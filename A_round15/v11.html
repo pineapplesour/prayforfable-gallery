@@ -1,0 +1,589 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>VORTEX — living storm</title>
+<style>
+  :root{ color-scheme: dark; }
+  html,body{margin:0;height:100%;background:#04060d;overflow:hidden;
+    font-family:"Helvetica Neue",Inter,system-ui,-apple-system,"Segoe UI",sans-serif;
+    -webkit-tap-highlight-color:transparent; cursor:crosshair;}
+  #c{display:block;width:100vw;height:100vh;touch-action:none;}
+  /* HUD */
+  .hud{position:fixed;left:0;top:0;right:0;bottom:0;pointer-events:none;
+       mix-blend-mode:screen;}
+  .title{position:fixed;left:clamp(18px,3.4vw,52px);top:clamp(16px,3vw,46px);
+    pointer-events:none;user-select:none;}
+  .title h1{margin:0;font-weight:800;letter-spacing:.34em;
+    font-size:clamp(20px,3.4vw,40px);line-height:1;
+    color:#eaf4ff;text-shadow:0 0 24px rgba(120,180,255,.45);}
+  .title h1 b{color:#ff8d4a;font-weight:800;text-shadow:0 0 26px rgba(255,140,70,.6);}
+  .title p{margin:.55em 0 0;font-size:clamp(10px,1.05vw,12px);letter-spacing:.42em;
+    color:#7f93b8;text-transform:uppercase;font-weight:600;}
+  .hint{position:fixed;left:clamp(18px,3.4vw,52px);bottom:clamp(16px,3vw,40px);
+    font-size:clamp(9.5px,1vw,11.5px);letter-spacing:.16em;color:#6a7ea6;
+    line-height:1.85;pointer-events:none;user-select:none;font-weight:500;
+    text-transform:uppercase; transition:opacity 1.4s ease;}
+  .hint b{color:#cfe0ff;font-weight:700;}
+  .read{position:fixed;right:clamp(16px,3vw,46px);top:clamp(16px,3vw,46px);
+    text-align:right;font-variant-numeric:tabular-nums;pointer-events:none;
+    user-select:none;}
+  .read .big{font-size:clamp(34px,6vw,72px);font-weight:200;line-height:.92;
+    color:#dcebff;letter-spacing:-.02em;text-shadow:0 0 30px rgba(110,170,255,.35);}
+  .read .lab{font-size:clamp(8.5px,.95vw,10.5px);letter-spacing:.4em;color:#6f84ad;
+    margin-top:.4em;text-transform:uppercase;font-weight:600;}
+  .read .sub{font-size:clamp(8.5px,.95vw,10.5px);letter-spacing:.16em;color:#566a92;
+    margin-top:.7em;font-weight:500;}
+  .vhint{animation:pulse 3.2s ease-in-out infinite;}
+  @keyframes pulse{0%,100%{opacity:.55}50%{opacity:1}}
+  @media (max-width:560px){
+    .hint{letter-spacing:.1em;}
+    .read .sub{display:none;}
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud">
+  <div class="title">
+    <h1>VOR<b>T</b>EX</h1>
+    <p>living&nbsp;&nbsp;storm</p>
+  </div>
+  <div class="read">
+    <div class="big" id="rpm">0</div>
+    <div class="lab">angular velocity</div>
+    <div class="sub" id="cnt">— particles aloft</div>
+  </div>
+  <div class="hint" id="hint">
+    <span class="vhint">drag</span> &nbsp;orbit camera &nbsp;·&nbsp;
+    move&nbsp;to&nbsp;bend &nbsp;·&nbsp;
+    <b>click</b>&nbsp;detonate &nbsp;·&nbsp;
+    wheel&nbsp;updraft &nbsp;·&nbsp;
+    <b>space</b>&nbsp;calm
+  </div>
+</div>
+<script>
+"use strict";
+(()=>{
+const cv=document.getElementById('c'), g=cv.getContext('2d',{alpha:false});
+let W=0,H=0,DPR=1,CX=0,CY=0;
+const TAU=Math.PI*2;
+const rnd=(a,b)=>a+Math.random()*(b-a);
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const lerp=(a,b,t)=>a+(b-a)*t;
+const mobile = Math.min(innerWidth,innerHeight) < 560;
+
+function resize(){
+  DPR=Math.min(devicePixelRatio||1, 2);
+  W=innerWidth; H=innerHeight; CX=W*0.5; CY=H*0.5;
+  cv.width=Math.round(W*DPR); cv.height=Math.round(H*DPR);
+  cv.style.width=W+'px'; cv.style.height=H+'px';
+  g.setTransform(DPR,0,0,DPR,0,0);
+  bgGrad=g.createLinearGradient(0,0,0,H);
+  bgGrad.addColorStop(0,'#060912'); bgGrad.addColorStop(0.55,'#070a14'); bgGrad.addColorStop(1,'#03040a');
+}
+let bgGrad=null;
+addEventListener('resize',resize,{passive:true}); resize();
+
+/* ---------- vortex parameters ---------- */
+// funnel geometry in world space (y up). The tornado is a tall cone:
+// radius grows with height, particles orbit and rise, then recycle.
+const HEIGHT = 2.70;          // world height of funnel
+const BASE_R = 0.085;         // tight radius at the pinched waist
+const TOP_R  = 0.92;          // flare at top (wall cloud)
+const TIP_R  = 0.34;          // ground touchdown / debris skirt spread
+// classic tornado silhouette: wide at top, pinch near the bottom,
+// then flare again right at the ground (the scouring skirt).
+function profileR(h){
+  // h: 0 ground .. 1 top
+  if(h < 0.14){ // ground skirt flares out then pinches into the waist
+    const t=h/0.14; return lerp(TIP_R, BASE_R, t*t);
+  }
+  // smooth power curve up to the flared top
+  const t=(h-0.14)/0.86;
+  return lerp(BASE_R, TOP_R, Math.pow(t,0.78));
+}
+
+// camera / projection
+let camAz = 0.0;              // azimuth (drag x)
+let camAzT = 0.0;
+let camTilt = -0.16;         // tilt (drag y)
+let camTiltT = -0.16;
+const FOV = 1.30;            // world->screen scale base
+let viewScale = 1;           // px per world unit (set from size)
+
+// dynamic state
+let spin = 1.0;              // angular velocity multiplier (target)
+let spinV = 1.0;             // smoothed
+let updraft = 1.0;          // vertical wind multiplier (wheel)
+let updraftT = 1.0;
+let lean = {x:0,y:0};       // funnel bend toward pointer (world)
+let leanT = {x:0,y:0};
+let calm = 0;               // 0..1 calm blend (space)
+let calmT = 0;
+let hueShift = 0;
+
+// pointer
+let pX=CX, pY=CY-40, pActive=false;
+let dragging=false, dragLastX=0, dragLastY=0, dragMoved=0;
+
+/* ---------- particle system ---------- */
+const COUNT = mobile ? 3200 : 7000;
+// SoA
+const ang  = new Float32Array(COUNT); // orbital angle
+const hgt  = new Float32Array(COUNT); // 0..1 height fraction
+const vel  = new Float32Array(COUNT); // rise speed
+const aSp  = new Float32Array(COUNT); // angular speed
+const life = new Float32Array(COUNT);
+const seed = new Float32Array(COUNT);
+const band = new Float32Array(COUNT); // -1..1 radial offset within shell
+const shell= new Uint8Array(COUNT);   // 0 core, 1 wall (dense), 2 outer veil
+
+function respawn(i, low){
+  ang[i]=Math.random()*TAU;
+  hgt[i]= low ? rnd(0,0.04) : Math.random();
+  // shell distribution: thin hot core, thick bright wall, wispy veil
+  const r=Math.random();
+  if(r<0.14){ shell[i]=0; band[i]=rnd(-0.35,0.35); }      // core
+  else if(r<0.82){ shell[i]=1; band[i]=rnd(-1,1)*0.38; }   // dense wall
+  else { shell[i]=2; band[i]=rnd(-1,1)*0.95; }             // outer veil
+  vel[i]= rnd(0.18,0.44);
+  aSp[i]= rnd(1.0,1.8);
+  seed[i]= Math.random();
+  life[i]= rnd(0,1);
+}
+for(let i=0;i<COUNT;i++) respawn(i, Math.random()<0.5);
+
+// persistent ground dust skirt (always kicked up at touchdown)
+const DUST = mobile?260:520;
+const dua=new Float32Array(DUST), dur=new Float32Array(DUST),
+      duh=new Float32Array(DUST), dus=new Float32Array(DUST), duv=new Float32Array(DUST);
+for(let i=0;i<DUST;i++){ dua[i]=Math.random()*TAU; dur[i]=rnd(0.2,1.0);
+  duh[i]=Math.random(); dus[i]=Math.random(); duv[i]=rnd(0.6,1.6); }
+
+// debris from clicks (sucked into the vortex)
+const DEB = 360;
+const dx=new Float32Array(DEB), dy=new Float32Array(DEB), dz=new Float32Array(DEB);
+const dvx=new Float32Array(DEB), dvy=new Float32Array(DEB), dvz=new Float32Array(DEB);
+const dl=new Float32Array(DEB), dh=new Float32Array(DEB);
+let debHead=0;
+function emitDebris(wx,wy,wz,n,heat){
+  for(let k=0;k<n;k++){
+    const i=debHead; debHead=(debHead+1)%DEB;
+    const a=Math.random()*TAU, sp=rnd(0.4,1.6);
+    dx[i]=wx; dy[i]=wy; dz[i]=wz;
+    dvx[i]=Math.cos(a)*sp; dvz[i]=Math.sin(a)*sp;
+    dvy[i]=rnd(0.2,1.4);
+    dl[i]=1; dh[i]=heat;
+  }
+}
+// shockwave rings (ground)
+const rings=[];
+function ring(wx,wz,heat){ rings.push({x:wx,z:wz,r:0,a:1,heat}); }
+
+/* ---------- color ---------- */
+// storm palette: indigo base -> cyan mid -> ember tip + lightning whites
+function bodyColor(hF, t, s, hue){
+  // hF height fraction 0(ground)..1(top). storm gradient.
+  const h = (lerp(258, 188, hF) + hue) ; // hue deg
+  const sat = lerp(70, 92, hF) - calmT*22;
+  const lig = lerp(46, 64, hF*0.7) ;
+  return `hsla(${h},${sat}%,${lig}%,${s})`;
+}
+
+/* ---------- projection ---------- */
+// world point (wx,wy,wz): center axis at origin, y up.
+// rotate around y by camAz, tilt around x by camTilt, orthographic-ish w/ slight perspective.
+function project(wx,wy,wz){
+  const ca=Math.cos(camAz), sa=Math.sin(camAz);
+  let x = wx*ca - wz*sa;
+  let z = wx*sa + wz*ca;
+  const ct=Math.cos(camTilt), st=Math.sin(camTilt);
+  let y = wy*ct - z*st;
+  z = wy*st + z*ct;
+  const persp = clamp(FOV/(FOV + z*0.42), 0.18, 2.6);
+  const sx = CX + x*viewScale*persp;
+  const sy = CY - (y - HEIGHT*0.5)*viewScale*persp; // center funnel vertically
+  return {x:sx,y:sy,s:persp,depth:z};
+}
+
+/* ---------- main loop ---------- */
+let last=performance.now(), tGlobal=0, fpsAcc=0, frames=0, fpsShown=60;
+let started=false;
+
+function step(now){
+  let dt=(now-last)/1000; last=now;
+  if(dt>0.05) dt=0.05; // clamp big gaps
+  tGlobal+=dt;
+  // viewScale from screen size; keep funnel ~70% of min dim
+  viewScale = Math.min(W,H)/ (HEIGHT*1.18) ;
+
+  // smooth controls
+  camAz = lerp(camAz, camAzT, 0.08);
+  camTilt = lerp(camTilt, camTiltT, 0.08);
+  // idle slow auto-orbit when not dragging
+  if(!dragging){ camAzT += dt*0.10*(1-calmT*0.7); }
+  spinV = lerp(spinV, spin*(1-calmT*0.78), 0.05);
+  updraft = lerp(updraft, updraftT*(1-calmT*0.5), 0.05);
+  leanT.x = lerp(leanT.x, lean.x, 0.06);
+  leanT.y = lerp(leanT.y, lean.y, 0.06);
+  calmT = lerp(calmT, calm, 0.06);
+  hueShift = lerp(hueShift, (pActive? (pX-CX)/W*40 : 0), 0.05);
+
+  // ---- background: deep gradient (cached) + faint nebula wash ----
+  g.fillStyle=bgGrad; g.fillRect(0,0,W,H);
+  drawWash();
+
+  g.globalCompositeOperation='lighter';
+
+  // ---- ground shock rings ----
+  for(let i=rings.length-1;i>=0;i--){
+    const r=rings[i];
+    r.r += dt*1.7; r.a *= (1-dt*1.2);
+    if(r.a<0.02){ rings.splice(i,1); continue; }
+    drawGroundRing(r);
+  }
+
+  // ---- ground dust skirt (behind the funnel body) ----
+  renderDust(dt);
+
+  // ---- update + collect particle render data ----
+  renderVortex(dt);
+
+  // ---- debris ----
+  renderDebris(dt);
+
+  // ---- lightning flicker inside core occasionally ----
+  if(Math.random()< (0.012 + spinV*0.01) && calmT<0.5) bolt();
+
+  g.globalCompositeOperation='source-over';
+
+  // HUD readouts + adaptive particle cap (keep it smooth on weak GPUs)
+  frames++; fpsAcc+=dt;
+  if(fpsAcc>0.5){
+    fpsShown=Math.round(frames/fpsAcc); frames=0; fpsAcc=0; updateHUD();
+    tuneTicks++;
+    if(tuneTicks>2){ // skip first warmup windows
+      if(fpsShown<48 && activeCount>COUNT*0.45){
+        activeCount=Math.max((COUNT*0.45)|0, (activeCount*0.88)|0);
+      } else if(fpsShown>58 && activeCount<COUNT){
+        activeCount=Math.min(COUNT, (activeCount*1.06+40)|0);
+      }
+    }
+  }
+
+  requestAnimationFrame(step);
+}
+let activeCount = COUNT;     // auto-tuned 0..COUNT
+let tuneTicks = 0;
+
+// temp projected buffers (current + trailing position for streaks)
+const px_=new Float32Array(COUNT), py_=new Float32Array(COUNT), ps_=new Float32Array(COUNT);
+const qx_=new Float32Array(COUNT), qy_=new Float32Array(COUNT);
+const hh_=new Float32Array(COUNT);
+
+function renderVortex(dt){
+  const spinNow = spinV;
+  const upNow = updraft;
+  const bendX = (leanT.x)*0.95;
+  const bendZ = (leanT.y)*0.62;
+
+  const N=activeCount;
+  for(let i=0;i<N;i++){
+    let h=hgt[i];
+    h += vel[i]*upNow*dt*0.30;
+    // conservation of momentum: spins much faster as it pinches toward the waist
+    const prof = profileR(h);
+    const angSpeed = aSp[i]*spinNow*(0.6 + 0.5/(prof+0.18));
+    const aPrev = ang[i];
+    ang[i]+= angSpeed*dt;
+    life[i]-= dt*0.09;
+    if(h>=1 || life[i]<=0){ respawn(i,true); h=hgt[i]; }
+    else hgt[i]=h;
+
+    // breathing wobble + per-particle radial offset within its shell
+    const wob = 1 + 0.08*Math.sin(tGlobal*1.2 + seed[i]*TAU + h*5.0);
+    const r = prof*wob*(1 + band[i]*0.42);
+    const wy = h*HEIGHT;
+    const bf = h*h; // bend grows with height
+    const bx = bendX*bf, bz = bendZ*bf;
+
+    const a=ang[i];
+    const wx = Math.cos(a)*r + bx;
+    const wz = Math.sin(a)*r + bz;
+    const p=project(wx,wy,wz);
+    // trailing point one small angular step back -> motion streak along the orbit
+    const trail = 0.05 + spinNow*0.045;
+    const ap = a - angSpeed*trail*0.18 - 0.10;
+    const qp=project(Math.cos(ap)*r+bx, wy, Math.sin(ap)*r+bz);
+
+    px_[i]=p.x; py_[i]=p.y; ps_[i]=p.s;
+    qx_[i]=qp.x; qy_[i]=qp.y; hh_[i]=h;
+  }
+  // No depth sort needed: additive ('lighter') blending is order-independent,
+  // so we render in array order and save an O(n log n) sort every frame.
+
+  const baseA = 0.40*(1-calmT*0.28);
+  const lineMul = mobile?1.3:1.6;
+  // Batch into buckets of (shell x heightBand x widthTier). Each bucket shares
+  // one real color (the height gradient is preserved because height is the key)
+  // and one lineWidth, so we issue ~NB stroke() calls instead of COUNT. This
+  // is the perf win while keeping the indigo->cyan vertical gradient intact.
+  for(let b=0;b<NB;b++) batchN[b]=0;
+  for(let i=0;i<N;i++){
+    const sx=px_[i], sy=py_[i], sc=ps_[i];
+    if(sx<-60||sx>W+60||sy<-60||sy>H+60) continue;
+    const h=hh_[i], sh=shell[i];
+    const fade = clamp(life[i]*1.5,0,1);
+    let w, alpha;
+    if(sh===0){ w=lineMul*sc*1.7; alpha=baseA*fade*1.15*(0.5+sc*0.6); }
+    else if(sh===1){ w=lineMul*sc*(0.9+(1-h)*0.5); alpha=baseA*fade*(0.55+sc*0.55); }
+    else { w=lineMul*sc*0.7; alpha=baseA*fade*0.5*(0.4+sc*0.5); }
+    const wt = w<1.0?0 : w<1.9?1 : 2;
+    let hb = (h*HB)|0; if(hb>=HB) hb=HB-1; if(hb<0) hb=0;
+    const bkt = (sh*HB + hb)*3 + wt;
+    const n=batchN[bkt]; if(n>=BCAP) continue;
+    const off=(bkt*BCAP + n)*4;
+    bx_[off]=qx_[i]; bx_[off+1]=qy_[i]; bx_[off+2]=sx; bx_[off+3]=sy;
+    ba_[bkt*BCAP+n]= alpha;
+    batchN[bkt]=n+1;
+  }
+  // flush veil -> wall -> core (core on top)
+  for(let sh=2; sh>=0; sh--){
+    for(let hb=0; hb<HB; hb++){
+      const h=(hb+0.5)/HB;
+      let hue,sat,lig;
+      if(sh===0){ hue=lerp(200,186,h)+hueShift; sat=100; lig=lerp(78,92,h); }
+      else if(sh===1){ hue=lerp(250,192,h)+hueShift; sat=lerp(78,96,h)-calmT*22; lig=lerp(50,70,h*0.8); }
+      else { hue=lerp(262,210,h)+hueShift; sat=lerp(60,80,h); lig=lerp(40,58,h); }
+      for(let wt=0; wt<3; wt++){
+        const bkt=(sh*HB+hb)*3+wt;
+        const n=batchN[bkt]; if(!n) continue;
+        // mean alpha for this small, color-coherent bucket
+        let mal=0; const ab=bkt*BCAP;
+        for(let k=0;k<n;k++) mal+=ba_[ab+k]; mal/=n;
+        g.lineWidth = wt===0?0.8 : wt===1?1.5 : 2.6;
+        g.strokeStyle=`hsla(${hue.toFixed(0)},${sat.toFixed(0)}%,${lig.toFixed(0)}%,${clamp(mal*1.1,0,1).toFixed(3)})`;
+        g.beginPath();
+        const base=bkt*BCAP*4;
+        for(let k=0;k<n;k++){ const o=base+k*4; g.moveTo(bx_[o],bx_[o+1]); g.lineTo(bx_[o+2],bx_[o+3]); }
+        g.stroke();
+      }
+    }
+  }
+}
+// batch buffers: 3 shells * HB height bands * 3 width tiers
+const HB = 14;
+const NB = 3*HB*3;
+const BCAP = Math.ceil(COUNT*0.6);
+const batchN = new Int32Array(NB);
+const bx_ = new Float32Array(NB*BCAP*4);
+const ba_ = new Float32Array(NB*BCAP);
+
+// ---- ground dust skirt: always-present scoured debris at touchdown ----
+function renderDust(dt){
+  const spinNow=spinV;
+  for(let i=0;i<DUST;i++){
+    dua[i]+= (1.4 + 0.7/(dur[i]+0.2))*spinNow*dt;
+    duh[i]+= duv[i]*updraft*dt*0.16;
+    dur[i]+= dt*0.18*duv[i];            // drift outward as it rises
+    if(duh[i]>0.26 || dur[i]>1.4){ duh[i]=rnd(0,0.02); dur[i]=rnd(0.1,0.5); dua[i]=Math.random()*TAU; }
+    const h=duh[i];
+    const r=dur[i];
+    const bf=h*h;
+    const wx=Math.cos(dua[i])*r + leanT.x*0.95*bf;
+    const wz=Math.sin(dua[i])*r + leanT.y*0.62*bf;
+    const p=project(wx,h*HEIGHT,wz);
+    if(p.x<-40||p.x>W+40) continue;
+    const fade=clamp(1-h/0.26,0,1);
+    const sz=(mobile?1.3:1.9)*p.s*(0.6+fade*0.8);
+    const hue=lerp(28,150,h*2.0)+hueShift; // ember at the floor -> teal as it lifts
+    g.fillStyle=`hsla(${hue},95%,${lerp(56,72,h*2)}%,${fade*0.5*(1-calmT*0.6)})`;
+    g.beginPath(); g.arc(p.x,p.y,Math.max(0.1,sz),0,TAU); g.fill();
+  }
+}
+
+function renderDebris(dt){
+  const spinNow=spinV;
+  for(let i=0;i<DEB;i++){
+    if(dl[i]<=0) continue;
+    // pull toward axis & spiral up — vortex suction
+    const r=Math.hypot(dx[i],dz[i])+1e-4;
+    const inward = 2.4;
+    const tang = 3.2*spinNow;
+    // tangential velocity (perpendicular)
+    const tx=-dz[i]/r, tz=dx[i]/r;
+    dvx[i]+= (-dx[i]/r*inward + tx*tang)*dt;
+    dvz[i]+= (-dz[i]/r*inward + tz*tang)*dt;
+    dvy[i]+= (updraft*0.9)*dt;
+    dvx[i]*=0.985; dvz[i]*=0.985; dvy[i]*=0.992;
+    dx[i]+=dvx[i]*dt; dy[i]+=dvy[i]*dt; dz[i]+=dvz[i]*dt;
+    dl[i]-=dt*0.22;
+    if(dy[i]>HEIGHT*1.05) dl[i]-=dt*0.8;
+    const p=project(dx[i],dy[i],dz[i]);
+    const hF=clamp(dy[i]/HEIGHT,0,1);
+    const sz=(mobile?1.6:2.4)*p.s*dl[i];
+    const hue=lerp(34, 196, hF*0.7)+hueShift; // ember -> cyan as it rises
+    g.fillStyle=`hsla(${hue},100%,${lerp(60,80,hF)}%,${clamp(dl[i],0,1)*0.9})`;
+    g.beginPath(); g.arc(p.x,p.y,Math.max(0.1,sz),0,TAU); g.fill();
+    // little trailing spark
+    if(dl[i]>0.4){
+      const p2=project(dx[i]-dvx[i]*0.06,dy[i]-dvy[i]*0.06,dz[i]-dvz[i]*0.06);
+      g.strokeStyle=`hsla(${hue},100%,75%,${dl[i]*0.4})`;
+      g.lineWidth=sz*0.7; g.beginPath(); g.moveTo(p.x,p.y); g.lineTo(p2.x,p2.y); g.stroke();
+    }
+  }
+}
+
+function drawGroundRing(r){
+  // ellipse on ground plane (y=0) projected
+  const segs=46; g.beginPath();
+  for(let k=0;k<=segs;k++){
+    const a=k/segs*TAU;
+    const p=project(Math.cos(a)*r.r, 0.001, Math.sin(a)*r.r);
+    if(k===0) g.moveTo(p.x,p.y); else g.lineTo(p.x,p.y);
+  }
+  const hue= r.heat? 30: 196;
+  g.strokeStyle=`hsla(${hue},100%,70%,${r.a*0.6})`;
+  g.lineWidth= 2.2*(1+r.heat);
+  g.stroke();
+}
+
+function drawWash(){
+  // soft radial breathing glow behind funnel
+  const pulse=0.5+0.5*Math.sin(tGlobal*0.7);
+  const rr=Math.min(W,H)*(0.42+0.05*pulse);
+  const cx=CX + camAz*0; const cy=CY*0.92;
+  const rg=g.createRadialGradient(cx,cy,0,cx,cy,rr);
+  const hue=232+hueShift*0.5;
+  rg.addColorStop(0,`hsla(${hue},60%,30%,${0.28-calmT*0.12})`);
+  rg.addColorStop(0.5,`hsla(${hue-10},55%,18%,0.10)`);
+  rg.addColorStop(1,'hsla(230,50%,8%,0)');
+  g.fillStyle=rg; g.fillRect(0,0,W,H);
+}
+
+function bolt(){
+  // jagged lightning along the core
+  g.globalCompositeOperation='lighter';
+  const segs=10;
+  let h=rnd(0.15,0.85);
+  const start=project(0,h*HEIGHT,0);
+  g.beginPath(); g.moveTo(start.x,start.y);
+  let lx=start.x, ly=start.y;
+  for(let k=0;k<segs;k++){
+    h-=0.06;
+    const a=Math.random()*TAU; const r=rnd(0,0.12);
+    const p=project(Math.cos(a)*r,h*HEIGHT,Math.sin(a)*r);
+    lx=lerp(lx,p.x,0.7)+rnd(-12,12); ly=lerp(ly,p.y,0.7)+rnd(-6,6);
+    g.lineTo(lx,ly);
+  }
+  g.strokeStyle='rgba(210,235,255,0.9)'; g.lineWidth=rnd(1.2,2.4);
+  g.shadowBlur=18; g.shadowColor='rgba(160,200,255,0.9)';
+  g.stroke(); g.shadowBlur=0;
+}
+
+/* ---------- HUD ---------- */
+const elRpm=document.getElementById('rpm');
+const elCnt=document.getElementById('cnt');
+function updateHUD(){
+  const rpm=Math.round(spinV*340 + updraft*60);
+  elRpm.textContent=rpm;
+  elCnt.textContent=`${activeCount.toLocaleString()} particles · ${fpsShown}fps`;
+}
+
+/* ---------- interaction ---------- */
+function screenToLean(sx,sy){
+  // pointer offset from center -> world lean direction (apply with camera-relative inverse az)
+  const ox=(sx-CX)/(Math.min(W,H)*0.5);
+  const oy=(sy-CY)/(Math.min(W,H)*0.5);
+  // counter-rotate by camAz so bend follows screen, not world
+  const ca=Math.cos(-camAz), sa=Math.sin(-camAz);
+  lean.x = ox*ca - oy*sa;
+  lean.y = ox*sa + oy*ca;
+  lean.x=clamp(lean.x,-1.1,1.1); lean.y=clamp(lean.y,-1.1,1.1);
+}
+
+cv.addEventListener('pointerdown',e=>{
+  cv.setPointerCapture(e.pointerId);
+  dragging=true; dragMoved=0; dragLastX=e.clientX; dragLastY=e.clientY;
+  pActive=true; pX=e.clientX; pY=e.clientY;
+});
+cv.addEventListener('pointermove',e=>{
+  pActive=true; pX=e.clientX; pY=e.clientY;
+  if(dragging){
+    const ddx=e.clientX-dragLastX, ddy=e.clientY-dragLastY;
+    dragMoved+=Math.abs(ddx)+Math.abs(ddy);
+    camAzT -= ddx*0.006;
+    camTiltT = clamp(camTiltT - ddy*0.004, -0.9, 0.55);
+    dragLastX=e.clientX; dragLastY=e.clientY;
+  }
+  screenToLean(e.clientX,e.clientY);
+});
+function endDrag(e){
+  if(dragging && dragMoved<6){ detonate(pX,pY); }
+  dragging=false;
+}
+cv.addEventListener('pointerup',endDrag);
+cv.addEventListener('pointercancel',()=>{dragging=false;});
+cv.addEventListener('pointerleave',()=>{pActive=false;});
+
+function detonate(sx,sy){
+  // emit a burst of debris near the ground under pointer, plus a spike of spin
+  // map pointer x -> world azimuth-ish ground position around base
+  const ox=(sx-CX)/(Math.min(W,H)*0.5);
+  const wx=clamp(ox*0.6,-0.7,0.7);
+  const wz=rnd(-0.2,0.2);
+  emitDebris(wx,0.02,wz, mobile?40:64, 1);
+  ring(wx,wz,1);
+  spin = clamp(spin+0.55,0.4,3.2);
+  // hide hint after first interaction
+  fadeHint();
+}
+
+addEventListener('wheel',e=>{
+  e.preventDefault();
+  updraftT = clamp(updraftT - e.deltaY*0.0012, 0.3, 2.6);
+  fadeHint();
+},{passive:false});
+
+// spin decays back toward 1 over time
+setInterval(()=>{ spin = lerp(spin, 1.0, 0.12); },180);
+
+addEventListener('keydown',e=>{
+  if(e.code==='Space'){ e.preventDefault(); calm = calm>0.5?0:1; fadeHint(); }
+  if(e.key==='r'||e.key==='R'){ for(let i=0;i<COUNT;i++) respawn(i,Math.random()<0.5); }
+});
+
+let hintGone=false;
+function fadeHint(){
+  if(hintGone) return; hintGone=true;
+  const h=document.getElementById('hint');
+  setTimeout(()=>{ h.style.opacity='0'; }, 2600);
+}
+
+/* ---------- expose for verification ---------- */
+window.__vortex={
+  state(){ return {
+    count:COUNT, active:activeCount, fps:fpsShown, spin:+spinV.toFixed(3), updraft:+updraft.toFixed(3),
+    camAz:+camAz.toFixed(3), camTilt:+camTilt.toFixed(3),
+    lean:{x:+leanT.x.toFixed(3),y:+leanT.y.toFixed(3)},
+    calm:+calmT.toFixed(3), rings:rings.length,
+    debrisLive: (()=>{let c=0;for(let i=0;i<DEB;i++)if(dl[i]>0)c++;return c;})()
+  };},
+  detonate(sx,sy){ detonate(sx??CX,sy??CY-40); },
+  wheel(d){ updraftT=clamp(updraftT - d*0.0012,0.3,2.6); },
+  orbit(dx,dy){ camAzT-=dx*0.006; camTiltT=clamp(camTiltT-dy*0.004,-0.9,0.55); },
+  toggleCalm(){ calm = calm>0.5?0:1; },
+  firstPaintNonEmpty(){ // sample center region for non-bg pixels
+    const s=g.getImageData(Math.round(CX*DPR-60*DPR),Math.round(CY*DPR-120*DPR),Math.round(120*DPR),Math.round(220*DPR)).data;
+    let lit=0; for(let i=0;i<s.length;i+=4){ if(s[i]+s[i+1]+s[i+2]>90) lit++; }
+    return lit;
+  }
+};
+
+requestAnimationFrame(step);
+})();
+</script>
+</body>
+</html>

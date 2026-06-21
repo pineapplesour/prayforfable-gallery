@@ -1,0 +1,740 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>MERCURIA — liquid metal SPH</title>
+<style>
+  :root{ color-scheme: dark; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ height:100%; width:100%; overflow:hidden; background:#04060b; }
+  body{
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+    cursor: crosshair;
+  }
+  #stage{ position:fixed; inset:0; display:block; }
+  /* metaball compositing canvas sits underneath, hidden offscreen-style buffer */
+  canvas{ position:fixed; inset:0; width:100%; height:100%; display:block; }
+  #fx{ z-index:1; }            /* final composited fluid */
+  #ui{ z-index:3; }            /* sharp vector overlay: hud, rings */
+
+  .hud{
+    position:fixed; z-index:5; pointer-events:none;
+    color:#cfe3ff; mix-blend-mode:screen;
+    text-shadow:0 0 10px rgba(80,140,255,.35);
+  }
+  #title{
+    left:26px; top:22px; letter-spacing:.42em; font-size:13px; font-weight:600;
+    opacity:.92;
+  }
+  #title b{ font-weight:800; letter-spacing:.5em; }
+  #title span{ display:block; margin-top:6px; letter-spacing:.28em; font-size:9.5px; opacity:.55; }
+  #stats{
+    right:24px; top:22px; text-align:right; font-size:10px; line-height:1.7; opacity:.62;
+  }
+  #stats em{ font-style:normal; color:#8fd0ff; }
+  #help{
+    left:50%; bottom:20px; transform:translateX(-50%);
+    font-size:10px; letter-spacing:.16em; text-align:center; opacity:.5;
+    white-space:nowrap;
+  }
+  #help kbd{
+    color:#9fe8ff; border:1px solid rgba(140,200,255,.25); border-radius:4px;
+    padding:1px 5px; margin:0 2px; background:rgba(40,90,170,.16); font-size:9.5px;
+  }
+  #palette{
+    left:26px; bottom:20px; font-size:10px; letter-spacing:.18em; opacity:.7;
+  }
+  #palette i{ font-style:normal; color:#fff; }
+  /* flash hint that fades */
+  #hint{
+    position:fixed; z-index:6; left:50%; top:50%; transform:translate(-50%,-50%);
+    color:#dfe9ff; font-size:12px; letter-spacing:.3em; pointer-events:none;
+    text-shadow:0 0 18px rgba(120,170,255,.6);
+    animation: fade 4.6s ease forwards 1.6s; opacity:0;
+  }
+  @keyframes fade{ 0%{opacity:.0} 14%{opacity:.85} 70%{opacity:.85} 100%{opacity:0} }
+
+  @media (max-width:520px){
+    #title{ font-size:11px; left:16px; top:16px; max-width:55vw; }
+    #title span{ font-size:8px; letter-spacing:.14em; }
+    #stats{ font-size:9px; right:14px; top:16px; }
+    #help{ display:none; }
+    #palette{ left:16px; bottom:14px; font-size:9px; }
+  }
+</style>
+</head>
+<body>
+  <canvas id="fx"></canvas>
+  <canvas id="ui"></canvas>
+  <canvas id="stage" style="display:none"></canvas>
+
+  <div id="title" class="hud"><b>MERCURIA</b><span>smoothed-particle hydrodynamics · liquid metal</span></div>
+  <div id="stats" class="hud"></div>
+  <div id="palette" class="hud"></div>
+  <div id="help" class="hud">
+    <kbd>drag</kbd> stir &nbsp; <kbd>click</kbd> burst &nbsp; <kbd>scroll</kbd> gravity &nbsp;
+    <kbd>space</kbd> antigrav &nbsp; <kbd>P</kbd> palette &nbsp; <kbd>G</kbd> goo &nbsp; <kbd>R</kbd> reset
+  </div>
+  <div id="hint" class="hud">move &nbsp;·&nbsp; drag &nbsp;·&nbsp; click</div>
+
+<script>
+(()=>{
+/* ============================================================================
+   MERCURIA — a single-file SPH (smoothed-particle hydrodynamics) liquid.
+   Real density/pressure/viscosity/surface-tension forces, spatial-hash
+   neighbor search, rendered as thresholded metaballs with a chromatic rim
+   and specular highlight so it reads as living liquid metal / plasma.
+   ========================================================================== */
+
+const FX = document.getElementById('fx');
+const UI = document.getElementById('ui');
+const fxc = FX.getContext('2d', { alpha:false });
+const uic = UI.getContext('2d');
+
+let W=0, H=0, DPR=1;
+// low-res field buffer for the metaball pass (cheap; upscaled with blur)
+let FW=0, FH=0, SCALE=0;            // field width/height & downsample factor
+let field = null;                   // Float32 density accumulation
+let field2 = null;                  // scratch for separable blur
+let fieldImg = null;                // ImageData written each frame
+let fieldCanvas = document.createElement('canvas');
+let fieldCtx = fieldCanvas.getContext('2d');
+
+/* ---------- tunables ---------- */
+const REST_DENS  = 3.0;
+const STIFF      = 190;     // pressure stiffness (gas constant)
+const NEAR_STIFF = 300;     // near-pressure (prevents clumping/explosion)
+const VISC       = 0.16;    // viscosity
+const COH        = 26;      // cohesion / surface-tension attraction strength
+let   GRAV       = 150;     // gentle gravity -> floating wobbling mercury body
+let   GRAV_DIR   = 1;       // +1 down, flips with space
+const DAMP       = 0.996;
+const BOUNCE     = 0.42;
+
+let   H_RAD;               // smoothing radius (set on resize relative to size)
+let   H2, PARTR;          // h^2, particle visual radius
+let   MASS = 1.0;
+
+/* particle SoA */
+let N = 0, CAP = 0;
+let px, py, vx, vy, ax, ay, dens, ndens, hue;
+
+/* spatial hash */
+let cellSize, gx, gy, gridHead, gridNext;
+
+/* pointer */
+const ptr = { x:0, y:0, px:0, py:0, down:false, active:false, vx:0, vy:0, t:0 };
+let burstQueue = [];
+
+/* palettes — each: background tint + 3 colour stops for the liquid ramp + rim */
+const PALETTES = [
+  { name:'MERCURY',  bg:[5,7,13],    a:[20,32,60],   b:[120,170,255], c:[235,245,255], rim:[150,210,255], spec:[255,255,255] },
+  { name:'MAGMA',    bg:[12,4,3],    a:[60,12,8],    b:[255,90,30],   c:[255,225,120], rim:[255,150,60],  spec:[255,255,220] },
+  { name:'TOXIC',    bg:[3,10,6],    a:[10,50,30],   b:[60,255,160],  c:[210,255,150], rim:[120,255,200], spec:[240,255,240] },
+  { name:'PLASMA',   bg:[8,4,14],    a:[40,10,70],   b:[200,60,255],  c:[120,200,255], rim:[255,120,230], spec:[255,240,255] },
+  { name:'GOLD INK', bg:[10,8,3],    a:[40,28,6],    b:[255,190,70],  c:[255,250,210], rim:[255,210,120], spec:[255,255,255] },
+];
+let pal = 0;
+
+let GOO = true;          // metaball goo mode vs. discrete droplets
+let ANTI = false;        // antigravity toggle (space hold-less toggle)
+let frames=0, fpsT=performance.now(), fps=60, simMs=0;
+let cenX=0, cenY=0, energy=0;     // fluid centroid + kinetic energy (for ambiance)
+
+/* ----------------------------------------------------------------- resize */
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = Math.floor(window.innerWidth);
+  H = Math.floor(window.innerHeight);
+  FX.width = W*DPR; FX.height = H*DPR; FX.style.width=W+'px'; FX.style.height=H+'px';
+  UI.width = W*DPR; UI.height = H*DPR; UI.style.width=W+'px'; UI.style.height=H+'px';
+  fxc.setTransform(DPR,0,0,DPR,0,0);
+  uic.setTransform(DPR,0,0,DPR,0,0);
+
+  // field buffer downsampled hard — upscaling with imageSmoothing gives the
+  // gooey blur for free (no expensive filter:blur on the big canvas).
+  SCALE = (W*H > 1300*800) ? 8 : (W*H > 800*600 ? 6 : 5);
+  FW = Math.max(48, Math.ceil(W/SCALE));
+  FH = Math.max(48, Math.ceil(H/SCALE));
+  field = new Float32Array(FW*FH);
+  field2 = new Float32Array(FW*FH);
+  fieldCanvas.width = FW; fieldCanvas.height = FH;
+  fieldImg = fieldCtx.createImageData(FW,FH);
+
+  // smoothing radius scales with viewport so it feels consistent
+  H_RAD = Math.max(22, Math.min(W,H)*0.034);
+  H2 = H_RAD*H_RAD;
+  PARTR = H_RAD*0.70;
+  cellSize = H_RAD;
+  gx = Math.ceil(W/cellSize)+1;
+  gy = Math.ceil(H/cellSize)+1;
+  gridHead = new Int32Array(gx*gy);
+  gridNext = new Int32Array(CAP||1);
+}
+
+/* ------------------------------------------------------------- particles */
+function targetCount(){
+  // area-based, capped hard for 60fps
+  const area = W*H;
+  let n = Math.round(area / 1500);
+  return Math.max(520, Math.min(n, 1700));
+}
+
+function alloc(cap){
+  CAP=cap;
+  px=new Float32Array(cap); py=new Float32Array(cap);
+  vx=new Float32Array(cap); vy=new Float32Array(cap);
+  ax=new Float32Array(cap); ay=new Float32Array(cap);
+  dens=new Float32Array(cap); ndens=new Float32Array(cap);
+  hue=new Float32Array(cap);
+  gridNext=new Int32Array(cap);
+}
+
+function spawn(){
+  N = targetCount();
+  if(!px || N>CAP) alloc(Math.ceil(N*1.15));
+  // start as a packed disc near center -> reads as a cohesive mercury body
+  // immediately on first paint, then it settles/wobbles.
+  const sp = H_RAD*0.62;
+  const R = Math.sqrt(N/Math.PI)*sp;       // radius to hold N at density
+  const cx = W*0.5, cy = H*0.42;
+  let i=0, ring=0;
+  // sunflower packing for an even disc
+  const golden = Math.PI*(3-Math.sqrt(5));
+  while(i<N){
+    const t=i/N;
+    const r = R*Math.sqrt(t);
+    const a = i*golden;
+    px[i]= cx + Math.cos(a)*r + (Math.random()-0.5)*sp*0.2;
+    py[i]= cy + Math.sin(a)*r + (Math.random()-0.5)*sp*0.2;
+    // gentle initial swirl so it's alive at t=0
+    vx[i]= -Math.sin(a)*60*t;
+    vy[i]=  Math.cos(a)*60*t + 20;
+    hue[i]= t;
+    i++;
+  }
+}
+
+/* ----------------------------------------------------------- spatial hash */
+function buildGrid(){
+  gridHead.fill(-1);
+  const inv = 1/cellSize;
+  for(let i=0;i<N;i++){
+    let cx=px[i]*inv|0, cy=py[i]*inv|0;
+    if(cx<0)cx=0; else if(cx>=gx)cx=gx-1;
+    if(cy<0)cy=0; else if(cy>=gy)cy=gy-1;
+    const ci=cy*gx+cx;
+    gridNext[i]=gridHead[ci];
+    gridHead[ci]=i;
+  }
+}
+
+/* ---------------------------------------------------------- SPH dynamics */
+// Double-density relaxation (Clavet et al.) — stable & cheap, great for blobs.
+function simulate(dt){
+  const t0=performance.now();
+  buildGrid();
+  const inv=1/cellSize;
+  const h=H_RAD;
+
+  // ---- forces: gravity, pointer, viscosity (applied as velocity) ----
+  const g = (ANTI ? -1 : GRAV_DIR) * GRAV * dt;
+  const pAtt = ptr.active ? (ptr.down ? -1 : 1) : 0; // hover attracts, drag(down) repels+stir
+  for(let i=0;i<N;i++){
+    vy[i]+= g;
+    // pointer interaction
+    if(ptr.active){
+      const dx=ptr.x-px[i], dy=ptr.y-py[i];
+      const d2=dx*dx+dy*dy;
+      const R = ptr.down? 170 : 130;
+      if(d2 < R*R && d2>1){
+        const d=Math.sqrt(d2);
+        const f = (1 - d/R);
+        if(ptr.down){
+          // stir: push outward + add pointer velocity (swirl)
+          const k = f*f*2400*dt;
+          vx[i]-= (dx/d)*k; vy[i]-= (dy/d)*k;
+          vx[i]+= ptr.vx*f*0.55; vy[i]+= ptr.vy*f*0.55;
+        }else{
+          // hover: gentle attraction so liquid "follows" the cursor
+          const k = f*1200*dt;
+          vx[i]+= (dx/d)*k; vy[i]+= (dy/d)*k;
+        }
+      }
+    }
+  }
+
+  // bursts (clicks) — radial impulse
+  if(burstQueue.length){
+    for(const b of burstQueue){
+      for(let i=0;i<N;i++){
+        const dx=px[i]-b.x, dy=py[i]-b.y, d2=dx*dx+dy*dy;
+        const R=b.r;
+        if(d2<R*R){
+          const d=Math.sqrt(d2)||1;
+          const f=(1-d/R);
+          const k=f*f*b.power;
+          vx[i]+=(dx/d)*k; vy[i]+=(dy/d)*k;
+        }
+      }
+    }
+    burstQueue.length=0;
+  }
+
+  // viscosity pass (linear + quadratic), neighbor-based — applied before move
+  for(let i=0;i<N;i++){
+    const xi=px[i], yi=py[i];
+    let cx=xi*inv|0, cy=yi*inv|0;
+    if(cx<0)cx=0; else if(cx>=gx)cx=gx-1;
+    if(cy<0)cy=0; else if(cy>=gy)cy=gy-1;
+    for(let oy=-1;oy<=1;oy++){
+      const ny=cy+oy; if(ny<0||ny>=gy)continue;
+      for(let ox=-1;ox<=1;ox++){
+        const nx=cx+ox; if(nx<0||nx>=gx)continue;
+        let j=gridHead[ny*gx+nx];
+        while(j!==-1){
+          if(j>i){
+            const dx=px[j]-xi, dy=py[j]-yi;
+            const d2=dx*dx+dy*dy;
+            if(d2<H2 && d2>0.0001){
+              const d=Math.sqrt(d2);
+              const q=1-d/h;
+              const nxn=dx/d, nyn=dy/d;
+              const u=(vx[i]-vx[j])*nxn + (vy[i]-vy[j])*nyn;
+              if(u>0){
+                const imp = dt*q*(VISC*u + 0.012*u*u)*0.5;
+                const ix=imp*nxn, iy=imp*nyn;
+                vx[i]-=ix; vy[i]-=iy;
+                vx[j]+=ix; vy[j]+=iy;
+              }
+              // cohesion (surface tension): symmetric pull toward each other,
+              // kernel peaks mid-range so the body rounds up & holds together
+              const ck = COH*dt*q*Math.sin(q*3.14159);
+              const cx2=nxn*ck, cy2=nyn*ck;
+              vx[i]+=cx2; vy[i]+=cy2;
+              vx[j]-=cx2; vy[j]-=cy2;
+            }
+          }
+          j=gridNext[j];
+        }
+      }
+    }
+  }
+
+  // ---- predict / integrate positions ----
+  const prevx=ax, prevy=ay;  // reuse a/a arrays to store previous pos
+  for(let i=0;i<N;i++){
+    prevx[i]=px[i]; prevy[i]=py[i];
+    px[i]+=vx[i]*dt; py[i]+=vy[i]*dt;
+  }
+  buildGrid();
+
+  // ---- double-density relaxation: compute density & near-density, then
+  //      apply position displacement (acts as pressure + surface tension) ----
+  for(let i=0;i<N;i++){
+    let rho=0, rhoN=0;
+    const xi=px[i], yi=py[i];
+    let cx=xi*inv|0, cy=yi*inv|0;
+    if(cx<0)cx=0; else if(cx>=gx)cx=gx-1;
+    if(cy<0)cy=0; else if(cy>=gy)cy=gy-1;
+    // first compute densities
+    for(let oy=-1;oy<=1;oy++){
+      const ny=cy+oy; if(ny<0||ny>=gy)continue;
+      for(let ox=-1;ox<=1;ox++){
+        const nx=cx+ox; if(nx<0||nx>=gx)continue;
+        let j=gridHead[ny*gx+nx];
+        while(j!==-1){
+          if(j!==i){
+            const dx=px[j]-xi, dy=py[j]-yi, d2=dx*dx+dy*dy;
+            if(d2<H2){
+              const q=1-Math.sqrt(d2)/h;
+              rho+=q*q; rhoN+=q*q*q;
+            }
+          }
+          j=gridNext[j];
+        }
+      }
+    }
+    dens[i]=rho; ndens[i]=rhoN;
+  }
+
+  for(let i=0;i<N;i++){
+    const P = STIFF*(dens[i]-REST_DENS);
+    const Pn = NEAR_STIFF*ndens[i];
+    const xi=px[i], yi=py[i];
+    let cx=xi*inv|0, cy=yi*inv|0;
+    if(cx<0)cx=0; else if(cx>=gx)cx=gx-1;
+    if(cy<0)cy=0; else if(cy>=gy)cy=gy-1;
+    let dxi=0, dyi=0;
+    for(let oy=-1;oy<=1;oy++){
+      const ny=cy+oy; if(ny<0||ny>=gy)continue;
+      for(let ox=-1;ox<=1;ox++){
+        const nx=cx+ox; if(nx<0||nx>=gx)continue;
+        let j=gridHead[ny*gx+nx];
+        while(j!==-1){
+          if(j!==i){
+            const dx=px[j]-xi, dy=py[j]-yi, d2=dx*dx+dy*dy;
+            if(d2<H2 && d2>0.0001){
+              const d=Math.sqrt(d2);
+              const q=1-d/h;
+              const D = dt*dt*(P*q + Pn*q*q);
+              const ux=dx/d, uy=dy/d;
+              const Dx=ux*D*0.5, Dy=uy*D*0.5;
+              px[j]+=Dx; py[j]+=Dy;
+              dxi-=Dx; dyi-=Dy;
+            }
+          }
+          j=gridNext[j];
+        }
+      }
+    }
+    px[i]+=dxi; py[i]+=dyi;
+  }
+
+  // ---- recompute velocity from position change, apply walls & damping ----
+  const idt=1/dt;
+  let sx=0,sy=0,ek=0;
+  for(let i=0;i<N;i++){
+    vx[i]=(px[i]-prevx[i])*idt*DAMP;
+    vy[i]=(py[i]-prevy[i])*idt*DAMP;
+    // walls
+    const m=PARTR*0.6;
+    if(px[i]<m){ px[i]=m; vx[i]=Math.abs(vx[i])*BOUNCE; }
+    else if(px[i]>W-m){ px[i]=W-m; vx[i]=-Math.abs(vx[i])*BOUNCE; }
+    if(py[i]<m){ py[i]=m; vy[i]=Math.abs(vy[i])*BOUNCE; }
+    else if(py[i]>H-m){ py[i]=H-m; vy[i]=-Math.abs(vy[i])*BOUNCE; }
+    // clamp insane velocities
+    const sp=vx[i]*vx[i]+vy[i]*vy[i];
+    if(sp>2.4e6){ const s=Math.sqrt(2.4e6/sp); vx[i]*=s; vy[i]*=s; }
+    // hue advect: drift hue by speed for shimmer
+    hue[i]+= (Math.sqrt(sp))*0.0000016;
+    if(hue[i]>1)hue[i]-=1;
+    sx+=px[i]; sy+=py[i]; ek+=sp;
+  }
+  // smooth centroid & energy for ambiance
+  const tcx=sx/N, tcy=sy/N, tek=Math.min(1, ek/N/120000);
+  cenX+=(tcx-cenX)*0.08; cenY+=(tcy-cenY)*0.08; energy+=(tek-energy)*0.06;
+  simMs = performance.now()-t0;
+}
+
+/* ----------------------------------------------------------- rendering */
+// Build a small radial stamp once (Float32) for fast field accumulation.
+let stamp=null, stampR=0, stampSize=0;
+function buildStamp(){
+  // wide, smooth, low-amplitude stamp so neighbouring particles MERGE into a
+  // continuous field (no cottage-cheese speckle). Radius ~= smoothing radius.
+  stampR = Math.max(4, Math.round(H_RAD/SCALE)+2);
+  stampSize = stampR*2+1;
+  stamp = new Float32Array(stampSize*stampSize);
+  for(let y=0;y<stampSize;y++){
+    for(let x=0;x<stampSize;x++){
+      const dx=x-stampR, dy=y-stampR;
+      const d=Math.sqrt(dx*dx+dy*dy)/stampR;
+      // smootherstep falloff -> very soft edges that overlap cleanly
+      let v=0;
+      if(d<1){ const e=1-d; v = e*e*e*(e*(e*6-15)+10); }
+      stamp[y*stampSize+x]=v*0.62;
+    }
+  }
+}
+
+// Separable box blur on the float field, radius r, applied `passes` times
+// (multiple box passes approximate a Gaussian). Cheap: O(FW*FH) per pass.
+function blurField(r){
+  const w=FW,h=FH, src=field, tmp=field2;
+  const norm=1/(2*r+1);
+  // horizontal
+  for(let y=0;y<h;y++){
+    const row=y*w;
+    let acc=0;
+    for(let x=-r;x<=r;x++){ acc+=src[row+Math.max(0,Math.min(w-1,x))]; }
+    for(let x=0;x<w;x++){
+      tmp[row+x]=acc*norm;
+      const xa=x-r, xb=x+r+1;
+      acc+=src[row+Math.min(w-1,xb)] - src[row+Math.max(0,xa)];
+    }
+  }
+  // vertical
+  for(let x=0;x<w;x++){
+    let acc=0;
+    for(let y=-r;y<=r;y++){ acc+=tmp[Math.max(0,Math.min(h-1,y))*w+x]; }
+    for(let y=0;y<h;y++){
+      src[y*w+x]=acc*norm;
+      const ya=y-r, yb=y+r+1;
+      acc+=tmp[Math.min(h-1,yb)*w+x] - tmp[Math.max(0,ya)*w+x];
+    }
+  }
+}
+
+function colorRamp(t, P){
+  // t in 0..1 mapped across a->b->c
+  let r,g,b;
+  if(t<0.5){ const u=t*2; r=P.a[0]+(P.b[0]-P.a[0])*u; g=P.a[1]+(P.b[1]-P.a[1])*u; b=P.a[2]+(P.b[2]-P.a[2])*u; }
+  else { const u=(t-0.5)*2; r=P.b[0]+(P.c[0]-P.b[0])*u; g=P.b[1]+(P.c[1]-P.b[1])*u; b=P.b[2]+(P.c[2]-P.b[2])*u; }
+  return [r,g,b];
+}
+
+function render(){
+  const P=PALETTES[pal];
+
+  // --- background (subtle vertical gradient + vignette feel) ---
+  const bg=fxc.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0, `rgb(${P.bg[0]+6},${P.bg[1]+8},${P.bg[2]+14})`);
+  bg.addColorStop(1, `rgb(${P.bg[0]},${P.bg[1]},${P.bg[2]})`);
+  fxc.fillStyle=bg; fxc.fillRect(0,0,W,H);
+
+  // reactive aura: soft glow behind the fluid centroid, brighter when stirred
+  if(cenX){
+    const rad=Math.max(W,H)*(0.34+energy*0.22);
+    const ag=fxc.createRadialGradient(cenX,cenY,0, cenX,cenY,rad);
+    const ai=0.10+energy*0.28;
+    ag.addColorStop(0, `rgba(${P.b[0]},${P.b[1]},${P.b[2]},${ai})`);
+    ag.addColorStop(0.5, `rgba(${P.rim[0]},${P.rim[1]},${P.rim[2]},${ai*0.3})`);
+    ag.addColorStop(1, 'rgba(0,0,0,0)');
+    fxc.globalCompositeOperation='lighter';
+    fxc.fillStyle=ag; fxc.fillRect(0,0,W,H);
+    fxc.globalCompositeOperation='source-over';
+  }
+
+  if(!GOO){
+    // discrete glossy droplets mode
+    fxc.globalCompositeOperation='lighter';
+    for(let i=0;i<N;i++){
+      const sp=Math.min(1, Math.hypot(vx[i],vy[i])/700);
+      const c=colorRamp(0.25+sp*0.7, P);
+      fxc.fillStyle=`rgba(${c[0]|0},${c[1]|0},${c[2]|0},0.5)`;
+      fxc.beginPath(); fxc.arc(px[i],py[i],PARTR*0.7,0,6.283); fxc.fill();
+    }
+    fxc.globalCompositeOperation='source-over';
+    drawPointerRing(P);
+    return;
+  }
+
+  // --- metaball field accumulation (low res) ---
+  field.fill(0);
+  const inv=1/SCALE;
+  const SR=stampR, SS=stampSize;
+  for(let i=0;i<N;i++){
+    const cx=(px[i]*inv)|0, cy=(py[i]*inv)|0;
+    let sy0=cy-SR, sx0=cx-SR;
+    for(let y=0;y<SS;y++){
+      const fy=sy0+y; if(fy<0||fy>=FH)continue;
+      const rowF=fy*FW, rowS=y*SS;
+      for(let x=0;x<SS;x++){
+        const fx=sx0+x; if(fx<0||fx>=FW)continue;
+        field[rowF+fx]+=stamp[rowS+x];
+      }
+    }
+  }
+
+  // --- smooth the field (separable 2-pass box blur) so the surface is a
+  //     continuous liquid sheet instead of a bumpy per-particle network ---
+  blurField(2);
+
+  // --- shade the field into ImageData with threshold + rim + spec ---
+  // Field gradient (Sobel-ish) drives a fake normal -> directional specular,
+  // so the surface reads as curved molten metal, not a flat sheet.
+  const data=fieldImg.data;
+  const TH=3.4;                 // surface threshold (calibrated to field mean)
+  const RIM_LO=1.3;             // where the glowing edge begins
+  const DEPTH=8.5;             // field span from surface to deep core
+  const a=P.a,b=P.b,c=P.c,rim=P.rim,spec=P.spec;
+  const F=field;
+  for(let y=0,i=0;y<FH;y++){
+    for(let x=0;x<FW;x++,i++){
+      const f=F[i];
+      const p=i<<2;
+      if(f<=RIM_LO){ data[p]=0; data[p+1]=0; data[p+2]=0; data[p+3]=0; continue; }
+      let R,G,B,A;
+      if(f < TH){
+        // glowing chromatic rim band (bright, additive-friendly, fading out)
+        const e=(f-RIM_LO)/(TH-RIM_LO);    // 0..1 inward
+        const e2=e*e;
+        R=rim[0]*(0.6+0.4*e2); G=rim[1]*(0.6+0.4*e2); B=rim[2]*(0.6+0.4*e2);
+        A=Math.min(255, 90+e2*150);
+      }else{
+        // body: shade a fairly uniform metal as a CURVED SURFACE using the
+        // field gradient as a normal. base = mid tone b, darkened a touch at
+        // the deepest core; bright c only via diffuse lobe; white via specular.
+        let tt=(f-TH)/DEPTH; if(tt>1)tt=1;        // 0 surface .. 1 deep core
+        // base metal colour: b, easing slightly to a in the deep core (depth shadow)
+        const dk=tt*tt*0.55;                       // core self-shadow
+        let cr=b[0]+(a[0]-b[0])*dk, cg=b[1]+(a[1]-b[1])*dk, cb=b[2]+(a[2]-b[2])*dk;
+        // surface normal from field gradient (z up)
+        const xm=x>0?F[i-1]:f, xp=x<FW-1?F[i+1]:f;
+        const ym=y>0?F[i-FW]:f, yp=y<FH-1?F[i+FW]:f;
+        let nx=(xm-xp), ny=(ym-yp);
+        const nz=2.2;                              // surface "height" -> roundness
+        const nl=Math.sqrt(nx*nx+ny*ny+nz*nz)||1; nx/=nl; ny/=nl; const nzz=nz/nl;
+        // key light from upper-left, slightly toward viewer
+        const lx=-0.45, ly=-0.62, lz=0.64;
+        const ndl=Math.max(0, nx*lx+ny*ly+nzz*lz);
+        // diffuse pushes metal toward bright c on lit side
+        const dif=ndl*ndl;
+        cr=cr+(c[0]-cr)*dif*0.75; cg=cg+(c[1]-cg)*dif*0.75; cb=cb+(c[2]-cb)*dif*0.75;
+        // specular: reflect light, tight lobe -> wet metal glint
+        const rdl=2*ndl;
+        const rx=rdl*nx-lx, ry=rdl*ny-ly, rz=rdl*nzz-lz;
+        let spc=Math.max(0, rz);                   // view dir = (0,0,1)
+        spc=spc*spc; spc=spc*spc; spc=spc*spc;     // ^8
+        R=cr + spec[0]*spc; G=cg + spec[1]*spc; B=cb + spec[2]*spc;
+        // fresnel rim glow at grazing edges (where nzz small)
+        const fres=(1-nzz); const f2=fres*fres;
+        R+= rim[0]*f2*0.5; G+= rim[1]*f2*0.5; B+= rim[2]*f2*0.5;
+        A=255;
+      }
+      data[p]=R>255?255:R|0; data[p+1]=G>255?255:G|0; data[p+2]=B>255?255:B|0; data[p+3]=A|0;
+    }
+  }
+  fieldCtx.putImageData(fieldImg,0,0);
+
+  fxc.imageSmoothingEnabled=true;
+  fxc.imageSmoothingQuality='medium';
+
+  // glow halo: a single oversized additive upscale = cheap soft bloom
+  fxc.globalCompositeOperation='lighter';
+  fxc.globalAlpha=0.22;
+  fxc.drawImage(fieldCanvas, 0,0, FW, FH, -W*0.03, -H*0.03, W*1.06, H*1.06);
+  fxc.globalAlpha=1;
+
+  // crisp liquid body
+  fxc.globalCompositeOperation='source-over';
+  fxc.drawImage(fieldCanvas,0,0,FW,FH,0,0,W,H);
+
+  // --- specular sweep: a moving light gives the metal a wet sheen ---
+  drawSpecular(P);
+
+  drawPointerRing(P);
+}
+
+let lightT=0;
+function drawSpecular(P){
+  lightT+=0.006;
+  const lx = W*(0.5+0.42*Math.cos(lightT));
+  const ly = H*(0.28+0.18*Math.sin(lightT*0.8));
+  const g=fxc.createRadialGradient(lx,ly,0, lx,ly, Math.max(W,H)*0.55);
+  g.addColorStop(0, `rgba(${P.spec[0]},${P.spec[1]},${P.spec[2]},0.16)`);
+  g.addColorStop(0.5, `rgba(${P.rim[0]},${P.rim[1]},${P.rim[2]},0.04)`);
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  fxc.globalCompositeOperation='lighter';
+  fxc.fillStyle=g; fxc.fillRect(0,0,W,H);
+  fxc.globalCompositeOperation='source-over';
+}
+
+function drawPointerRing(P){
+  uic.clearRect(0,0,W,H);
+  if(!ptr.active) return;
+  const R = ptr.down?170:130;
+  uic.save();
+  uic.strokeStyle=`rgba(${P.rim[0]},${P.rim[1]},${P.rim[2]},${ptr.down?0.5:0.28})`;
+  uic.lineWidth=1.3;
+  uic.beginPath(); uic.arc(ptr.x,ptr.y,R,0,6.283); uic.stroke();
+  // crosshair
+  uic.strokeStyle=`rgba(${P.spec[0]},${P.spec[1]},${P.spec[2]},0.5)`;
+  uic.beginPath();
+  uic.moveTo(ptr.x-9,ptr.y); uic.lineTo(ptr.x+9,ptr.y);
+  uic.moveTo(ptr.x,ptr.y-9); uic.lineTo(ptr.x,ptr.y+9);
+  uic.stroke();
+  uic.restore();
+}
+
+/* --------------------------------------------------------------- loop */
+let last=performance.now();
+let acc=0;
+function frame(now){
+  let rdt=(now-last)/1000; last=now;
+  if(rdt>0.05) rdt=0.05;                // avoid spiral after tab-away
+  // fixed sub-steps for stable SPH
+  acc+=rdt;
+  const STEP=1/120;
+  let steps=0;
+  while(acc>=STEP && steps<3){ simulate(STEP); acc-=STEP; steps++; }
+  if(steps===0 && rdt>0){ simulate(Math.min(rdt,STEP)); }
+
+  // decay pointer velocity
+  ptr.vx*=0.85; ptr.vy*=0.85;
+
+  render();
+  hud(now);
+  requestAnimationFrame(frame);
+}
+
+function hud(now){
+  frames++;
+  if(now-fpsT>=500){
+    fps=Math.round(frames*1000/(now-fpsT));
+    frames=0; fpsT=now;
+    document.getElementById('stats').innerHTML =
+      `<em>${N}</em> particles<br><em>${fps}</em> fps · <em>${simMs.toFixed(1)}</em>ms sim<br>`+
+      `grav <em>${(GRAV/100)|0}</em> ${ANTI?'⟂':(GRAV_DIR<0?'↑':'↓')}`;
+  }
+  document.getElementById('palette').innerHTML =
+    `palette · <i>${PALETTES[pal].name}</i> &nbsp; mode · <i>${GOO?'GOO':'DROPS'}</i>${ANTI?' &nbsp; <i>ANTIGRAV</i>':''}`;
+}
+
+/* ----------------------------------------------------------- input */
+function setPtr(x,y){
+  ptr.px=ptr.x; ptr.py=ptr.y;
+  ptr.x=x; ptr.y=y;
+  ptr.vx=(ptr.x-ptr.px); ptr.vy=(ptr.y-ptr.py);
+  ptr.active=true;
+}
+FX.parentNode; // noop
+window.addEventListener('pointermove', e=>{ setPtr(e.clientX,e.clientY); }, {passive:true});
+window.addEventListener('pointerdown', e=>{
+  setPtr(e.clientX,e.clientY); ptr.down=true; ptr.t=performance.now();
+}, {passive:true});
+window.addEventListener('pointerup', e=>{
+  const held=performance.now()-ptr.t;
+  ptr.down=false;
+  if(held<200){ // treat as click -> burst
+    burstQueue.push({x:e.clientX,y:e.clientY,r:200,power:2600});
+  }
+}, {passive:true});
+window.addEventListener('pointerleave', ()=>{ ptr.active=false; ptr.down=false; });
+
+window.addEventListener('wheel', e=>{
+  GRAV = Math.max(80, Math.min(2600, GRAV + (e.deltaY>0?120:-120)));
+  e.preventDefault();
+}, {passive:false});
+
+window.addEventListener('keydown', e=>{
+  const k=e.key.toLowerCase();
+  if(k===' '){ ANTI=!ANTI; e.preventDefault(); }
+  else if(k==='p'){ pal=(pal+1)%PALETTES.length; }
+  else if(k==='g'){ GOO=!GOO; }
+  else if(k==='r'){ spawn(); }
+  else if(k==='f'){ GRAV_DIR*=-1; }
+});
+
+// touch: two-finger spread = burst at midpoint (mobile flourish)
+let lastTap=0;
+window.addEventListener('touchend', e=>{
+  const t=performance.now();
+  if(t-lastTap<300 && e.changedTouches.length){
+    const tt=e.changedTouches[0];
+    burstQueue.push({x:tt.clientX,y:tt.clientY,r:220,power:3000});
+  }
+  lastTap=t;
+}, {passive:true});
+
+/* ----------------------------------------------------------- init */
+window.addEventListener('resize', ()=>{ resize(); buildStamp(); });
+resize();
+alloc(Math.ceil(targetCount()*1.15));
+buildStamp();
+spawn();
+// place pointer center-ish so a hover ring appears if mouse never moves (desktop)
+ptr.x=W*0.5; ptr.y=H*0.5;
+requestAnimationFrame(frame);
+
+// expose minimal hook for verification
+window.__mercuria = { get N(){return N;}, get fps(){return fps;}, palette:()=>PALETTES[pal].name, burst:(x,y)=>burstQueue.push({x,y,r:200,power:2600}),
+  fieldStats:()=>{ let mx=0,sum=0,cnt=0; for(let k=0;k<field.length;k++){ const f=field[k]; if(f>mx)mx=f; if(f>0.1){sum+=f;cnt++;} } return {max:mx, mean:cnt?sum/cnt:0, FW, FH, SCALE}; } };
+})();
+</script>
+</body>
+</html>

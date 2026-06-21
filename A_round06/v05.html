@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Lumengarden — 발광 정원</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { height:100%; width:100%; overflow:hidden; background:#03040a; }
+  body { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+         -webkit-tap-highlight-color: transparent; touch-action: none; cursor: none; }
+  #stage { position:fixed; inset:0; display:block; }
+  /* layered canvases: scene + bloom */
+  canvas { position:fixed; inset:0; width:100%; height:100%; }
+  #bloom { mix-blend-mode: screen; pointer-events:none; opacity:.9; }
+
+  #hud { position:fixed; left:0; right:0; bottom:0; padding:14px 18px 16px;
+         display:flex; justify-content:space-between; align-items:flex-end;
+         gap:12px; pointer-events:none; z-index:5;
+         font-size:11px; letter-spacing:.14em; text-transform:uppercase; }
+  #title { writing-mode:initial; }
+  #title b { display:block; font-size:13px; letter-spacing:.4em; font-weight:600;
+             color:#dffaf0; text-shadow:0 0 18px rgba(120,255,220,.55); }
+  #title span { color:rgba(190,220,255,.42); font-size:10px; letter-spacing:.22em; }
+  #hint { text-align:right; color:rgba(190,220,255,.5); line-height:1.7;
+          text-shadow:0 0 10px rgba(40,120,160,.6); }
+  #hint .k { color:#8ef0d6; }
+  #season { position:fixed; top:16px; left:0; right:0; text-align:center; z-index:5;
+            pointer-events:none; font-size:10px; letter-spacing:.5em; text-transform:uppercase;
+            color:rgba(200,230,255,.55); transition:opacity .6s; }
+  #season b { color:#bff6e6; text-shadow:0 0 16px rgba(120,255,220,.6); letter-spacing:.5em; }
+  #cur { position:fixed; z-index:6; width:46px; height:46px; margin:-23px 0 0 -23px;
+         border-radius:50%; pointer-events:none; left:50%; top:50%;
+         mix-blend-mode:screen; transition:transform .12s ease-out; }
+  @media (max-width:480px){
+    #hud{ padding:10px 12px 14px; }
+    #title b{ font-size:11px; letter-spacing:.3em; }
+    #hint{ font-size:9px; line-height:1.6; }
+    #season{ font-size:9px; letter-spacing:.34em; }
+  }
+  .fade { opacity:0 !important; }
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <canvas id="bloom"></canvas>
+  <svg id="cur" viewBox="0 0 46 46"></svg>
+
+  <div id="season"><span>계절 · </span><b id="seasonName">여명</b></div>
+  <div id="hud">
+    <div id="title"><b>LUMENGARDEN</b><span>발광하는 L-시스템 정원 · 생장 중</span></div>
+    <div id="hint">
+      <div><span class="k">움직임</span> 빛을 끌어 — 줄기가 따라온다</div>
+      <div><span class="k">클릭/터치</span> 새 씨앗을 심는다</div>
+      <div><span class="k">스크롤</span> 계절을 바꾼다</div>
+    </div>
+  </div>
+
+<script>
+(() => {
+"use strict";
+
+/* ============================================================
+   Lumengarden
+   - Real-time L-system plants & corals that grow segment by
+     segment over time toward a moving light (the cursor).
+   - A flowing current field sways everything organically.
+   - Two-canvas pipeline: crisp scene + downsampled bloom.
+   ============================================================ */
+
+const scene  = document.getElementById('stage');
+const bloomC = document.getElementById('bloom');
+const sx = scene.getContext('2d');
+const bx = bloomC.getContext('2d');
+const seasonName = document.getElementById('seasonName');
+const seasonBox  = document.getElementById('season');
+const curEl = document.getElementById('cur');
+
+let W=0, H=0, DPR=1, BW=0, BH=0;
+const BSCALE = 0.42;             // bloom buffer downscale (perf)
+let lowPower = false;            // auto-degrade flag
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  scene.width = Math.round(W*DPR); scene.height = Math.round(H*DPR);
+  sx.setTransform(DPR,0,0,DPR,0,0);
+  BW = Math.max(2, Math.round(W*BSCALE)); BH = Math.max(2, Math.round(H*BSCALE));
+  bloomC.width = BW; bloomC.height = BH;
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* ---------- pointer / light source ---------- */
+const light = { x: W*0.5, y: H*0.46, tx: W*0.5, ty: H*0.46, active:false, vel:0 };
+function setLight(x,y){ light.tx=x; light.ty=y; light.active=true; }
+scene.addEventListener('pointermove', e=>{ setLight(e.clientX, e.clientY); }, {passive:true});
+window.addEventListener('pointermove', e=>{ setLight(e.clientX, e.clientY); }, {passive:true});
+
+/* ---------- seasons (palettes + growth params) ---------- */
+const SEASONS = [
+  { name:'여명', bgTop:'#06091a', bgBot:'#020308',
+    hueA:158, hueB:285, leafSat:78, energy:1.0, current:0.55, glow:1.0 },
+  { name:'심해', bgTop:'#020816', bgBot:'#01020a',
+    hueA:188, hueB:235, leafSat:82, energy:0.86, current:0.9, glow:1.15 },
+  { name:'산호', bgTop:'#160514', bgBot:'#06010a',
+    hueA:330, hueB:32, leafSat:85, energy:1.12, current:0.7, glow:1.05 },
+  { name:'극광', bgTop:'#04101a', bgBot:'#01030a',
+    hueA:120, hueB:200, leafSat:80, energy:0.96, current:1.05, glow:1.25 },
+  { name:'잿빛 봄', bgTop:'#0a0d12', bgBot:'#030406',
+    hueA:54, hueB:300, leafSat:70, energy:1.05, current:0.45, glow:0.95 },
+];
+let seasonIdx = 0;
+let season = SEASONS[0];
+// smoothed background colors for cross-fade
+let bg = { tR:6,tG:9,tB:26, bR:2,bG:3,bB:8 };
+function hexRGB(h){ const n=parseInt(h.slice(1),16); return [(n>>16)&255,(n>>8)&255,n&255]; }
+let seasonHideT = 0;
+
+function cycleSeason(dir){
+  seasonIdx = (seasonIdx + dir + SEASONS.length) % SEASONS.length;
+  season = SEASONS[seasonIdx];
+  seasonName.textContent = season.name;
+  seasonBox.classList.remove('fade'); seasonHideT = performance.now() + 1900;
+}
+window.addEventListener('wheel', e=>{
+  cycleSeason(e.deltaY>0 ? 1 : -1);
+}, {passive:true});
+
+/* ---------- flow field (cheap, animated curl-ish noise) ---------- */
+// hashed value noise for a smooth swaying vector field
+function hash(ix,iy){ let h = ix*374761393 + iy*668265263; h=(h^(h>>13))*1274126177; return ((h^(h>>16))>>>0)/4294967295; }
+function vnoise(x,y){
+  const x0=Math.floor(x), y0=Math.floor(y);
+  const fx=x-x0, fy=y-y0;
+  const u=fx*fx*(3-2*fx), v=fy*fy*(3-2*fy);
+  const a=hash(x0,y0), b=hash(x0+1,y0), c=hash(x0,y0+1), d=hash(x0+1,y0+1);
+  return a+(b-a)*u + (c-a)*v + (a-b-c+d)*u*v;
+}
+function flowAngle(x,y,t){
+  const s=0.0016;
+  const n = vnoise(x*s + t*0.05, y*s - t*0.03)
+          + 0.5*vnoise(x*s*2.3 - t*0.04, y*s*2.3 + t*0.06);
+  return n * Math.PI * 2.2;
+}
+
+/* ============================================================
+   L-SYSTEM PLANTS
+   Each plant owns an axiom + rules and expands its string
+   progressively, then "draws" it incrementally as a turtle so
+   growth is animated rather than instant.
+   ============================================================ */
+
+const RULESETS = [
+  // classic bushy fractal
+  { axiom:'X', rules:{ X:'F+[[X]-X]-F[-FX]+X', F:'FF' },
+    angle:24, step:7.4, depth:5, kind:'bush' },
+  // weeping / fern
+  { axiom:'X', rules:{ X:'F-[[X]+X]+F[+FX]-X', F:'FF' },
+    angle:21, step:7.2, depth:5, kind:'fern' },
+  // seaweed / sparse vertical
+  { axiom:'F', rules:{ F:'FF+[+F-F-F]-[-F+F+F]' },
+    angle:23, step:8.0, depth:4, kind:'weed' },
+  // coral fan — wide, dense branching
+  { axiom:'X', rules:{ X:'F[+X][-X]FX', F:'FF' },
+    angle:27, step:6.6, depth:6, kind:'coral' },
+  // spiral vine
+  { axiom:'X', rules:{ X:'F[+X]F[-X]+X', F:'FF' },
+    angle:20, step:7.6, depth:6, kind:'vine' },
+];
+
+function expand(rs){
+  let s = rs.axiom;
+  for(let i=0;i<rs.depth;i++){
+    let out='';
+    for(const ch of s){ out += (rs.rules[ch] || ch); }
+    s = out;
+    if(s.length > 24000) break; // safety cap
+  }
+  return s;
+}
+
+// pre-tokenize the string into draw commands for fast turtle stepping
+function tokenize(str){
+  const t=[];
+  for(const ch of str){
+    if(ch==='F'){ t.push(0); }
+    else if(ch==='+'){ t.push(1); }
+    else if(ch==='-'){ t.push(2); }
+    else if(ch==='['){ t.push(3); }
+    else if(ch===']'){ t.push(4); }
+  }
+  return t;
+}
+
+let SEED_ID=0;
+const plants = [];
+const MAX_PLANTS = 9;
+
+function makePlant(x, y, opts={}){
+  const rs = RULESETS[(Math.random()*RULESETS.length)|0];
+  const tokens = tokenize(expand(rs));
+  // count drawable Fs to scale growth time
+  let nF=0; for(const k of tokens) if(k===0) nF++;
+  const baseHue = (season.hueA + Math.random()*(season.hueB-season.hueA));
+  const p = {
+    id: ++SEED_ID,
+    x, y, rs, tokens, nF,
+    grown: 0,                       // how many F's have been drawn (float)
+    growSpeed: (28 + Math.random()*22) * (opts.fast?2.2:1),
+    rootAngle: -Math.PI/2 + (Math.random()-0.5)*0.5, // mostly upward
+    step: rs.step * (0.85 + Math.random()*0.5) * (opts.scale||1),
+    angle: rs.angle * (Math.PI/180) * (0.85+Math.random()*0.4),
+    hue: baseHue,
+    hue2: baseHue + (Math.random()<0.5? 40 : -36),
+    sway: 0.6 + Math.random()*0.8,
+    phase: Math.random()*Math.PI*2,
+    seedTime: performance.now(),
+    born: performance.now(),
+    blooms: [],                     // glowing tip flowers
+    age:0,
+    bornScale:0,                    // pop-in
+  };
+  return p;
+}
+
+function plant(x,y,opts){
+  if(plants.length >= MAX_PLANTS){ plants.shift(); }
+  plants.push(makePlant(x,y,opts));
+}
+
+/* seed initial garden along the floor — evenly spread, slight stagger */
+function seedGarden(){
+  plants.length = 0;
+  const baseY = H*0.99;
+  const n = W<520 ? 4 : 6;
+  for(let i=0;i<n;i++){
+    const frac = (i+0.5)/n;                      // even cells
+    const jit  = (Math.random()-0.5) * (0.9/n);  // small in-cell jitter
+    const x = W*(0.06 + 0.88*(frac+jit));
+    plant(Math.max(20,Math.min(W-20,x)), baseY, {fast:true, scale: 0.85+Math.random()*0.5});
+  }
+}
+
+/* click / tap → plant a seed where pressed (or on floor if near top) */
+function pointerSeed(x,y){
+  // if user clicks high in the sky, root it on the floor under the click
+  const ry = y > H*0.55 ? y : H*0.985;
+  plant(x, ry, {fast:true, scale: 0.85+Math.random()*0.55});
+  // little spark burst
+  for(let i=0;i<14;i++){
+    const a=Math.random()*Math.PI*2, sp=0.6+Math.random()*2.4;
+    sparks.push({x,y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp-0.6,life:1,
+                 hue: season.hueA + Math.random()*60});
+  }
+}
+scene.addEventListener('pointerdown', e=>{
+  e.preventDefault();
+  setLight(e.clientX, e.clientY);
+  pointerSeed(e.clientX, e.clientY);
+}, {passive:false});
+
+/* ---------- ambient particles (drifting spores) ---------- */
+const spores = [];
+function initSpores(){
+  spores.length=0;
+  const n = W<520 ? 60 : 120;
+  for(let i=0;i<n;i++){
+    spores.push({ x:Math.random()*W, y:Math.random()*H,
+                  r: 0.6+Math.random()*1.8, p:Math.random()*Math.PI*2,
+                  sp: 0.2+Math.random()*0.6 });
+  }
+}
+const sparks = [];
+
+/* ============================================================
+   TURTLE RENDERER (incremental L-system draw)
+   Draws onto BOTH scene (thin crisp lines) and bloom (fat glow)
+   while applying the flow field + phototropism toward the light.
+   ============================================================ */
+
+// reusable turtle stack
+const stk = new Float32Array(4096); // x,y,ang,depth packed *? we'll use parallel arrays
+const stX=new Float32Array(1024), stY=new Float32Array(1024),
+      stA=new Float32Array(1024), stD=new Float32Array(1024);
+
+function drawPlant(p, t){
+  const grownN = p.grown;
+  if(grownN < 0.3) return;
+
+  let x=p.x, y=p.y, ang=p.rootAngle, depth=0, sp=0;
+  let drawn=0;
+  const tokens=p.tokens;
+  const stepLen=p.step;
+  const turn=p.angle;
+
+  // global sway for this plant
+  const swayBase = Math.sin(t*0.0006*p.sway + p.phase) * 0.05 * p.sway;
+
+  // pull strength toward light (phototropism), stronger near tips
+  const lx=light.x, ly=light.y;
+
+  sx.lineCap='round';
+  bx.lineCap='round';
+
+  for(let i=0;i<tokens.length;i++){
+    if(drawn >= grownN) break;
+    const cmd=tokens[i];
+    if(cmd===0){ // F : draw forward
+      // local growth fraction for the leading segment (smooth tip)
+      let segFrac = 1;
+      if(drawn+1 > grownN){ segFrac = grownN - drawn; }
+
+      // flow field perturbation (gentle organic sway)
+      const fa = flowAngle(x, y, t*0.001);
+      const flowK = season.current * 0.05 * (1 - depth*0.05);
+      // phototropism: lean toward light — kept small & clamped so the
+      // fractal silhouette survives instead of curling into a ball.
+      const dx=lx-x, dy=ly-y;
+      const dl=Math.hypot(dx,dy)+0.0001;
+      const want=Math.atan2(dy,dx);
+      let da=want-ang;
+      da=Math.atan2(Math.sin(da),Math.cos(da));
+      const photo = (light.active?1:0.4) * 0.045 * (1/(1+dl*0.0025)) * (0.25+depth*0.06);
+      let bend = da*photo;
+      // upward heliotropism: tips gently prefer the sky (counter gravity)
+      let upDa = (-Math.PI/2) - ang;
+      upDa = Math.atan2(Math.sin(upDa),Math.cos(upDa));
+      bend += upDa * 0.018 * (0.3+depth*0.08);
+      // clamp total bend per segment to preserve branch angles
+      if(bend> 0.10) bend=0.10; else if(bend< -0.10) bend=-0.10;
+
+      const a = ang + Math.sin(fa)*flowK + bend + swayBase*(depth+1);
+
+      const len = stepLen * segFrac;
+      const nx = x + Math.cos(a)*len;
+      const ny = y + Math.sin(a)*len;
+
+      // color: trunk warm-dark → tips bright; lerp by depth & height
+      const tipness = depth / (p.rs.depth+1);
+      const heightF = Math.max(0, (p.y - y) / (H*0.55));
+      const hue = p.hue + tipness*(p.hue2-p.hue);
+      const lum = 36 + tipness*30 + heightF*16;
+      const wScene = Math.max(0.6, (p.rs.depth - depth) * 0.62 + 0.5) * (p.bornScale);
+      const alpha = (0.55 + tipness*0.4);
+
+      // scene stroke (crisp, saturated)
+      sx.lineWidth = wScene;
+      sx.strokeStyle = `hsla(${hue},${season.leafSat}%,${lum}%,${alpha})`;
+      sx.beginPath(); sx.moveTo(x,y); sx.lineTo(nx,ny); sx.stroke();
+
+      // bloom stroke (downscaled coords, fat, additive) — only outer-ish branches
+      if(depth>=1){
+        const sB=BSCALE;
+        bx.lineWidth = Math.max(1.0, wScene*sB*2.6);
+        bx.strokeStyle = `hsla(${hue},90%,${56+tipness*22}%,${0.22*alpha*season.glow})`;
+        bx.beginPath(); bx.moveTo(x*sB,y*sB); bx.lineTo(nx*sB,ny*sB); bx.stroke();
+      }
+
+      x=nx; y=ny; ang=a; drawn++;
+
+      // bloom flower at growing tips of fully-grown leaves
+      if(segFrac>=1 && depth>=p.rs.depth-1 && Math.random()<0.002 && p.blooms.length<46){
+        p.blooms.push({x,y,r:1.4+Math.random()*2.6,hue:hue+ (Math.random()*30-10),
+                       pulse:Math.random()*Math.PI*2, ox:x-p.x, oy:y-p.y, born:0});
+      }
+    }
+    else if(cmd===1){ ang += turn; }       // +
+    else if(cmd===2){ ang -= turn; }       // -
+    else if(cmd===3){ // push
+      if(sp<1023){ stX[sp]=x;stY[sp]=y;stA[sp]=ang;stD[sp]=depth; sp++; depth++; }
+    }
+    else if(cmd===4){ // pop
+      if(sp>0){ sp--; x=stX[sp];y=stY[sp];ang=stA[sp];depth=stD[sp]; }
+    }
+  }
+
+  // draw blooms (glowing flowers) that follow sway
+  const bsw = Math.sin(t*0.0008*p.sway + p.phase)*0.08;
+  for(const fl of p.blooms){
+    if(fl.born<1) fl.born += 0.02;
+    // re-anchor with sway around plant base
+    const ca=Math.cos(bsw), sa=Math.sin(bsw);
+    const bxp = p.x + fl.ox*ca - fl.oy*sa;
+    const byp = p.y + fl.ox*sa + fl.oy*ca;
+    const pr = fl.r * (0.8+0.4*Math.sin(t*0.004+fl.pulse)) * fl.born * p.bornScale;
+    // core
+    sx.fillStyle = `hsla(${fl.hue},90%,72%,0.9)`;
+    sx.beginPath(); sx.arc(bxp,byp,pr*0.5,0,6.283); sx.fill();
+    // bloom glow
+    const sB=BSCALE;
+    const rg = bx.createRadialGradient(bxp*sB,byp*sB,0, bxp*sB,byp*sB, pr*sB*4);
+    rg.addColorStop(0,`hsla(${fl.hue},95%,70%,${0.5*season.glow})`);
+    rg.addColorStop(1,`hsla(${fl.hue},95%,60%,0)`);
+    bx.fillStyle=rg;
+    bx.beginPath(); bx.arc(bxp*sB,byp*sB,pr*sB*4,0,6.283); bx.fill();
+  }
+}
+
+/* ============================================================
+   MAIN LOOP
+   ============================================================ */
+let last=performance.now();
+let fpsAvg=60, slowFrames=0, started=false;
+
+function step(now){
+  const dt = Math.min(48, now-last); last=now;
+  const t = now;
+
+  // perf governor
+  const fps = 1000/Math.max(1,dt);
+  fpsAvg += (fps-fpsAvg)*0.08;
+  if(fpsAvg<42){ slowFrames++; } else { slowFrames=Math.max(0,slowFrames-1); }
+  if(slowFrames>40 && !lowPower){ lowPower=true; } // degrade once
+
+  // ----- background gradient (smoothly crossfaded) -----
+  const tt=hexRGB(season.bgTop), bb=hexRGB(season.bgBot);
+  bg.tR+=(tt[0]-bg.tR)*0.04; bg.tG+=(tt[1]-bg.tG)*0.04; bg.tB+=(tt[2]-bg.tB)*0.04;
+  bg.bR+=(bb[0]-bg.bR)*0.04; bg.bG+=(bb[1]-bg.bG)*0.04; bg.bB+=(bb[2]-bg.bB)*0.04;
+  const grad=sx.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0,`rgb(${bg.tR|0},${bg.tG|0},${bg.tB|0})`);
+  grad.addColorStop(1,`rgb(${bg.bR|0},${bg.bG|0},${bg.bB|0})`);
+  // faint trail (don't fully clear -> luminous afterglow)
+  sx.globalCompositeOperation='source-over';
+  sx.fillStyle=grad; sx.fillRect(0,0,W,H);
+
+  // vignette light halo following cursor (soft caustic)
+  light.x += (light.tx-light.x)*0.10;
+  light.y += (light.ty-light.y)*0.10;
+  light.vel += (Math.hypot(light.tx-light.x, light.ty-light.y) - light.vel)*0.2;
+  const halo=sx.createRadialGradient(light.x,light.y,0,light.x,light.y,Math.min(W,H)*0.5);
+  halo.addColorStop(0,`hsla(${season.hueA},80%,60%,0.10)`);
+  halo.addColorStop(0.5,`hsla(${season.hueA},70%,40%,0.04)`);
+  halo.addColorStop(1,'hsla(0,0%,0%,0)');
+  sx.globalCompositeOperation='lighter';
+  sx.fillStyle=halo; sx.beginPath(); sx.arc(light.x,light.y,Math.min(W,H)*0.5,0,6.283); sx.fill();
+
+  // luminous ground band / waterline so plants feel rooted in a glowing bed
+  const gy=H*0.97;
+  const gb=sx.createLinearGradient(0,gy-H*0.10,0,H);
+  gb.addColorStop(0,'hsla(0,0%,0%,0)');
+  gb.addColorStop(0.7,`hsla(${season.hueA},70%,30%,0.05)`);
+  gb.addColorStop(1,`hsla(${season.hueA},80%,42%,0.13)`);
+  sx.fillStyle=gb; sx.fillRect(0,gy-H*0.10,W,H);
+  sx.globalCompositeOperation='source-over';
+
+  // clear bloom buffer (it must not accumulate forever; light fade)
+  bx.globalCompositeOperation='source-over';
+  bx.fillStyle='rgba(0,0,0,0.30)';
+  bx.fillRect(0,0,BW,BH);
+  bx.globalCompositeOperation='lighter';
+
+  // ----- spores -----
+  sx.globalCompositeOperation='lighter';
+  for(const s of spores){
+    const fa=flowAngle(s.x,s.y,t*0.001);
+    s.x += Math.cos(fa)*s.sp*season.current + Math.sin(t*0.001+s.p)*0.2;
+    s.y += Math.sin(fa)*s.sp*season.current*0.6 - 0.12;
+    // drift toward light slightly
+    s.x += (light.x-s.x)*0.0006; s.y += (light.y-s.y)*0.0006;
+    if(s.y< -5) s.y=H+5; if(s.x<-5)s.x=W+5; if(s.x>W+5)s.x=-5; if(s.y>H+5)s.y=-5;
+    const tw=0.4+0.6*Math.abs(Math.sin(t*0.002+s.p));
+    sx.fillStyle=`hsla(${season.hueA+30},90%,75%,${0.18*tw})`;
+    sx.beginPath(); sx.arc(s.x,s.y,s.r,0,6.283); sx.fill();
+  }
+  sx.globalCompositeOperation='source-over';
+
+  // ----- grow + draw plants -----
+  for(const p of plants){
+    p.age = now-p.born;
+    if(p.bornScale<1) p.bornScale = Math.min(1, p.bornScale + dt*0.004);
+    // grow toward target with easing; energy by season
+    const target=p.nF;
+    if(p.grown<target){
+      p.grown += (p.growSpeed*season.energy) * (dt/1000) * 1.0;
+      if(p.grown>target) p.grown=target;
+    }
+    drawPlant(p, t);
+  }
+
+  // ----- sparks (seed burst) -----
+  sx.globalCompositeOperation='lighter';
+  for(let i=sparks.length-1;i>=0;i--){
+    const sp=sparks[i];
+    sp.x+=sp.vx; sp.y+=sp.vy; sp.vy+=0.04; sp.vx*=0.97; sp.vy*=0.97; sp.life-=0.018;
+    if(sp.life<=0){ sparks.splice(i,1); continue; }
+    sx.fillStyle=`hsla(${sp.hue},95%,72%,${sp.life})`;
+    sx.beginPath(); sx.arc(sp.x,sp.y,1.6*sp.life+0.4,0,6.283); sx.fill();
+  }
+  sx.globalCompositeOperation='source-over';
+
+  // ----- composite bloom buffer onto scene (additive, blurred via scale) -----
+  // upscale the small bloom canvas to full size for a cheap glow
+  sx.globalCompositeOperation='lighter';
+  sx.imageSmoothingEnabled=true;
+  sx.globalAlpha = lowPower?0.6:0.92;
+  sx.drawImage(bloomC, 0,0, W,H);
+  sx.globalAlpha=1;
+  sx.globalCompositeOperation='source-over';
+
+  // hide season label after a while
+  if(seasonHideT && now>seasonHideT){ seasonBox.classList.add('fade'); seasonHideT=0; }
+
+  // move cursor glyph
+  updateCursor(t);
+
+  requestAnimationFrame(step);
+}
+
+/* ---------- custom luminous cursor (a tiny spore-light) ---------- */
+function buildCursor(){
+  curEl.innerHTML = `
+    <defs>
+      <radialGradient id="cg" cx="50%" cy="50%" r="50%">
+        <stop offset="0%" stop-color="#eafff7" stop-opacity="1"/>
+        <stop offset="35%" stop-color="#7df0d6" stop-opacity=".8"/>
+        <stop offset="100%" stop-color="#7df0d6" stop-opacity="0"/>
+      </radialGradient>
+    </defs>
+    <circle cx="23" cy="23" r="20" fill="url(#cg)"/>
+    <circle id="cdot" cx="23" cy="23" r="2.4" fill="#ffffff"/>`;
+}
+function updateCursor(t){
+  const s=1 + Math.min(0.7, light.vel*0.02) + Math.sin(t*0.005)*0.06;
+  curEl.style.transform=`translate(${light.x}px,${light.y}px) translate(-50%,-50%) scale(${s})`;
+  curEl.style.left='0'; curEl.style.top='0';
+}
+
+/* ---------- boot ---------- */
+function boot(){
+  buildCursor();
+  initSpores();
+  seedGarden();
+  // first paint immediately
+  requestAnimationFrame(step);
+}
+
+window.addEventListener('resize', ()=>{ initSpores(); /* keep plants, just respace floor seeds next time */ });
+
+// keyboard nicety: space = new random seed center, arrows = season
+window.addEventListener('keydown', e=>{
+  if(e.code==='Space'){ pointerSeed(W*(0.2+Math.random()*0.6), H*0.985); }
+  else if(e.code==='ArrowRight'||e.code==='ArrowUp') cycleSeason(1);
+  else if(e.code==='ArrowLeft'||e.code==='ArrowDown') cycleSeason(-1);
+});
+
+boot();
+
+// expose for self-test
+window.__lumen = {
+  state: ()=>({ plants:plants.length, grown: plants.reduce((a,p)=>a+p.grown,0),
+                season: season.name, seasonIdx, blooms: plants.reduce((a,p)=>a+p.blooms.length,0) }),
+  seed: (x,y)=>pointerSeed(x ?? W*0.5, y ?? H*0.7),
+  move: (x,y)=>setLight(x,y),
+  next: ()=>cycleSeason(1),
+};
+
+})();
+</script>
+</body>
+</html>

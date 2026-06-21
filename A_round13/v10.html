@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>성에 · Frost</title>
+<style>
+  :root { --bg:#04060e; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:var(--bg); }
+  body {
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    color:#dfeaff;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+    cursor: crosshair;
+  }
+  #stage { position:fixed; inset:0; }
+  canvas { position:absolute; inset:0; width:100%; height:100%; display:block; }
+  /* layering: scene (bokeh + glass tint) under, frost over */
+  #scene { z-index:1; }
+  #frost { z-index:2; }
+  #ui {
+    position:fixed; left:0; right:0; bottom:0; z-index:5;
+    display:flex; justify-content:space-between; align-items:flex-end;
+    padding:18px 22px; pointer-events:none;
+    mix-blend-mode: screen;
+  }
+  #ui .title {
+    font-weight:300; letter-spacing:.42em; font-size:13px;
+    text-transform:uppercase; opacity:.66;
+  }
+  #ui .title b { font-weight:600; letter-spacing:.5em; }
+  #ui .hint {
+    font-size:11px; letter-spacing:.16em; opacity:.42; text-align:right;
+    line-height:1.7;
+  }
+  #temp {
+    position:fixed; top:18px; left:22px; z-index:5;
+    font-size:11px; letter-spacing:.22em; opacity:.5; mix-blend-mode:screen;
+  }
+  #temp b { font-weight:600; font-size:13px; }
+  @media (max-width:520px){
+    #ui { padding:14px 16px; }
+    #ui .title { font-size:11px; letter-spacing:.3em; }
+    #ui .hint { font-size:9px; letter-spacing:.1em; }
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="scene"></canvas>
+  <canvas id="frost"></canvas>
+</div>
+<div id="temp">−<b id="tval">14</b>°C · <span id="season">한겨울</span></div>
+<div id="ui">
+  <div class="title"><b>성에</b> &nbsp;FROST ON GLASS</div>
+  <div class="hint">
+    움직여 입김으로 닦기 · 멈추면 결정이 핀다<br>
+    스크롤 — 계절 · 더블클릭 — 새벽 입김
+  </div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const scene = document.getElementById('scene');
+  const frost = document.getElementById('frost');
+  const sctx = scene.getContext('2d');
+  const fctx = frost.getContext('2d', { willReadFrequently:false });
+  const tval = document.getElementById('tval');
+  const seasonEl = document.getElementById('season');
+
+  let W = 0, H = 0, DPR = 1;
+  let CAP = 1.6; // dpr cap for perf
+
+  // ------- temperature / palette --------
+  // t in [0,1]; 0 = deep midnight winter (blue), 1 = dawn thaw (pink/gold)
+  let temp = 0.18, tempTarget = 0.18;
+
+  // palette interpolation helpers
+  function lerp(a,b,t){ return a+(b-a)*t; }
+  function mix(c1,c2,t){
+    return [ Math.round(lerp(c1[0],c2[0],t)),
+             Math.round(lerp(c1[1],c2[1],t)),
+             Math.round(lerp(c1[2],c2[2],t)) ];
+  }
+  // cold -> warm anchor colors
+  const COLD_BG_TOP=[5,9,22], COLD_BG_BOT=[10,18,40];
+  const WARM_BG_TOP=[26,14,30], WARM_BG_BOT=[48,26,38];
+  const COLD_GLASS=[120,170,235], WARM_GLASS=[255,184,170];
+  const COLD_BOKEH=[150,200,255], WARM_BOKEH=[255,206,150];
+
+  function rgb(c,a){ return `rgba(${c[0]},${c[1]},${c[2]},${a})`; }
+
+  // ------- bokeh lights behind glass --------
+  let bokeh = [];
+  function makeBokeh(){
+    bokeh = [];
+    const n = Math.round((W*H)/52000);
+    for(let i=0;i<Math.max(14,Math.min(n,44));i++){
+      bokeh.push({
+        x: Math.random()*W,
+        y: Math.random()*H,
+        r: 14 + Math.random()*70,
+        a: .07 + Math.random()*.22,
+        hue: Math.random(),       // its own warm/cold bias
+        ph: Math.random()*6.283,
+        sp: .15 + Math.random()*.5,
+        dx: (Math.random()-.5)*.05,
+        dy: (Math.random()-.5)*.05
+      });
+    }
+  }
+
+  // ------- frost field -------
+  // We grow crystals by diffusion-limited-aggregation style branching,
+  // but rendered as luminous fern strokes for beauty.
+  // The frost "coverage" is also held in an offscreen accumulation so we can
+  // wipe it (warm breath) by erasing, and re-bloom from cleared edges.
+
+  let off, octx;          // accumulation buffer (the actual frost picture)
+  function makeBuffers(){
+    off = document.createElement('canvas');
+    off.width = frost.width; off.height = frost.height;
+    octx = off.getContext('2d');
+    octx.setTransform(DPR,0,0,DPR,0,0);
+  }
+
+  // active growing crystal tips
+  let tips = [];
+  const MAX_TIPS = 1400;
+
+  // seed a crystal bloom at (x,y) with given energy
+  function bloom(x, y, energy=1, branches=null){
+    if(tips.length > MAX_TIPS) return;
+    const b = branches || (6); // six-fold ice symmetry
+    const base = Math.random()*Math.PI*2;
+    const jit = (Math.random()-.5)*0.18; // small per-bloom asymmetry
+    for(let i=0;i<b;i++){
+      const ang = base + (i/b)*Math.PI*2 + jit;
+      tips.push({
+        x, y,
+        a: ang,
+        len: 0,
+        max: (34 + Math.random()*90) * energy,
+        w: (1.5 + Math.random()*1.7) * (.7+energy*.5),
+        gen: 0,
+        spd: (1.0 + Math.random()*1.1),
+        wob: (Math.random()-.5)*.07,
+        barbStep: 2.6 + Math.random()*1.8, // spacing between fern barbs
+        barbAcc: 0,
+        seedx: x, seedy: y,
+        life: 0,
+        bias: Math.random()
+      });
+    }
+  }
+
+  // draw a single fern barb (with its own tiny secondary teeth) — the beauty
+  function drawBarb(x,y,ang,len,w,col,a){
+    const ex = x+Math.cos(ang)*len, ey = y+Math.sin(ang)*len;
+    octx.strokeStyle = rgb(col, a);
+    octx.lineWidth = w;
+    octx.beginPath(); octx.moveTo(x,y); octx.lineTo(ex,ey); octx.stroke();
+    // secondary teeth on the barb -> the lush frosted-fern texture
+    if(len>4){
+      const teeth = 2 + (len/4|0);
+      const tang1 = ang + 0.7, tang2 = ang - 0.7;
+      octx.lineWidth = Math.max(0.25, w*0.55);
+      octx.beginPath();
+      for(let i=1;i<=teeth;i++){
+        const f=i/(teeth+1);
+        const bx=x+(ex-x)*f, by=y+(ey-y)*f;
+        const tl=len*0.34*(1-f);
+        const side=(i%2===0)?tang1:tang2;
+        octx.moveTo(bx,by); octx.lineTo(bx+Math.cos(side)*tl, by+Math.sin(side)*tl);
+      }
+      octx.stroke();
+    }
+  }
+
+  // grow one step of all tips, drawing into octx
+  function growTips(dt){
+    const warm = temp;            // higher -> slower growth, faster melt
+    const growGate = 1 - warm*0.78;
+    octx.globalCompositeOperation = 'lighter';
+    octx.lineCap = 'round';
+    const next = [];
+    for(let k=0;k<tips.length;k++){
+      const t = tips[k];
+      t.life += dt;
+      const step = t.spd * dt * 0.95 * growGate * (1 - t.len/(t.max*1.7));
+      if(step <= 0.02 || t.len >= t.max){
+        continue;
+      }
+      const px = t.x, py = t.y;
+      // gentle directed wobble — keeps stems graceful, not jittery
+      t.a += t.wob*0.4 + Math.sin(t.life*0.5 + t.seedx*0.3)*0.012;
+      t.x += Math.cos(t.a) * step;
+      t.y += Math.sin(t.a) * step;
+      t.len += step;
+      if(t.x<-30||t.x>W+30||t.y<-30||t.y>H+30) continue;
+
+      const taper = 1 - t.len/(t.max*1.25);
+      // icy color: cold cyan-white core, warmth shifts toward rose-gold
+      const glass = mix(COLD_GLASS, WARM_GLASS, warm*0.55 + t.bias*0.12);
+      const lum = 0.55 + 0.45*Math.min(1,t.len/t.max);
+      const col = [
+        Math.min(255, glass[0]*0.35 + 255*lum*0.65),
+        Math.min(255, glass[1]*0.35 + 255*lum*0.65),
+        Math.min(255, glass[2]*0.40 + 255*lum*0.62)
+      ];
+
+      // ---- glowing soft halo under the stem (additive bloom) ----
+      octx.strokeStyle = rgb(col, 0.020*taper+0.006);
+      octx.lineWidth = (t.w*3.2)*taper + 1.2;
+      octx.beginPath(); octx.moveTo(px,py); octx.lineTo(t.x,t.y); octx.stroke();
+
+      // ---- crisp bright core stem ----
+      octx.strokeStyle = rgb([Math.min(255,col[0]+40),Math.min(255,col[1]+45),255], 0.11*taper+0.05);
+      octx.lineWidth = Math.max(0.4, t.w*taper*0.85);
+      octx.beginPath(); octx.moveTo(px,py); octx.lineTo(t.x,t.y); octx.stroke();
+
+      // ---- fern barbs at regular spacing, alternating sides, swept back ----
+      t.barbAcc += step;
+      while(t.barbAcc >= t.barbStep && t.len>2){
+        t.barbAcc -= t.barbStep;
+        const sweep = 0.78;            // ~45deg swept toward the base (natural)
+        const bl = (t.w*4.4)*taper*(0.8+t.bias*0.4);
+        if(bl>1.2){
+          drawBarb(t.x,t.y, t.a+sweep, bl, Math.max(0.3,t.w*0.5*taper), col, 0.10*taper+0.04);
+          drawBarb(t.x,t.y, t.a-sweep, bl, Math.max(0.3,t.w*0.5*taper), col, 0.10*taper+0.04);
+        }
+      }
+
+      // branch occasionally with ~60deg angles (ice dendrite habit)
+      if(t.gen < 4 && t.len > 7 && Math.random() < 0.05*growGate && tips.length+next.length < MAX_TIPS){
+        const side = Math.random()<.5? 1:-1;
+        next.push({
+          x:t.x, y:t.y,
+          a: t.a + side*(Math.PI/3 + (Math.random()-.5)*0.22),
+          len:0, max:t.max*(0.45+Math.random()*0.35),
+          w:t.w*0.74, gen:t.gen+1,
+          spd:t.spd*0.94, wob:(Math.random()-.5)*0.08,
+          barbStep:t.barbStep*0.92, barbAcc:0,
+          seedx:t.seedx, seedy:t.seedy, life:0, bias:t.bias
+        });
+      }
+      next.push(t);
+    }
+    octx.globalCompositeOperation = 'source-over';
+    tips = next;
+  }
+
+  // ambient slow frost creep from edges so the glass never stays bare
+  let creepAcc = 0;
+  function ambientCreep(dt){
+    const warm = temp;
+    if(warm > 0.7) return; // too warm to freeze
+    creepAcc += dt * (1-warm) * 1.6;
+    while(creepAcc > 1){
+      creepAcc -= 1;
+      // seed near an edge or near existing-ish region
+      const edge = Math.random();
+      let x,y;
+      if(edge<0.25){ x=Math.random()*W; y=Math.random()*20; }
+      else if(edge<0.5){ x=Math.random()*W; y=H-Math.random()*20; }
+      else if(edge<0.75){ x=Math.random()*20; y=Math.random()*H; }
+      else { x=W-Math.random()*20; y=Math.random()*H; }
+      bloom(x,y, 0.55 + Math.random()*0.4, 4+(Math.random()*2|0));
+      // occasional interior frost too
+      if(Math.random()<0.3) bloom(Math.random()*W, Math.random()*H, 0.35+Math.random()*0.3, 4);
+    }
+  }
+
+  // ------- warm breath wipe -------
+  // pointer leaves a melted clear circle; trailing edge re-blooms frost
+  let pointer = {x:-999,y:-999, px:-999,py:-999, down:false, active:false, lastBloom:0, idle:0, vx:0, vy:0};
+
+  function wipe(x,y, r){
+    // erase frost (melt) with soft brush
+    octx.save();
+    octx.globalCompositeOperation = 'destination-out';
+    const g = octx.createRadialGradient(x,y,0, x,y,r);
+    g.addColorStop(0,'rgba(0,0,0,1)');
+    g.addColorStop(0.6,'rgba(0,0,0,0.85)');
+    g.addColorStop(1,'rgba(0,0,0,0)');
+    octx.fillStyle = g;
+    octx.beginPath(); octx.arc(x,y,r,0,7); octx.fill();
+    octx.restore();
+    // also retire tips inside the wipe so they don't immediately regrow there
+    if(tips.length){
+      const r2 = r*r;
+      tips = tips.filter(t=>{
+        const dx=t.x-x, dy=t.y-y;
+        return dx*dx+dy*dy > r2*0.55;
+      });
+    }
+  }
+
+  // condensation droplets that slide down inside cleared areas (life!)
+  let drops = [];
+  function spawnDrop(x,y){
+    if(drops.length>180) return;
+    drops.push({x, y, r:1.2+Math.random()*2.6, vy:0, trail:0, a:.0});
+  }
+  function updateDrops(dt){
+    const warm = temp;
+    for(let i=drops.length-1;i>=0;i--){
+      const d = drops[i];
+      d.a = Math.min(1, d.a + dt*0.1);
+      // gravity, grows slightly, accelerates
+      d.vy += dt*(0.02 + warm*0.05) * (d.r*0.12);
+      d.y += d.vy*dt;
+      d.x += Math.sin(d.y*0.05 + i)*0.15;
+      d.trail += d.vy*dt;
+      if(d.y > H+10 || d.r<0.4){ drops.splice(i,1); }
+    }
+  }
+
+  // ------- scene render (bokeh + glass) -------
+  let tms = 0;
+  function renderScene(dt){
+    tms += dt;
+    const warm = temp;
+    const top = mix(COLD_BG_TOP, WARM_BG_TOP, warm);
+    const bot = mix(COLD_BG_BOT, WARM_BG_BOT, warm);
+    const g = sctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0, rgb(top,1));
+    g.addColorStop(1, rgb(bot,1));
+    sctx.fillStyle = g;
+    sctx.fillRect(0,0,W,H);
+
+    // bokeh lights, softly blurred via radial gradients
+    sctx.globalCompositeOperation = 'lighter';
+    const bk = mix(COLD_BOKEH, WARM_BOKEH, warm);
+    for(const b of bokeh){
+      b.x += b.dx; b.y += b.dy;
+      if(b.x<-60)b.x=W+60; if(b.x>W+60)b.x=-60;
+      if(b.y<-60)b.y=H+60; if(b.y>H+60)b.y=-60;
+      const tw = 0.7 + 0.3*Math.sin(tms*0.001*b.sp + b.ph);
+      const col = mix(bk, warm<0.5?COLD_GLASS:WARM_GLASS, b.hue*0.5);
+      const rg = sctx.createRadialGradient(b.x,b.y,0, b.x,b.y,b.r);
+      rg.addColorStop(0, rgb(col, b.a*tw));
+      rg.addColorStop(0.5, rgb(col, b.a*tw*0.4));
+      rg.addColorStop(1, rgb(col, 0));
+      sctx.fillStyle = rg;
+      sctx.beginPath(); sctx.arc(b.x,b.y,b.r,0,7); sctx.fill();
+    }
+    sctx.globalCompositeOperation = 'source-over';
+
+    // very faint glass sheen toward pointer (cold breath glow)
+    if(pointer.active){
+      const gl = mix(COLD_GLASS, WARM_GLASS, warm);
+      const rg = sctx.createRadialGradient(pointer.x,pointer.y,0, pointer.x,pointer.y,150);
+      rg.addColorStop(0, rgb(gl, 0.06));
+      rg.addColorStop(1, rgb(gl, 0));
+      sctx.globalCompositeOperation='lighter';
+      sctx.fillStyle = rg; sctx.fillRect(0,0,W,H);
+      sctx.globalCompositeOperation='source-over';
+    }
+  }
+
+  // ------- frost composite -------
+  function renderFrost(dt){
+    fctx.clearRect(0,0,W,H);
+    // draw accumulation buffer, scaled (it is DPR-scaled already)
+    fctx.save();
+    fctx.setTransform(1,0,0,1,0,0);
+    // glow pass: draw blurred-ish by drawing twice with screen
+    fctx.globalCompositeOperation='source-over';
+    fctx.globalAlpha = 0.9;
+    fctx.drawImage(off,0,0);
+    fctx.restore();
+
+    // droplets on top (in cleared regions)
+    fctx.save();
+    const warm = temp;
+    const dcol = mix(COLD_GLASS, WARM_GLASS, warm);
+    for(const d of drops){
+      // trail
+      fctx.strokeStyle = rgb(dcol, 0.05*d.a);
+      fctx.lineWidth = d.r*0.9;
+      fctx.lineCap='round';
+      fctx.beginPath();
+      fctx.moveTo(d.x, d.y - Math.min(d.trail, 30));
+      fctx.lineTo(d.x, d.y);
+      fctx.stroke();
+      // body
+      const rg = fctx.createRadialGradient(d.x-d.r*0.3, d.y-d.r*0.3, 0, d.x, d.y, d.r*1.4);
+      rg.addColorStop(0, rgb([255,255,255], 0.5*d.a));
+      rg.addColorStop(0.4, rgb(dcol, 0.22*d.a));
+      rg.addColorStop(1, rgb(dcol, 0));
+      fctx.fillStyle = rg;
+      fctx.beginPath(); fctx.arc(d.x,d.y,d.r*1.4,0,7); fctx.fill();
+      // highlight
+      fctx.fillStyle = rgb([255,255,255], 0.6*d.a);
+      fctx.beginPath(); fctx.arc(d.x-d.r*0.35, d.y-d.r*0.35, d.r*0.32, 0,7); fctx.fill();
+    }
+    fctx.restore();
+  }
+
+  // ------- main loop -------
+  let last = performance.now();
+  let rafOK = false;
+  function frame(now){
+    let dt = (now-last)/16.667; // normalized to ~60fps units
+    if(dt>3) dt=3;
+    last = now;
+    rafOK = true;
+
+    // temperature easing
+    temp += (tempTarget - temp)*0.06;
+    updateHUD();
+
+    // pointer dynamics
+    if(pointer.active){
+      pointer.vx = pointer.x - pointer.px;
+      pointer.vy = pointer.y - pointer.py;
+      const speed = Math.hypot(pointer.vx, pointer.vy);
+      pointer.px = pointer.x; pointer.py = pointer.y;
+      // wipe radius scales mildly with speed
+      const r = 30 + Math.min(speed*0.8, 40);
+      wipe(pointer.x, pointer.y, r);
+      if(speed < 0.6){
+        pointer.idle += dt;
+        // when paused, bloom fresh frost around the cleared spot (re-freeze)
+        if(now - pointer.lastBloom > 60){
+          pointer.lastBloom = now;
+          const ang = Math.random()*6.283;
+          const rr = r*0.8 + Math.random()*20;
+          bloom(pointer.x+Math.cos(ang)*rr, pointer.y+Math.sin(ang)*rr,
+                0.7+Math.random()*0.5);
+        }
+      } else {
+        pointer.idle = 0;
+        // moving wipe occasionally leaves a sliding drop
+        if(Math.random()<0.18) spawnDrop(pointer.x+(Math.random()-.5)*r, pointer.y+(Math.random()-.5)*r);
+      }
+    }
+
+    ambientCreep(dt);
+    growTips(dt);
+    updateDrops(dt);
+
+    renderScene(dt);
+    renderFrost(dt);
+
+    requestAnimationFrame(frame);
+  }
+
+  // ------- HUD -------
+  function updateHUD(){
+    const c = Math.round(lerp(-22, 4, temp));
+    tval.textContent = (c<0?('−'+Math.abs(c)):('+'+c));
+    let s;
+    if(temp<0.25) s='한겨울';
+    else if(temp<0.45) s='이른 새벽';
+    else if(temp<0.65) s='동틀 무렵';
+    else if(temp<0.82) s='해 돋을 때';
+    else s='첫 해빙';
+    seasonEl.textContent = s;
+    document.getElementById('temp').style.color =
+      rgb(mix(COLD_GLASS, WARM_GLASS, temp), 0.55);
+  }
+
+  // ------- input -------
+  function setPointer(x,y){
+    if(!pointer.active){ pointer.px=x; pointer.py=y; }
+    pointer.x=x; pointer.y=y; pointer.active=true;
+  }
+  function onMove(e){
+    const r = frost.getBoundingClientRect();
+    if(e.touches && e.touches[0]){
+      setPointer(e.touches[0].clientX-r.left, e.touches[0].clientY-r.top);
+    } else {
+      setPointer(e.clientX-r.left, e.clientY-r.top);
+    }
+  }
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mousedown', (e)=>{ pointer.down=true; onMove(e); });
+  window.addEventListener('mouseup', ()=>{ pointer.down=false; });
+  window.addEventListener('mouseleave', ()=>{ pointer.active=false; });
+  window.addEventListener('touchstart', (e)=>{ onMove(e); e.preventDefault(); }, {passive:false});
+  window.addEventListener('touchmove', (e)=>{ onMove(e); e.preventDefault(); }, {passive:false});
+  window.addEventListener('touchend', ()=>{ pointer.active=false; });
+
+  // double click / double tap -> dawn breath: warm pulse + radial bloom burst
+  function dawnBreath(x,y){
+    tempTarget = Math.min(1, tempTarget + 0.12);
+    for(let i=0;i<10;i++){
+      const a=(i/10)*6.283;
+      const rr=20+Math.random()*60;
+      bloom(x+Math.cos(a)*rr, y+Math.sin(a)*rr, 1.1+Math.random()*0.5, 6);
+    }
+    // a few drops bloom
+    for(let i=0;i<6;i++) spawnDrop(x+(Math.random()-.5)*80, y+(Math.random()-.5)*40);
+  }
+  window.addEventListener('dblclick', (e)=>{
+    const r=frost.getBoundingClientRect();
+    dawnBreath(e.clientX-r.left, e.clientY-r.top);
+  });
+  // double-tap detection
+  let lastTap=0;
+  window.addEventListener('touchend',(e)=>{
+    const now=performance.now();
+    if(now-lastTap<320 && e.changedTouches[0]){
+      const r=frost.getBoundingClientRect();
+      dawnBreath(e.changedTouches[0].clientX-r.left, e.changedTouches[0].clientY-r.top);
+    }
+    lastTap=now;
+  });
+
+  // scroll / wheel -> temperature (season)
+  window.addEventListener('wheel', (e)=>{
+    tempTarget = Math.max(0, Math.min(1, tempTarget + e.deltaY*0.0006));
+    e.preventDefault();
+  }, {passive:false});
+
+  // ------- resize / init -------
+  function resize(){
+    DPR = Math.min(window.devicePixelRatio||1, CAP);
+    W = window.innerWidth; H = window.innerHeight;
+    for(const cv of [scene, frost]){
+      cv.width = Math.round(W*DPR);
+      cv.height= Math.round(H*DPR);
+      cv.style.width = W+'px';
+      cv.style.height= H+'px';
+    }
+    sctx.setTransform(DPR,0,0,DPR,0,0);
+    fctx.setTransform(1,0,0,1,0,0); // we composite the off buffer at native res
+    makeBuffers();
+    makeBokeh();
+    tips.length=0; drops.length=0;
+    // seed an opening composition: corners frosted, center clearer
+    seedInitialFrost();
+  }
+
+  function seedInitialFrost(){
+    // pre-grow a lush first paint so the opening frame IS the artwork.
+    // Composition: dense frost sweeping the borders, thinning toward an
+    // off-center "breath lens" that stays clearer for contrast.
+    const cx = W*0.46, cy = H*0.52, lens = Math.min(W,H)*0.30;
+
+    function densityAt(x,y){
+      // 0 (clear, near lens) -> 1 (full frost, edges)
+      const d = Math.hypot(x-cx, y-cy)/lens;
+      return Math.max(0, Math.min(1, (d-0.5)*1.1));
+    }
+
+    // strong frosted borders
+    const corners = [
+      [0,0],[W,0],[0,H],[W,H],
+      [W*0.5,0],[0,H*0.5],[W,H*0.5],[W*0.5,H],
+      [W*0.25,0],[W*0.75,0],[W*0.25,H],[W*0.75,H]
+    ];
+    for(const [x,y] of corners){
+      for(let i=0;i<3;i++) bloom(x+(Math.random()-.5)*100, y+(Math.random()-.5)*100, 0.95+Math.random()*0.35, 6);
+    }
+
+    // field seeds weighted by density (rejection sampling)
+    const target = Math.round((W*H)/14000);
+    let placed=0, guard=0;
+    while(placed<target && guard<target*6){
+      guard++;
+      const x=Math.random()*W, y=Math.random()*H;
+      if(Math.random() < densityAt(x,y)*0.95+0.05){
+        bloom(x,y, 0.55+densityAt(x,y)*0.7, 6);
+        placed++;
+      }
+    }
+
+    // grow synchronously for first paint
+    for(let s=0;s<300;s++){
+      growTips(1.0);
+      if(s%14===0 && s<160) ambientCreep(1.0);
+    }
+    // second wave of fine frost to thicken texture
+    placed=0; guard=0;
+    const t2=Math.round(target*0.7);
+    while(placed<t2 && guard<t2*6){
+      guard++;
+      const x=Math.random()*W, y=Math.random()*H;
+      if(Math.random() < densityAt(x,y)){
+        bloom(x,y, 0.45+Math.random()*0.4, 6); placed++;
+      }
+    }
+    for(let s=0;s<180;s++) growTips(1.0);
+
+    // soft pre-cleared breath lens so center reads as a wiped patch
+    octx.save();
+    octx.globalCompositeOperation='destination-out';
+    const g=octx.createRadialGradient(cx,cy,lens*0.15, cx,cy,lens*0.95);
+    g.addColorStop(0,'rgba(0,0,0,0.7)');
+    g.addColorStop(0.7,'rgba(0,0,0,0.25)');
+    g.addColorStop(1,'rgba(0,0,0,0)');
+    octx.fillStyle=g; octx.beginPath(); octx.arc(cx,cy,lens,0,7); octx.fill();
+    octx.restore();
+  }
+
+  window.addEventListener('resize', resize);
+  resize();
+  requestAnimationFrame(frame);
+
+  // safety: if raf somehow blocked, keep buffer visible
+  setTimeout(()=>{ if(!rafOK){ renderScene(1); renderFrost(1); } }, 300);
+
+})();
+</script>
+</body>
+</html>

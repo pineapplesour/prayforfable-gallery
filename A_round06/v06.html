@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>DATAMOSH // motion vectors</title>
+<style>
+  :root{ --bg:#05060a; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; background:var(--bg); overflow:hidden; }
+  body{
+    font-family: "Courier New", ui-monospace, monospace;
+    color:#cfd6e4;
+    -webkit-tap-highlight-color: transparent;
+    cursor: crosshair;
+    touch-action: none;
+  }
+  #stage{ position:fixed; inset:0; display:block; }
+  /* Scanline + vignette overlay, pure CSS, sits above canvas */
+  #grain{
+    position:fixed; inset:0; pointer-events:none; z-index:5; mix-blend-mode:overlay; opacity:.5;
+    background:
+      repeating-linear-gradient(0deg, rgba(255,255,255,.045) 0 1px, transparent 1px 3px);
+  }
+  #vig{
+    position:fixed; inset:0; pointer-events:none; z-index:6;
+    background:radial-gradient(120% 120% at 50% 50%, transparent 55%, rgba(0,0,0,.55) 100%);
+  }
+  /* HUD */
+  .hud{ position:fixed; z-index:8; pointer-events:none;
+    font-size:11px; letter-spacing:.22em; text-transform:uppercase;
+    color:#7e8aa3; text-shadow:0 0 6px rgba(0,0,0,.8); user-select:none; }
+  #hud-tl{ top:18px; left:20px; }
+  #hud-tr{ top:18px; right:20px; text-align:right; }
+  #hud-bl{ bottom:16px; left:20px; }
+  #hud-br{ bottom:16px; right:20px; text-align:right; }
+  .hud b{ color:#e7ecf7; font-weight:700; }
+  .acc{ color:#ff2d6b; }
+  .acc2{ color:#23e7c8; }
+  #title{ position:fixed; z-index:8; pointer-events:none;
+    left:20px; top:50%; transform:translateY(-50%);
+    font-weight:700; letter-spacing:.04em; line-height:.92;
+    font-size: clamp(40px, 9.5vw, 150px);
+    color:#f2f4fb; opacity:.92; mix-blend-mode:exclusion;
+    text-shadow: -2px 0 #ff2d6b, 2px 0 #23e7c8; }
+  #title small{ display:block; font-size:.16em; letter-spacing:.5em; font-weight:400;
+    color:#aeb8cf; margin-top:.8em; -webkit-text-fill-color:#aeb8cf; text-shadow:none; }
+  @media (max-width:560px){
+    #title{ left:14px; }
+    .hud{ font-size:9px; letter-spacing:.16em; }
+    #hud-tr,#hud-br{ display:none; }
+  }
+  .blink{ animation: bk 1.1s steps(2) infinite; }
+  @keyframes bk{ 50%{ opacity:.15; } }
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <div id="grain"></div>
+  <div id="vig"></div>
+
+  <div id="title">DATA<br>MOSH<small>drag to corrupt the keyframe</small></div>
+
+  <div class="hud" id="hud-tl">codec: <b class="acc2">RAW//rgb</b><br>vectors: <b id="vcount">0</b></div>
+  <div class="hud" id="hud-tr">mode <b id="mode">FLOW</b><br><span class="blink">●</span> <span class="acc">REC</span></div>
+  <div class="hud" id="hud-bl"><b>drag</b> smear · <b>click</b> i-frame · <b>scroll</b> bitrate</div>
+  <div class="hud" id="hud-br">bitrate <b id="bitrate">100%</b><br>fps <b id="fps">--</b></div>
+
+<script>
+(() => {
+  "use strict";
+  const cv = document.getElementById('stage');
+  const ctx = cv.getContext('2d', { alpha:false, desynchronized:true });
+
+  // Offscreen low-res buffer where the generative field is drawn.
+  // The mosh engine reads/writes THIS buffer, then it's upscaled to screen.
+  const buf = document.createElement('canvas');
+  const bx  = buf.getContext('2d', { willReadFrequently:true });
+
+  let W=0,H=0, BW=0,BH=0, SCALE=1, DPR=1;
+  // Resolution of the internal field. Lower = chunkier, more "compressed" look + faster.
+  const TARGET = 300; // long edge in field pixels (kept low on purpose for the codec aesthetic)
+
+  function resize(){
+    DPR = Math.min(window.devicePixelRatio||1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = Math.floor(W*DPR); cv.height = Math.floor(H*DPR);
+    cv.style.width = W+'px'; cv.style.height = H+'px';
+
+    const ar = W/H;
+    if (ar>=1){ BW = TARGET; BH = Math.round(TARGET/ar); }
+    else      { BH = TARGET; BW = Math.round(TARGET*ar); }
+    buf.width = BW; buf.height = BH;
+    bx.imageSmoothingEnabled = false;
+    ctx.imageSmoothingEnabled = false; // nearest-neighbour upscale = blocky codec feel
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---------- pointer / motion-vector field ----------
+  const P = { x:0.5, y:0.5, px:0.5, py:0.5, vx:0, vy:0, down:false, present:false };
+  function setP(cx, cy){
+    P.px = P.x; P.py = P.y;
+    P.x = cx / W; P.y = cy / H;
+    P.vx = P.x - P.px; P.vy = P.y - P.py;
+    P.present = true;
+  }
+  cv.addEventListener('pointermove', e => setP(e.clientX, e.clientY));
+  cv.addEventListener('pointerdown', e => { P.down=true; setP(e.clientX,e.clientY); iframe(e.clientX/W, e.clientY/H); audioBurst(); });
+  window.addEventListener('pointerup',   () => P.down=false);
+  cv.addEventListener('pointerleave', () => { P.present=false; P.vx=P.vy=0; });
+
+  let bitrate = 1.0; // scroll-controlled "quality"
+  window.addEventListener('wheel', e => {
+    bitrate = Math.min(1.0, Math.max(0.12, bitrate - Math.sign(e.deltaY)*0.06));
+    document.getElementById('bitrate').textContent = Math.round(bitrate*100)+'%';
+  }, { passive:true });
+
+  // ---------- I-frame shock: ring of strong vectors at a point ----------
+  const shocks = []; // {x,y,t,life}
+  function iframe(x,y){ shocks.push({x,y,life:1.0}); if(shocks.length>6) shocks.shift(); }
+
+  // ---------- generative field (the "video" being moshed) ----------
+  let t = 0;
+  function drawField(){
+    // Animated plasma-ish bands + drifting blobs, drawn cheaply on the small buffer.
+    const g = bx;
+    // base gradient that slowly rotates hue feel via two moving radial lights
+    g.globalCompositeOperation = 'source-over';
+    g.fillStyle = '#06070d';
+    g.fillRect(0,0,BW,BH);
+
+    const lights = [
+      { x: BW*(0.5+0.42*Math.cos(t*0.31)),       y: BH*(0.5+0.40*Math.sin(t*0.27)),       r: BW*0.55, c:[255,45,107] },
+      { x: BW*(0.5+0.46*Math.cos(t*0.21+2.1)),   y: BH*(0.5+0.44*Math.sin(t*0.19+1.3)),   r: BW*0.55, c:[35,231,200] },
+      { x: BW*(0.5+0.38*Math.cos(-t*0.17+4.0)),  y: BH*(0.5+0.36*Math.sin(-t*0.23+0.6)),  r: BW*0.5,  c:[120,90,255] },
+    ];
+    g.globalCompositeOperation = 'lighter';
+    for(const L of lights){
+      const rg = g.createRadialGradient(L.x,L.y,0, L.x,L.y,L.r);
+      rg.addColorStop(0, `rgba(${L.c[0]},${L.c[1]},${L.c[2]},0.95)`);
+      rg.addColorStop(0.5,`rgba(${L.c[0]},${L.c[1]},${L.c[2]},0.25)`);
+      rg.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = rg;
+      g.beginPath(); g.arc(L.x,L.y,L.r,0,7); g.fill();
+    }
+
+    // interference stripes — gives a "signal" texture that mosh smearing can grab onto
+    g.globalCompositeOperation = 'overlay';
+    const sw = 6;
+    for(let yy=0; yy<BH; yy+=sw){
+      const k = Math.sin(yy*0.16 + t*1.6 + Math.cos(yy*0.05+t)) ;
+      const a = 0.12 + 0.12*k;
+      g.fillStyle = `rgba(255,255,255,${Math.max(0,a)})`;
+      g.fillRect(0, yy, BW, 1);
+    }
+
+    // pointer attractor glow (only when present) — a hot core that you smear around
+    if(P.present){
+      g.globalCompositeOperation = 'lighter';
+      const px=P.x*BW, py=P.y*BH;
+      const rr = BW*0.16;
+      const rg = g.createRadialGradient(px,py,0,px,py,rr);
+      rg.addColorStop(0,'rgba(255,255,255,0.9)');
+      rg.addColorStop(0.4,'rgba(120,200,255,0.4)');
+      rg.addColorStop(1,'rgba(0,0,0,0)');
+      g.fillStyle=rg; g.beginPath(); g.arc(px,py,rr,0,7); g.fill();
+    }
+    g.globalCompositeOperation = 'source-over';
+  }
+
+  // ---------- THE MOSH ENGINE ----------
+  // Datamoshing = propagate motion vectors across P-frames + drop the residual.
+  // We emulate by displacing image blocks along the pointer velocity + shock fields,
+  // never fully clearing -> color/blocks "bleed" and persist like corrupted P-frames.
+  function mosh(){
+    let img;
+    try { img = bx.getImageData(0,0,BW,BH); }
+    catch(e){ return; }
+    const d = img.data;
+    const W4 = BW*4;
+
+    // global drift from pointer velocity, scaled up because field is small
+    const driftX = P.vx * BW * 22;
+    const driftY = P.vy * BH * 22;
+
+    // "quality" loss => bigger blocks, harsher smear when bitrate low
+    const block = Math.max(2, Math.round(8*(1.05-bitrate)) + 2); // 2..~10
+    const smear = 0.78 + 0.20*(1-bitrate);                       // how much old frame persists
+
+    // copy buffer so we sample stable source while writing
+    const src = new Uint8ClampedArray(d);
+
+    // radius of pointer influence (in field px)
+    const infR = BW*0.42;
+    const pcx = P.x*BW, pcy = P.y*BH;
+
+    for(let by=0; by<BH; by+=block){
+      for(let bx0=0; bx0<BW; bx0+=block){
+        // block centre
+        const cx = bx0+block*0.5, cy = by+block*0.5;
+
+        // motion vector for this block: pointer drift falls off with distance
+        const dx0 = cx-pcx, dy0 = cy-pcy;
+        const dist = Math.hypot(dx0,dy0);
+        const fall = Math.max(0, 1 - dist/infR);
+        let mvx = driftX*fall;
+        let mvy = driftY*fall;
+
+        // shock (i-frame) contributions: radial push + ringing
+        for(const s of shocks){
+          const sx=s.x*BW, sy=s.y*BH;
+          const ddx=cx-sx, ddy=cy-sy, dd=Math.hypot(ddx,ddy)+0.001;
+          const ring = Math.exp(-Math.pow((dd - (1-s.life)*BW*0.6)/(BW*0.12),2));
+          const push = ring*s.life* (block*1.2+6);
+          mvx += (ddx/dd)*push;
+          mvy += (ddy/dd)*push;
+        }
+
+        // ambient swirl so even idle frames "breathe"
+        const sw = (P.present? 0.6: 1.0);
+        mvx += Math.cos(cy*0.03 + t*0.9)*1.1*sw;
+        mvy += Math.sin(cx*0.03 + t*0.7)*1.1*sw;
+
+        const ox = Math.round(mvx), oy = Math.round(mvy);
+        if(ox===0 && oy===0 && smear>0.95) continue;
+
+        // sample source block from (bx0-ox, by-oy) and write smeared into dest block
+        for(let yy=0; yy<block; yy++){
+          const dyR = by+yy; if(dyR>=BH) break;
+          let syR = dyR - oy; if(syR<0) syR=0; else if(syR>=BH) syR=BH-1;
+          const dRow = dyR*W4;
+          const sRow = syR*W4;
+          for(let xx=0; xx<block; xx++){
+            const dxC = bx0+xx; if(dxC>=BW) break;
+            let sxC = dxC - ox; if(sxC<0) sxC=0; else if(sxC>=BW) sxC=BW-1;
+            const di = dRow + dxC*4;
+            const si = sRow + sxC*4;
+            // smear: blend displaced source over existing dest (P-frame residual loss)
+            d[di]   = src[si]   *smear + d[di]  *(1-smear);
+            d[di+1] = src[si+1] *smear + d[di+1]*(1-smear);
+            d[di+2] = src[si+2] *smear + d[di+2]*(1-smear);
+          }
+        }
+      }
+    }
+
+    // ---- RGB channel split along motion direction (chroma corruption) ----
+    const speed = Math.hypot(P.vx,P.vy);
+    let shift = Math.round(Math.min(7, speed*BW*3 + 0.6));
+    if(shift>0){
+      const sx = (P.vx>=0?1:-1)*shift;
+      // shift red one way, blue the other -> classic glitch fringe
+      for(let i=0;i<d.length;i+=4){
+        const px = (i>>2)%BW;
+        const rIdx = i - sx*4;   // red sampled offset
+        const bIdx = i + sx*4;
+        if(px+ (sx>0?sx:-sx) < BW && px-(sx>0?sx:-sx) >=0){
+          d[i]   = src[Math.max(0,Math.min(d.length-4,rIdx))];     // R
+          d[i+2] = src[Math.max(0,Math.min(d.length-4,bIdx))+2];   // B
+        }
+      }
+    }
+
+    // ---- occasional horizontal "tear" / sync-loss scanlines ----
+    if(Math.random() < 0.10 + (1-bitrate)*0.3){
+      const lines = 1 + (Math.random()*3|0);
+      for(let l=0;l<lines;l++){
+        const yy = (Math.random()*BH)|0;
+        const ht = 1 + (Math.random()*Math.max(2,(1-bitrate)*10))|0;
+        const sh = ((Math.random()*BW*0.4)|0) - (BW*0.2|0);
+        for(let y2=yy; y2<Math.min(BH,yy+ht); y2++){
+          const row = y2*W4;
+          const tmp = d.slice(row, row+W4);
+          for(let x=0;x<BW;x++){
+            let s2 = x - sh; if(s2<0) s2+=BW; else if(s2>=BW) s2-=BW;
+            const di=row+x*4, s2i=s2*4;
+            d[di]=tmp[s2i]; d[di+1]=tmp[s2i+1]; d[di+2]=tmp[s2i+2];
+          }
+        }
+      }
+    }
+
+    bx.putImageData(img,0,0);
+  }
+
+  // ---------- compose to screen ----------
+  function present(){
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(buf, 0,0,BW,BH, 0,0, cv.width, cv.height);
+
+    // subtle chroma bloom overlay (cheap): redraw buffer slightly offset & additive
+    const sp = Math.hypot(P.vx,P.vy);
+    if(sp>0.002){
+      ctx.globalCompositeOperation='lighter';
+      ctx.globalAlpha=0.18;
+      const o = Math.min(14, sp*W*0.4);
+      ctx.drawImage(buf,0,0,BW,BH, o,0, cv.width, cv.height);
+      ctx.drawImage(buf,0,0,BW,BH,-o,0, cv.width, cv.height);
+      ctx.globalAlpha=1; ctx.globalCompositeOperation='source-over';
+    }
+  }
+
+  // ---------- WebAudio glitch burst ----------
+  let AC=null;
+  function audioBurst(){
+    try{
+      if(!AC) AC = new (window.AudioContext||window.webkitAudioContext)();
+      if(AC.state==='suspended') AC.resume();
+      const now=AC.currentTime;
+      // noise burst
+      const len = 0.18;
+      const b = AC.createBuffer(1, AC.sampleRate*len, AC.sampleRate);
+      const ch = b.getChannelData(0);
+      for(let i=0;i<ch.length;i++){ ch[i]=(Math.random()*2-1)*Math.pow(1-i/ch.length,2); }
+      const ns=AC.createBufferSource(); ns.buffer=b;
+      const bp=AC.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=400+Math.random()*2200; bp.Q.value=6;
+      const g=AC.createGain(); g.gain.value=0.12;
+      ns.connect(bp); bp.connect(g); g.connect(AC.destination);
+      ns.start(now); ns.stop(now+len);
+      // glitch blip
+      const o=AC.createOscillator(); o.type='square'; o.frequency.setValueAtTime(120+Math.random()*600, now);
+      o.frequency.exponentialRampToValueAtTime(40, now+0.12);
+      const og=AC.createGain(); og.gain.setValueAtTime(0.08, now); og.gain.exponentialRampToValueAtTime(0.0001, now+0.14);
+      o.connect(og); og.connect(AC.destination); o.start(now); o.stop(now+0.15);
+    }catch(e){}
+  }
+
+  // ---------- HUD refs ----------
+  const elV=document.getElementById('vcount'), elFps=document.getElementById('fps'), elMode=document.getElementById('mode');
+
+  // ---------- main loop ----------
+  let last=performance.now(), fpsAcc=0, fpsN=0, fpsT=0;
+  function frame(now){
+    const dt=Math.min(0.05,(now-last)/1000); last=now;
+    t += dt;
+
+    // decay pointer velocity (so smear eases out when you stop)
+    P.vx*=0.86; P.vy*=0.86;
+    // age shocks
+    for(const s of shocks) s.life -= dt*0.9;
+    while(shocks.length && shocks[0].life<=0) shocks.shift();
+
+    drawField();
+    mosh();
+    present();
+
+    // HUD
+    fpsAcc += 1/Math.max(dt,1e-4); fpsN++; fpsT+=dt;
+    if(fpsT>=0.4){ elFps.textContent=Math.round(fpsAcc/fpsN); fpsAcc=0;fpsN=0;fpsT=0; }
+    const v = Math.round((Math.hypot(P.vx,P.vy)*5000) + shocks.length*40);
+    elV.textContent = String(v).padStart(4,'0');
+    elMode.textContent = P.down ? 'I-FRAME' : (Math.hypot(P.vx,P.vy)>0.004?'MOSH':'FLOW');
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  // gentle autonomous motion at start so the very first paint is already alive
+  (function intro(){
+    let k=0;
+    const id=setInterval(()=>{
+      k+=0.08;
+      P.px=P.x; P.py=P.y;
+      P.x=0.5+0.28*Math.cos(k*1.3); P.y=0.5+0.22*Math.sin(k*1.7);
+      P.vx=P.x-P.px; P.vy=P.y-P.py; P.present=true;
+      if(k>2.2){ clearInterval(id); P.present=false; P.vx=P.vy=0; }
+    },40);
+  })();
+})();
+</script>
+</body>
+</html>

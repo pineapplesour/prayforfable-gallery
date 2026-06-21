@@ -1,0 +1,1497 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>심해 잠수 수집행 · Abyssal Divers</title>
+<style>
+  :root{
+    --ink:#0a1622; --deep:#0d2236; --mid:#13405e; --glow:#37e0d8; --gold:#ffd76a;
+    --hp:#52e07a; --hp2:#e05252; --xp:#6ab4ff; --panel:#0f2a40; --panelb:#2a6f8f;
+    --txt:#dff3ff;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;padding:0;height:100%;background:#04080d;overflow:hidden;
+    font-family:'Courier New',monospace;color:var(--txt);user-select:none;}
+  #stage{position:relative;width:100vw;height:100vh;display:flex;align-items:center;justify-content:center;}
+  #game{position:relative;image-rendering:pixelated;background:#04080d;
+    box-shadow:0 0 0 3px #06121c, 0 0 40px #000;border-radius:6px;}
+  canvas{display:block;image-rendering:pixelated;border-radius:6px;}
+  /* HUD overlay */
+  #hud{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;}
+  .pix{font-family:'Courier New',monospace;letter-spacing:.5px;}
+  /* Touch controls */
+  #touch{position:absolute;left:0;bottom:0;width:100%;display:none;
+    justify-content:space-between;align-items:flex-end;padding:14px 18px;pointer-events:none;}
+  #dpad{position:relative;width:150px;height:150px;pointer-events:auto;}
+  .dbtn{position:absolute;width:50px;height:50px;background:rgba(20,64,94,.85);
+    border:2px solid var(--panelb);color:var(--txt);font-size:20px;border-radius:8px;
+    display:flex;align-items:center;justify-content:center;touch-action:none;}
+  .dbtn:active{background:var(--glow);color:#04121a;}
+  #dU{left:50px;top:0}#dD{left:50px;top:100px}#dL{left:0;top:50px}#dR{left:100px;top:50px}
+  #abtns{display:flex;gap:14px;pointer-events:auto;align-items:flex-end;}
+  .abtn{width:64px;height:64px;border-radius:50%;background:rgba(255,215,106,.9);
+    color:#3a2a00;border:3px solid #b9952f;font-weight:bold;font-size:18px;
+    display:flex;align-items:center;justify-content:center;touch-action:none;}
+  .bbtn{width:54px;height:54px;background:rgba(224,82,82,.9);border-color:#8f2a2a;color:#fff;}
+  .abtn:active{filter:brightness(1.3);}
+  #hint{position:absolute;left:0;top:0;width:100%;text-align:center;padding:6px;
+    font-size:11px;color:#7fb6d0;pointer-events:none;text-shadow:0 1px 2px #000;}
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="game">
+    <canvas id="cv"></canvas>
+    <div id="hud">
+      <div id="hint" class="pix"></div>
+    </div>
+    <div id="touch">
+      <div id="dpad">
+        <div class="dbtn" id="dU" data-k="ArrowUp">▲</div>
+        <div class="dbtn" id="dD" data-k="ArrowDown">▼</div>
+        <div class="dbtn" id="dL" data-k="ArrowLeft">◀</div>
+        <div class="dbtn" id="dR" data-k="ArrowRight">▶</div>
+      </div>
+      <div id="abtns">
+        <div class="abtn bbtn" id="bB" data-k="x">B</div>
+        <div class="abtn" id="bA" data-k="z">A</div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+"use strict";
+/* =====================================================================
+   심해 잠수 수집행 · Abyssal Divers
+   포켓몬에서 영감 — © Nintendo / Game Freak / The Pokémon Company.
+   오리지널 구현. 크리처·타입·지역·진화 전부 오리지널.
+   단일 자기완결 HTML, CDN/백엔드 없음.
+   ===================================================================== */
+
+/* ---------- Canvas / scaling ---------- */
+const BASE_W = 320, BASE_H = 288;       // internal pixel resolution (10x9 tiles @32px)
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+let SCALE = 2;
+function fit(){
+  const pad = 8;
+  const availW = window.innerWidth - pad, availH = window.innerHeight - pad;
+  // leave room for touch controls on small screens
+  const touchRoom = (window.innerWidth < 760) ? 180 : 0;
+  const s = Math.max(1, Math.floor(Math.min(availW/BASE_W, (availH-touchRoom)/BASE_H)));
+  SCALE = s;
+  cv.width = BASE_W; cv.height = BASE_H;
+  cv.style.width = (BASE_W*s)+'px';
+  cv.style.height = (BASE_H*s)+'px';
+  ctx.imageSmoothingEnabled = false;
+  const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints>0 || window.innerWidth<760;
+  document.getElementById('touch').style.display = isTouch ? 'flex' : 'none';
+}
+window.addEventListener('resize', fit);
+
+/* ---------- Tiny deterministic helpers ---------- */
+const rnd = (n)=>Math.floor(Math.random()*n);
+const chance = (p)=>Math.random()<p;
+const clamp = (v,a,b)=>v<a?a:(v>b?b:v);
+
+/* ---------- ORIGINAL TYPE SYSTEM ----------
+   6 오리지널 타입. 상성표(공격→방어 배수).
+   조류(Tidal) 심연(Abyss) 전류(Volt) 빙결(Frost) 맹독(Venom) 갑각(Shell) */
+const TYPES = ['조류','심연','전류','빙결','맹독','갑각'];
+const TCOL = {조류:'#37e0d8',심연:'#8a6cff',전류:'#ffd84a',빙결:'#9fe7ff',맹독:'#b46cff',갑각:'#d8a05a'};
+// chart[atk][def] = multiplier
+const CHART = {
+  조류:{조류:1, 심연:1, 전류:0.5, 빙결:1, 맹독:1, 갑각:2},
+  심연:{조류:2, 심연:1, 전류:1, 빙결:1, 맹독:0.5, 갑각:1},
+  전류:{조류:2, 심연:1, 전류:0.5, 빙결:1, 맹독:1, 갑각:0.5},
+  빙결:{조류:1, 심연:1, 전류:1, 빙결:0.5, 맹독:2, 갑각:1},
+  맹독:{조류:2, 심연:0.5, 전류:1, 빙결:1, 맹독:0.5, 갑각:1},
+  갑각:{조류:1, 심연:1, 전류:2, 빙결:2, 맹독:1, 갑각:0.5},
+};
+function typeMult(atk, def){ return (CHART[atk] && CHART[atk][def]!=null)?CHART[atk][def]:1; }
+
+/* ---------- MOVES (오리지널 스킬) ---------- */
+const MOVES = {
+  '물보라':{type:'조류',pow:35},
+  '소용돌이':{type:'조류',pow:55},
+  '심연응시':{type:'심연',pow:40},
+  '암흑류':{type:'심연',pow:60},
+  '방전':{type:'전류',pow:45},
+  '전기충격':{type:'전류',pow:30},
+  '한파':{type:'빙결',pow:45},
+  '서리침':{type:'빙결',pow:30},
+  '독침':{type:'맹독',pow:35},
+  '맹독안개':{type:'맹독',pow:55},
+  '껍질박치기':{type:'갑각',pow:40},
+  '집게강타':{type:'갑각',pow:55},
+  '몸통박치기':{type:'갑각',pow:25},
+};
+
+/* ---------- CREATURE SPECIES (오리지널 도감, 12종) ----------
+   id, 이름, 타입, 베이스스탯(hp,atk,def,spd), 진화(레벨/대상), 스킬셋(레벨해금), 픽셀팔레트, 스프라이트 패턴 */
+const SPECIES = {
+  // --- 조류 라인 ---
+  guppi:{id:'guppi',name:'구피링',type:'조류',base:{hp:38,atk:9,def:8,spd:11},
+    evo:{lv:16,to:'tidra'}, learn:[[1,'물보라'],[7,'전기충격'],[13,'소용돌이']],
+    pal:['#1b6fb0','#37e0d8','#cdfcff','#0a3a5a'], shape:'fish'},
+  tidra:{id:'tidra',name:'타이드라',type:'조류',base:{hp:60,atk:14,def:13,spd:14},
+    evo:{lv:32,to:'levira'}, learn:[[1,'소용돌이'],[18,'방전'],[26,'한파']],
+    pal:['#0e5d9c','#37e0d8','#bff7ff','#063248'], shape:'serpent'},
+  levira:{id:'levira',name:'레비라탄',type:'조류',base:{hp:92,atk:22,def:20,spd:18},
+    evo:null, learn:[[1,'소용돌이'],[34,'방전'],[40,'암흑류']],
+    pal:['#0a4f8a','#5cf0e6','#d6fbff','#04263a'], shape:'leviathan'},
+
+  // --- 심연 라인 ---
+  anglo:{id:'anglo',name:'앙글룬',type:'심연',base:{hp:42,atk:11,def:7,spd:9},
+    evo:{lv:20,to:'voidra'}, learn:[[1,'심연응시'],[9,'독침'],[15,'암흑류']],
+    pal:['#2a1b4a','#8a6cff','#ffd84a','#120a26'], shape:'angler'},
+  voidra:{id:'voidra',name:'보이드라',type:'심연',base:{hp:70,atk:20,def:14,spd:13},
+    evo:null, learn:[[1,'암흑류'],[24,'맹독안개'],[33,'심연응시']],
+    pal:['#1d1138','#9a7cff','#ffe27a','#0c0620'], shape:'angler'},
+
+  // --- 전류 라인 ---
+  sparko:{id:'sparko',name:'스파콘',type:'전류',base:{hp:34,atk:12,def:6,spd:15},
+    evo:{lv:18,to:'jelvolt'}, learn:[[1,'전기충격'],[8,'물보라'],[14,'방전']],
+    pal:['#7a5a00','#ffd84a','#fff6c8','#3a2a00'], shape:'jelly'},
+  jelvolt:{id:'jelvolt',name:'젤볼트',type:'전류',base:{hp:56,atk:19,def:11,spd:20},
+    evo:null, learn:[[1,'방전'],[22,'소용돌이'],[30,'한파']],
+    pal:['#8a6a10','#ffe24a','#fffadf','#4a3500'], shape:'jelly'},
+
+  // --- 빙결 라인 ---
+  frosti:{id:'frosti',name:'프로스티',type:'빙결',base:{hp:40,atk:8,def:12,spd:8},
+    evo:{lv:22,to:'glacir'}, learn:[[1,'서리침'],[10,'몸통박치기'],[17,'한파']],
+    pal:['#3a6a8a','#9fe7ff','#ffffff','#1a3a52'], shape:'crab'},
+  glacir:{id:'glacir',name:'글라시르',type:'빙결',base:{hp:74,atk:16,def:22,spd:11},
+    evo:null, learn:[[1,'한파'],[26,'집게강타'],[34,'서리침']],
+    pal:['#2e5e80','#b9f0ff','#ffffff','#143046'], shape:'crab'},
+
+  // --- 맹독 라인 ---
+  venni:{id:'venni',name:'베니그',type:'맹독',base:{hp:36,atk:10,def:9,spd:12},
+    evo:{lv:19,to:'toxar'}, learn:[[1,'독침'],[8,'물보라'],[16,'맹독안개']],
+    pal:['#3a1b4a','#b46cff','#e8ffa0','#1a0a26'], shape:'squid'},
+  toxar:{id:'toxar',name:'톡사르',type:'맹독',base:{hp:62,atk:18,def:15,spd:16},
+    evo:null, learn:[[1,'맹독안개'],[24,'암흑류'],[31,'독침']],
+    pal:['#2e1240','#c47cff','#d8ff7a','#140622'], shape:'squid'},
+
+  // --- 갑각 라인 (싱글) ---
+  shello:{id:'shello',name:'셸로크',type:'갑각',base:{hp:55,atk:13,def:18,spd:6},
+    evo:{lv:24,to:'kragar'}, learn:[[1,'껍질박치기'],[12,'몸통박치기'],[20,'집게강타']],
+    pal:['#7a5230','#d8a05a','#ffe2b0','#3a2410'], shape:'turtle'},
+  kragar:{id:'kragar',name:'크라가르',type:'갑각',base:{hp:88,atk:21,def:30,spd:9},
+    evo:null, learn:[[1,'집게강타'],[28,'방전'],[36,'껍질박치기']],
+    pal:['#6a4624','#e0ac66','#fff0d0','#2e1c0a'], shape:'turtle'},
+};
+
+/* ---------- Stat / leveling math ---------- */
+function statAt(species, stat, lv){
+  const b = SPECIES[species].base[stat];
+  if(stat==='hp') return Math.floor(b + b*0.09*lv + lv*2 + 8);
+  return Math.floor(b + b*0.06*lv + lv);
+}
+function xpForLevel(lv){ return Math.floor(8*lv*lv + 12*lv); } // total xp to reach lv from 1-ish curve
+function xpToNext(lv){ return Math.floor(6 + lv*lv*1.2 + lv*4); }
+function movesAtLevel(species, lv){
+  const set=[]; for(const [l,m] of SPECIES[species].learn){ if(l<=lv) set.push(m); }
+  return set.slice(-4); // keep last 4 learned
+}
+
+/* ---------- Creature instance factory ---------- */
+let UID=1;
+function makeCreature(speciesId, lv){
+  const s = SPECIES[speciesId];
+  const c = {
+    uid: UID++, species:speciesId, name:s.name, type:s.type, lv:lv,
+    maxhp: statAt(speciesId,'hp',lv),
+    moves: movesAtLevel(speciesId, lv),
+    xp: 0,
+  };
+  c.hp = c.maxhp;
+  c.atk = statAt(speciesId,'atk',lv);
+  c.def = statAt(speciesId,'def',lv);
+  c.spd = statAt(speciesId,'spd',lv);
+  return c;
+}
+function recomputeStats(c){
+  c.maxhp = statAt(c.species,'hp',c.lv);
+  c.atk = statAt(c.species,'atk',c.lv);
+  c.def = statAt(c.species,'def',c.lv);
+  c.spd = statAt(c.species,'spd',c.lv);
+  c.moves = movesAtLevel(c.species, c.lv);
+}
+
+/* =====================================================================
+   PIXEL SPRITE RENDERER (procedural, original art)
+   Each creature drawn from a shape template + 4-color palette.
+   Drawn into a tiny offscreen and blitted scaled — true pixel art.
+   ===================================================================== */
+function px(c,x,y,col,s){ c.fillStyle=col; c.fillRect(x*s,y*s,s,s); }
+
+// shape templates: 16x16 grids, values index into palette (0=transparent, 1-4 = pal[0..3])
+const SHAPES = {
+  fish:[
+    "0000000000000000",
+    "0000003330000000",
+    "0000033223000000",
+    "0000322222300040",
+    "0003222122230440",
+    "0032221111223444",
+    "0322211111122344",
+    "3222211111112234",
+    "3222111111111224",
+    "0322211111122344",
+    "0032221111223444",
+    "0003222222230440",
+    "0000322222300040",
+    "0000033223000000",
+    "0000003330000000",
+    "0000000000000000",
+  ],
+  serpent:[
+    "0000000033300000",
+    "0000000322230000",
+    "0000003221230000",
+    "0000032211230000",
+    "0003332211230000",
+    "0032222212300000",
+    "0322211123000000",
+    "3222111230000000",
+    "3221112300000400",
+    "3221123000004440",
+    "0322230000044440",
+    "0032300004444400",
+    "0003000044440000",
+    "0000004444000000",
+    "0000044400000000",
+    "0000000000000000",
+  ],
+  leviathan:[
+    "0000033330000000",
+    "0000322223000040",
+    "0003221122300440",
+    "0032211112234444",
+    "0322111111223444",
+    "3221111111122344",
+    "3211111111112234",
+    "3211211121112234",
+    "3221111111112234",
+    "0322111111122344",
+    "0032211111223440",
+    "0003222112230440",
+    "0000322222300040",
+    "0000033223000000",
+    "0000000330000000",
+    "0000000000000000",
+  ],
+  angler:[
+    "0000000040000000",
+    "0000000044000000",
+    "0000003304000000",
+    "0000033330000000",
+    "0000322232300000",
+    "0003222222230000",
+    "0032211221223000",
+    "0322111111122300",
+    "0322141114122300",
+    "0322111111122300",
+    "0032221111223000",
+    "0003222222230030",
+    "0000322222303030",
+    "0000033223033300",
+    "0000000330030000",
+    "0000000000000000",
+  ],
+  jelly:[
+    "0000033333000000",
+    "0003222222300000",
+    "0032111111230000",
+    "0321111111123000",
+    "3211141114112300",
+    "3211111111112300",
+    "3221111111122300",
+    "0322222222223000",
+    "0032030203030000",
+    "0030300300300300",
+    "0300030030030030",
+    "0003003003003000",
+    "0030030030030000",
+    "0003003003000300",
+    "0000300300300000",
+    "0000030000030000",
+  ],
+  crab:[
+    "0400000000000040",
+    "0440000000000440",
+    "0044000330000440",
+    "0004403223044400",
+    "0003322222330000",
+    "0032211111223000",
+    "3322141141122330",
+    "3222111111122230",
+    "3322111111122330",
+    "0032222222223000",
+    "0004400000044000",
+    "0040040000400400",
+    "0400004004000040",
+    "4000000440000004",
+    "0000004004000000",
+    "0000040000400000",
+  ],
+  squid:[
+    "0000033330000000",
+    "0000322223000000",
+    "0003211112300000",
+    "0032111111230000",
+    "0321411141123000",
+    "0321111111123000",
+    "0032111111230000",
+    "0003222222300000",
+    "0003200200230000",
+    "0030200200302000",
+    "0300200200300300",
+    "0300020020030030",
+    "0030020020300300",
+    "0003002002030030",
+    "0000302030200300",
+    "0000030030030000",
+  ],
+  turtle:[
+    "0000033333300000",
+    "0003222222230000",
+    "0032212212223000",
+    "0322121121122300",
+    "0322212212122300",
+    "0322121121122300",
+    "3032221221222303",
+    "3300322222230033",
+    "0040032222300400",
+    "0044000220000440",
+    "0044000000000440",
+    "0040000000000040",
+    "0000000000000000",
+    "0000000000000000",
+    "0000000000000000",
+    "0000000000000000",
+  ],
+};
+
+// draw a creature sprite into ctx at (dx,dy) with pixel size ps, optional flip & frame bob
+function drawCreature(c, dx, dy, ps, opt){
+  opt = opt||{};
+  const sp = SPECIES[c.species];
+  const grid = SHAPES[sp.shape];
+  const pal = sp.pal;
+  const flip = opt.flip;
+  const bob = opt.bob||0;
+  ctx.save();
+  ctx.translate(dx, dy+bob);
+  for(let y=0;y<16;y++){
+    const row = grid[y];
+    for(let x=0;x<16;x++){
+      const v = row.charCodeAt(x)-48;
+      if(v===0) continue;
+      const col = pal[v-1];
+      const rx = flip ? (15-x) : x;
+      ctx.fillStyle = col;
+      ctx.fillRect(rx*ps, y*ps, ps, ps);
+    }
+  }
+  ctx.restore();
+}
+
+/* =====================================================================
+   OVERWORLD MAP — deep-sea seabed (tile based)
+   Tiles: 0 water(walkable), 1 rock(wall), 2 seaweed(encounter),
+          3 coral(wall deco), 4 healing vent, 5 shop(clam), 6 trainer,
+          7 sand(walkable), 8 exit/portal-deco(walkable highlight)
+   ===================================================================== */
+const TS = 32;            // tile size px
+const VIEW_W = 10, VIEW_H = 9;   // visible tiles
+const MAP = [
+  "1111111111111111",
+  "1077777222007701",
+  "1070110702207701",
+  "10707V0702207a01",  // V vent
+  "1070110702222201",
+  "1077777702200701",
+  "10222270702200S1",  // S shop
+  "1022227070220071",
+  "1000007770000071",
+  "1077770b07777771",  // b trainer
+  "1070000007022201",
+  "1070222207022201",
+  "1077777707000071",
+  "1100000007777771",
+  "1077777777700071",
+  "1111111111111111",
+];
+const MAP_H = MAP.length, MAP_W = MAP[0].length;
+function tileAt(tx,ty){
+  if(tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) return '1';
+  return MAP[ty][tx];
+}
+function isWall(ch){ return ch==='1'; }
+function isEncounter(ch){ return ch==='2'; }
+
+/* ---------- Game state ---------- */
+const G = {
+  mode:'title',          // title, world, battle, menu, dex, shop, party, bag
+  player:{tx:8, ty:11, dir:'down', px:8*TS, py:11*TS, moving:false, anim:0},
+  cam:{x:0,y:0},
+  party:[],
+  dex:{},                // speciesId -> {seen:true, caught:bool}
+  bag:{'포획구슬':5, '회복약':3, '대형포획구슬':1},
+  money:600,
+  steps:0,
+  trainerDefeated:false,
+  msg:'',
+  tick:0,
+};
+
+/* ---------- Init player party ---------- */
+function newGame(){
+  G.party = [ makeCreature('guppi',5), makeCreature('sparko',5) ];
+  for(const c of G.party){ markDex(c.species, true); }
+  // also "seen" a couple wild ones
+  markDex('frosti', false); markDex('venni', false);
+  G.bag = {'포획구슬':5, '회복약':3, '대형포획구슬':1};
+  G.money = 600; G.steps=0; G.trainerDefeated=false;
+  G.player={tx:8, ty:11, dir:'down', px:8*TS, py:11*TS, moving:false, anim:0};
+}
+function markDex(sp, caught){
+  if(!G.dex[sp]) G.dex[sp]={seen:true,caught:false};
+  G.dex[sp].seen=true;
+  if(caught) G.dex[sp].caught=true;
+}
+
+/* =====================================================================
+   INPUT
+   ===================================================================== */
+const keys={};
+const pressed={};   // edge-trigger
+window.addEventListener('keydown',e=>{
+  const k=e.key;
+  if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(k)) e.preventDefault();
+  if(!keys[k]) pressed[k]=true;
+  keys[k]=true;
+  // map z/x/enter/esc
+  if(k==='Enter') { if(!keys['z']) pressed['z']=true; keys['z']=true; }
+  if(k==='Escape'){ if(!keys['x']) pressed['x']=true; keys['x']=true; }
+});
+window.addEventListener('keyup',e=>{
+  const k=e.key; keys[k]=false;
+  if(k==='Enter') keys['z']=false;
+  if(k==='Escape') keys['x']=false;
+});
+// touch buttons -> synth keys
+function bindTouch(id){
+  const el=document.getElementById(id); if(!el) return;
+  const k=el.getAttribute('data-k');
+  const dn=(ev)=>{ ev.preventDefault(); if(!keys[k]) pressed[k]=true; keys[k]=true; };
+  const up=(ev)=>{ ev.preventDefault(); keys[k]=false; };
+  el.addEventListener('touchstart',dn,{passive:false});
+  el.addEventListener('touchend',up,{passive:false});
+  el.addEventListener('touchcancel',up,{passive:false});
+  el.addEventListener('mousedown',dn);
+  el.addEventListener('mouseup',up);
+  el.addEventListener('mouseleave',up);
+}
+['dU','dD','dL','dR','bA','bB'].forEach(bindTouch);
+function consumePress(k){ if(pressed[k]){ pressed[k]=false; return true; } return false; }
+
+/* =====================================================================
+   DRAW HELPERS
+   ===================================================================== */
+function clear(col){ ctx.fillStyle=col||'#04080d'; ctx.fillRect(0,0,BASE_W,BASE_H); }
+function text(s,x,y,col,size){
+  ctx.fillStyle=col||'#dff3ff';
+  ctx.font=(size||10)+"px 'Courier New',monospace";
+  ctx.textBaseline='top';
+  ctx.fillText(s,x,y);
+}
+function textC(s,x,y,col,size){
+  ctx.fillStyle=col||'#dff3ff';
+  ctx.font=(size||10)+"px 'Courier New',monospace";
+  ctx.textBaseline='top'; ctx.textAlign='center';
+  ctx.fillText(s,x,y); ctx.textAlign='left';
+}
+function panel(x,y,w,h,fill){
+  ctx.fillStyle=fill||'rgba(8,28,44,.95)';
+  ctx.fillRect(x,y,w,h);
+  ctx.strokeStyle='#2a6f8f'; ctx.lineWidth=2;
+  ctx.strokeRect(x+1,y+1,w-2,h-2);
+  ctx.strokeStyle='#0a3a52'; ctx.lineWidth=1;
+  ctx.strokeRect(x+3,y+3,w-6,h-6);
+}
+function bar(x,y,w,h,frac,col,bg){
+  ctx.fillStyle=bg||'#05202e'; ctx.fillRect(x,y,w,h);
+  ctx.fillStyle=col; ctx.fillRect(x,y,Math.max(0,Math.round(w*frac)),h);
+  ctx.strokeStyle='#0a3a52'; ctx.strokeRect(x+.5,y+.5,w-1,h-1);
+}
+
+/* ---------- Tile drawing (procedural deep-sea) ---------- */
+function drawTile(ch, sx, sy){
+  // base seabed gradient-ish
+  // water
+  ctx.fillStyle='#0a2336'; ctx.fillRect(sx,sy,TS,TS);
+  // subtle dither
+  if(((sx/TS + sy/TS)|0)%2===0){ ctx.fillStyle='#0c2a40'; ctx.fillRect(sx,sy,TS,TS); }
+  switch(ch){
+    case '7': // sand
+      ctx.fillStyle='#1a2e3a'; ctx.fillRect(sx,sy,TS,TS);
+      ctx.fillStyle='#22424f';
+      for(let i=0;i<6;i++){ ctx.fillRect(sx+rndSeed(sx+sy+i)*28, sy+rndSeed(sx*sy+i)*28, 3,2); }
+      break;
+    case '1': // rock wall
+      ctx.fillStyle='#12202a'; ctx.fillRect(sx,sy,TS,TS);
+      ctx.fillStyle='#1d3340'; ctx.fillRect(sx+2,sy+2,TS-4,TS-4);
+      ctx.fillStyle='#0a151c'; ctx.fillRect(sx+6,sy+8,8,6);
+      ctx.fillRect(sx+18,sy+16,8,8);
+      ctx.fillStyle='#27414f'; ctx.fillRect(sx+4,sy+4,6,4); ctx.fillRect(sx+20,sy+6,6,4);
+      break;
+    case '2': // seaweed (encounter)
+      // sand floor + waving kelp
+      ctx.fillStyle='#0f2a1f'; ctx.fillRect(sx,sy,TS,TS);
+      ctx.fillStyle='#1f7a4a';
+      const ph=(G.tick*0.08)+(sx*0.3+sy*0.2);
+      for(let k=0;k<4;k++){
+        const bx=sx+5+k*7;
+        for(let yy=0;yy<7;yy++){
+          const off=Math.round(Math.sin(ph+yy*0.5+k)*1.6);
+          ctx.fillStyle = yy%2? '#2aa05a':'#1f7a4a';
+          ctx.fillRect(bx+off, sy+TS-3-yy*4, 3,4);
+        }
+      }
+      break;
+    case '3': // coral
+      ctx.fillStyle='#0a2336'; ctx.fillRect(sx,sy,TS,TS);
+      ctx.fillStyle='#e0668a'; ctx.fillRect(sx+8,sy+10,4,16);
+      ctx.fillStyle='#ff8aa8'; ctx.fillRect(sx+14,sy+6,4,20);
+      ctx.fillStyle='#ffb0c4'; ctx.fillRect(sx+20,sy+12,4,14);
+      break;
+    case 'V': // healing vent
+      ctx.fillStyle='#1a2e3a'; ctx.fillRect(sx,sy,TS,TS);
+      ctx.fillStyle='#0e1a22'; ctx.fillRect(sx+8,sy+18,16,10);
+      // bubbles
+      const bb=(G.tick*0.15)%24;
+      ctx.fillStyle='#7fe0d8';
+      ctx.globalAlpha=.8;
+      ctx.fillRect(sx+12, sy+24-bb, 4,4);
+      ctx.fillRect(sx+18, sy+22-((bb+10)%24), 3,3);
+      ctx.globalAlpha=1;
+      ctx.fillStyle='#37e0d8'; ctx.fillRect(sx+10,sy+24,12,4);
+      break;
+    case 'S': // shop (clam)
+      ctx.fillStyle='#1a2e3a'; ctx.fillRect(sx,sy,TS,TS);
+      ctx.fillStyle='#c8b0d8';
+      ctx.beginPath(); ctx.moveTo(sx+4,sy+24); ctx.lineTo(sx+16,sy+8); ctx.lineTo(sx+28,sy+24); ctx.fill();
+      ctx.fillStyle='#e8d0f8'; ctx.fillRect(sx+6,sy+22,20,4);
+      ctx.fillStyle='#ffd76a'; ctx.fillRect(sx+14,sy+16,4,4);
+      break;
+    case 'b': // trainer (NPC diver)
+      drawTile('7',sx,sy);
+      drawDiver(sx+8, sy+4, '#ff8a4a');
+      break;
+    case 'a': // ambient deco — anemone
+      ctx.fillStyle='#0a2336'; ctx.fillRect(sx,sy,TS,TS);
+      ctx.fillStyle='#5a37e0'; ctx.fillRect(sx+12,sy+18,8,10);
+      ctx.fillStyle='#8a6cff';
+      for(let i=0;i<5;i++){ ctx.fillRect(sx+8+i*4, sy+10+Math.round(Math.sin(G.tick*0.1+i)*2), 2,8); }
+      break;
+    default: break; // water
+  }
+}
+// cheap deterministic pseudo random for static deco
+function rndSeed(n){ const x=Math.sin(n*12.9898)*43758.5453; return x-Math.floor(x); }
+
+/* ---------- Diver / player sprite ---------- */
+function drawDiver(x,y,suit){
+  suit=suit||'#37e0d8';
+  const bob = Math.round(Math.sin(G.tick*0.12)*1.5);
+  y+=bob;
+  // tank
+  ctx.fillStyle='#d8a05a'; ctx.fillRect(x+18,y+8,5,12);
+  // body
+  ctx.fillStyle=suit; ctx.fillRect(x+6,y+8,12,14);
+  ctx.fillStyle='#0a3a52'; ctx.fillRect(x+6,y+18,12,4);
+  // helmet
+  ctx.fillStyle='#e8f4ff'; ctx.fillRect(x+7,y+2,10,8);
+  ctx.fillStyle='#1b4a66'; ctx.fillRect(x+9,y+4,6,4); // visor
+  ctx.fillStyle='#9fe7ff'; ctx.fillRect(x+10,y+5,2,2);
+  // flippers
+  ctx.fillStyle='#0a3a52'; ctx.fillRect(x+5,y+22,5,3); ctx.fillRect(x+14,y+22,5,3);
+}
+function drawPlayer(){
+  const px = G.player.px - G.cam.x;
+  const py = G.player.py - G.cam.y;
+  drawDiver(px, py-2, '#37e0d8');
+}
+
+/* =====================================================================
+   WORLD UPDATE
+   ===================================================================== */
+function updateWorld(dt){
+  const p=G.player;
+  if(p.moving){
+    const tgx=p.tx*TS, tgy=p.ty*TS;
+    const sp=2.6*dt*60/16*1.6; // px per frame approx
+    const step = 2.4;
+    if(p.px<tgx) p.px=Math.min(tgx,p.px+step); else if(p.px>tgx) p.px=Math.max(tgx,p.px-step);
+    if(p.py<tgy) p.py=Math.min(tgy,p.py+step); else if(p.py>tgy) p.py=Math.max(tgy,p.py-step);
+    if(p.px===tgx && p.py===tgy){
+      p.moving=false;
+      G.steps++;
+      // encounter check on seaweed
+      const ch=tileAt(p.tx,p.ty);
+      if(isEncounter(ch) && chance(0.16)){
+        startWildEncounter();
+        return;
+      }
+    }
+  } else {
+    let nx=p.tx, ny=p.ty, moved=false;
+    if(keys['ArrowUp']){ p.dir='up'; ny--; moved=true; }
+    else if(keys['ArrowDown']){ p.dir='down'; ny++; moved=true; }
+    else if(keys['ArrowLeft']){ p.dir='left'; nx--; moved=true; }
+    else if(keys['ArrowRight']){ p.dir='right'; nx++; moved=true; }
+    if(moved){
+      const tch=tileAt(nx,ny);
+      if(!isWall(tch) && tch!=='3'){
+        // interactive tiles that block but trigger:
+        if(tch==='V'){ healParty(); G.msg='열수분출구의 온기가 파티를 모두 회복시켰다!'; setMsg(G.msg); }
+        else if(tch==='S'){ openShop(); }
+        else if(tch==='b'){ if(!G.trainerDefeated) startTrainerBattle(); else { G.msg='탐사대원: 좋은 잠수였어!'; setMsg(G.msg);} }
+        else { p.tx=nx; p.ty=ny; p.moving=true; }
+        // V,S,b are "interact" tiles standing in front
+      }
+    }
+    // open menu
+    if(consumePress('x')){ openMenu(); }
+  }
+  // camera centers on player, clamped
+  const cw=VIEW_W*TS, chh=VIEW_H*TS;
+  G.cam.x = clamp(p.px - cw/2 + TS/2, 0, MAP_W*TS - cw);
+  G.cam.y = clamp(p.py - chh/2 + TS/2, 0, MAP_H*TS - chh);
+}
+
+let msgTimer=0;
+function setMsg(s){ G.msg=s; msgTimer=140; document.getElementById('hint').textContent=s; }
+
+function drawWorld(){
+  clear('#06141f');
+  // draw visible tiles
+  const startX=Math.floor(G.cam.x/TS), startY=Math.floor(G.cam.y/TS);
+  for(let ty=startY-1; ty<startY+VIEW_H+2; ty++){
+    for(let tx=startX-1; tx<startX+VIEW_W+2; tx++){
+      if(tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) continue;
+      const sx=tx*TS-G.cam.x, sy=ty*TS-G.cam.y;
+      drawTile(MAP[ty][tx], sx, sy);
+    }
+  }
+  drawPlayer();
+  // light vignette / depth
+  const grd=ctx.createRadialGradient(BASE_W/2,BASE_H/2,40, BASE_W/2,BASE_H/2,220);
+  grd.addColorStop(0,'rgba(0,0,0,0)'); grd.addColorStop(1,'rgba(0,8,16,.55)');
+  ctx.fillStyle=grd; ctx.fillRect(0,0,BASE_W,BASE_H);
+  // floating bubbles ambiance
+  ctx.fillStyle='rgba(120,220,230,.25)';
+  for(let i=0;i<10;i++){
+    const bx=(i*37 + (G.tick*0.4)%320)%320;
+    const by=(BASE_H - ((G.tick*0.6 + i*53)%BASE_H));
+    ctx.fillRect(bx, by, 2,2);
+  }
+  // top HUD bar
+  panel(2,2,BASE_W-4,18,'rgba(6,20,32,.9)');
+  text('심해 잠수 수집행',8,5,'#7fe0d8',11);
+  text('₽'+G.money,BASE_W-70,5,'#ffd76a',11);
+  // bottom message
+  if(msgTimer>0){
+    panel(2,BASE_H-26,BASE_W-4,24,'rgba(6,20,32,.95)');
+    text(G.msg,10,BASE_H-20,'#dff3ff',10);
+    msgTimer--;
+    if(msgTimer===0) document.getElementById('hint').textContent = controlHint();
+  } else {
+    document.getElementById('hint').textContent = controlHint();
+  }
+}
+function controlHint(){
+  return '이동: 방향키/D패드 · 메뉴: X(B) · 결정: Z(A) · 수풀=조우 · 분출구=회복';
+}
+
+/* =====================================================================
+   HEAL / SHOP / MENU
+   ===================================================================== */
+function healParty(){ for(const c of G.party){ c.hp=c.maxhp; recomputeStats(c); c.hp=c.maxhp; } }
+
+/* ---------- MENU ---------- */
+const menu={sel:0, items:['파티','가방','도감','회복(자가)','크레딧','닫기']};
+function openMenu(){ G.mode='menu'; menu.sel=0; }
+function updateMenu(){
+  if(consumePress('ArrowUp')) menu.sel=(menu.sel+menu.items.length-1)%menu.items.length;
+  if(consumePress('ArrowDown')) menu.sel=(menu.sel+1)%menu.items.length;
+  if(consumePress('x')){ G.mode='world'; return; }
+  if(consumePress('z')){
+    const it=menu.items[menu.sel];
+    if(it==='닫기') G.mode='world';
+    else if(it==='파티'){ G.mode='party'; party.sel=0; }
+    else if(it==='가방'){ G.mode='bag'; bagUI.sel=0; }
+    else if(it==='도감'){ G.mode='dex'; dexUI.sel=0; }
+    else if(it==='크레딧'){ G.mode='credit'; }
+    else if(it==='회복(자가)'){ /* small free heal nudge */ G.mode='world'; setMsg('회복은 열수분출구(V)에서! 또는 회복약 사용.'); }
+  }
+}
+function drawMenu(){
+  drawWorld();
+  ctx.fillStyle='rgba(0,0,0,.45)'; ctx.fillRect(0,0,BASE_W,BASE_H);
+  panel(BASE_W-118, 24, 112, 130);
+  text('메뉴',BASE_W-110,30,'#7fe0d8',12);
+  for(let i=0;i<menu.items.length;i++){
+    const y=48+i*16;
+    if(i===menu.sel){ ctx.fillStyle='#13405e'; ctx.fillRect(BASE_W-114,y-2,104,14); text('▶',BASE_W-112,y,'#ffd76a',10); }
+    text(menu.items[i], BASE_W-100, y, i===menu.sel?'#fff':'#bfe3f0', 10);
+  }
+}
+
+/* ---------- PARTY screen ---------- */
+const party={sel:0};
+function updateParty(){
+  if(consumePress('ArrowUp')) party.sel=(party.sel+G.party.length-1)%G.party.length;
+  if(consumePress('ArrowDown')) party.sel=(party.sel+1)%G.party.length;
+  if(consumePress('x')||consumePress('z')) G.mode='menu';
+}
+function drawParty(){
+  clear('#07182433'); drawWorld(); ctx.fillStyle='rgba(4,12,20,.85)'; ctx.fillRect(0,0,BASE_W,BASE_H);
+  panel(4,22,BASE_W-8,BASE_H-46);
+  text('파티 ('+G.party.length+'/6)',12,28,'#7fe0d8',12);
+  for(let i=0;i<G.party.length;i++){
+    const c=G.party[i]; const y=46+i*40;
+    if(i===party.sel){ ctx.fillStyle='#0e3046'; ctx.fillRect(8,y-2,BASE_W-16,38); }
+    // mini sprite
+    drawCreatureSmall(c, 12, y, 2);
+    text(c.name,52,y,'#fff',11);
+    text('Lv'+c.lv,52,y+13,'#ffd76a',10);
+    // type chip
+    ctx.fillStyle=TCOL[c.type]; ctx.fillRect(95,y+13,4,8);
+    text(c.type,102,y+13,TCOL[c.type],9);
+    bar(150,y+2,90,8,c.hp/c.maxhp, c.hp/c.maxhp>0.3?'#52e07a':'#e05252');
+    text(c.hp+'/'+c.maxhp,150,y+13,'#bfe3f0',9);
+    const need=xpToNext(c.lv);
+    bar(150,y+24,90,4, clamp(c.xp/need,0,1),'#6ab4ff');
+  }
+  text('Z/X: 뒤로',12,BASE_H-30,'#7fb6d0',9);
+}
+function drawCreatureSmall(c,x,y,ps){
+  // draw 16x16 sprite scaled by ps, fit ~32px box
+  const sp=SPECIES[c.species], grid=SHAPES[sp.shape], pal=sp.pal;
+  for(let yy=0;yy<16;yy++){ const row=grid[yy];
+    for(let xx=0;xx<16;xx++){ const v=row.charCodeAt(xx)-48; if(!v)continue;
+      ctx.fillStyle=pal[v-1]; ctx.fillRect(x+xx*ps,y+yy*ps,ps,ps);
+    }}
+}
+
+/* ---------- BAG screen ---------- */
+const bagUI={sel:0};
+function bagList(){ return Object.keys(G.bag).filter(k=>G.bag[k]>0); }
+function updateBag(){
+  const items=bagList();
+  if(items.length){
+    if(consumePress('ArrowUp')) bagUI.sel=(bagUI.sel+items.length-1)%items.length;
+    if(consumePress('ArrowDown')) bagUI.sel=(bagUI.sel+1)%items.length;
+  }
+  if(consumePress('x')||consumePress('z')) G.mode='menu';
+}
+function drawBag(){
+  drawWorld(); ctx.fillStyle='rgba(4,12,20,.85)'; ctx.fillRect(0,0,BASE_W,BASE_H);
+  panel(4,22,BASE_W-8,BASE_H-46);
+  text('가방',12,28,'#7fe0d8',12);
+  const items=bagList();
+  if(!items.length) text('비어있음',16,52,'#bfe3f0',10);
+  for(let i=0;i<items.length;i++){
+    const y=50+i*18;
+    if(i===bagUI.sel){ ctx.fillStyle='#0e3046'; ctx.fillRect(8,y-2,BASE_W-16,16); }
+    text(items[i],16,y,'#fff',10);
+    text('x'+G.bag[items[i]],BASE_W-50,y,'#ffd76a',10);
+  }
+  text('Z/X: 뒤로 · (전투 중 사용)',12,BASE_H-30,'#7fb6d0',9);
+}
+
+/* ---------- DEX screen ---------- */
+const dexUI={sel:0};
+const DEX_ORDER=Object.keys(SPECIES);
+function updateDex(){
+  if(consumePress('ArrowUp')) dexUI.sel=(dexUI.sel+DEX_ORDER.length-1)%DEX_ORDER.length;
+  if(consumePress('ArrowDown')) dexUI.sel=(dexUI.sel+1)%DEX_ORDER.length;
+  if(consumePress('x')||consumePress('z')) G.mode='menu';
+}
+function drawDex(){
+  drawWorld(); ctx.fillStyle='rgba(4,12,20,.9)'; ctx.fillRect(0,0,BASE_W,BASE_H);
+  panel(4,22,BASE_W-8,BASE_H-46);
+  let caught=0,seen=0;
+  for(const k of DEX_ORDER){ if(G.dex[k]){seen++; if(G.dex[k].caught)caught++;} }
+  text('심해도감  포획'+caught+' / 발견'+seen+' / '+DEX_ORDER.length,12,28,'#7fe0d8',11);
+  // list (left) + detail (right)
+  const visible=7; const start=clamp(dexUI.sel-3,0,Math.max(0,DEX_ORDER.length-visible));
+  for(let i=0;i<visible;i++){
+    const idx=start+i; if(idx>=DEX_ORDER.length) break;
+    const k=DEX_ORDER[idx]; const d=G.dex[k]; const y=48+i*16;
+    if(idx===dexUI.sel){ ctx.fillStyle='#0e3046'; ctx.fillRect(8,y-2,120,15); }
+    const label = d? (SPECIES[k].name) : '？？？';
+    const mark = d? (d.caught?'●':'○') : ' ';
+    text(mark,12,y,d&&d.caught?'#ffd76a':'#7fb6d0',10);
+    text(String(idx+1).padStart(2,'0'),24,y,'#5a8aa0',9);
+    text(label,46,y, d?'#fff':'#3a5a6a',10);
+  }
+  // detail
+  const k=DEX_ORDER[dexUI.sel]; const d=G.dex[k]; const sp=SPECIES[k];
+  panel(136,40,BASE_W-142,BASE_H-66);
+  if(d){
+    drawCreatureSmall({species:k},150,48,3);
+    text(sp.name,210,50,'#fff',11);
+    ctx.fillStyle=TCOL[sp.type]; ctx.fillRect(210,66,4,8); text(sp.type,218,66,TCOL[sp.type],9);
+    text('HP '+sp.base.hp,150,108,'#bfe3f0',9);
+    text('공 '+sp.base.atk,150,120,'#bfe3f0',9);
+    text('방 '+sp.base.def,210,108,'#bfe3f0',9);
+    text('속 '+sp.base.spd,210,120,'#bfe3f0',9);
+    if(sp.evo) text('진화→Lv'+sp.evo.lv,150,134,'#37e0d8',9);
+    else text('최종형태',150,134,'#9aa',9);
+    text(d.caught?'★ 포획완료':'발견만',150,150,d.caught?'#ffd76a':'#7fb6d0',9);
+  } else {
+    textC('？？？',(136+BASE_W-142/1)/1.4,90,'#3a5a6a',12);
+  }
+  text('Z/X: 뒤로',12,BASE_H-30,'#7fb6d0',9);
+}
+
+/* ---------- CREDIT screen ---------- */
+function drawCredit(){
+  clear('#04101a');
+  panel(16,40,BASE_W-32,BASE_H-90);
+  textC('크레딧',BASE_W/2,52,'#7fe0d8',14);
+  const lines=[
+    '심해 잠수 수집행',
+    'Abyssal Divers',
+    '',
+    '포켓몬에서 영감 —',
+    '© Nintendo / Game Freak /',
+    'The Pokémon Company.',
+    '',
+    '오리지널 구현.',
+    '크리처·타입·지역·진화',
+    '전부 오리지널 디자인.',
+  ];
+  lines.forEach((l,i)=>textC(l,BASE_W/2,80+i*13, i===3?'#ffd76a':'#bfe3f0', 10));
+  textC('Z/X: 뒤로',BASE_W/2,BASE_H-44,'#7fb6d0',9);
+  if(consumePress('z')||consumePress('x')) G.mode = G._creditFromTitle? 'title':'menu';
+}
+
+/* ---------- SHOP ---------- */
+const shop={sel:0, mode:'menu',
+  goods:[
+    {name:'포획구슬',price:200},
+    {name:'대형포획구슬',price:600},
+    {name:'회복약',price:150},
+  ]};
+function openShop(){ G.mode='shop'; shop.sel=0; }
+function updateShop(){
+  if(consumePress('ArrowUp')) shop.sel=(shop.sel+shop.goods.length+1-1)%(shop.goods.length+1);
+  if(consumePress('ArrowDown')) shop.sel=(shop.sel+1)%(shop.goods.length+1);
+  if(consumePress('x')){ G.mode='world'; return; }
+  if(consumePress('z')){
+    if(shop.sel===shop.goods.length){ G.mode='world'; return; } // 나가기
+    const g=shop.goods[shop.sel];
+    if(G.money>=g.price){ G.money-=g.price; G.bag[g.name]=(G.bag[g.name]||0)+1; setMsg(g.name+' 구매! (-'+g.price+'₽)'); }
+    else setMsg('₽가 부족하다...');
+  }
+}
+function drawShop(){
+  drawWorld(); ctx.fillStyle='rgba(4,12,20,.8)'; ctx.fillRect(0,0,BASE_W,BASE_H);
+  panel(20,30,BASE_W-40,BASE_H-60);
+  textC('조개 상점',BASE_W/2,38,'#ffd76a',13);
+  text('소지금 ₽'+G.money,30,58,'#7fe0d8',10);
+  for(let i=0;i<shop.goods.length;i++){
+    const g=shop.goods[i]; const y=80+i*22;
+    if(i===shop.sel){ ctx.fillStyle='#0e3046'; ctx.fillRect(26,y-3,BASE_W-52,20); }
+    text(g.name,40,y,'#fff',11);
+    text('₽'+g.price,BASE_W-90,y,'#ffd76a',11);
+    text('보유 x'+(G.bag[g.name]||0),BASE_W-90,y+10,'#7fb6d0',8);
+  }
+  const ey=80+shop.goods.length*22;
+  if(shop.sel===shop.goods.length){ ctx.fillStyle='#0e3046'; ctx.fillRect(26,ey-3,BASE_W-52,18); }
+  text('나가기',40,ey,'#bfe3f0',11);
+  text('Z: 구매 · X: 닫기',30,BASE_H-44,'#7fb6d0',9);
+}
+
+/* =====================================================================
+   BATTLE SYSTEM
+   ===================================================================== */
+const B = {
+  active:false, isTrainer:false,
+  enemy:null, enemyTeam:[], enemyIdx:0,
+  myIdx:0,
+  state:'intro', // intro, menu, fight, item, switch, run, anim, msg, win, lose, caught
+  msgQ:[], msg:'', sub:0, sel:0,
+  log:'', shake:0, flashMy:0, flashEn:0,
+  catchAnim:0, ballThrow:null, captured:false,
+  myAnimX:0, enAnimX:0,
+};
+function myMon(){ return G.party[B.myIdx]; }
+function firstAlive(team){ for(let i=0;i<team.length;i++) if(team[i].hp>0) return i; return -1; }
+
+function startWildEncounter(){
+  // pick wild species weighted by area
+  const pool=['guppi','sparko','frosti','venni','anglo','shello','guppi','frosti'];
+  const sid=pool[rnd(pool.length)];
+  const lv = clamp(3 + rnd(6) + Math.floor(G.steps/30), 3, 14);
+  const e = makeCreature(sid, lv);
+  markDex(sid, false);
+  B.active=true; B.isTrainer=false; B.enemy=e; B.enemyTeam=[e]; B.enemyIdx=0;
+  B.captured=false;
+  B.myIdx = Math.max(0, firstAlive(G.party));
+  G.mode='battle'; B.state='intro';
+  queue('야생 '+e.name+'(Lv'+e.lv+') 출현!');
+}
+function startTrainerBattle(){
+  const team=[ makeCreature('toxar',12), makeCreature('jelvolt',13) ];
+  B.active=true; B.isTrainer=true; B.enemyTeam=team; B.enemyIdx=0; B.enemy=team[0];
+  for(const c of team) markDex(c.species,false);
+  B.myIdx=Math.max(0,firstAlive(G.party));
+  G.mode='battle'; B.state='intro';
+  queue('탐사대원 마린이 승부를 걸어왔다!');
+  queue('마린은 '+B.enemy.name+'을(를) 내보냈다!');
+}
+function queue(s){ B.msgQ.push(s); if(!B.msg){ nextMsg(); } }
+function nextMsg(){ if(B.msgQ.length){ B.msg=B.msgQ.shift(); B._msgT=1; } else { B.msg=''; B._after && B._after(); } }
+
+/* battle menu */
+const bmenu={sel:0, items:['싸운다','가방','교체','도망']};
+const fmenu={sel:0};
+const imenu={sel:0};
+const smenu={sel:0};
+
+function updateBattle(){
+  B.tick=(B.tick||0)+1;
+  if(B.shake>0) B.shake--;
+  if(B.flashMy>0) B.flashMy--;
+  if(B.flashEn>0) B.flashEn--;
+  if(B.catchAnim>0){ B.catchAnim--; if(B.catchAnim===0) resolveCatch(); return; }
+
+  // message advancing
+  if(B.msg){
+    if(consumePress('z')||consumePress('x')){
+      const wasLast = B.msgQ.length===0;
+      nextMsg();
+      if(wasLast && !B.msg){
+        // after-message hook handled in nextMsg via _after
+        if(B._pending){ const f=B._pending; B._pending=null; f(); }
+      }
+    }
+    return;
+  }
+
+  switch(B.state){
+    case 'intro':
+      // when intro msgs cleared:
+      B.state='menu'; bmenu.sel=0; break;
+    case 'menu': battleMenuInput(); break;
+    case 'fight': fightMenuInput(); break;
+    case 'item': itemMenuInput(); break;
+    case 'switch': switchMenuInput(); break;
+    case 'win': if(consumePress('z')||consumePress('x')){ endBattle(); } break;
+    case 'lose': if(consumePress('z')||consumePress('x')){ endBattle(); } break;
+  }
+}
+
+function battleMenuInput(){
+  if(consumePress('ArrowUp')) bmenu.sel=(bmenu.sel+2)%4;
+  if(consumePress('ArrowDown')) bmenu.sel=(bmenu.sel+2)%4;
+  if(consumePress('ArrowLeft')) bmenu.sel=(bmenu.sel%2===1)?bmenu.sel-1:bmenu.sel;
+  if(consumePress('ArrowRight')) bmenu.sel=(bmenu.sel%2===0)?bmenu.sel+1:bmenu.sel;
+  if(consumePress('z')){
+    const it=bmenu.items[bmenu.sel];
+    if(it==='싸운다'){ B.state='fight'; fmenu.sel=0; }
+    else if(it==='가방'){ B.state='item'; imenu.sel=0; }
+    else if(it==='교체'){ B.state='switch'; smenu.sel=0; }
+    else if(it==='도망'){ tryRun(); }
+  }
+}
+function fightMenuInput(){
+  const moves=myMon().moves;
+  if(consumePress('ArrowUp')) fmenu.sel=(fmenu.sel+moves.length-1)%moves.length;
+  if(consumePress('ArrowDown')) fmenu.sel=(fmenu.sel+1)%moves.length;
+  if(consumePress('x')){ B.state='menu'; return; }
+  if(consumePress('z')){ doTurn('move', moves[fmenu.sel]); }
+}
+function itemMenuInput(){
+  const items=bagList();
+  if(items.length){
+    if(consumePress('ArrowUp')) imenu.sel=(imenu.sel+items.length-1)%items.length;
+    if(consumePress('ArrowDown')) imenu.sel=(imenu.sel+1)%items.length;
+  }
+  if(consumePress('x')){ B.state='menu'; return; }
+  if(consumePress('z') && items.length){
+    const it=items[imenu.sel];
+    if(it.includes('포획구슬')){
+      if(B.isTrainer){ queue('상대 크리처는 포획할 수 없다!'); B._pending=()=>{B.state='menu';}; return; }
+      doTurn('catch', it);
+    } else if(it==='회복약'){
+      const m=myMon();
+      if(m.hp>=m.maxhp){ queue('이미 체력이 가득하다!'); B._pending=()=>{B.state='item';}; return; }
+      doTurn('heal', it);
+    }
+  }
+}
+function switchMenuInput(){
+  if(consumePress('ArrowUp')) smenu.sel=(smenu.sel+G.party.length-1)%G.party.length;
+  if(consumePress('ArrowDown')) smenu.sel=(smenu.sel+1)%G.party.length;
+  if(consumePress('x')){ B.state='menu'; return; }
+  if(consumePress('z')){
+    if(smenu.sel===B.myIdx){ queue('이미 출전 중이다!'); B._pending=()=>{B.state='switch';}; return; }
+    if(G.party[smenu.sel].hp<=0){ queue('기절한 크리처는 못 내보낸다!'); B._pending=()=>{B.state='switch';}; return; }
+    const old=myMon();
+    B.myIdx=smenu.sel;
+    queue(old.name+' 회수! 가라 '+myMon().name+'!');
+    B._pending=()=>{ enemyTurn(()=>{ B.state='menu'; }); };
+  }
+}
+
+/* ---------- Turn resolution ---------- */
+function calcDamage(att, def, move){
+  const m=MOVES[move];
+  const stab = (att.type===m.type)?1.25:1.0;
+  const eff = typeMult(m.type, def.type);
+  const variance = 0.85 + Math.random()*0.3;
+  let dmg = ((att.atk*1.0 + att.lv*0.6) * (m.pow/45) * stab * eff / (1 + def.def*0.04)) * variance;
+  dmg = Math.max(1, Math.floor(dmg));
+  return {dmg, eff, stab};
+}
+function effWord(e){ return e>=2?'효과가 굉장했다!':(e<=0.5?'효과가 별로인 듯하다...':''); }
+
+function doTurn(kind, arg){
+  // determine order by speed for 'move' actions; item/catch happen first then enemy
+  const me=myMon(), en=B.enemy;
+  if(kind==='move'){
+    const meFirst = me.spd>=en.spd;
+    const acts=[];
+    acts.push(()=>playerMove(arg));
+    acts.push(()=>{ if(en.hp>0) enemyAttack(()=>{}); });
+    if(meFirst) runSeq([ ()=>playerMove(arg, ()=>{
+        if(en.hp<=0){ onEnemyFaint(); }
+        else enemyAttack(()=>{ checkMyFaint(()=>{ B.state='menu'; }); });
+      }) ]);
+    else runSeq([ ()=>enemyAttack(()=>{
+        checkMyFaint(()=>{
+          if(me.hp>0) playerMove(arg, ()=>{ if(en.hp<=0) onEnemyFaint(); else B.state='menu'; });
+        });
+      }) ]);
+  } else if(kind==='catch'){
+    throwBall(arg);
+  } else if(kind==='heal'){
+    const m=myMon(); const before=m.hp; m.hp=clamp(m.hp+40,0,m.maxhp); G.bag[arg]--;
+    queue(m.name+'의 체력을 '+(m.hp-before)+' 회복!');
+    B._pending=()=>{ enemyAttack(()=>{ checkMyFaint(()=>{ B.state='menu'; }); }); };
+  }
+}
+function runSeq(fns){ // run a single starting fn (chain handled via callbacks)
+  fns[0]();
+}
+function playerMove(move, after){
+  const me=myMon(), en=B.enemy;
+  B.enAnimX=8; B.flashEn=8; B.shake=6;
+  const {dmg,eff}=calcDamage(me,en,move);
+  en.hp=clamp(en.hp-dmg,0,en.maxhp);
+  const w=effWord(eff);
+  queue(me.name+'의 '+move+'!'+(w?' '+w:''));
+  B._pending=()=>{ if(after) after(); else B.state='menu'; };
+}
+function enemyAttack(after){
+  const me=myMon(), en=B.enemy;
+  if(en.hp<=0){ if(after)after(); return; }
+  const move=en.moves[rnd(en.moves.length)];
+  B.myAnimX=-8; B.flashMy=8; B.shake=6;
+  const {dmg,eff}=calcDamage(en,me,move);
+  me.hp=clamp(me.hp-dmg,0,me.maxhp);
+  const w=effWord(eff);
+  queue('적 '+en.name+'의 '+move+'!'+(w?' '+w:''));
+  B._pending=()=>{ if(after) after(); };
+}
+function checkMyFaint(cont){
+  const me=myMon();
+  if(me.hp<=0){
+    queue(me.name+'이(가) 기절했다!');
+    const alive=firstAlive(G.party);
+    if(alive<0){ B._pending=()=>{ B.state='lose'; queue('눈앞이 캄캄해졌다...'); }; }
+    else { B.myIdx=alive; B._pending=()=>{ queue('가라 '+myMon().name+'!'); B._pending=cont; }; }
+  } else { cont(); }
+}
+function onEnemyFaint(){
+  const en=B.enemy;
+  queue('적 '+en.name+'을(를) 쓰러뜨렸다!');
+  // XP
+  const me=myMon();
+  const gain = Math.floor(en.lv*6 + 10);
+  B._pending=()=>{ grantXP(me, gain, ()=>{
+    // trainer next mon?
+    if(B.isTrainer){
+      B.enemyIdx++;
+      if(B.enemyIdx<B.enemyTeam.length){
+        B.enemy=B.enemyTeam[B.enemyIdx];
+        queue('마린은 '+B.enemy.name+'을(를) 내보냈다!');
+        B._pending=()=>{ B.state='menu'; };
+      } else {
+        winBattle(true);
+      }
+    } else {
+      winBattle(false);
+    }
+  }); };
+}
+function grantXP(c, amt, done){
+  queue(c.name+'은(는) 경험치 '+amt+'를 얻었다!');
+  B._pending=()=>{
+    c.xp += amt;
+    let leveled=false;
+    while(c.xp>=xpToNext(c.lv) && c.lv<50){
+      c.xp-=xpToNext(c.lv); c.lv++; leveled=true;
+      const prevMoves=c.moves.slice();
+      recomputeStats(c); c.hp=clamp(c.hp+statAt(c.species,'hp',c.lv)-statAt(c.species,'hp',c.lv-1), 0, c.maxhp);
+      queue(c.name+'은(는) Lv'+c.lv+'(으)로 올랐다!');
+      const newMoves=c.moves.filter(m=>!prevMoves.includes(m));
+      for(const nm of newMoves) queue(c.name+'은(는) '+nm+'을(를) 배웠다!');
+      // evolution
+      const sp=SPECIES[c.species];
+      if(sp.evo && c.lv>=sp.evo.lv){
+        const to=sp.evo.to;
+        queue('어라...? '+c.name+'의 모습이...!');
+        queue(c.name+'은(는) '+SPECIES[to].name+'(으)로 진화했다!');
+        c.species=to; c.name=SPECIES[to].name; c.type=SPECIES[to].type;
+        recomputeStats(c); markDex(to,true);
+      }
+    }
+    B._pending=()=>{ done(); };
+  };
+}
+
+/* ---------- Catch ---------- */
+function throwBall(ballName){
+  const en=B.enemy;
+  G.bag[ballName]--;
+  const big = ballName.includes('대형');
+  queue((big?'대형포획구슬':'포획구슬')+'을 던졌다!');
+  B._pending=()=>{
+    B.ballThrow={name:ballName, big};
+    B.catchAnim=70; // frames of shake animation
+    // compute catch result now, reveal after anim
+    const hpFrac=en.hp/en.maxhp;
+    const ballBonus = big?1.7:1.0;
+    const rate = clamp((1.15 - hpFrac) * ballBonus * (1 - en.lv*0.012), 0.05, 0.95);
+    B._catchRoll = Math.random() < rate;
+    B._catchShakes = B._catchRoll?3:(rnd(3));
+  };
+}
+function resolveCatch(){
+  const en=B.enemy;
+  if(B._catchRoll){
+    B.captured=true;
+    markDex(en.species,true);
+    if(G.party.length<6){ G.party.push(en); queue(en.name+'을(를) 포획했다!'); }
+    else queue(en.name+'을(를) 포획! (파티 가득 — 보관)');
+    queue('심해도감에 데이터가 기록됐다.');
+    B._pending=()=>{ B.state='win'; };
+  } else {
+    queue('앗! '+en.name+'이(가) 튀어나왔다!');
+    B._pending=()=>{ enemyAttack(()=>{ checkMyFaint(()=>{ B.state='menu'; }); }); };
+  }
+}
+function enemyTurn(after){ enemyAttack(()=>{ checkMyFaint(after); }); }
+
+function tryRun(){
+  if(B.isTrainer){ queue('승부 중엔 도망칠 수 없다!'); B._pending=()=>{B.state='menu';}; return; }
+  const me=myMon(), en=B.enemy;
+  if(me.spd>=en.spd || chance(0.6)){
+    queue('무사히 도망쳤다!');
+    B._pending=()=>{ endBattle(); };
+  } else {
+    queue('도망치지 못했다!');
+    B._pending=()=>{ enemyAttack(()=>{ checkMyFaint(()=>{ B.state='menu'; }); }); };
+  }
+}
+function winBattle(isTrainer){
+  if(isTrainer){
+    const prize=800; G.money+=prize; G.trainerDefeated=true;
+    queue('탐사대원 마린을 이겼다!');
+    queue('상금 ₽'+prize+'을(를) 받았다!');
+  } else {
+    const prize=20+B.enemy.lv*8; G.money+=prize;
+    queue('₽'+prize+'을(를) 주웠다!');
+  }
+  B._pending=()=>{ B.state='win'; };
+}
+function endBattle(){
+  B.active=false; G.mode='world'; B.msg=''; B.msgQ=[]; B._pending=null;
+  setMsg('탐사를 계속한다...');
+}
+
+/* ---------- Battle draw ---------- */
+function drawBattle(){
+  // deep-sea battle backdrop
+  const g=ctx.createLinearGradient(0,0,0,BASE_H);
+  g.addColorStop(0,'#0a3450'); g.addColorStop(.6,'#072233'); g.addColorStop(1,'#04141f');
+  ctx.fillStyle=g; ctx.fillRect(0,0,BASE_W,BASE_H);
+  // light rays
+  ctx.globalAlpha=.06; ctx.fillStyle='#9fe7ff';
+  for(let i=0;i<5;i++){ ctx.save(); ctx.translate(40+i*60,0); ctx.rotate(0.15); ctx.fillRect(0,0,18,BASE_H); ctx.restore(); }
+  ctx.globalAlpha=1;
+  // floor
+  ctx.fillStyle='#0a2030'; ctx.fillRect(0,BASE_H-70,BASE_W,70);
+  ctx.fillStyle='#0e2a3c'; ctx.fillRect(0,BASE_H-72,BASE_W,4);
+
+  const sh = B.shake>0? (rnd(3)-1):0;
+  const en=B.enemy, me=myMon();
+
+  // enemy platform (top right)
+  ctx.fillStyle='rgba(10,40,60,.6)'; ctx.beginPath();
+  ctx.ellipse(232, 96, 46, 14, 0,0,Math.PI*2); ctx.fill();
+  // enemy sprite
+  if(en){
+    const bob=Math.round(Math.sin(B.tick*0.1)*2);
+    const ex = 200 + (B.enAnimX>0?(B.enAnimX=Math.max(0,B.enAnimX-2),6):0) + sh;
+    let alpha=1;
+    if(B.flashEn>0 && B.flashEn%2===0) alpha=0.3;
+    ctx.globalAlpha=alpha;
+    drawSpriteAt(en, ex, 48+bob, 4, false);
+    ctx.globalAlpha=1;
+  }
+  // catch ball anim over enemy
+  if(B.catchAnim>0 && B.ballThrow){
+    const t=1-(B.catchAnim/70);
+    const bx=232, by=72;
+    drawBall(bx-8, by-8 - Math.round(Math.sin(t*Math.PI)* ( (B.catchAnim>50)?40:0 )), B.ballThrow.big);
+    if(B.catchAnim<50){
+      // shake
+      const sk=Math.round(Math.sin(B.catchAnim*0.6)* ((B.catchAnim<14&&!B._catchRoll)? 0 : 3));
+      // already drawn; redraw with shake
+    }
+  }
+
+  // my sprite (bottom left, back-ish — we show front sprite flipped)
+  if(me && me.hp>0){
+    const bob=Math.round(Math.sin(B.tick*0.1+1)*2);
+    const mx = 56 + (B.myAnimX<0?(B.myAnimX=Math.min(0,B.myAnimX+2),-6):0);
+    let alpha=1; if(B.flashMy>0 && B.flashMy%2===0) alpha=0.3;
+    ctx.globalAlpha=alpha;
+    drawSpriteAt(me, mx, 150+bob, 4, true);
+    ctx.globalAlpha=1;
+  }
+
+  // enemy info box (top-left)
+  if(en){
+    panel(8,16,150,40);
+    text(en.name,16,20,'#fff',11);
+    text('Lv'+en.lv,120,20,'#ffd76a',10);
+    ctx.fillStyle=TCOL[en.type]; ctx.fillRect(16,34,4,7); text(en.type,22,34,TCOL[en.type],8);
+    bar(58,34,90,7,en.hp/en.maxhp, en.hp/en.maxhp>0.3?'#52e07a':'#e05252');
+  }
+  // my info box (bottom-right above command)
+  if(me){
+    panel(BASE_W-160,118,152,46);
+    text(me.name,BASE_W-152,122,'#fff',11);
+    text('Lv'+me.lv,BASE_W-44,122,'#ffd76a',10);
+    bar(BASE_W-100,136,90,7,me.hp/me.maxhp, me.hp/me.maxhp>0.3?'#52e07a':'#e05252');
+    text(me.hp+'/'+me.maxhp,BASE_W-152,150,'#bfe3f0',9);
+    const need=xpToNext(me.lv);
+    bar(BASE_W-100,150,90,3,clamp(me.xp/need,0,1),'#6ab4ff');
+  }
+
+  // command / message panel (bottom)
+  panel(2,BASE_H-58,BASE_W-4,56,'rgba(5,18,28,.97)');
+  if(B.msg){
+    wrapText(B.msg, 12, BASE_H-50, BASE_W-24, 12, '#dff3ff');
+    if(((B.tick>>3)&1)) text('▼',BASE_W-18,BASE_H-14,'#ffd76a',10);
+    return;
+  }
+  // draw current sub-menu
+  if(B.state==='menu'){
+    drawCmdGrid(bmenu.items, bmenu.sel);
+  } else if(B.state==='fight'){
+    drawMoveList();
+  } else if(B.state==='item'){
+    drawItemList();
+  } else if(B.state==='switch'){
+    drawSwitchList();
+  } else if(B.state==='win'||B.state==='lose'){
+    text(B.state==='win'?'▶ 계속하려면 Z/A':'▶ Z/A',12,BASE_H-40,'#ffd76a',11);
+  } else {
+    text('...',12,BASE_H-40,'#bfe3f0',11);
+  }
+}
+function drawCmdGrid(items, sel){
+  // 2x2
+  for(let i=0;i<items.length;i++){
+    const col=i%2, row=(i/2)|0;
+    const x=170+col*70, y=BASE_H-48+row*22;
+    if(i===sel){ ctx.fillStyle='#13405e'; ctx.fillRect(x-6,y-3,68,18); text('▶',x-6,y,'#ffd76a',10); }
+    text(items[i], x+6, y, i===sel?'#fff':'#bfe3f0', 11);
+  }
+  text('무엇을 할까?',14,BASE_H-44,'#7fe0d8',11);
+}
+function drawMoveList(){
+  const moves=myMon().moves;
+  for(let i=0;i<moves.length;i++){
+    const y=BASE_H-50+i*12;
+    if(i===fmenu.sel){ ctx.fillStyle='#13405e'; ctx.fillRect(8,y-1,150,12); }
+    const m=MOVES[moves[i]];
+    text((i===fmenu.sel?'▶':' ')+moves[i],10,y,i===fmenu.sel?'#fff':'#bfe3f0',10);
+    ctx.fillStyle=TCOL[m.type]; ctx.fillRect(120,y+2,4,7);
+    text(m.type,126,y,TCOL[m.type],8);
+  }
+  const sm=MOVES[moves[fmenu.sel]];
+  panel(168,BASE_H-54,BASE_W-172,48);
+  text('위력 '+sm.pow,178,BASE_H-48,'#ffd76a',10);
+  const eff=typeMult(sm.type, B.enemy.type);
+  text('상성 x'+eff, 178, BASE_H-34,'#7fe0d8',10);
+  text('X: 뒤로',178,BASE_H-20,'#7fb6d0',8);
+}
+function drawItemList(){
+  const items=bagList();
+  if(!items.length){ text('가방이 비었다',12,BASE_H-44,'#bfe3f0',11); text('X: 뒤로',12,BASE_H-26,'#7fb6d0',9); return; }
+  for(let i=0;i<items.length;i++){
+    const y=BASE_H-50+i*12;
+    if(i===imenu.sel){ ctx.fillStyle='#13405e'; ctx.fillRect(8,y-1,200,12); }
+    text((i===imenu.sel?'▶':' ')+items[i]+'  x'+G.bag[items[i]],10,y,i===imenu.sel?'#fff':'#bfe3f0',10);
+  }
+  text('X: 뒤로',BASE_W-70,BASE_H-18,'#7fb6d0',8);
+}
+function drawSwitchList(){
+  for(let i=0;i<G.party.length;i++){
+    const c=G.party[i]; const y=BASE_H-52+i*11;
+    if(i===smenu.sel){ ctx.fillStyle='#13405e'; ctx.fillRect(8,y-1,220,11); }
+    const col = c.hp<=0?'#e05252':(i===B.myIdx?'#37e0d8':(i===smenu.sel?'#fff':'#bfe3f0'));
+    text((i===smenu.sel?'▶':' ')+c.name+' Lv'+c.lv+'  '+c.hp+'/'+c.maxhp+(i===B.myIdx?' (출전)':''),10,y,col,9);
+  }
+  text('X: 뒤로',BASE_W-70,BASE_H-16,'#7fb6d0',8);
+}
+function drawSpriteAt(c, cx, cy, ps, flip){
+  // center 16x16 at cx,cy
+  const sp=SPECIES[c.species], grid=SHAPES[sp.shape], pal=sp.pal;
+  const ox=cx - 8*ps, oy=cy-8*ps;
+  for(let yy=0;yy<16;yy++){ const row=grid[yy];
+    for(let xx=0;xx<16;xx++){ const v=row.charCodeAt(xx)-48; if(!v) continue;
+      const rx=flip?(15-xx):xx;
+      ctx.fillStyle=pal[v-1]; ctx.fillRect(ox+rx*ps,oy+yy*ps,ps,ps);
+    }}
+}
+function drawBall(x,y,big){
+  const s=big?'#ffd76a':'#e05252';
+  ctx.fillStyle=s; ctx.fillRect(x,y,16,8);
+  ctx.fillStyle='#e8f4ff'; ctx.fillRect(x,y+8,16,8);
+  ctx.fillStyle='#0a151c'; ctx.fillRect(x,y+7,16,2);
+  ctx.fillStyle='#cdfcff'; ctx.fillRect(x+6,y+6,4,4);
+}
+function wrapText(s,x,y,maxw,lh,col){
+  ctx.fillStyle=col; ctx.font="11px 'Courier New',monospace"; ctx.textBaseline='top';
+  // simple char-based wrap for Korean monospace-ish
+  let line='', yy=y;
+  const words=s.split('');
+  for(const ch of words){
+    if(ctx.measureText(line+ch).width>maxw){ ctx.fillText(line,x,yy); line=ch; yy+=lh; }
+    else line+=ch;
+  }
+  ctx.fillText(line,x,yy);
+}
+
+/* =====================================================================
+   TITLE SCREEN
+   ===================================================================== */
+const title={sel:0, items:['모험 시작','크레딧']};
+function updateTitle(){
+  if(consumePress('ArrowUp')) title.sel=(title.sel+title.items.length-1)%title.items.length;
+  if(consumePress('ArrowDown')) title.sel=(title.sel+1)%title.items.length;
+  if(consumePress('z')){
+    if(title.sel===0){ newGame(); G.mode='world'; setMsg('수풀을 헤치고 야생 크리처를 찾아라!'); }
+    else { G._creditFromTitle=true; G.mode='credit'; }
+  }
+}
+function drawTitle(){
+  // gradient sea
+  const g=ctx.createLinearGradient(0,0,0,BASE_H);
+  g.addColorStop(0,'#0e4a6e'); g.addColorStop(.5,'#083350'); g.addColorStop(1,'#03101a');
+  ctx.fillStyle=g; ctx.fillRect(0,0,BASE_W,BASE_H);
+  // bubbles
+  ctx.fillStyle='rgba(150,230,240,.3)';
+  for(let i=0;i<24;i++){
+    const bx=(i*53+ (G.tick*0.5))%BASE_W;
+    const by=(BASE_H-((G.tick*0.7+i*40)%BASE_H));
+    const r=1+(i%3); ctx.fillRect(bx,by,r,r);
+  }
+  // light rays
+  ctx.globalAlpha=.08; ctx.fillStyle='#bff7ff';
+  for(let i=0;i<6;i++){ ctx.save(); ctx.translate(30+i*55,0); ctx.rotate(0.16); ctx.fillRect(0,0,16,BASE_H); ctx.restore(); }
+  ctx.globalAlpha=1;
+  // floating showcase creatures
+  drawSpriteAt({species:'levira'}, 70, 120+Math.round(Math.sin(G.tick*0.05)*4), 3, false);
+  drawSpriteAt({species:'anglo'}, 240, 100+Math.round(Math.sin(G.tick*0.05+2)*4), 3, true);
+  drawSpriteAt({species:'glacir'}, 250, 180+Math.round(Math.sin(G.tick*0.06+1)*3), 2, false);
+  // diver
+  drawDiver(140, 150+Math.round(Math.sin(G.tick*0.08)*3), '#37e0d8');
+
+  // title text
+  ctx.textAlign='center';
+  ctx.fillStyle='#04121a'; ctx.font="bold 26px 'Courier New',monospace"; ctx.fillText('심해 잠수 수집행',BASE_W/2+2,42);
+  ctx.fillStyle='#7fe0d8'; ctx.fillText('심해 잠수 수집행',BASE_W/2,40);
+  ctx.fillStyle='#ffd76a'; ctx.font="12px 'Courier New',monospace"; ctx.fillText('ABYSSAL  DIVERS',BASE_W/2,70);
+  ctx.textAlign='left';
+
+  // menu
+  panel(BASE_W/2-58, 210, 116, 50);
+  for(let i=0;i<title.items.length;i++){
+    const y=218+i*18;
+    ctx.textAlign='center';
+    if(i===title.sel){ ctx.fillStyle='#13405e'; ctx.fillRect(BASE_W/2-52,y-2,104,16); }
+    ctx.fillStyle=i===title.sel?'#fff':'#bfe3f0'; ctx.font="12px 'Courier New',monospace";
+    ctx.fillText((i===title.sel?'▶ ':'')+title.items[i],BASE_W/2,y);
+    ctx.textAlign='left';
+  }
+  // credit footer (always visible on title)
+  ctx.textAlign='center';
+  ctx.fillStyle='#5a8aa0'; ctx.font="8px 'Courier New',monospace";
+  ctx.fillText('포켓몬에서 영감 — © Nintendo / Game Freak / The Pokémon Company. 오리지널 구현', BASE_W/2, BASE_H-12);
+  ctx.textAlign='left';
+  document.getElementById('hint').textContent='Z/A: 결정 · 방향키: 선택';
+}
+
+/* =====================================================================
+   MAIN LOOP
+   ===================================================================== */
+let last=performance.now();
+function frame(now){
+  const dt=Math.min(0.05,(now-last)/1000); last=now;
+  G.tick++;
+  B.tick=(B.tick||0)+1;
+
+  switch(G.mode){
+    case 'title': updateTitle(); drawTitle(); break;
+    case 'world': updateWorld(dt); drawWorld(); break;
+    case 'menu': updateMenu(); drawMenu(); break;
+    case 'party': updateParty(); drawParty(); break;
+    case 'bag': updateBag(); drawBag(); break;
+    case 'dex': updateDex(); drawDex(); break;
+    case 'shop': updateShop(); drawShop(); break;
+    case 'credit': drawCredit(); break;
+    case 'battle': updateBattle(); drawBattle(); break;
+  }
+  // clear edge-press leftovers each frame for keys not consumed
+  for(const k in pressed){ if(pressed[k]) { /* leave for next consume if same frame */ } }
+  requestAnimationFrame(frame);
+}
+
+/* boot */
+fit();
+G.mode='title';
+requestAnimationFrame(frame);
+
+// expose for self-test
+window.__G=G; window.__B=B; window.__SPECIES=SPECIES; window.__newGame=newGame;
+window.__startWild=startWildEncounter;
+</script>
+</body>
+</html>

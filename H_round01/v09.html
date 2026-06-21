@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>액체유리 렌즈 · 명화 위</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0b0a08;cursor:none}
+  #gl{position:fixed;inset:0;width:100vw;height:100vh;display:block}
+  #hint{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);
+    font:11px/1.4 "SF Mono",Menlo,monospace;letter-spacing:.18em;color:rgba(255,250,235,.55);
+    text-shadow:0 0 8px rgba(0,0,0,.85);pointer-events:none;transition:opacity 1.2s;text-transform:uppercase;white-space:nowrap}
+  #fb{position:fixed;inset:0;display:none;color:#999;font:14px sans-serif;padding:2em;box-sizing:border-box}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="hint">move mouse · hold to press · right-drag to tilt · scroll gallery</div>
+<div id="fb">WebGL unavailable.</div>
+<script>
+'use strict';
+/* ============================================================
+   "액체유리 렌즈 · 명화 위" — a photoreal liquid-glass lens
+   resting on a gallery wall, refracting masterpieces beneath.
+   scene = canvas2d (museum wall + paintings), optics = webgl.
+   ============================================================ */
+
+const DPR = Math.min(window.devicePixelRatio || 1, 1.75);
+let W = 0, H = 0;
+
+const glCanvas = document.getElementById('gl');
+const gl = glCanvas.getContext('webgl', { antialias:false, preserveDrawingBuffer:false });
+if (!gl) { document.getElementById('fb').style.display = 'block'; }
+
+/* ------------------------------------------------------------
+   SCENE — a museum wall hung with painted masterpieces.
+   logical space LW x LH, cover-scaled, tilted like a filmed wall.
+   ------------------------------------------------------------ */
+const scene = document.createElement('canvas');
+const sx = scene.getContext('2d');
+const LW = 1600, LH = 1000;
+let scrollY = 0;
+const SCROLL_MAX = 520;
+
+function rr(c, x, y, w, h, r) {
+  c.beginPath();
+  c.moveTo(x+r, y); c.arcTo(x+w, y, x+w, y+h, r); c.arcTo(x+w, y+h, x, y+h, r);
+  c.arcTo(x, y+h, x, y, r); c.arcTo(x, y, x+w, y, r); c.closePath();
+}
+function tw(c, text, x, y, size, color, weight, align, font) {
+  c.fillStyle = color;
+  c.font = (weight||400) + ' ' + size + 'px ' + (font || 'Georgia,"Times New Roman",serif');
+  c.textAlign = align || 'left';
+  c.fillText(text, x, y);
+  c.textAlign = 'left';
+}
+/* deterministic noise so the scene is stable per-frame */
+function mkRand(seed){ let s = seed >>> 0; return () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296; }
+
+/* ---- ornate gilded frame around a painting ---- */
+function frame(c, x, y, w, h) {
+  const t = 26;                                   // frame thickness
+  // outer drop shadow
+  c.save();
+  c.shadowColor = 'rgba(0,0,0,0.55)'; c.shadowBlur = 34; c.shadowOffsetX = 10; c.shadowOffsetY = 22;
+  c.fillStyle = '#2a1d10'; rr(c, x - t, y - t, w + 2*t, h + 2*t, 4); c.fill();
+  c.restore();
+  // gilded gradient body
+  const g = c.createLinearGradient(x - t, y - t, x + w + t, y + h + t);
+  g.addColorStop(0.00, '#caa657'); g.addColorStop(0.18, '#f6e3a6');
+  g.addColorStop(0.40, '#b8923f'); g.addColorStop(0.62, '#8c6a26');
+  g.addColorStop(0.80, '#e6cf86'); g.addColorStop(1.00, '#7c5d23');
+  c.fillStyle = g; rr(c, x - t, y - t, w + 2*t, h + 2*t, 4); c.fill();
+  // inner bevel grooves
+  c.lineWidth = 2;
+  c.strokeStyle = 'rgba(255,243,200,0.65)'; rr(c, x - t + 6, y - t + 6, w + 2*t - 12, h + 2*t - 12, 3); c.stroke();
+  c.strokeStyle = 'rgba(70,46,15,0.7)';     rr(c, x - 7, y - 7, w + 14, h + 14, 2); c.stroke();
+  // inner mat / canvas opening shadow
+  c.fillStyle = 'rgba(20,12,4,0.9)'; rr(c, x - 4, y - 4, w + 8, h + 8, 1); c.fill();
+}
+
+/* a tiny museum placard under a painting */
+function placard(c, cx, y, title, artist) {
+  c.save();
+  c.shadowColor = 'rgba(0,0,0,0.35)'; c.shadowBlur = 8; c.shadowOffsetY = 3;
+  c.fillStyle = '#f3ece0'; rr(c, cx - 96, y, 192, 46, 3); c.fill();
+  c.restore();
+  tw(c, title, cx, y + 22, 14, '#2a241c', 700, 'center');
+  tw(c, artist, cx, y + 39, 11, '#6b6151', 400, 'center', 'Helvetica,Arial,sans-serif');
+}
+
+/* ===================== PAINTINGS ===================== */
+/* Each paints into rect (x,y,w,h) already clipped. */
+
+/* 1. Starry-night style: swirling cobalt sky, crescent, cypress */
+function paintStarry(c, x, y, w, h) {
+  const r = mkRand(7);
+  const g = c.createLinearGradient(x, y, x, y + h);
+  g.addColorStop(0, '#0b2a52'); g.addColorStop(0.55, '#143b6b'); g.addColorStop(1, '#0e2a4d');
+  c.fillStyle = g; c.fillRect(x, y, w, h);
+  // swirling brush bands
+  for (let i = 0; i < 26; i++) {
+    const cy = y + h * (0.08 + 0.62 * r());
+    const cx = x + w * r();
+    const rad = w * (0.05 + 0.16 * r());
+    c.beginPath();
+    c.strokeStyle = ['#2e62a8','#3f7bc4','#a9c6ea','#dfe9f5','#1d4d8c'][Math.floor(r()*5)];
+    c.lineWidth = 3 + r() * 6; c.lineCap = 'round'; c.globalAlpha = 0.55;
+    const a0 = r() * 6.28;
+    for (let k = 0; k <= 18; k++) {
+      const a = a0 + k * 0.42; const rr2 = rad * (1 - k * 0.035);
+      const px = cx + Math.cos(a) * rr2, py = cy + Math.sin(a) * rr2 * 0.7;
+      k ? c.lineTo(px, py) : c.moveTo(px, py);
+    }
+    c.stroke();
+  }
+  c.globalAlpha = 1;
+  // stars with halos
+  for (let i = 0; i < 11; i++) {
+    const sx2 = x + w * (0.08 + 0.84 * r()), sy2 = y + h * (0.05 + 0.5 * r());
+    const rad = 5 + r() * 7;
+    const hg = c.createRadialGradient(sx2, sy2, 0, sx2, sy2, rad * 3.4);
+    hg.addColorStop(0, 'rgba(255,243,180,0.95)'); hg.addColorStop(0.4, 'rgba(255,224,120,0.5)'); hg.addColorStop(1, 'rgba(255,224,120,0)');
+    c.fillStyle = hg; c.beginPath(); c.arc(sx2, sy2, rad * 3.4, 0, 7); c.fill();
+    c.fillStyle = '#fff6cf'; c.beginPath(); c.arc(sx2, sy2, rad, 0, 7); c.fill();
+  }
+  // crescent moon glow
+  const mx = x + w * 0.82, my = y + h * 0.16;
+  const mg = c.createRadialGradient(mx, my, 0, mx, my, 64);
+  mg.addColorStop(0, 'rgba(255,238,150,0.95)'); mg.addColorStop(0.5, 'rgba(255,214,90,0.45)'); mg.addColorStop(1, 'rgba(255,214,90,0)');
+  c.fillStyle = mg; c.beginPath(); c.arc(mx, my, 64, 0, 7); c.fill();
+  c.fillStyle = '#ffe98c'; c.beginPath(); c.arc(mx, my, 22, 0, 7); c.fill();
+  c.fillStyle = g; c.beginPath(); c.arc(mx + 9, my - 5, 20, 0, 7); c.fill();
+  // dark cypress
+  c.fillStyle = '#0a1c14';
+  c.beginPath(); c.moveTo(x + w*0.13, y + h);
+  c.quadraticCurveTo(x + w*0.02, y + h*0.5, x + w*0.11, y + h*0.06);
+  c.quadraticCurveTo(x + w*0.2, y + h*0.5, x + w*0.19, y + h); c.closePath(); c.fill();
+  // sleeping village rooftops
+  c.fillStyle = '#16243a';
+  for (let i = 0; i < 7; i++) { const bx = x + w*(0.28 + i*0.085); const bw = w*0.07; const bh = h*(0.06 + r()*0.05);
+    c.fillRect(bx, y + h - bh, bw, bh);
+    c.fillStyle = '#3a2c12'; c.beginPath(); c.moveTo(bx-2, y+h-bh); c.lineTo(bx+bw/2, y+h-bh-12); c.lineTo(bx+bw+2, y+h-bh); c.fill();
+    if (r() > 0.5) { c.fillStyle = '#ffd86a'; c.fillRect(bx + bw*0.3, y + h - bh*0.6, 5, 6); }
+    c.fillStyle = '#16243a';
+  }
+}
+
+/* 2. Girl with a pearl earring style: dark ground, blue/gold turban, pearl */
+function paintPearl(c, x, y, w, h) {
+  c.fillStyle = '#0c0b08'; c.fillRect(x, y, w, h);
+  const cx = x + w * 0.5, cy = y + h * 0.5;
+  // face
+  const fg = c.createRadialGradient(cx - w*0.04, cy - h*0.06, 10, cx, cy, w*0.34);
+  fg.addColorStop(0, '#f1d3b0'); fg.addColorStop(0.6, '#cda079'); fg.addColorStop(1, '#7c5740');
+  c.save();
+  c.beginPath(); c.ellipse(cx, cy + h*0.02, w*0.20, h*0.26, 0, 0, 7); c.fill();
+  c.fillStyle = fg; c.beginPath(); c.ellipse(cx, cy + h*0.02, w*0.20, h*0.26, 0, 0, 7); c.fill();
+  c.restore();
+  // neck / shoulder
+  c.fillStyle = '#8a6347';
+  c.beginPath(); c.moveTo(cx - w*0.1, cy + h*0.2); c.quadraticCurveTo(cx, cy + h*0.34, cx + w*0.16, cy + h*0.22);
+  c.lineTo(cx + w*0.28, y + h); c.lineTo(cx - w*0.26, y + h); c.closePath(); c.fill();
+  // collar (white)
+  c.fillStyle = '#e8e2d4';
+  c.beginPath(); c.moveTo(cx - w*0.16, y + h); c.quadraticCurveTo(cx, cy + h*0.28, cx + w*0.18, y + h*0.9); c.lineTo(cx + w*0.1, y + h); c.closePath(); c.fill();
+  // blue turban
+  c.fillStyle = '#1c4b86';
+  c.beginPath(); c.ellipse(cx - w*0.02, cy - h*0.2, w*0.24, h*0.2, -0.2, Math.PI*0.92, Math.PI*2.18); c.fill();
+  c.fillStyle = '#2f6bb0';
+  c.beginPath(); c.ellipse(cx - w*0.02, cy - h*0.24, w*0.21, h*0.15, -0.2, Math.PI, Math.PI*2); c.fill();
+  // gold tail of turban
+  c.fillStyle = '#e0b24a';
+  c.beginPath(); c.moveTo(cx + w*0.1, cy - h*0.12); c.quadraticCurveTo(cx + w*0.26, cy, cx + w*0.16, cy + h*0.16);
+  c.quadraticCurveTo(cx + w*0.1, cy + h*0.02, cx + w*0.1, cy - h*0.12); c.fill();
+  // eyes + lips hint
+  c.fillStyle = '#3a2a1e';
+  c.beginPath(); c.ellipse(cx - w*0.07, cy - h*0.04, 7, 4, 0, 0, 7); c.fill();
+  c.beginPath(); c.ellipse(cx + w*0.05, cy - h*0.04, 7, 4, 0, 0, 7); c.fill();
+  c.fillStyle = '#b56a5a';
+  c.beginPath(); c.ellipse(cx - w*0.01, cy + h*0.1, 12, 5, 0, 0, 7); c.fill();
+  // the pearl earring — luminous
+  const px = cx + w*0.13, py = cy + h*0.11;
+  const pg = c.createRadialGradient(px - 4, py - 4, 1, px, py, 16);
+  pg.addColorStop(0, '#ffffff'); pg.addColorStop(0.4, '#d9dde6'); pg.addColorStop(0.85, '#6d7480'); pg.addColorStop(1, '#3a3f48');
+  c.fillStyle = pg; c.beginPath(); c.arc(px, py, 15, 0, 7); c.fill();
+  c.fillStyle = 'rgba(255,255,255,0.9)'; c.beginPath(); c.arc(px - 5, py - 5, 3.5, 0, 7); c.fill();
+}
+
+/* 3. Mona-Lisa style: sfumato portrait, folded hands, hazy landscape */
+function paintMona(c, x, y, w, h) {
+  const bg = c.createLinearGradient(x, y, x, y + h);
+  bg.addColorStop(0, '#6f5a32'); bg.addColorStop(0.45, '#8a7a4a'); bg.addColorStop(1, '#3a2e1a');
+  c.fillStyle = bg; c.fillRect(x, y, w, h);
+  // hazy landscape band
+  c.fillStyle = 'rgba(120,150,150,0.4)'; c.fillRect(x, y + h*0.18, w, h*0.18);
+  c.fillStyle = 'rgba(150,175,165,0.3)';
+  for (let i=0;i<5;i++){ c.beginPath(); c.moveTo(x + w*(i*0.22), y+h*0.36); c.lineTo(x+w*(i*0.22+0.12), y+h*0.2); c.lineTo(x+w*(i*0.22+0.24), y+h*0.36); c.fill(); }
+  const cx = x + w * 0.5, cy = y + h * 0.46;
+  // hair / veil
+  c.fillStyle = '#2a2014';
+  c.beginPath(); c.ellipse(cx, cy - h*0.06, w*0.28, h*0.32, 0, 0, 7); c.fill();
+  // face
+  const fg = c.createRadialGradient(cx, cy - h*0.04, 8, cx, cy, w*0.3);
+  fg.addColorStop(0, '#e7c89d'); fg.addColorStop(0.7, '#b8946a'); fg.addColorStop(1, '#6e5235');
+  c.fillStyle = fg; c.beginPath(); c.ellipse(cx, cy - h*0.02, w*0.17, h*0.22, 0, 0, 7); c.fill();
+  // subtle smile
+  c.strokeStyle = 'rgba(90,60,40,0.7)'; c.lineWidth = 3; c.lineCap='round';
+  c.beginPath(); c.moveTo(cx - w*0.05, cy + h*0.07); c.quadraticCurveTo(cx, cy + h*0.1, cx + w*0.05, cy + h*0.07); c.stroke();
+  // eyes
+  c.fillStyle = '#3a2a1a';
+  c.beginPath(); c.ellipse(cx - w*0.06, cy - h*0.02, 7, 4, 0, 0, 7); c.fill();
+  c.beginPath(); c.ellipse(cx + w*0.06, cy - h*0.02, 7, 4, 0, 0, 7); c.fill();
+  // dark dress + folded hands
+  c.fillStyle = '#241a10';
+  c.beginPath(); c.moveTo(cx - w*0.32, y + h); c.quadraticCurveTo(cx, cy + h*0.18, cx + w*0.32, y + h); c.closePath(); c.fill();
+  c.fillStyle = '#c39d6e';
+  c.beginPath(); c.ellipse(cx + w*0.04, y + h*0.92, w*0.13, h*0.05, -0.3, 0, 7); c.fill();
+}
+
+/* 4. The Kiss style: golden mosaic embrace, art-nouveau */
+function paintKiss(c, x, y, w, h) {
+  const r = mkRand(31);
+  const g = c.createLinearGradient(x, y, x + w, y + h);
+  g.addColorStop(0, '#b8902f'); g.addColorStop(0.5, '#e7c25a'); g.addColorStop(1, '#8a6a1e');
+  c.fillStyle = g; c.fillRect(x, y, w, h);
+  // shimmering gold flecks
+  for (let i = 0; i < 240; i++) {
+    c.fillStyle = ['#f7e08a','#caa12f','#fff3c0','#9c7a26'][Math.floor(r()*4)];
+    c.globalAlpha = 0.5 + r()*0.5;
+    const fx = x + w*r(), fy = y + h*r(), s = 3 + r()*7;
+    c.fillRect(fx, fy, s, s * (0.6 + r()));
+  }
+  c.globalAlpha = 1;
+  // the two cloaked figures, kneeling, merged into one golden mass
+  const cx = x + w * 0.5, cy = y + h * 0.62;
+  c.fillStyle = '#caa12f';
+  c.beginPath(); c.moveTo(cx - w*0.26, y + h); c.quadraticCurveTo(cx - w*0.3, cy - h*0.1, cx, cy - h*0.32);
+  c.quadraticCurveTo(cx + w*0.3, cy - h*0.1, cx + w*0.26, y + h); c.closePath(); c.fill();
+  // man's rectangles (cool), woman's circles (warm)
+  for (let i = 0; i < 70; i++) {
+    const side = r() > 0.5;
+    const ang = r()*6.28, rad = (0.04 + r()*0.22)*w;
+    const fx = cx + Math.cos(ang)*rad*0.8, fy = cy - h*0.1 + Math.sin(ang)*rad;
+    if (fy > y + h - 6) continue;
+    if (side) { c.fillStyle = ['#3a4a5a','#1f2e3e','#5a6a7a'][Math.floor(r()*3)]; c.fillRect(fx, fy, 14, 14); }
+    else { c.fillStyle = ['#d2473a','#e88a3a','#f2c84a'][Math.floor(r()*3)]; c.beginPath(); c.arc(fx, fy, 7, 0, 7); c.fill(); }
+  }
+  // two faces touching at top of the golden mass
+  c.fillStyle = '#e9caa0';
+  c.beginPath(); c.arc(cx - w*0.05, cy - h*0.3, 22, 0, 7); c.fill();
+  c.beginPath(); c.ellipse(cx + w*0.04, cy - h*0.34, 16, 22, 0.4, 0, 7); c.fill();
+  // flower meadow base
+  for (let i = 0; i < 60; i++) {
+    c.fillStyle = ['#c0392b','#27ae60','#8e44ad','#2980b9'][Math.floor(r()*4)];
+    c.beginPath(); c.arc(x + w*r(), y + h*(0.86 + 0.12*r()), 4 + r()*4, 0, 7); c.fill();
+  }
+}
+
+/* 5. Wave style: great wave, indigo & foam */
+function paintWave(c, x, y, w, h) {
+  const r = mkRand(53);
+  const g = c.createLinearGradient(x, y, x, y + h);
+  g.addColorStop(0, '#dfe3cf'); g.addColorStop(0.5, '#cdd6c2'); g.addColorStop(1, '#aeb9a6');
+  c.fillStyle = g; c.fillRect(x, y, w, h);
+  // distant Fuji
+  c.fillStyle = '#2b3a52';
+  c.beginPath(); c.moveTo(x + w*0.36, y + h*0.62); c.lineTo(x + w*0.55, y + h*0.34); c.lineTo(x + w*0.74, y + h*0.62); c.closePath(); c.fill();
+  c.fillStyle = '#eef1ea';
+  c.beginPath(); c.moveTo(x + w*0.49, y + h*0.43); c.lineTo(x + w*0.55, y + h*0.34); c.lineTo(x + w*0.61, y + h*0.43); c.closePath(); c.fill();
+  // the great wave body
+  c.fillStyle = '#163a63';
+  c.beginPath();
+  c.moveTo(x, y + h*0.62);
+  c.bezierCurveTo(x + w*0.18, y + h*0.3, x + w*0.34, y + h*0.18, x + w*0.5, y + h*0.34);
+  c.bezierCurveTo(x + w*0.6, y + h*0.44, x + w*0.5, y + h*0.5, x + w*0.42, y + h*0.46);
+  c.bezierCurveTo(x + w*0.5, y + h*0.6, x + w*0.3, y + h*0.78, x, y + h*0.82);
+  c.closePath(); c.fill();
+  // inner wave teal
+  c.fillStyle = '#3d6f9c';
+  c.beginPath();
+  c.moveTo(x, y + h*0.7);
+  c.bezierCurveTo(x + w*0.18, y + h*0.45, x + w*0.32, y + h*0.36, x + w*0.44, y + h*0.44);
+  c.bezierCurveTo(x + w*0.34, y + h*0.56, x + w*0.2, y + h*0.7, x, y + h*0.86);
+  c.closePath(); c.fill();
+  // claw foam — recursive circles along the crest
+  c.fillStyle = '#f6f7f2';
+  const crest = [[0.5,0.32],[0.44,0.28],[0.38,0.26],[0.33,0.28],[0.28,0.32],[0.24,0.38]];
+  for (const [fx, fy] of crest) {
+    const bx = x + w*fx, by = y + h*fy;
+    for (let k = 0; k < 5; k++) c.beginPath(), c.arc(bx + (r()-0.5)*40, by + (r()-0.5)*30, 6 + r()*10, 0, 7), c.fill();
+  }
+  // smaller foreground swells
+  c.fillStyle = '#e9edE3';
+  for (let i = 0; i < 30; i++) c.beginPath(), c.arc(x + w*r(), y + h*(0.74 + 0.2*r()), 3 + r()*7, 0, 7), c.fill();
+}
+
+/* layout: paintings hung in a row on the wall, with vertical scroll
+   revealing a second row. */
+const PAINTINGS = [
+  { f: paintStarry, title: 'Cobalt Reverie', artist: 'after V. van Gogh' },
+  { f: paintPearl,  title: 'Pearl & Shadow', artist: 'after J. Vermeer' },
+  { f: paintMona,   title: 'Quiet Smile',    artist: 'after L. da Vinci' },
+  { f: paintKiss,   title: 'Gilded Embrace', artist: 'after G. Klimt' },
+  { f: paintWave,   title: 'The Great Swell',artist: 'after Hokusai' },
+];
+
+function drawScene() {
+  scene.width = W; scene.height = H;
+  const c = sx;
+
+  /* ---- gallery wall background (warm plaster, vignetted) ---- */
+  const rg = c.createRadialGradient(W*0.5, H*0.4, H*0.15, W*0.5, H*0.55, H*1.05);
+  rg.addColorStop(0, '#48433a'); rg.addColorStop(0.6, '#332e27'); rg.addColorStop(1, '#161310');
+  c.fillStyle = rg; c.fillRect(0, 0, W, H);
+
+  // cover-scale logical space with a slight filmed tilt
+  const sc = Math.max(W / LW, H / LH) * 1.04;
+  c.save();
+  c.translate(W/2, H/2); c.rotate(-0.014); c.scale(sc, sc); c.translate(-LW/2, -LH/2);
+
+  // subtle plaster texture + warm spotlights
+  const wallG = c.createLinearGradient(0, 0, 0, LH);
+  wallG.addColorStop(0, 'rgba(255,236,200,0.06)'); wallG.addColorStop(0.5, 'rgba(0,0,0,0)'); wallG.addColorStop(1, 'rgba(0,0,0,0.18)');
+  c.fillStyle = wallG; c.fillRect(0, 0, LW, LH);
+  // ceiling track-light pools
+  for (let i = 0; i < 5; i++) {
+    const lx = LW * (0.12 + i * 0.19);
+    const lg = c.createRadialGradient(lx, -40, 10, lx, 240, 420);
+    lg.addColorStop(0, 'rgba(255,238,205,0.16)'); lg.addColorStop(1, 'rgba(255,238,205,0)');
+    c.fillStyle = lg; c.fillRect(lx - 300, -60, 600, 540);
+  }
+
+  // baseboard / floor line at bottom
+  c.fillStyle = '#211b14'; c.fillRect(0, LH - 70, LW, 70);
+  c.fillStyle = 'rgba(255,236,200,0.05)'; c.fillRect(0, LH - 72, LW, 3);
+
+  /* ---- paintings: two rows, scroll shifts them up ---- */
+  const colW = 360, gap = 70;
+  const rowYbase = 150 - scrollY;          // first row top
+  const rowGap = 470;
+  const startX = (LW - (3 * colW + 2 * gap)) / 2;  // 3 across, centered
+
+  for (let i = 0; i < PAINTINGS.length; i++) {
+    const col = i % 3, row = Math.floor(i / 3);
+    const pw = colW, ph = (i === 1 || i === 4) ? 300 : 250; // vary heights
+    const px = startX + col * (colW + gap);
+    const py = rowYbase + row * rowGap;
+    if (py > LH + 60 || py + ph < -60) continue;
+
+    frame(c, px, py, pw, ph);
+    // painting body, clipped to opening
+    c.save();
+    rr(c, px, py, pw, ph, 1); c.clip();
+    PAINTINGS[i].f(c, px, py, pw, ph);
+    // canvas varnish gloss across the surface
+    const vg = c.createLinearGradient(px, py, px + pw, py + ph);
+    vg.addColorStop(0, 'rgba(255,255,255,0.10)'); vg.addColorStop(0.25, 'rgba(255,255,255,0)');
+    vg.addColorStop(0.7, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,0.12)');
+    c.fillStyle = vg; c.fillRect(px, py, pw, ph);
+    c.restore();
+    placard(c, px + pw/2, py + ph + 22, PAINTINGS[i].title, PAINTINGS[i].artist);
+  }
+
+  // gallery title plate, top-center
+  tw(c, 'M A S T E R W O R K S', LW/2, 86 - scrollY*0.4, 30, 'rgba(244,232,206,0.92)', 700, 'center');
+  tw(c, 'a private collection · gallery III', LW/2, 112 - scrollY*0.4, 14, 'rgba(214,200,170,0.7)', 400, 'center', 'Helvetica,Arial,sans-serif');
+
+  c.restore(); // untilt
+}
+
+/* ------------------------------------------------------------
+   WEBGL — the optics: refraction, magnification, rim rings,
+   speculars, caustics, then handheld-camera post.
+   ------------------------------------------------------------ */
+const VS = `
+attribute vec2 aP;
+void main(){ gl_Position = vec4(aP, 0.0, 1.0); }`;
+
+const FS = `
+precision highp float;
+uniform sampler2D uScene;
+uniform vec2  uRes, uGlass, uShake, uTilt;
+uniform float uR, uTime, uPress, uBlur, uExpo, uRot;
+
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+
+vec3 scn(vec2 uv){
+  return texture2D(uScene, clamp(uv / uRes, vec2(0.002), vec2(0.998))).rgb;
+}
+/* handheld camera: rotate + slight lens barrel + shake */
+vec2 cam(vec2 v){
+  vec2 cen = uRes * 0.5;
+  vec2 p = v - cen;
+  float ca = cos(uRot), sa = sin(uRot);
+  p = vec2(ca*p.x - sa*p.y, sa*p.x + ca*p.y);
+  float rr = dot(p, p) / dot(cen, cen);
+  p *= 1.0 + 0.04 * rr;
+  return cen + p + uShake;
+}
+float gband(float x, float c, float w){ float d = (x - c) / w; return exp(-d * d); }
+
+void main(){
+  vec2 fc = gl_FragCoord.xy;
+  vec2 d  = fc - uGlass;
+  /* tilt: viewed at an angle the lens foreshortens into an ellipse */
+  float tA = length(uTilt);
+  vec2 tD = tA > 0.001 ? uTilt / tA : vec2(1.0, 0.0);
+  vec2 pD = vec2(-tD.y, tD.x);
+  float squash = 1.0 - 0.40 * tA;
+  vec2 ds = tD * (dot(d, tD) / squash) + pD * dot(d, pD);
+  float r = length(ds);
+  vec2 dir = r > 0.5 ? ds / r : vec2(1.0, 0.0);
+  vec2 tdir = vec2(-dir.y, dir.x);
+  float x = r / uR;
+
+  float innerX = 0.82;
+  float w    = smoothstep(innerX - 0.05, innerX + 0.03, x);   // rim weight
+  float wOut = smoothstep(1.0, 1.06, x);                      // outside weight
+  float q = clamp(x / innerX, 0.0, 1.0);
+
+  /* refracted source radius: magnified center, compressed edge */
+  float magA = mix(0.42, 0.36, uPress);
+  float q5 = q*q*q*q*q;
+  float rsG = uR * (magA * q + (1.06 - magA) * q5);
+  /* tilted glass: asymmetric magnification + prism deviation */
+  float asym = 1.0 + 0.36 * tA * dot(dir, tD);
+  vec2 refr = dir * mix(rsG, uR * 1.06, w) * asym + uTilt * uR * 0.5;
+
+  /* anisotropic blur (source-space px) */
+  float q4 = q*q*q*q;
+  float radial = mix(mix(q4 * uR * 0.13, uR * 0.018, w), 0.0, wOut) + uBlur + 0.7;
+  float tang   = mix(mix(q*q*q * uR * 0.045, uR * 0.18, w), 0.0, wOut) + uBlur + 0.7;
+
+  vec2 srcBase = uGlass + mix(refr, d, wOut);
+  vec3 col = vec3(0.0);
+  #define TAP(rx, ty) col += scn(cam(srcBase + dir * ((rx) * radial) + tdir * ((ty) * tang)));
+  TAP( 0.00,  0.00) TAP( 0.62,  0.25) TAP(-0.58,  0.30) TAP( 0.21, -0.64)
+  TAP(-0.25, -0.61) TAP( 0.45,  0.68) TAP(-0.70, -0.15) TAP( 0.86, -0.18)
+  TAP(-0.41,  0.74) TAP( 0.05,  0.94) TAP(-0.88,  0.35) TAP( 0.33,  0.13)
+  TAP(-0.18,  0.20) TAP( 0.69, -0.55)
+  col /= 14.0;
+
+  float inG = (1.0 - wOut);          // inside glass (incl. rim)
+  float inI = inG * (1.0 - w);       // inner refraction zone only
+
+  /* chromatic aberration, stronger toward the rim and when tilted */
+  float caW = 0.5 * smoothstep(0.25, 1.0, x) * (1.0 + 1.3 * tA) * inG;
+  caW = min(caW, 0.85);
+  if (caW > 0.01) {
+    vec3 cR = scn(cam(uGlass + refr * 0.97));
+    vec3 cB = scn(cam(uGlass + refr * 1.03));
+    col.r = mix(col.r, cR.r, caW);
+    col.b = mix(col.b, cB.b, caW);
+  }
+
+  /* liquid-glass body: slight desaturation, lift, cool veil outward */
+  float lum = dot(col, vec3(0.299, 0.587, 0.114));
+  col = mix(col, vec3(lum), 0.12 * inI);
+  col = mix(col, col * 0.92 + vec3(0.05), inG);
+  float veil = (0.03 + 0.13 * x * x + 0.06 * uPress) * inI;
+  col = mix(col, vec3(0.97, 0.98, 1.0), veil);
+  col += inI * 0.05 * (1.0 - x * x);            // soft center bloom
+
+  /* faint radial caustic streaks */
+  float th = atan(d.y, d.x);
+  float cau = 0.5 * sin(th * 13.0 + 2.0) + 0.5 * sin(th * 29.0 + 0.6) + 0.35 * sin(th * 7.0 - 1.2);
+  col += cau * 0.05 * q4 * inI;
+
+  /* rim: dark glass wall + concentric rings + specular arcs */
+  float rim = w * (1.0 - wOut);
+  col = mix(col, col * 0.34, rim);
+  float bands = gband(x, 0.85, 0.018) * 0.85
+              + gband(x, 0.93, 0.014) * 0.50
+              + gband(x, 0.985, 0.010) * 0.78;
+  float arc = pow(max(cos(th - 2.45), 0.0), 6.0)
+            + 0.7 * pow(max(cos(th + 0.55), 0.0), 10.0)
+            + 0.45 * pow(max(cos(th - 4.30), 0.0), 14.0);
+  col += rim * bands * (0.14 + 0.70 * arc);
+  col *= mix(1.0, 0.5, rim * gband(x, 1.0, 0.012));            // dark outer lip
+  col += inI * 0.16 * gband(x, 0.815, 0.012);                  // bright inner ring
+
+  /* soft window-reflection highlight, upper-left */
+  vec2 hp = uGlass + vec2(-0.30, 0.40) * uR + uTilt * uR * 0.5;
+  vec2 hd = fc - hp;
+  col += exp(-dot(hd, hd) / (uR * uR * 0.16)) * (0.15 + 0.08 * uPress) * inG;
+  /* secondary sharp glint, upper-right */
+  vec2 hp2 = uGlass + vec2(0.34, 0.30) * uR;
+  vec2 hd2 = fc - hp2;
+  col += exp(-dot(hd2, hd2) / (uR * uR * 0.006)) * 0.5 * inG;
+
+  /* contact shadow + caustic ring hugging the outside of the lens */
+  col *= 1.0 - (0.30 - 0.10 * uPress) * gband(x, 1.03, 0.045) * wOut;
+  col += vec3(0.10, 0.09, 0.06) * gband(x, 1.10, 0.03) * wOut;  // warm projected caustic
+
+  /* ---- phone-camera post ---- */
+  col *= uExpo;
+  col *= vec3(1.02, 1.0, 0.985);                                // warm gallery white balance
+  vec2 vc = (fc - uRes * 0.5) / (uRes * 0.5);
+  col *= 1.0 - 0.30 * pow(dot(vc, vc) * 0.55, 1.4);             // vignette
+  col *= 1.0 + 0.010 * sin(fc.y * 0.07 - uTime * 9.0);          // faint banding
+  float gn = hash(fc + fract(uTime * 7.0) * 113.0);
+  col += (gn - 0.5) * 0.04;                                      // grain
+  col = clamp(col, 0.0, 1.0);
+  col = pow(col, vec3(0.97));                                    // slight lift
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
+let prog, U = {}, sceneTex, buf;
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+function makeTex(unit) {
+  const t = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0 + unit);
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  return t;
+}
+function uploadScene() {
+  gl.activeTexture(gl.TEXTURE0);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, scene);
+}
+
+if (gl) {
+  prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+
+  buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+  const aP = gl.getAttribLocation(prog, 'aP');
+  gl.enableVertexAttribArray(aP);
+  gl.vertexAttribPointer(aP, 2, gl.FLOAT, false, 0, 0);
+
+  for (const n of ['uScene','uRes','uGlass','uShake','uTilt','uR','uTime','uPress','uBlur','uExpo','uRot'])
+    U[n] = gl.getUniformLocation(prog, n);
+  sceneTex = makeTex(0);
+  gl.uniform1i(U.uScene, 0);
+}
+
+/* ------------------------------------------------------------ state */
+const mouse = { x: 0, y: 0 };
+const glass = { x: 0, y: 0 };
+const tilt = { x: 0, y: 0 };
+const tiltManual = { x: 0, y: 0 };
+const tiltVel = { x: 0, y: 0 };
+let rightDrag = null;
+let pressTarget = 0, press = 0;
+let needScene = true;
+
+function resize() {
+  W = Math.round(innerWidth * DPR); H = Math.round(innerHeight * DPR);
+  glCanvas.width = W; glCanvas.height = H;
+  if (gl) gl.viewport(0, 0, W, H);
+  if (!mouse.x) { mouse.x = innerWidth * 0.5; mouse.y = innerHeight * 0.46; glass.x = W * 0.5; glass.y = H * 0.54; }
+  needScene = true;
+}
+addEventListener('resize', resize); resize();
+
+addEventListener('contextmenu', e => e.preventDefault());
+addEventListener('pointermove', e => {
+  mouse.x = e.clientX; mouse.y = e.clientY;
+  if (rightDrag) {
+    tiltManual.x = rightDrag.tx + (e.clientX - rightDrag.x) * 0.0035;
+    tiltManual.y = rightDrag.ty + (rightDrag.y - e.clientY) * 0.0035;
+    const m = Math.hypot(tiltManual.x, tiltManual.y);
+    if (m > 0.5) { tiltManual.x *= 0.5 / m; tiltManual.y *= 0.5 / m; }
+  }
+});
+addEventListener('pointerdown', e => {
+  if (e.button === 2) rightDrag = { x: e.clientX, y: e.clientY, tx: tiltManual.x, ty: tiltManual.y };
+  else pressTarget = 1;
+});
+addEventListener('pointerup', e => {
+  if (e.button === 2) rightDrag = null;
+  else pressTarget = 0;
+});
+addEventListener('wheel', e => {
+  scrollY = Math.max(0, Math.min(SCROLL_MAX, scrollY + e.deltaY * 0.7));
+  needScene = true;
+}, { passive: true });
+setTimeout(() => { const h = document.getElementById('hint'); if (h) h.style.opacity = '0'; }, 5000);
+
+/* autofocus hunts */
+let huntT0 = 1800 + Math.random() * 3000;
+function focusHunt(now) {
+  const dt = now - huntT0;
+  if (dt > 900) { huntT0 = now + 2600 + Math.random() * 4800; return 0; }
+  if (dt < 0) return 0;
+  const ph = dt / 900;
+  return Math.sin(ph * Math.PI) * (3.4 + Math.random() * 0.6);
+}
+
+function loop(tms) {
+  if (!gl) return;
+  const t = tms * 0.001;
+  if (needScene) { drawScene(); uploadScene(); needScene = false; }
+
+  // lens follows mouse with physical lag + grip tremor
+  const tx = mouse.x * DPR + Math.sin(t * 8.7) * 1.5 * DPR + Math.sin(t * 13.1 + 2.0) * 0.8 * DPR;
+  const ty = (innerHeight - mouse.y) * DPR + Math.cos(t * 9.4 + 1.0) * 1.4 * DPR;
+  const pgx = glass.x, pgy = glass.y;
+  glass.x += (tx - glass.x) * 0.16;
+  glass.y += (ty - glass.y) * 0.16;
+  press += (pressTarget - press) * 0.09;
+
+  // tilt: lens leans against its motion + manual right-drag
+  const vk = -0.010 / DPR;
+  tiltVel.x += ((glass.x - pgx) * vk - tiltVel.x) * 0.18;
+  tiltVel.y += ((glass.y - pgy) * vk - tiltVel.y) * 0.18;
+  if (!rightDrag) { tiltManual.x *= 0.95; tiltManual.y *= 0.95; }
+  let ttx = tiltManual.x + tiltVel.x, tty = tiltManual.y + tiltVel.y;
+  const tm = Math.hypot(ttx, tty);
+  if (tm > 0.55) { ttx *= 0.55 / tm; tty *= 0.55 / tm; }
+  tilt.x += (ttx - tilt.x) * 0.12;
+  tilt.y += (tty - tilt.y) * 0.12;
+
+  const R = Math.min(W, H) * (0.30 + press * 0.02);
+
+  // handheld shake / drift
+  const shx = (Math.sin(t * 1.3) * 2.6 + Math.sin(t * 0.7 + 1.7) * 3.6 + Math.sin(t * 3.1 + 0.5) * 1.1 + Math.sin(t * 7.3) * 0.4) * DPR;
+  const shy = (Math.cos(t * 1.1 + 0.4) * 3.0 + Math.sin(t * 0.5 + 2.6) * 4.0 + Math.cos(t * 2.7 + 1.2) * 1.2 + Math.cos(t * 8.1) * 0.4) * DPR;
+  const rot = 0.004 * Math.sin(t * 0.45) + 0.0018 * Math.sin(t * 1.7 + 1.0);
+
+  // focus breathing + hunts
+  const blur = Math.max(0.0, 0.9 + 0.8 * Math.sin(t * 0.8) + 0.5 * Math.sin(t * 2.3 + 0.7)) * DPR + focusHunt(tms) * DPR;
+
+  // exposure slowly re-metering
+  const expo = 1.0 + 0.04 * Math.sin(t * 0.4) + 0.025 * Math.sin(t * 1.1 + 2.2) - press * 0.04;
+
+  gl.uniform2f(U.uRes, W, H);
+  gl.uniform2f(U.uGlass, glass.x, glass.y);
+  gl.uniform2f(U.uShake, shx, shy);
+  gl.uniform2f(U.uTilt, tilt.x, tilt.y);
+  gl.uniform1f(U.uR, R);
+  gl.uniform1f(U.uTime, t);
+  gl.uniform1f(U.uPress, press);
+  gl.uniform1f(U.uBlur, blur);
+  gl.uniform1f(U.uExpo, expo);
+  gl.uniform1f(U.uRot, rot);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(loop);
+}
+if (gl) requestAnimationFrame(loop);
+</script>
+</body>
+</html>

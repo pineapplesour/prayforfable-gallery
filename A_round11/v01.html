@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Rosace — Voronoi Stained Glass</title>
+<style>
+  :root { --bg:#04060d; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { height:100%; background:var(--bg); overflow:hidden; }
+  body {
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color:#cfd6ea; -webkit-tap-highlight-color:transparent; touch-action:none;
+    cursor:crosshair;
+  }
+  #stage { position:fixed; inset:0; display:block; }
+  canvas { position:fixed; inset:0; width:100%; height:100%; display:block; }
+  /* light beams composite on top */
+  #beams { mix-blend-mode:screen; }
+  #grain { pointer-events:none; opacity:.05; mix-blend-mode:overlay; }
+  .hud {
+    position:fixed; left:18px; bottom:16px; z-index:10; pointer-events:none;
+    font-size:11px; letter-spacing:.18em; text-transform:uppercase;
+    color:rgba(207,214,234,.42); line-height:1.7; user-select:none;
+    text-shadow:0 1px 8px rgba(0,0,0,.6);
+  }
+  .hud b { color:rgba(225,205,255,.72); font-weight:600; letter-spacing:.22em; }
+  .hud .k { color:rgba(255,224,170,.7); }
+  .title {
+    position:fixed; right:20px; top:16px; z-index:10; pointer-events:none;
+    text-align:right; user-select:none;
+  }
+  .title .t1 { font-size:13px; letter-spacing:.5em; color:rgba(232,224,255,.8);
+    text-shadow:0 0 18px rgba(160,120,255,.5); }
+  .title .t2 { font-size:10px; letter-spacing:.3em; color:rgba(207,214,234,.4);
+    margin-top:5px; }
+  @media (max-width:560px){
+    .hud { font-size:10px; left:12px; bottom:12px; letter-spacing:.12em; }
+    .title .t1 { font-size:11px; letter-spacing:.34em; }
+  }
+</style>
+</head>
+<body>
+  <canvas id="glass"></canvas>   <!-- the stained glass window -->
+  <canvas id="beams"></canvas>   <!-- volumetric light shafts (screen blend) -->
+  <canvas id="grain"></canvas>   <!-- subtle film grain -->
+
+  <div class="title">
+    <div class="t1">ROSACE</div>
+    <div class="t2">voronoi · lumière · vitrail</div>
+  </div>
+  <div class="hud">
+    <div><b>드래그</b> 회전 · <b>이동</b> 빛 기울이기</div>
+    <div><b>스크롤</b> 호흡 · <b class="k">클릭</b> 빛 터뜨리기 · <b>R</b> 재생성 · <b>S</b> 저장</div>
+  </div>
+
+<script>
+"use strict";
+/* ============================================================
+   ROSACE — generative Voronoi rose window + volumetric light.
+   Single file. No deps. Mouse / touch / scroll reactive.
+   ============================================================ */
+
+const TAU = Math.PI * 2;
+const clamp = (v,a,b)=> v<a?a:(v>b?b:v);
+const lerp  = (a,b,t)=> a+(b-a)*t;
+const smooth= (t)=> t*t*(3-2*t);
+const rand  = (a,b)=> a + Math.random()*(b-a);
+
+/* ---- deterministic-ish palette generator (HSL families) ---- */
+// Cathedral glass tends toward saturated cobalt, ruby, amber, emerald, violet.
+const PALETTES = [
+  [[214,1.00,0.52],[262,0.86,0.58],[340,0.92,0.55],[38,1.0,0.56],[150,0.78,0.46]], // jewel
+  [[206,0.95,0.55],[190,0.85,0.5],[268,0.8,0.6],[320,0.85,0.55],[44,0.95,0.55]],   // cool sea
+  [[348,0.92,0.52],[18,0.95,0.55],[40,1.0,0.55],[300,0.78,0.55],[228,0.9,0.55]],   // rose-fire
+  [[258,0.85,0.6],[286,0.82,0.58],[200,0.9,0.55],[170,0.75,0.48],[330,0.85,0.56]], // amethyst
+];
+
+function hsl(h,s,l,a=1){ return `hsla(${h.toFixed(1)},${(s*100).toFixed(1)}%,${(l*100).toFixed(1)}%,${a})`; }
+
+/* ============================================================
+   Geometry: build a rose-window seed set with radial symmetry.
+   Cells are computed analytically per-pixel via nearest-seed
+   (cheap Voronoi on an offscreen low-res buffer, then upscaled),
+   but to keep it crisp + cheap we instead draw the window as
+   layered radial rings of polygon "petals" whose vertices are
+   jittered Voronoi-like seeds reflected across N-fold symmetry.
+   This gives clean leaded glass without per-pixel cost.
+   ============================================================ */
+
+let DPR = Math.min(window.devicePixelRatio || 1, 2);
+const cG = document.getElementById('glass');
+const cB = document.getElementById('beams');
+const cN = document.getElementById('grain');
+const g  = cG.getContext('2d');
+const b  = cB.getContext('2d');
+const n  = cN.getContext('2d');
+
+let W=0,H=0, CX=0, CY=0, R=0;
+
+/* ---- Window model ---- */
+let symmetry = 12;          // N-fold rotational symmetry (rose window arms)
+let palette  = PALETTES[0];
+let cells    = [];          // {pts:[[x,y]...], h,s,l, depth, kind}
+let petalSeed= 1;
+
+// A "wedge" is one 1/symmetry slice; we build cells inside it,
+// then the renderer rotates the wedge `symmetry` times.
+function buildWindow(){
+  palette = PALETTES[(Math.random()*PALETTES.length)|0];
+  symmetry = [8,10,12,12,14,16][(Math.random()*6)|0];
+  cells = [];
+  petalSeed++;
+
+  const rings = 5;                       // concentric ring count
+  const wedge = TAU / symmetry;
+  // ring radii (normalized 0..1 of R)
+  let radii = [0.0];
+  let acc = 0.10;
+  for(let i=0;i<rings;i++){
+    acc += rand(0.14,0.22);
+    radii.push(Math.min(acc, 1.0));
+  }
+  radii[radii.length-1] = 1.0;
+
+  // central oculus (the hub) — a faceted core
+  const hubR = 0.085;
+  const hubFacets = symmetry;
+  for(let f=0; f<1; f++){ /* hub built once, full circle below */ }
+
+  // For each ring band, create Voronoi-ish lozenges across the wedge.
+  // We scatter seeds in (radius, angle) inside one wedge with a margin
+  // so reflected copies tile seamlessly.
+  for(let ri=0; ri<radii.length-1; ri++){
+    const r0 = radii[ri], r1 = radii[ri+1];
+    const mid = (r0+r1)*0.5;
+    // cells per ring scale with circumference
+    const baseCount = Math.max(1, Math.round( (1 + ri) ));
+    // sub-divisions across the wedge angle
+    const sub = baseCount;
+    for(let s=0; s<sub; s++){
+      const a0 = (s/sub)*wedge;
+      const a1 = ((s+1)/sub)*wedge;
+      // jittered quad corners -> petal-like cell
+      const jr = (r1-r0)*0.16;
+      const ja = wedge*0.10;
+      const inner0 = [r0+rand(-jr,jr), a0+rand(-ja,ja)];
+      const inner1 = [r0+rand(-jr,jr), a1+rand(-ja,ja)];
+      const outer1 = [r1+rand(-jr,jr), a1+rand(-ja,ja)];
+      const outer0 = [r1+rand(-jr,jr), a0+rand(-ja,ja)];
+      // optional mid waist point to make a leaf shape
+      const waistOut = [ (r0+r1)*0.5+rand(-jr,jr), (a0+a1)*0.5 + ja*0.6 ];
+      const pts = [inner0, inner1, outer1, waistOut, outer0];
+
+      // colour: family by ring, lightness by depth, slight hue drift
+      const fam = palette[(ri + s) % palette.length];
+      const hueJ = rand(-12,12);
+      const c = {
+        polar: pts,
+        h: fam[0] + hueJ,
+        s: clamp(fam[1] + rand(-0.06,0.06), 0.4, 1),
+        l: clamp(fam[2] + rand(-0.08,0.10), 0.28, 0.7),
+        ring: ri,
+        twinkle: Math.random()*TAU,
+        twRate: rand(0.4,1.4),
+      };
+      cells.push(c);
+    }
+  }
+
+  // outer tracery ring (thin border lancets)
+  const tr0 = 0.93, tr1 = 1.0;
+  const tsub = symmetry; // handled in render via repetition; here one per wedge
+  for(let s=0;s<2;s++){
+    const a0 = (s/2)*wedge, a1=((s+1)/2)*wedge;
+    const fam = palette[(s)%palette.length];
+    cells.push({
+      polar:[[tr0,a0],[tr0,a1],[tr1,a1],[tr1,a0]],
+      h:fam[0], s:0.9, l:0.6, ring:rings, twinkle:Math.random()*TAU, twRate:1.0, lancet:true
+    });
+  }
+}
+
+/* ---- Render the static glass to its canvas ---- */
+// We keep an offscreen of the glass so beams can sample brightness cheaply
+let glassImageDirty = true;
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  for(const c of [cG,cB,cN]){
+    c.width  = Math.floor(W*DPR);
+    c.height = Math.floor(H*DPR);
+    c.style.width = W+'px'; c.style.height = H+'px';
+  }
+  g.setTransform(DPR,0,0,DPR,0,0);
+  b.setTransform(DPR,0,0,DPR,0,0);
+  n.setTransform(DPR,0,0,DPR,0,0);
+  CX = W*0.5; CY = H*0.5;
+  R  = Math.min(W,H) * 0.46;
+  buildGrain();
+  glassImageDirty = true;
+}
+
+/* ---- pointer / interaction state ---- */
+const P = {
+  mx: 0, my: 0,        // mouse (px, centered later)
+  tx: 0, ty: 0,        // smoothed light tilt (-1..1)
+  rot: 0, rotV: 0,     // window rotation
+  dragging:false, lastDX:0, lastDY:0, lastA:0,
+  zoom: 1, zoomT: 1,   // scroll breathe
+  bursts: [],          // click light bursts {x,y,t}
+};
+P.mx = CX; P.my = CY;
+
+function angleAt(x,y){ return Math.atan2(y-CY, x-CX); }
+
+/* ---- color helpers for glass shading ---- */
+function drawGlassCell(ctx, cell, rot, lightAng, lightStr, t){
+  const sym = symmetry;
+  const wedge = TAU / sym;
+  // twinkle modulates lightness slightly over time
+  const tw = 0.5 + 0.5*Math.sin(t*cell.twRate + cell.twinkle);
+  const baseL = cell.l + tw*0.05;
+
+  for(let k=0;k<sym;k++){
+    const baseRot = rot + k*wedge;
+    // also draw mirrored copy for that "kaleidoscope" double symmetry
+    for(let m=0;m<2;m++){
+      const mir = m===0?1:-1;
+      ctx.beginPath();
+      const pts = cell.polar;
+      for(let i=0;i<pts.length;i++){
+        const pr = pts[i][0]*R*P.zoom;
+        let pa = pts[i][1]*mir + baseRot;
+        const x = CX + Math.cos(pa)*pr;
+        const y = CY + Math.sin(pa)*pr;
+        if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+      }
+      ctx.closePath();
+
+      // directional light: cell brighter when its centroid faces the light dir
+      // approximate centroid angle
+      const cAng = (pts.reduce((a,p)=>a+p[1],0)/pts.length)*mir + baseRot;
+      const cR   = (pts.reduce((a,p)=>a+p[0],0)/pts.length);
+      const facing = Math.cos(cAng - lightAng); // -1..1
+      const radialBright = 1 - cR*0.35;         // inner cells get more core glow
+      const litL = clamp(baseL + facing*0.16*lightStr + radialBright*0.10, 0.18, 0.92);
+      const litS = clamp(cell.s + facing*0.05, 0.3, 1);
+
+      // radial gradient inside the cell for a glassy refraction look
+      const gx = CX + Math.cos(cAng)*cR*R*P.zoom;
+      const gy = CY + Math.sin(cAng)*cR*R*P.zoom;
+      const grd = ctx.createRadialGradient(gx,gy, 1, gx,gy, Math.max(2, R*0.5*P.zoom));
+      grd.addColorStop(0, hsl(cell.h, litS, Math.min(litL+0.12,0.95), 1));
+      grd.addColorStop(0.55, hsl(cell.h, litS, litL, 1));
+      grd.addColorStop(1, hsl(cell.h-8, Math.min(litS+0.08,1), Math.max(litL-0.16,0.12), 1));
+      ctx.fillStyle = grd;
+      ctx.fill();
+
+      // inner sheen highlight (specular streak from light)
+      const sheen = clamp(facing,0,1)*lightStr;
+      if(sheen>0.04){
+        ctx.save();
+        ctx.clip();
+        const sx = CX + Math.cos(lightAng)*R*0.2*P.zoom;
+        const sy = CY + Math.sin(lightAng)*R*0.2*P.zoom;
+        const sg = ctx.createLinearGradient(sx,sy, gx,gy);
+        sg.addColorStop(0, `rgba(255,250,235,${0.16*sheen})`);
+        sg.addColorStop(1, 'rgba(255,250,235,0)');
+        ctx.fillStyle = sg;
+        ctx.fillRect(0,0,W,H);
+        ctx.restore();
+      }
+
+      // leading (came) — dark outline between glass pieces
+      ctx.lineJoin='round';
+      ctx.lineWidth = clamp(R*0.006*P.zoom, 0.8, 3.2);
+      ctx.strokeStyle = 'rgba(6,6,12,0.92)';
+      ctx.stroke();
+      // thin metallic inner highlight on the came
+      ctx.lineWidth = clamp(R*0.0016*P.zoom, 0.3, 1.0);
+      ctx.strokeStyle = 'rgba(150,160,190,0.18)';
+      ctx.stroke();
+    }
+  }
+}
+
+function drawHub(ctx, rot, lightAng, lightStr, t){
+  const sym = symmetry;
+  const wedge = TAU/sym;
+  const hubR = 0.11*R*P.zoom;
+  // faceted core
+  for(let k=0;k<sym;k++){
+    const a0 = rot + k*wedge;
+    const a1 = rot + (k+1)*wedge;
+    ctx.beginPath();
+    ctx.moveTo(CX,CY);
+    ctx.lineTo(CX+Math.cos(a0)*hubR, CY+Math.sin(a0)*hubR);
+    ctx.lineTo(CX+Math.cos((a0+a1)/2)*hubR*1.12, CY+Math.sin((a0+a1)/2)*hubR*1.12);
+    ctx.lineTo(CX+Math.cos(a1)*hubR, CY+Math.sin(a1)*hubR);
+    ctx.closePath();
+    const fam = palette[k%palette.length];
+    const facing = Math.cos((a0+a1)/2 - lightAng);
+    const l = clamp(fam[2]+0.12 + facing*0.18*lightStr, 0.2, 0.95);
+    const grd = ctx.createRadialGradient(CX,CY,1, CX,CY,hubR*1.2);
+    grd.addColorStop(0, hsl(fam[0], fam[1], Math.min(l+0.2,0.98)));
+    grd.addColorStop(1, hsl(fam[0], fam[1], l));
+    ctx.fillStyle = grd;
+    ctx.fill();
+    ctx.lineWidth = clamp(R*0.006*P.zoom,0.8,3.2);
+    ctx.strokeStyle='rgba(6,6,12,0.95)';
+    ctx.stroke();
+  }
+  // glowing center jewel — pulses with light
+  const pulse = 0.6+0.4*Math.sin(t*1.6);
+  const jr = hubR*0.42*(0.9+0.2*pulse);
+  const jg = ctx.createRadialGradient(CX,CY,0, CX,CY,jr*3);
+  jg.addColorStop(0, `rgba(255,255,250,${0.95})`);
+  jg.addColorStop(0.3, hsl(palette[0][0], 0.7, 0.8, 0.9));
+  jg.addColorStop(1, hsl(palette[0][0], 0.9, 0.5, 0));
+  ctx.fillStyle = jg;
+  ctx.beginPath(); ctx.arc(CX,CY,jr*3,0,TAU); ctx.fill();
+}
+
+/* ---- Volumetric light beams (god rays) on screen-blend canvas ---- */
+function drawBeams(t, lightAng, lightStr){
+  b.clearRect(0,0,W,H);
+  b.globalCompositeOperation = 'lighter';
+
+  // The light source sits outside the window in lightAng direction.
+  const srcDist = R*1.9;
+  const sx = CX + Math.cos(lightAng)*srcDist;
+  const sy = CY + Math.sin(lightAng)*srcDist;
+
+  // Several soft shafts fanning from the source through the window.
+  const shafts = 7;
+  const spread = 0.55;
+  for(let i=0;i<shafts;i++){
+    const f = (i/(shafts-1) - 0.5); // -0.5..0.5
+    const a = lightAng + Math.PI + f*spread + Math.sin(t*0.3+i)*0.02;
+    const len = R*2.6;
+    const wBeam = R*(0.10 + 0.05*Math.sin(t*0.5+i*1.3));
+    const ex = sx + Math.cos(a)*len;
+    const ey = sy + Math.sin(a)*len;
+    // perpendicular for width
+    const px = Math.cos(a+Math.PI/2), py = Math.sin(a+Math.PI/2);
+
+    const grad = b.createLinearGradient(sx,sy, ex,ey);
+    const fam = palette[i%palette.length];
+    const beamCol = hsl(fam[0], 0.6, 0.7, 1);
+    const inten = (0.05 + 0.05*lightStr) * (0.6+0.4*Math.cos(f*Math.PI));
+    grad.addColorStop(0, `rgba(255,250,235,0)`);
+    grad.addColorStop(0.28, hsl(fam[0], 0.55, 0.72, inten*1.2));
+    grad.addColorStop(0.62, hsl(fam[0], 0.65, 0.6, inten*0.6));
+    grad.addColorStop(1, hsl(fam[0], 0.7, 0.5, 0));
+
+    b.beginPath();
+    b.moveTo(sx + px*wBeam*0.3, sy + py*wBeam*0.3);
+    b.lineTo(sx - px*wBeam*0.3, sy - py*wBeam*0.3);
+    b.lineTo(ex - px*wBeam*1.6, ey - py*wBeam*1.6);
+    b.lineTo(ex + px*wBeam*1.6, ey + py*wBeam*1.6);
+    b.closePath();
+    b.fillStyle = grad;
+    b.fill();
+  }
+
+  // central core glow bleeding through the oculus
+  const cg = b.createRadialGradient(CX,CY,0, CX,CY,R*0.7*P.zoom);
+  const coreCol = palette[0];
+  cg.addColorStop(0, hsl(coreCol[0],0.5,0.85, 0.12+0.06*lightStr));
+  cg.addColorStop(0.4, hsl(coreCol[0],0.6,0.6, 0.05));
+  cg.addColorStop(1, 'rgba(0,0,0,0)');
+  b.fillStyle = cg;
+  b.beginPath(); b.arc(CX,CY,R*0.7*P.zoom,0,TAU); b.fill();
+
+  // dust motes drifting in the shafts
+  b.globalCompositeOperation = 'lighter';
+  const motes = 60;
+  for(let i=0;i<motes;i++){
+    const seed = i*12.9898;
+    const fa = lightAng + Math.PI + (Math.sin(seed)*spread);
+    const d  = ((t*0.04 + (i/motes)) % 1);
+    const dist = d * R*2.4;
+    const wob = Math.sin(t*0.7 + i)*R*0.04;
+    const px = Math.cos(fa+Math.PI/2), py=Math.sin(fa+Math.PI/2);
+    const mx = sx + Math.cos(fa)*dist + px*wob;
+    const my = sy + Math.sin(fa)*dist + py*wob;
+    const al = (1-Math.abs(d-0.5)*2) * 0.5 * lightStr;
+    if(al<=0) continue;
+    const r = (0.6+Math.sin(seed*3.3)*0.4)*R*0.004 + 0.5;
+    b.fillStyle = `rgba(255,248,225,${al*0.6})`;
+    b.beginPath(); b.arc(mx,my,r,0,TAU); b.fill();
+  }
+
+  // click bursts: expanding rings of light
+  for(let i=P.bursts.length-1;i>=0;i--){
+    const burst = P.bursts[i];
+    const age = Math.max(0, t - burst.t);
+    if(age>1.6){ P.bursts.splice(i,1); continue; }
+    const e = age/1.6;
+    const rr = Math.max(0.001, e*R*1.1);
+    const al = (1-e)*0.9;
+    const bg = b.createRadialGradient(burst.x,burst.y, rr*0.6, burst.x,burst.y, rr);
+    bg.addColorStop(0,'rgba(255,255,245,0)');
+    bg.addColorStop(0.7, hsl(palette[burst.c][0],0.7,0.75, al*0.5));
+    bg.addColorStop(1,'rgba(255,255,245,0)');
+    b.fillStyle=bg;
+    b.beginPath(); b.arc(burst.x,burst.y,rr,0,TAU); b.fill();
+    // bright core
+    b.fillStyle = `rgba(255,252,240,${al*0.5})`;
+    b.beginPath(); b.arc(burst.x,burst.y,R*0.02*(1-e)+1,0,TAU); b.fill();
+  }
+
+  b.globalCompositeOperation = 'source-over';
+}
+
+/* ---- background ambience (drawn under glass) ---- */
+function drawBackdrop(t, lightAng, lightStr){
+  // deep stone niche vignette
+  const bg = g.createRadialGradient(CX,CY, R*0.2, CX,CY, Math.max(W,H)*0.75);
+  bg.addColorStop(0, '#0a0d18');
+  bg.addColorStop(0.5, '#06080f');
+  bg.addColorStop(1, '#020308');
+  g.fillStyle = bg;
+  g.fillRect(0,0,W,H);
+
+  // faint warm wash from the light direction (sunlight on the wall)
+  const wx = CX + Math.cos(lightAng)*R*1.2;
+  const wy = CY + Math.sin(lightAng)*R*1.2;
+  const wash = g.createRadialGradient(wx,wy,0, wx,wy, R*2.2);
+  wash.addColorStop(0, `rgba(255,225,170,${0.05*lightStr})`);
+  wash.addColorStop(1, 'rgba(255,225,170,0)');
+  g.fillStyle = wash;
+  g.fillRect(0,0,W,H);
+}
+
+/* ---- film grain (static, redrawn on resize) ---- */
+function buildGrain(){
+  n.clearRect(0,0,W,H);
+  const img = n.createImageData(Math.floor(W*DPR), Math.floor(H*DPR));
+  const d = img.data;
+  for(let i=0;i<d.length;i+=4){
+    const v = (Math.random()*255)|0;
+    d[i]=d[i+1]=d[i+2]=v; d[i+3]=255;
+  }
+  // draw at native pixels
+  n.save();
+  n.setTransform(1,0,0,1,0,0);
+  n.putImageData(img,0,0);
+  n.restore();
+}
+
+/* ============================================================
+   Animation loop
+   ============================================================ */
+let t0 = performance.now();
+function frame(now){
+  const t = (now - t0)/1000;
+
+  // smooth pointer -> light tilt
+  const dx = (P.mx - CX)/R;          // -~1..1
+  const dy = (P.my - CY)/R;
+  P.tx = lerp(P.tx, clamp(dx,-1.4,1.4), 0.06);
+  P.ty = lerp(P.ty, clamp(dy,-1.4,1.4), 0.06);
+
+  // light angle: where the sun is, derived from pointer position around center
+  // base: top-left sun, nudged by pointer
+  const baseSun = -Math.PI*0.65;
+  const lightAng = baseSun + P.tx*0.9 + P.ty*0.5 + Math.sin(t*0.07)*0.15;
+  const lightStr = clamp(0.85 + (P.tx*P.tx+P.ty*P.ty)*0.25, 0.6, 1.4);
+
+  // rotation: drag momentum + gentle idle drift
+  if(!P.dragging){
+    P.rot += P.rotV;
+    P.rotV *= 0.95;
+    P.rot += 0.0006; // slow constant drift
+  }
+  // zoom breathe
+  P.zoom = lerp(P.zoom, P.zoomT, 0.08);
+  // idle subtle breathe
+  const breathe = 1 + Math.sin(t*0.4)*0.012;
+  const renderZoom = P.zoom * breathe;
+  const savedZoom = P.zoom; P.zoom = renderZoom;
+
+  // ---- draw glass ----
+  drawBackdrop(t, lightAng, lightStr);
+  // outer cells first (back), then inner so leading layers nicely
+  // sort by ring desc
+  if(frame._sorted!==petalSeed){ cells.sort((a,c)=>c.ring-a.ring); frame._sorted=petalSeed; }
+  for(const c of cells) drawGlassCell(g, c, P.rot, lightAng, lightStr, t);
+  drawHub(g, P.rot, lightAng, lightStr, t);
+
+  // outer iron frame ring
+  g.beginPath();
+  g.arc(CX,CY, R*1.0*P.zoom, 0, TAU);
+  g.lineWidth = clamp(R*0.03*P.zoom, 3, 16);
+  g.strokeStyle = 'rgba(10,9,14,0.9)';
+  g.stroke();
+  g.lineWidth = clamp(R*0.006*P.zoom, 1, 4);
+  g.strokeStyle = 'rgba(120,110,140,0.25)';
+  g.stroke();
+
+  P.zoom = savedZoom;
+
+  // ---- beams on top ----
+  drawBeams(t, lightAng, lightStr);
+
+  requestAnimationFrame(frame);
+}
+
+/* ============================================================
+   Events
+   ============================================================ */
+function setPointer(x,y){ P.mx=x; P.my=y; }
+
+window.addEventListener('pointermove', (e)=>{
+  setPointer(e.clientX, e.clientY);
+  if(P.dragging){
+    const a = angleAt(e.clientX, e.clientY);
+    let da = a - P.lastA;
+    if(da> Math.PI) da-=TAU; if(da<-Math.PI) da+=TAU;
+    P.rot += da;
+    P.rotV = da; // momentum
+    P.lastA = a;
+  }
+});
+window.addEventListener('pointerdown', (e)=>{
+  P.dragging = true;
+  P.lastA = angleAt(e.clientX,e.clientY);
+  P.downX = e.clientX; P.downY=e.clientY; P.downT=performance.now();
+});
+window.addEventListener('pointerup', (e)=>{
+  P.dragging=false;
+  // treat as click (burst) if minimal movement + quick
+  const moved = Math.hypot(e.clientX-(P.downX||0), e.clientY-(P.downY||0));
+  const quick = performance.now()-(P.downT||0) < 350;
+  if(moved<6 && quick){
+    P.bursts.push({x:e.clientX, y:e.clientY, t:(performance.now()-t0)/1000, c:(Math.random()*palette.length)|0});
+  }
+});
+window.addEventListener('pointercancel', ()=>{ P.dragging=false; });
+
+window.addEventListener('wheel', (e)=>{
+  e.preventDefault();
+  P.zoomT = clamp(P.zoomT - e.deltaY*0.0009, 0.6, 1.8);
+},{passive:false});
+
+// touch pinch -> zoom
+let pinchD0=null;
+window.addEventListener('touchstart',(e)=>{
+  if(e.touches.length===2){
+    pinchD0 = Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
+    P.pinchZoom0 = P.zoomT;
+  }
+},{passive:false});
+window.addEventListener('touchmove',(e)=>{
+  if(e.touches.length===2 && pinchD0){
+    e.preventDefault();
+    const d = Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
+    P.zoomT = clamp(P.pinchZoom0 * (d/pinchD0), 0.6, 1.8);
+    // center pointer between fingers for light
+    setPointer((e.touches[0].clientX+e.touches[1].clientX)/2,(e.touches[0].clientY+e.touches[1].clientY)/2);
+  }
+},{passive:false});
+window.addEventListener('touchend',(e)=>{ if(e.touches.length<2) pinchD0=null; });
+
+window.addEventListener('keydown',(e)=>{
+  if(e.key==='r'||e.key==='R'){ buildWindow(); frame._sorted=-1; }
+  if(e.key==='s'||e.key==='S'){
+    // composite glass + beams into a temp canvas and download
+    const tmp = document.createElement('canvas');
+    tmp.width=cG.width; tmp.height=cG.height;
+    const tc=tmp.getContext('2d');
+    tc.drawImage(cG,0,0);
+    tc.globalCompositeOperation='screen';
+    tc.drawImage(cB,0,0);
+    const a=document.createElement('a');
+    a.download='rosace_'+Date.now()+'.png';
+    a.href=tmp.toDataURL('image/png');
+    a.click();
+  }
+});
+
+window.addEventListener('resize', resize);
+
+/* ---- boot ---- */
+resize();
+buildWindow();
+frame._sorted = -1;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

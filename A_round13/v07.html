@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>CULTURE — 박테리아 군집</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#04060a; }
+  body {
+    font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    -webkit-user-select:none; user-select:none; -webkit-tap-highlight-color:transparent;
+    touch-action:none; cursor:crosshair;
+  }
+  #stage { position:fixed; inset:0; display:block; }
+  /* dual stacked canvases */
+  canvas { position:fixed; inset:0; width:100%; height:100%; display:block; }
+  #field { z-index:1; }   /* glow / nutrient haze field */
+  #ink   { z-index:2; }   /* crisp colony + agents */
+
+  /* vignette + dish rim, pure CSS so it paints instantly */
+  #vig {
+    position:fixed; inset:0; z-index:3; pointer-events:none;
+    background:
+      radial-gradient(120% 120% at 50% 42%, rgba(0,0,0,0) 55%, rgba(0,0,0,.55) 100%),
+      radial-gradient(closest-side at 50% 50%, rgba(0,0,0,0) 78%, rgba(6,10,16,.9) 100%);
+    mix-blend-mode:multiply;
+  }
+  #ui {
+    position:fixed; z-index:5; left:0; right:0; top:0; pointer-events:none;
+    display:flex; justify-content:space-between; align-items:flex-start;
+    padding:18px 22px; color:#7fe9c0; mix-blend-mode:screen;
+  }
+  #ui .l { letter-spacing:.34em; font-size:11px; opacity:.85; }
+  #ui .l b { color:#e7fff5; font-weight:600; }
+  #ui .r { text-align:right; font-size:10px; line-height:1.7; letter-spacing:.12em; opacity:.6; }
+  #hint {
+    position:fixed; z-index:5; left:0; right:0; bottom:0; pointer-events:none;
+    text-align:center; padding:16px; color:#a7f0d6; font-size:10.5px;
+    letter-spacing:.26em; opacity:.55; mix-blend-mode:screen;
+    transition:opacity 1.4s ease;
+  }
+  #hint.dim { opacity:0; }
+  @media (max-width:560px){
+    #ui { padding:14px 16px; }
+    #ui .l { letter-spacing:.22em; font-size:10px; }
+    #ui .r { font-size:9px; letter-spacing:.08em; }
+    #hint { letter-spacing:.18em; font-size:9.5px; }
+  }
+</style>
+</head>
+<body>
+  <canvas id="field"></canvas>
+  <canvas id="ink"></canvas>
+  <div id="vig"></div>
+  <div id="ui">
+    <div class="l"><b>CULTURE</b> &nbsp;//&nbsp; AGAR No.13</div>
+    <div class="r" id="stat">colonies&nbsp;—<br>biomass&nbsp;—</div>
+  </div>
+  <div id="hint">움직여서 영양분을 흘리세요 · 클릭으로 새 군집 · SPACE 재배양</div>
+
+<script>
+(() => {
+"use strict";
+
+/* ============================================================
+   CULTURE — generative bacterial colony growth
+   Two-layer pipeline:
+     1) field canvas: a persistent, slowly-decaying nutrient/glow
+        haze, plus a low-res additive "biomass" deposit map. Gives
+        the soft chromatic bloom of a real petri dish under light.
+     2) ink canvas: thousands of motile agents (bacteria) that
+        perform chemotaxis up a nutrient gradient, branch, divide,
+        and die — painted crisply on top.
+   The mouse/touch is a nutrient drip. Click seeds a new colony.
+   ============================================================ */
+
+const fieldC = document.getElementById('field');
+const inkC   = document.getElementById('ink');
+const fctx   = fieldC.getContext('2d');
+const ictx   = inkC.getContext('2d', { alpha:true });
+const stat   = document.getElementById('stat');
+const hint   = document.getElementById('hint');
+
+let W=0, H=0, DPR=1, MIN=0;
+// precomputed soft glow sprites bucketed by hue — far cheaper than
+// calling createRadialGradient per agent every frame.
+const GLOW_S = 64, GLOW_BUCKETS = 36;
+const GLOW = [];
+(function buildGlows(){
+  for (let b=0;b<GLOW_BUCKETS;b++){
+    const hue = (b/GLOW_BUCKETS)*360;
+    const cv=document.createElement('canvas'); cv.width=GLOW_S; cv.height=GLOW_S;
+    const g=cv.getContext('2d');
+    const rg=g.createRadialGradient(GLOW_S/2,GLOW_S/2,0,GLOW_S/2,GLOW_S/2,GLOW_S/2);
+    rg.addColorStop(0,  `hsla(${hue} 90% 62% / 0.55)`);
+    rg.addColorStop(0.45,`hsla(${hue} 90% 52% / 0.16)`);
+    rg.addColorStop(1,  `hsla(${hue} 90% 50% / 0)`);
+    g.fillStyle=rg; g.fillRect(0,0,GLOW_S,GLOW_S);
+    GLOW.push(cv);
+  }
+})();
+function glowFor(hue){
+  let h=((hue%360)+360)%360;
+  return GLOW[Math.min(GLOW_BUCKETS-1, (h/360*GLOW_BUCKETS)|0)];
+}
+// nutrient field is a coarse grid for cheap diffusion
+let GW=0, GH=0, GS=0;          // grid w, h, cell-size(px)
+let nutrient=null;             // Float32Array gradient food
+let nutNext=null;
+let occ=null;                  // Uint8 occupancy (colony has grown here)
+const PALETTES = [
+  // h0/h1 = colony hue range, hot = nutrient-rich tip hue,
+  // agar = lit dish gel tint [H,S,L], rim = bright dish edge glow hue
+  { name:'verdigris', h0:158, h1:190, hot:78,  agar:[168,46,11], rim:172 },
+  { name:'plasma',    h0:288, h1:332, hot:46,  agar:[284,40,12], rim:312 },
+  { name:'aurora',    h0:172, h1:128, hot:88,  agar:[196,52,12], rim:166 },
+  { name:'amber',     h0:38,  h1:12,  hot:52,  agar:[28,55,11 ], rim:34  },
+  { name:'cyanblood', h0:196, h1:340, hot:58,  agar:[206,50,12], rim:200 },
+];
+let PAL = PALETTES[0];
+
+const TAU = Math.PI*2;
+const rnd = (a=1,b=0)=> b + Math.random()*(a-b);
+const clamp=(v,a,b)=> v<a?a:(v>b?b:v);
+function pick(arr){ return arr[(Math.random()*arr.length)|0]; }
+
+/* ---------- agents ---------- */
+// Agents are tip cells. Each carries a colony id (for hue) and energy.
+let agents=[];
+let CAP=0;                     // population cap (perf)
+let colonies=[];              // {x,y,hue,age}
+let biomass=0;
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = Math.floor(innerWidth);
+  H = Math.floor(innerHeight);
+  MIN = Math.min(W,H);
+  for (const c of [fieldC, inkC]){
+    c.width = Math.floor(W*DPR);
+    c.height= Math.floor(H*DPR);
+  }
+  fctx.setTransform(DPR,0,0,DPR,0,0);
+  ictx.setTransform(DPR,0,0,DPR,0,0);
+
+  // nutrient grid ~ 7px cells, capped for perf on large screens
+  GS = clamp(Math.round(MIN/150), 5, 9);
+  GW = Math.ceil(W/GS)+2;
+  GH = Math.ceil(H/GS)+2;
+  nutrient = new Float32Array(GW*GH);
+  nutNext  = new Float32Array(GW*GH);
+  occ      = new Uint8Array(GW*GH);
+
+  // population cap scales with area but bounded
+  const area = W*H;
+  CAP = clamp(Math.round(area/760), 1100, 5200);
+
+  // seed an ambient food bath so colonies have somewhere to crawl
+  for (let i=0;i<nutrient.length;i++) nutrient[i] = 0.10 + Math.random()*0.06;
+
+  paintAgarBase();
+}
+
+/* one-time agar base wash on field layer so first paint already
+   looks like a lit petri dish (no loading gate). builds agarGrad for
+   reuse as the slow field re-wash. */
+let agarGrad=null;
+function paintAgarBase(){
+  fctx.setTransform(DPR,0,0,DPR,0,0);
+  const [ah,as,al]=PAL.agar;
+  // deep backdrop
+  fctx.fillStyle = '#04060a';
+  fctx.fillRect(0,0,W,H);
+
+  // luminous gel: bright off-centre key light falling on the agar
+  const lx=W*0.42, ly=H*0.38, rad=MIN*0.95;
+  const g = fctx.createRadialGradient(lx,ly, MIN*0.02, lx,ly, rad);
+  g.addColorStop(0,    `hsl(${ah} ${as+10}% ${al+22}%)`);
+  g.addColorStop(0.32, `hsl(${ah} ${as+6}%  ${al+10}%)`);
+  g.addColorStop(0.62, `hsl(${ah} ${as}%    ${al+2}%)`);
+  g.addColorStop(1,    `hsl(${ah} ${as-6}%  ${Math.max(2,al-7)}%)`);
+  agarGrad = g;
+  fctx.fillStyle = g; fctx.fillRect(0,0,W,H);
+
+  // bright dish rim arc (the meniscus catching light)
+  fctx.globalCompositeOperation='lighter';
+  const rg = fctx.createRadialGradient(W*0.5,H*0.5, MIN*0.40, W*0.5,H*0.5, MIN*0.52);
+  rg.addColorStop(0, 'hsla(0 0% 0% / 0)');
+  rg.addColorStop(0.86,`hsla(${PAL.rim} 60% 60% / 0.10)`);
+  rg.addColorStop(1, 'hsla(0 0% 0% / 0)');
+  fctx.fillStyle=rg; fctx.fillRect(0,0,W,H);
+  fctx.globalCompositeOperation='source-over';
+
+  // faint condensation speckle + gel grain for texture
+  for (let i=0;i<MIN*1.1;i++){
+    const x=rnd(W), y=rnd(H), r=rnd(1.5,.3);
+    const bright = i%3===0;
+    fctx.globalAlpha = bright?0.045:0.06;
+    fctx.fillStyle = bright? '#cfeede':'#060b12';
+    fctx.beginPath(); fctx.arc(x,y,r,0,TAU); fctx.fill();
+  }
+  fctx.globalAlpha=1;
+}
+
+/* grid helpers */
+function gIdx(gx,gy){ return gy*GW+gx; }
+function worldToGrid(x,y){ return [clamp((x/GS+1)|0,1,GW-2), clamp((y/GS+1)|0,1,GH-2)]; }
+
+/* deposit nutrient (mouse drip / colony seed food) */
+function drip(x,y,amt,rad){
+  const [cx,cy]=worldToGrid(x,y);
+  const r = Math.max(1,(rad/GS)|0);
+  for (let gy=-r; gy<=r; gy++) for (let gx=-r; gx<=r; gx++){
+    const d=Math.hypot(gx,gy); if (d>r) continue;
+    const ix=clamp(cx+gx,0,GW-1), iy=clamp(cy+gy,0,GH-1);
+    nutrient[gIdx(ix,iy)] += amt*(1-d/r);
+  }
+}
+
+/* ---------- colony / agent spawning ---------- */
+function spawnColony(x,y, hueOverride){
+  const hue = hueOverride!=null? hueOverride
+            : (Math.random()<0.5 ? PAL.h0 : PAL.h1) + rnd(20,-20);
+  colonies.push({x,y,hue,age:0});
+  drip(x,y, 1.6, MIN*0.10);
+  const n = 14;
+  for (let i=0;i<n;i++){
+    const a = (i/n)*TAU + rnd(0.3,-0.3);
+    addAgent(x,y, a, hue);
+  }
+}
+
+function addAgent(x,y,ang,hue){
+  if (agents.length>=CAP) return;
+  agents.push({
+    x,y, ang, hue,
+    spd: rnd(0.9,0.5),
+    energy: rnd(1,0.7),
+    age:0,
+    wob: rnd(0.6,-0.6),
+    div: rnd(160,70)|0,      // frames until it may divide
+    width: rnd(1.7,1.0),
+  });
+}
+
+/* ---------- the simulation step ---------- */
+let mx=-999, my=-999, pmx=-999, pmy=-999, down=false, moved=false;
+let t=0;
+
+function step(){
+  t++;
+
+  // --- diffuse nutrient field (cheap 4-neighbour, low rate) ---
+  // tiny ambient regrowth so the dish keeps slowly feeding colonies and
+  // growth expands outward instead of starving in place
+  const DIFF=0.15, DECAY=0.993, REGROW=0.0009, CAPFOOD=0.85;
+  for (let gy=1; gy<GH-1; gy++){
+    const row=gy*GW;
+    for (let gx=1; gx<GW-1; gx++){
+      const i=row+gx;
+      const v=nutrient[i];
+      const lap = (nutrient[i-1]+nutrient[i+1]+nutrient[i-GW]+nutrient[i+GW]) - 4*v;
+      let nv = (v + DIFF*lap) * DECAY + REGROW*(1-v);
+      if (nv>CAPFOOD) nv=CAPFOOD;
+      nutNext[i] = nv;
+    }
+  }
+  const tmp=nutrient; nutrient=nutNext; nutNext=tmp;
+
+  // mouse drips nutrient when moving
+  if (moved && mx>-900){
+    const dx=mx-pmx, dy=my-pmy;
+    const v=Math.hypot(dx,dy);
+    drip(mx,my, clamp(0.10+v*0.012,0.10,0.9), MIN*0.045);
+  }
+  pmx=mx; pmy=my; moved=false;
+
+  // gently re-wash the agar over the field haze so accumulated additive
+  // glow can never blow out to white over long sessions, while keeping
+  // the lit-dish base alive underneath the colonies.
+  if (t%3===0){
+    fctx.globalCompositeOperation='source-over';
+    fctx.globalAlpha=0.05;
+    fctx.fillStyle=agarGrad;
+    fctx.fillRect(0,0,W,H);
+    fctx.globalAlpha=1;
+  }
+
+  // --- agents ---
+  // fade the ink layer very slightly so growth fronts stay vivid while
+  // ancient structure slowly settles — keeps the colony record legible
+  ictx.globalCompositeOperation='source-over';
+  ictx.fillStyle='rgba(4,6,10,0.018)';
+  ictx.fillRect(0,0,W,H);
+  ictx.globalCompositeOperation='lighter';
+
+  let alive=0;
+  biomass *= 0.999;
+
+  // batch the additive glow on the field layer once per frame.
+  // throttle emission frequency as population rises to keep 60fps.
+  fctx.globalCompositeOperation='lighter';
+  const pop=agents.length;
+  const glowEvery = pop>2600?4 : pop>1500?3 : 2;
+
+  for (let k=agents.length-1;k>=0;k--){
+    const a=agents[k];
+    a.age++;
+    const glowSrc = glowFor(a.hue);
+
+    // sense nutrient gradient at three points (chemotaxis)
+    const sense = 6 + a.width*2;
+    const fL = sampleNut(a.x+Math.cos(a.ang-0.5)*sense, a.y+Math.sin(a.ang-0.5)*sense);
+    const fC = sampleNut(a.x+Math.cos(a.ang)*sense,     a.y+Math.sin(a.ang)*sense);
+    const fR = sampleNut(a.x+Math.cos(a.ang+0.5)*sense, a.y+Math.sin(a.ang+0.5)*sense);
+
+    // steer toward stronger food; add wobble + curl for organic dendrites
+    let turn = (fR-fL)*5.5 + a.wob*0.04;
+    turn += Math.sin(a.age*0.07 + a.wob*9)*0.05;
+    a.ang += clamp(turn,-0.6,0.6);
+
+    // mouse is a soft attractor too (nutrient drip already pulls,
+    // but a gentle direct bias makes interaction feel alive)
+    if (mx>-900){
+      const ddx=mx-a.x, ddy=my-a.y, dd=Math.hypot(ddx,ddy);
+      if (dd<MIN*0.5){
+        const want=Math.atan2(ddy,ddx);
+        let diff=((want-a.ang+Math.PI*3)%TAU)-Math.PI;
+        a.ang += diff*0.012*(1-dd/(MIN*0.5));
+      }
+    }
+
+    const food = Math.max(fC,0);
+    const sp = a.spd*(0.55+food*1.5);
+    a.x += Math.cos(a.ang)*sp;
+    a.y += Math.sin(a.ang)*sp;
+
+    // consume food, gain/lose energy
+    consumeNut(a.x,a.y, 0.05);
+    a.energy += food*0.07 - 0.0040;
+
+    // wrap-avoid: steer back from edges instead of hard kill (organic)
+    const m=MIN*0.02;
+    if (a.x<m) a.ang += 0.3; if (a.x>W-m) a.ang -= 0.3;
+    if (a.y<m) a.ang += 0.3; if (a.y>H-m) a.ang -= 0.3;
+    a.x=clamp(a.x,2,W-2); a.y=clamp(a.y,2,H-2);
+
+    // ---- render the tip ----
+    const e = clamp(a.energy,0,1.2);
+    // mid-luminance, high-saturation strands so the colony reads as
+    // SATURATED living colour (not grey) even when food is depleted
+    const lum = 40 + e*22 + food*40;
+    const sat = 88 + food*10;
+    const hh = a.hue;
+    const r = a.width*(0.8+food*1.0);
+    // body of the strand
+    ictx.fillStyle = `hsl(${hh} ${clamp(sat,55,100)}% ${clamp(lum,30,68)}%)`;
+    ictx.beginPath(); ictx.arc(a.x,a.y,r,0,TAU); ictx.fill();
+    // luminous hot core at well-fed growing tips (bioluminescence)
+    if (food>0.10 || e>0.80){
+      const ch = a.hue + (PAL.hot-a.hue)*clamp(food*1.8,0,0.78);
+      ictx.fillStyle = `hsl(${ch} 100% ${clamp(74+food*28,74,96)}%)`;
+      ictx.beginPath(); ictx.arc(a.x,a.y,r*0.55,0,TAU); ictx.fill();
+    }
+    // glow seed on field layer (additive haze) — the colony's aura.
+    // cheap pre-tinted sprite; emission throttled when crowded so the
+    // additive haze stays smooth at full population.
+    if ((t+k)%glowEvery===0){
+      const gr=(r*4.4+6);
+      fctx.drawImage(glowSrc, a.x-gr, a.y-gr, gr*2, gr*2);
+    }
+    biomass += r*0.02;
+
+    // ---- division (branching) ----
+    a.div--;
+    if (a.div<=0 && a.energy>0.50 && agents.length<CAP){
+      a.div = rnd(120,60)|0;
+      a.energy*=0.64;
+      const branchAng = a.ang + (Math.random()<0.5?1:-1)*rnd(1.0,0.45);
+      addAgent(a.x,a.y, branchAng, a.hue);
+      // occasional twin straight-ahead growth (dense fronts)
+      if (Math.random()<0.34) addAgent(a.x,a.y, a.ang+rnd(0.25,-0.25), a.hue);
+    }
+
+    // ---- death ----
+    if (a.energy<=0.02 || a.age>1800){
+      // leave a settled spore dot before dying
+      ictx.fillStyle=`hsla(${a.hue} 60% 30% / .5)`;
+      ictx.beginPath(); ictx.arc(a.x,a.y, a.width*0.8, 0, TAU); ictx.fill();
+      agents.splice(k,1);
+      continue;
+    }
+    alive++;
+  }
+
+  // if population collapses, sprinkle survivors from richest food cells
+  if (alive < 24 && t>40){
+    reseedFromFood(3);
+  }
+
+  // mouse nutrient bloom marker on field (additive living cursor)
+  if (mx>-900){
+    const gr=46;
+    fctx.drawImage(glowFor(PAL.hot), mx-gr, my-gr, gr*2, gr*2);
+  }
+  // field is left additive during the agent glow batch + marker; restore
+  fctx.globalCompositeOperation='source-over';
+
+  for (const c of colonies) c.age++;
+
+  if (t%20===0){
+    stat.innerHTML = `colonies&nbsp;${colonies.length}<br>biomass&nbsp;${Math.round(biomass)}`;
+  }
+}
+
+/* sample nutrient at world coord (bilinear-ish) */
+function sampleNut(x,y){
+  const fx=x/GS+1, fy=y/GS+1;
+  const gx=clamp(fx|0,1,GW-2), gy=clamp(fy|0,1,GH-2);
+  return nutrient[gIdx(gx,gy)];
+}
+function consumeNut(x,y,amt){
+  const [gx,gy]=worldToGrid(x,y);
+  const i=gIdx(gx,gy);
+  nutrient[i]=Math.max(0,nutrient[i]-amt);
+  occ[i]=1;
+}
+function reseedFromFood(n){
+  let best=[];
+  for (let i=0;i<nutrient.length;i+=7){
+    if (nutrient[i]>0.18){
+      const gx=i%GW, gy=(i/GW)|0;
+      best.push([(gx-1)*GS, (gy-1)*GS]);
+      if (best.length>200) break;
+    }
+  }
+  for (let i=0;i<n && best.length;i++){
+    const [x,y]=pick(best);
+    addAgent(x,y, rnd(TAU), pick(colonies)?.hue ?? PAL.h0);
+  }
+}
+
+/* ---------- loop with fixed-step accumulator for steady 60fps feel ---------- */
+let last=performance.now(), acc=0;
+const DT=1000/60;
+function frame(now){
+  acc += Math.min(now-last, 60); last=now;
+  let guard=0;
+  while (acc>=DT && guard<3){ step(); acc-=DT; guard++; }
+  requestAnimationFrame(frame);
+}
+
+/* ---------- interaction ---------- */
+function setMouse(x,y){ mx=x; my=y; moved=true; if(!hint.classList.contains('dim')){hint.classList.add('dim');} }
+inkC.addEventListener('pointermove', e=>{ setMouse(e.clientX,e.clientY); }, {passive:true});
+inkC.addEventListener('pointerdown', e=>{
+  down=true; setMouse(e.clientX,e.clientY);
+  spawnColony(e.clientX,e.clientY);
+}, {passive:true});
+window.addEventListener('pointerup', ()=>{ down=false; }, {passive:true});
+inkC.addEventListener('pointerleave', ()=>{ mx=-999; my=-999; }, {passive:true});
+
+window.addEventListener('keydown', e=>{
+  if (e.code==='Space'){ e.preventDefault(); recompose(); }
+}, {passive:false});
+
+/* swap palette + reset on space (re-culture) */
+function recompose(){
+  let np; do { np=pick(PALETTES); } while(np===PAL && PALETTES.length>1);
+  PAL=np;
+  agents.length=0; colonies.length=0; biomass=0;
+  resize();          // repaints agar base in new palette + clears grid
+  ictx.setTransform(DPR,0,0,DPR,0,0);
+  ictx.clearRect(0,0,W,H);
+  seedInitial();
+}
+
+/* initial autonomous culture so first paint is already alive */
+function seedInitial(){
+  const cx=W*0.5, cy=H*0.5;
+  // several colonies spread across the dish for a full composition
+  const seeds = [
+    [cx,            cy,            PAL.h0],
+    [cx+MIN*0.26,   cy-MIN*0.16,   PAL.h1],
+    [cx-MIN*0.24,   cy+MIN*0.18,   PAL.h0+rnd(34,-10)],
+    [cx+MIN*0.20,   cy+MIN*0.22,   PAL.h1+rnd(20,-20)],
+    [cx-MIN*0.28,   cy-MIN*0.14,   PAL.h0+rnd(20,-20)],
+  ];
+  for (const [x,y,h] of seeds) spawnColony(clamp(x,W*0.1,W*0.9), clamp(y,H*0.12,H*0.88), h);
+
+  // ambient food veins radiating out so growth has direction & reach
+  for (let i=0;i<9;i++){
+    const a=rnd(TAU), len=MIN*rnd(0.5,0.25);
+    let x=cx+rnd(MIN*0.1,-MIN*0.1), y=cy+rnd(MIN*0.1,-MIN*0.1);
+    for (let s=0;s<len;s+=GS){
+      x+=Math.cos(a)*GS; y+=Math.sin(a)*GS;
+      drip(x,y,0.55,GS*2.2);
+    }
+  }
+}
+
+/* ---------- boot ---------- */
+window.addEventListener('resize', ()=>{
+  const oldAgents=agents.map(a=>({...a}));
+  resize();
+  ictx.setTransform(DPR,0,0,DPR,0,0);
+  ictx.clearRect(0,0,W,H);
+  agents=oldAgents.filter(a=>a.x<W&&a.y<H);
+}, {passive:true});
+
+PAL = pick(PALETTES);
+resize();
+seedInitial();
+
+/* warm-start: run many steps before first visible frame so the very
+   first painted frame already shows established, branching colonies,
+   not a blank dish — satisfies "first paint is the artwork" */
+for (let i=0;i<150;i++) step();
+
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

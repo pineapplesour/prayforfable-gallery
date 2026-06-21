@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>486 DITHER RENDERER</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<style>
+  :root{
+    /* limited 486 / VGA sunset palette */
+    --c-bg:        #2a1820;
+    --c-bg2:       #3a2230;
+    --c-maroon:    #4a1f2b;
+    --c-rust:      #b8502a;
+    --c-orange:    #d97a3c;
+    --c-salmon:    #e89b6c;
+    --c-peach:     #f2c79a;
+    --c-teal:      #2f7d76;
+    --c-teal-d:    #1d5450;
+    --c-green:     #3a6b4a;
+    --c-ink:       #1a0e14;
+    --c-line:      #6a3b3f;
+    --c-chip:      #2f7d76;
+    --c-chip-ink:  #d8f3ee;
+    --px: 1px;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ height:100%; margin:0; }
+  body{
+    background:
+      repeating-linear-gradient(0deg, rgba(0,0,0,.16) 0 2px, rgba(0,0,0,0) 2px 4px),
+      radial-gradient(120% 120% at 70% -10%, #3a2230 0%, #241019 60%, #160a10 100%);
+    color:var(--c-peach);
+    font-family:'VT323', monospace;
+    -webkit-font-smoothing:none;
+    image-rendering:pixelated;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:18px;
+    min-height:100vh;
+  }
+
+  /* ---- retro OS window ---- */
+  .win{
+    width:min(1120px, 100%);
+    background:var(--c-bg);
+    border:3px solid var(--c-ink);
+    box-shadow:
+      0 0 0 2px var(--c-line),
+      8px 8px 0 0 rgba(0,0,0,.55);
+    image-rendering:pixelated;
+  }
+  .titlebar{
+    display:flex; align-items:center; gap:8px;
+    background:linear-gradient(180deg, var(--c-rust), var(--c-maroon));
+    border-bottom:3px solid var(--c-ink);
+    padding:6px 8px;
+    user-select:none;
+  }
+  .tb-dots{ display:flex; gap:5px; }
+  .tb-dots i{
+    width:13px; height:13px; display:block;
+    border:2px solid var(--c-ink);
+    background:var(--c-peach);
+  }
+  .tb-dots i.r{ background:#e0683f; }
+  .tb-dots i.y{ background:#e7b463; }
+  .tb-dots i.g{ background:#5aa37a; }
+  .tb-title{
+    font-family:'Press Start 2P', monospace;
+    font-size:10px; letter-spacing:2px;
+    color:var(--c-peach);
+    text-transform:uppercase;
+    text-shadow:1px 1px 0 var(--c-ink);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .tb-spacer{ flex:1; }
+  .tb-btn{
+    font-family:'Press Start 2P', monospace;
+    font-size:9px; color:var(--c-peach);
+    border:2px solid var(--c-ink);
+    background:var(--c-orange);
+    padding:3px 5px; cursor:pointer; line-height:1;
+    text-shadow:1px 1px 0 var(--c-ink);
+  }
+  .tb-btn:active{ transform:translate(1px,1px); }
+
+  .menubar{
+    display:flex; gap:0;
+    background:var(--c-bg2);
+    border-bottom:2px solid var(--c-line);
+    font-family:'Press Start 2P', monospace;
+    font-size:8px; letter-spacing:1px;
+    color:var(--c-salmon);
+  }
+  .menubar span{ padding:6px 10px; border-right:2px solid var(--c-line); cursor:default; }
+  .menubar span:hover{ background:var(--c-maroon); color:var(--c-peach); }
+
+  .workspace{
+    display:flex; gap:0; align-items:stretch;
+  }
+
+  /* ---- canvas viewport ---- */
+  .viewport{
+    flex:1; min-width:0;
+    position:relative;
+    background:#160a10;
+    border-right:3px solid var(--c-ink);
+    padding:14px;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .screen-frame{
+    position:relative;
+    width:100%;
+    border:3px solid var(--c-ink);
+    box-shadow:inset 0 0 0 2px var(--c-line), inset 0 0 22px rgba(0,0,0,.7);
+    background:#0d0509;
+    overflow:hidden;
+  }
+  canvas#out{
+    display:block; width:100%; height:auto;
+    image-rendering:pixelated;
+  }
+  .scanlines{
+    position:absolute; inset:0; pointer-events:none;
+    background:repeating-linear-gradient(0deg, rgba(0,0,0,.28) 0 2px, rgba(0,0,0,0) 2px 4px);
+    mix-blend-mode:multiply;
+    opacity:0;
+    transition:opacity .12s;
+  }
+  .scanlines.on{ opacity:1; }
+  .grain{
+    position:absolute; inset:0; pointer-events:none; opacity:0;
+  }
+  .grain.on{ opacity:.06; }
+  .scr-tag{
+    position:absolute; left:8px; bottom:6px;
+    font-family:'Press Start 2P', monospace; font-size:8px; letter-spacing:1px;
+    color:var(--c-peach); text-shadow:1px 1px 0 var(--c-ink);
+    pointer-events:none; opacity:.8;
+  }
+
+  /* CONTROL chip overlay (top-right on the screen) */
+  .control-chip{
+    position:absolute; top:8px; right:8px;
+    background:var(--c-chip);
+    border:2px solid var(--c-ink);
+    border-radius:11px;
+    padding:4px 10px;
+    display:flex; align-items:center; gap:6px;
+    box-shadow:2px 2px 0 rgba(0,0,0,.5);
+  }
+  .control-chip b{
+    font-family:'Press Start 2P', monospace; font-size:8px; letter-spacing:2px;
+    color:var(--c-chip-ink);
+  }
+  .control-chip .led{
+    width:7px; height:7px; background:#bdf3c0; border:1px solid var(--c-ink);
+    box-shadow:0 0 5px #8fe79a; display:block;
+  }
+
+  /* ---- control panel ---- */
+  .panel{
+    width:300px; flex:none;
+    background:var(--c-bg);
+    padding:12px;
+    display:flex; flex-direction:column; gap:12px;
+    font-size:17px;
+  }
+  .pl-head{
+    font-family:'Press Start 2P', monospace; font-size:9px; letter-spacing:2px;
+    color:var(--c-peach); text-transform:uppercase;
+    background:var(--c-teal-d);
+    border:2px solid var(--c-ink);
+    padding:7px 9px;
+    box-shadow:2px 2px 0 rgba(0,0,0,.45);
+    display:flex; align-items:center; gap:7px;
+  }
+  .pl-head .led{ width:8px; height:8px; background:#bdf3c0; border:1px solid var(--c-ink); box-shadow:0 0 6px #8fe79a; }
+
+  fieldset{
+    border:2px solid var(--c-line);
+    margin:0; padding:9px;
+    background:var(--c-bg2);
+  }
+  legend{
+    font-family:'Press Start 2P', monospace; font-size:8px; letter-spacing:1px;
+    color:var(--c-salmon); padding:0 5px; text-transform:uppercase;
+  }
+  .row{ display:flex; align-items:center; justify-content:space-between; margin:2px 0 6px; }
+  .row label{
+    font-family:'VT323', monospace; font-size:18px; letter-spacing:1px;
+    color:var(--c-salmon); text-transform:uppercase;
+  }
+  .val{
+    font-family:'Press Start 2P', monospace; font-size:8px; color:var(--c-peach);
+    background:var(--c-ink); border:1px solid var(--c-line);
+    padding:3px 5px; min-width:42px; text-align:center;
+  }
+
+  /* retro slider */
+  input[type=range]{
+    -webkit-appearance:none; appearance:none;
+    width:100%; height:14px; margin:0 0 4px;
+    background:var(--c-ink);
+    border:2px solid var(--c-line);
+    cursor:pointer;
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none; appearance:none;
+    width:14px; height:14px; margin-top:0;
+    background:var(--c-orange);
+    border:2px solid var(--c-ink);
+    box-shadow:0 0 0 2px var(--c-rust);
+  }
+  input[type=range]::-moz-range-thumb{
+    width:12px; height:12px;
+    background:var(--c-orange);
+    border:2px solid var(--c-ink);
+    border-radius:0;
+  }
+
+  /* palette + scene + dither selectors as chips */
+  .chips{ display:flex; flex-wrap:wrap; gap:6px; }
+  .chip{
+    font-family:'Press Start 2P', monospace; font-size:8px; letter-spacing:1px;
+    color:var(--c-peach);
+    background:var(--c-maroon);
+    border:2px solid var(--c-ink);
+    padding:6px 7px; cursor:pointer; text-transform:uppercase;
+    box-shadow:2px 2px 0 rgba(0,0,0,.4);
+    user-select:none;
+  }
+  .chip:active{ transform:translate(1px,1px); box-shadow:1px 1px 0 rgba(0,0,0,.4); }
+  .chip.sel{ background:var(--c-teal); color:var(--c-chip-ink); box-shadow:2px 2px 0 var(--c-teal-d); }
+
+  .swatch{ display:flex; gap:0; height:14px; border:2px solid var(--c-ink); margin-top:8px; }
+  .swatch span{ flex:1; }
+
+  .toggles{ display:flex; gap:6px; flex-wrap:wrap; }
+
+  .statusbar{
+    border-top:3px solid var(--c-ink);
+    background:var(--c-bg2);
+    display:flex; gap:0; align-items:stretch;
+    font-family:'Press Start 2P', monospace; font-size:8px; letter-spacing:1px;
+    color:var(--c-salmon);
+  }
+  .statusbar div{ padding:6px 9px; border-right:2px solid var(--c-line); white-space:nowrap; }
+  .statusbar .grow{ flex:1; border-right:none; color:var(--c-peach); overflow:hidden; text-overflow:ellipsis; }
+
+  @media (max-width:760px){
+    body{ padding:8px; }
+    .workspace{ flex-direction:column; }
+    .viewport{ border-right:none; border-bottom:3px solid var(--c-ink); padding:10px; }
+    .panel{ width:100%; }
+    .statusbar{ flex-wrap:wrap; }
+    .statusbar .grow{ flex-basis:100%; }
+    .tb-title{ font-size:8px; }
+    .menubar{ flex-wrap:wrap; }
+  }
+</style>
+</head>
+<body>
+  <div class="win" role="application" aria-label="486 Dither Renderer">
+    <!-- title bar -->
+    <div class="titlebar">
+      <div class="tb-dots"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+      <div class="tb-title">486 DITHER RENDERER . EXE</div>
+      <div class="tb-spacer"></div>
+      <div class="tb-btn" title="minimize">_</div>
+      <div class="tb-btn" title="maximize">[ ]</div>
+      <div class="tb-btn" title="close">X</div>
+    </div>
+
+    <!-- menu bar -->
+    <div class="menubar">
+      <span>FILE</span><span>EDIT</span><span>VIEW</span><span>RENDER</span><span>HELP</span>
+    </div>
+
+    <div class="workspace">
+      <!-- viewport -->
+      <div class="viewport">
+        <div class="screen-frame">
+          <canvas id="out" width="512" height="384" aria-label="dithered render output"></canvas>
+          <div class="scanlines on" id="scan"></div>
+          <canvas class="grain on" id="grain"></canvas>
+          <div class="control-chip"><span class="led"></span><b>CONTROL</b></div>
+          <div class="scr-tag" id="scrtag">VGA 320x240 . 16 COL</div>
+        </div>
+      </div>
+
+      <!-- control panel -->
+      <div class="panel">
+        <div class="pl-head"><span class="led"></span>CONTROL PANEL</div>
+
+        <fieldset>
+          <legend>SCENE</legend>
+          <div class="chips" id="sceneChips">
+            <div class="chip sel" data-scene="bridge">BRIDGE</div>
+            <div class="chip" data-scene="mountain">MTN</div>
+            <div class="chip" data-scene="city">CITY</div>
+            <div class="chip" data-scene="desert">DUNE</div>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>PALETTE</legend>
+          <div class="chips" id="palChips">
+            <div class="chip sel" data-pal="sunset">SUNSET</div>
+            <div class="chip" data-pal="dusk">DUSK</div>
+            <div class="chip" data-pal="amber">AMBER</div>
+            <div class="chip" data-pal="teal">TEAL</div>
+            <div class="chip" data-pal="mono">MONO</div>
+          </div>
+          <div class="swatch" id="swatch"></div>
+        </fieldset>
+
+        <fieldset>
+          <legend>DITHER MATRIX</legend>
+          <div class="chips" id="matChips">
+            <div class="chip" data-mat="2">BAYER 2</div>
+            <div class="chip sel" data-mat="4">BAYER 4</div>
+            <div class="chip" data-mat="8">BAYER 8</div>
+            <div class="chip" data-mat="0">NONE</div>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>RENDER PARAMS</legend>
+          <div class="row"><label for="px">PIXEL SIZE</label><span class="val" id="pxVal">4</span></div>
+          <input type="range" id="px" min="1" max="10" step="1" value="4">
+
+          <div class="row"><label for="str">DITHER STR</label><span class="val" id="strVal">100%</span></div>
+          <input type="range" id="str" min="0" max="100" step="1" value="100">
+
+          <div class="row"><label for="lev">COLOR LVLS</label><span class="val" id="levVal">4</span></div>
+          <input type="range" id="lev" min="2" max="8" step="1" value="4">
+
+          <div class="row"><label for="sun">SUN POS</label><span class="val" id="sunVal">50</span></div>
+          <input type="range" id="sun" min="0" max="100" step="1" value="58">
+        </fieldset>
+
+        <fieldset>
+          <legend>CRT FX</legend>
+          <div class="toggles">
+            <div class="chip sel" id="tScan">SCANLINE</div>
+            <div class="chip sel" id="tGrain">GRAIN</div>
+            <div class="chip" id="tAnim">DRIFT</div>
+          </div>
+        </fieldset>
+      </div>
+    </div>
+
+    <!-- status bar -->
+    <div class="statusbar">
+      <div id="stMode">BAYER 4x4</div>
+      <div id="stRes">512x384</div>
+      <div id="stCol">16 COL</div>
+      <div class="grow" id="stMsg">READY. ORDERED DITHER ENGINE ONLINE.</div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  "use strict";
+  const out  = document.getElementById('out');
+  const ctx  = out.getContext('2d', { willReadFrequently:true });
+  const W = out.width, H = out.height;
+
+  // offscreen full-res scene buffer
+  const scene = document.createElement('canvas');
+  scene.width = W; scene.height = H;
+  const sctx = scene.getContext('2d', { willReadFrequently:true });
+
+  // ---- palettes (limited, 486/VGA sunset family) ----
+  const PALS = {
+    sunset: ['#1a0e14','#3a1822','#5a2330','#8a3a2e','#b8502a','#d97a3c','#e89b6c','#f2c79a','#2f7d76','#3a6b4a'],
+    dusk:   ['#120a1a','#241433','#3a2057','#5a2e6e','#86406e','#b65a63','#d98a64','#f0c39a','#2c6f8f','#7fbfd1'],
+    amber:  ['#1a0f04','#2e1c06','#4a300a','#6e4a10','#9a6a16','#c08a22','#e0ad3f','#f6d97a','#3a3018','#7a6630'],
+    teal:   ['#06141a','#0c2630','#123a44','#1d5450','#2f7d76','#4fa394','#8fd1bf','#d6f3e6','#b8502a','#e89b6c'],
+    mono:   ['#0d0a0c','#241c20','#3d3036','#564449','#74595e','#967377','#bd9a9c','#ecd9d6'],
+  };
+
+  // ---- Bayer matrices (normalized 0..1, threshold) ----
+  const BAYER2 = [[0,2],[3,1]];
+  const BAYER4 = [
+    [ 0, 8, 2,10],
+    [12, 4,14, 6],
+    [ 3,11, 1, 9],
+    [15, 7,13, 5]
+  ];
+  // build 8x8 by recursion from 4x4
+  function buildBayer8(){
+    const m=[];
+    for(let y=0;y<8;y++){ m[y]=[]; for(let x=0;x<8;x++){
+      const q = BAYER4[y%4][x%4];
+      const add = 16*((y<4?0:0)); // base
+      // standard recursive: M8 = 4*M4(tiled) + offset by quadrant
+      let quad;
+      if(y<4 && x<4) quad=0; else if(y<4) quad=2; else if(x<4) quad=3; else quad=1;
+      m[y][x] = 4*BAYER4[y%4][x%4] + quad;
+    }}
+    return m;
+  }
+  const BAYER8 = buildBayer8();
+  function matrixFor(size){
+    if(size===2) return {m:BAYER2, n:2, max:4};
+    if(size===4) return {m:BAYER4, n:4, max:16};
+    if(size===8) return {m:BAYER8, n:8, max:64};
+    return null; // none
+  }
+
+  // ---- state ----
+  const S = {
+    scene:'bridge', pal:'sunset', mat:4,
+    px:4, str:100, lev:4, sun:58,
+    scan:true, grain:true, anim:false
+  };
+
+  // ---- hex -> rgb cache ----
+  function hex2rgb(h){
+    const n = parseInt(h.slice(1),16);
+    return [ (n>>16)&255, (n>>8)&255, n&255 ];
+  }
+  let palRGB = PALS[S.pal].map(hex2rgb);
+
+  // nearest palette color (euclidean in rgb)
+  function nearest(r,g,b){
+    let bi=0, bd=1e12;
+    for(let i=0;i<palRGB.length;i++){
+      const p=palRGB[i];
+      const dr=r-p[0], dg=g-p[1], db=b-p[2];
+      const d=dr*dr+dg*dg+db*db;
+      if(d<bd){ bd=d; bi=i; }
+    }
+    return palRGB[bi];
+  }
+
+  // ============ PROCEDURAL SCENES (drawn at full res, smooth) ============
+  function lerpHex(a,b,t){
+    const A=hex2rgb(a),B=hex2rgb(b);
+    return `rgb(${Math.round(A[0]+(B[0]-A[0])*t)},${Math.round(A[1]+(B[1]-A[1])*t)},${Math.round(A[2]+(B[2]-A[2])*t)})`;
+  }
+
+  function drawSky(p, sunY){
+    // vertical gradient using palette extremes for sunset glow
+    const g = sctx.createLinearGradient(0,0,0,H*0.72);
+    g.addColorStop(0,   p[1]);
+    g.addColorStop(0.45,p[3]);
+    g.addColorStop(0.72,p[4]);
+    g.addColorStop(0.9, p[5]);
+    g.addColorStop(1,   p[6]);
+    sctx.fillStyle=g; sctx.fillRect(0,0,W,H);
+    // sun
+    const sx=W*0.5, sy=sunY;
+    const sg = sctx.createRadialGradient(sx,sy,2,sx,sy,90);
+    sg.addColorStop(0, p[7]);
+    sg.addColorStop(0.5, p[6]);
+    sg.addColorStop(1, 'rgba(0,0,0,0)');
+    sctx.fillStyle=sg; sctx.beginPath(); sctx.arc(sx,sy,90,0,7); sctx.fill();
+    sctx.fillStyle=p[7]; sctx.beginPath(); sctx.arc(sx,sy,30,0,7); sctx.fill();
+  }
+  function drawWater(p, horizon, sunY){
+    const g = sctx.createLinearGradient(0,horizon,0,H);
+    g.addColorStop(0, p[5]);
+    g.addColorStop(0.4, p[4]);
+    g.addColorStop(1, p[2]);
+    sctx.fillStyle=g; sctx.fillRect(0,horizon,W,H-horizon);
+    // sun reflection column
+    sctx.save();
+    sctx.globalAlpha=0.55;
+    for(let y=horizon; y<H; y+=3){
+      const t=(y-horizon)/(H-horizon);
+      const w = 16 + t*60;
+      sctx.fillStyle = p[7];
+      sctx.globalAlpha = 0.5*(1-t);
+      sctx.fillRect(W*0.5 - w/2, y, w, 2);
+    }
+    sctx.restore();
+  }
+
+  const SCENES = {
+    bridge(p, sunY){
+      const horizon = H*0.62;
+      drawSky(p, sunY);
+      // far hills
+      sctx.fillStyle=p[2];
+      sctx.beginPath(); sctx.moveTo(0,horizon);
+      sctx.lineTo(0,horizon-30); sctx.quadraticCurveTo(W*0.2,horizon-60,W*0.45,horizon-20);
+      sctx.lineTo(W,horizon-10); sctx.lineTo(W,horizon); sctx.closePath(); sctx.fill();
+      drawWater(p, horizon, sunY);
+      // bridge towers + cables (rust)
+      const rust=p[4], deck=horizon-46;
+      sctx.strokeStyle=rust; sctx.fillStyle=rust;
+      // two towers
+      [W*0.30, W*0.70].forEach(tx=>{
+        sctx.fillRect(tx-7, deck-120, 6, 120);
+        sctx.fillRect(tx+1, deck-120, 6, 120);
+        sctx.fillRect(tx-9, deck-120, 22, 6);
+        sctx.fillRect(tx-9, deck-95, 22, 5);
+      });
+      // main suspension cables (parabolas)
+      sctx.lineWidth=3;
+      sctx.beginPath();
+      sctx.moveTo(0, deck-60);
+      sctx.quadraticCurveTo(W*0.30, deck-118, W*0.50, deck-70);
+      sctx.quadraticCurveTo(W*0.70, deck-118, W, deck-60);
+      sctx.stroke();
+      // deck
+      sctx.fillRect(0, deck, W, 8);
+      // vertical hangers
+      sctx.lineWidth=1;
+      for(let x=10;x<W;x+=14){
+        const t = x/W;
+        let cy;
+        if(x < W*0.5){ const u=x/(W*0.5); cy = deck-60 + (deck-70-(deck-60))*0 ; cy = (deck-60)*(1-u)+(deck-118)*(u)*(1-u)*2 + (deck-70)*u; }
+        cy = cableY(x, deck);
+        sctx.beginPath(); sctx.moveTo(x, cy); sctx.lineTo(x, deck); sctx.stroke();
+      }
+      // deck reflection
+      sctx.save(); sctx.globalAlpha=0.25; sctx.fillStyle=rust;
+      sctx.fillRect(0, deck+ (horizon-deck)*2 + 8, W, 6); sctx.restore();
+    },
+    mountain(p, sunY){
+      const horizon=H*0.66;
+      drawSky(p,sunY);
+      // layered ridges
+      const layers=[[0.30,p[3]],[0.46,p[4]],[0.62,p[2]]];
+      layers.forEach(([yy,col],i)=>{
+        const base=H*yy+ i*8;
+        sctx.fillStyle=col; sctx.beginPath(); sctx.moveTo(0,H);
+        sctx.lineTo(0,base);
+        let x=0;
+        while(x<W){
+          const peak = base - (40 - i*8) * (0.4+Math.abs(Math.sin(x*0.013+i)));
+          sctx.lineTo(x, peak);
+          x+=W/8;
+        }
+        sctx.lineTo(W,base); sctx.lineTo(W,H); sctx.closePath(); sctx.fill();
+      });
+      // snowy caps highlight
+      sctx.fillStyle=p[7];
+      sctx.save(); sctx.globalAlpha=0.4;
+      for(let x=0;x<W;x+=W/8){
+        const base=H*0.30;
+        const peak = base - 40*(0.4+Math.abs(Math.sin(x*0.013)));
+        sctx.beginPath(); sctx.moveTo(x,peak); sctx.lineTo(x+10,peak+10); sctx.lineTo(x-10,peak+10); sctx.closePath(); sctx.fill();
+      }
+      sctx.restore();
+      drawWater(p,horizon,sunY);
+    },
+    city(p, sunY){
+      const horizon=H*0.70;
+      drawSky(p,sunY);
+      drawWater(p,horizon,sunY);
+      // skyline silhouette
+      sctx.fillStyle=p[1];
+      let x=0; let seed=7;
+      while(x<W){
+        seed = (seed*1103515245+12345)&0x7fffffff;
+        const bw = 16 + (seed%26);
+        seed = (seed*1103515245+12345)&0x7fffffff;
+        const bh = 30 + (seed%110);
+        sctx.fillRect(x, horizon-bh, bw, bh);
+        // windows (warm)
+        sctx.fillStyle=p[6];
+        for(let wy=horizon-bh+6; wy<horizon-6; wy+=9){
+          for(let wx=x+4; wx<x+bw-4; wx+=8){
+            seed=(seed*1103515245+12345)&0x7fffffff;
+            if(seed%3===0) sctx.fillRect(wx,wy,3,4);
+          }
+        }
+        sctx.fillStyle=p[1];
+        x += bw+3;
+      }
+      // reflection band
+      sctx.save(); sctx.globalAlpha=0.2; sctx.fillStyle=p[1];
+      sctx.fillRect(0,horizon,W,40); sctx.restore();
+    },
+    desert(p, sunY){
+      const horizon=H*0.6;
+      drawSky(p,sunY);
+      // dunes (sandy)
+      const dunes=[[0.60,p[5]],[0.72,p[4]],[0.85,p[3]],[1.0,p[2]]];
+      dunes.forEach(([yy,col],i)=>{
+        const base=H*yy;
+        sctx.fillStyle=col; sctx.beginPath(); sctx.moveTo(0,H); sctx.lineTo(0,base);
+        for(let x=0;x<=W;x+=W/6){
+          const cy = base - 26*Math.sin(x*0.01 + i*1.3);
+          sctx.quadraticCurveTo(x+W/12, cy-14, x+W/6, base - 26*Math.sin((x+W/6)*0.01+i*1.3));
+        }
+        sctx.lineTo(W,H); sctx.closePath(); sctx.fill();
+      });
+      // a small cactus / palm hint
+      sctx.fillStyle=p[1];
+      sctx.fillRect(W*0.78, horizon+10, 5, 60);
+      sctx.fillRect(W*0.78-12, horizon+24, 12, 5);
+      sctx.fillRect(W*0.78-12, horizon+10, 5, 18);
+      sctx.fillRect(W*0.78+5, horizon+34, 12, 5);
+      sctx.fillRect(W*0.78+12, horizon+18, 5, 18);
+    }
+  };
+  function cableY(x, deck){
+    if(x <= W*0.5){
+      const u=x/(W*0.5);
+      return (1-u)*(deck-60) + u*(deck-70) + (-Math.sin(u*Math.PI))*((deck-60)-(deck-118));
+    } else {
+      const u=(x-W*0.5)/(W*0.5);
+      return (1-u)*(deck-70) + u*(deck-60) + (-Math.sin(u*Math.PI))*((deck-60)-(deck-118));
+    }
+  }
+
+  // ============ ORDERED DITHER PIPELINE ============
+  function render(){
+    const pal = PALS[S.pal];
+    palRGB = pal.map(hex2rgb);
+    const sunY = H*0.18 + (1-S.sun/100)*H*0.42;
+
+    // 1) draw smooth procedural scene at full res
+    sctx.clearRect(0,0,W,H);
+    (SCENES[S.scene]||SCENES.bridge)(pal, sunY);
+
+    // 2) read scene pixels
+    const src = sctx.getImageData(0,0,W,H);
+    const sd = src.data;
+
+    // 3) ordered dither into a low-res grid (pixel-size blocks), then upscale
+    const px = S.px;
+    const gw = Math.ceil(W/px), gh = Math.ceil(H/px);
+    const dst = ctx.createImageData(W,H);
+    const dd = dst.data;
+
+    const mat = matrixFor(S.mat);          // null => no dither
+    const levels = S.lev;                  // quantization levels per channel pre-palette
+    const strength = S.str/100;            // dither amplitude
+
+    for(let by=0; by<gh; by++){
+      for(let bx=0; bx<gw; bx++){
+        // sample center of block from scene
+        const cx = Math.min(W-1, bx*px + (px>>1));
+        const cy = Math.min(H-1, by*px + (px>>1));
+        const si = (cy*W+cx)*4;
+        let r=sd[si], g=sd[si+1], b=sd[si+2];
+
+        // ordered-dither threshold offset
+        if(mat){
+          const t = (mat.m[by % mat.n][bx % mat.n] + 0.5)/mat.max - 0.5; // -0.5..0.5
+          const amp = (255/levels) * strength;
+          r = r + t*amp;
+          g = g + t*amp;
+          b = b + t*amp;
+        }
+        // pre-quantize to N levels then snap to palette (gives true dithered banding)
+        const step = 255/(levels-1);
+        r = Math.max(0,Math.min(255, Math.round(r/step)*step));
+        g = Math.max(0,Math.min(255, Math.round(g/step)*step));
+        b = Math.max(0,Math.min(255, Math.round(b/step)*step));
+        const c = nearest(r,g,b);
+
+        // write block
+        const x0=bx*px, y0=by*px;
+        const xe=Math.min(W,x0+px), ye=Math.min(H,y0+px);
+        for(let y=y0;y<ye;y++){
+          let di=(y*W+x0)*4;
+          for(let x=x0;x<xe;x++){
+            dd[di]=c[0]; dd[di+1]=c[1]; dd[di+2]=c[2]; dd[di+3]=255;
+            di+=4;
+          }
+        }
+      }
+    }
+    ctx.putImageData(dst,0,0);
+    updateSwatch(pal);
+    updateStatus();
+  }
+
+  // ============ GRAIN overlay ============
+  const grainC = document.getElementById('grain');
+  const gctx = grainC.getContext('2d');
+  function drawGrain(){
+    grainC.width=W; grainC.height=H;
+    const im=gctx.createImageData(W,H), d=im.data;
+    for(let i=0;i<d.length;i+=4){
+      const v=(Math.random()*255)|0;
+      d[i]=d[i+1]=d[i+2]=v; d[i+3]=255;
+    }
+    gctx.putImageData(im,0,0);
+  }
+  drawGrain();
+
+  // ============ UI WIRING ============
+  function updateSwatch(pal){
+    const sw=document.getElementById('swatch');
+    sw.innerHTML = pal.map(c=>`<span style="background:${c}"></span>`).join('');
+  }
+  function updateStatus(){
+    const matName = S.mat===0 ? 'NO DITHER' : 'BAYER '+S.mat+'x'+S.mat;
+    document.getElementById('stMode').textContent = matName;
+    document.getElementById('stRes').textContent = W+'x'+H;
+    document.getElementById('stCol').textContent = PALS[S.pal].length+' COL';
+    document.getElementById('scrtag').textContent = 'VGA '+W+'x'+H+' . '+PALS[S.pal].length+' COL';
+    document.getElementById('stMsg').textContent =
+      'SCENE='+S.scene.toUpperCase()+' PAL='+S.pal.toUpperCase()+' PX='+S.px+' STR='+S.str+'% LVL='+S.lev;
+  }
+
+  function bindChips(containerId, key, cast){
+    const c=document.getElementById(containerId);
+    c.addEventListener('click', e=>{
+      const chip=e.target.closest('.chip'); if(!chip) return;
+      [...c.querySelectorAll('.chip')].forEach(k=>k.classList.remove('sel'));
+      chip.classList.add('sel');
+      S[key] = cast(chip.dataset[key==='mat'?'mat':(key==='scene'?'scene':'pal')]);
+      render();
+    });
+  }
+  bindChips('sceneChips','scene', v=>v);
+  bindChips('palChips','pal', v=>v);
+  bindChips('matChips','mat', v=>parseInt(v,10));
+
+  function bindSlider(id, key, fmt){
+    const el=document.getElementById(id);
+    const val=document.getElementById(id+'Val');
+    el.addEventListener('input', ()=>{
+      S[key]=parseInt(el.value,10);
+      val.textContent = fmt(S[key]);
+      render();
+    });
+    val.textContent = fmt(S[key]);
+  }
+  bindSlider('px','px', v=>v);
+  bindSlider('str','str', v=>v+'%');
+  bindSlider('lev','lev', v=>v);
+  bindSlider('sun','sun', v=>v);
+
+  // toggles
+  const scanEl=document.getElementById('scan');
+  document.getElementById('tScan').addEventListener('click', e=>{
+    S.scan=!S.scan; e.target.classList.toggle('sel',S.scan); scanEl.classList.toggle('on',S.scan);
+  });
+  document.getElementById('tGrain').addEventListener('click', e=>{
+    S.grain=!S.grain; e.target.classList.toggle('sel',S.grain); grainC.classList.toggle('on',S.grain);
+  });
+
+  // drift animation (sun slowly moves)
+  let raf=null, t0=0;
+  function loop(ts){
+    if(!t0) t0=ts;
+    const dt=(ts-t0)/1000;
+    S.sun = 30 + Math.sin(dt*0.25)*28 + 28; // 0..86 range-ish
+    document.getElementById('sun').value=Math.round(S.sun);
+    document.getElementById('sunVal').textContent=Math.round(S.sun);
+    render();
+    if(S.anim) raf=requestAnimationFrame(loop);
+  }
+  document.getElementById('tAnim').addEventListener('click', e=>{
+    S.anim=!S.anim; e.target.classList.toggle('sel',S.anim);
+    if(S.anim){ t0=0; raf=requestAnimationFrame(loop); }
+    else if(raf){ cancelAnimationFrame(raf); raf=null; }
+  });
+
+  // title bar buttons (cosmetic but reactive)
+  document.querySelectorAll('.tb-btn').forEach(b=>{
+    b.addEventListener('click', ()=>{
+      document.getElementById('stMsg').textContent = 'BTN: '+b.getAttribute('title').toUpperCase()+' (NO-OP IN DEMO)';
+    });
+  });
+
+  // first paint
+  render();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>雨だれの池</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@300&family=JetBrains+Mono:wght@300&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#2b332e;}
+  #scene{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none;}
+  #cap{
+    position:fixed;left:50%;bottom:26px;transform:translateX(-50%);
+    color:rgba(232,238,228,.62);
+    font:300 11px/1.6 "JetBrains Mono","Hiragino Kaku Gothic ProN",monospace;
+    letter-spacing:.26em;
+    background:rgba(20,30,24,.28);
+    padding:7px 20px;border-radius:99px;
+    -webkit-backdrop-filter:blur(7px);backdrop-filter:blur(7px);
+    pointer-events:none;white-space:nowrap;user-select:none;
+    text-transform:none;
+  }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<div id="cap">雨だれの池 ── 静かな波紋、ゆっくりと</div>
+<script>
+'use strict';
+(()=>{
+const TAU=Math.PI*2;
+const cv=document.getElementById('scene');
+const ctx=cv.getContext('2d');
+
+let W=0,H=0,DPR=1,DIAG=0;
+
+/* ============ 오프스크린 레이어 ============
+   bottom : 탁한 연못 바닥(라디얼 그라데이션 + 입자 노이즈 + 흐릿한 진흙 얼룩)  — 정적
+   grain  : 미세 모노 노이즈 타일 — 정적, 위에 곱하기
+   파문/떠다니는 요소/굴절은 매 프레임 합성
+*/
+const bCan=document.createElement('canvas'),bx=bCan.getContext('2d');
+const gCan=document.createElement('canvas'),gx=gCan.getContext('2d');
+
+/* ---- 뮤트 팔레트 (위에서 본 탁한 물) ---- */
+const PAL={
+  deep :'#26302a',   // 가장 깊은 그늘
+  mid  :'#3a473c',   // 중간 물
+  high :'#566150',   // 얕은/빛 닿는 곳
+  silt :'#6d7259',   // 진흙/모래 톤
+  water:[58,74,62]   // 물 색(파문 굴절 틴트)
+};
+
+/* ---------------- 바닥(정적 페인팅) ---------------- */
+function paintBottom(){
+  bCan.width=W;bCan.height=H;
+  const c=bx;
+  // 본 그라데이션: 약간 오프센터 라이트 풀
+  const cx=W*0.44, cy=H*0.40;
+  const g=c.createRadialGradient(cx,cy,0,cx,cy,DIAG*0.78);
+  g.addColorStop(0,PAL.high);
+  g.addColorStop(0.42,PAL.mid);
+  g.addColorStop(0.82,PAL.deep);
+  g.addColorStop(1,'#1d2521');
+  c.fillStyle=g;c.fillRect(0,0,W,H);
+
+  // 흐릿한 진흙 얼룩(깊이의 불균질) — 부드러운 라디얼들
+  for(let i=0;i<11;i++){
+    const x=Math.random()*W, y=Math.random()*H, r=DIAG*(0.10+Math.random()*0.22);
+    const dark=Math.random()<0.6;
+    const ag=c.createRadialGradient(x,y,0,x,y,r);
+    if(dark){
+      ag.addColorStop(0,'rgba(24,32,26,0.26)');
+      ag.addColorStop(1,'rgba(24,32,26,0)');
+    }else{
+      ag.addColorStop(0,'rgba(110,114,89,0.14)');
+      ag.addColorStop(1,'rgba(110,114,89,0)');
+    }
+    c.fillStyle=ag;c.beginPath();c.arc(x,y,r,0,TAU);c.fill();
+  }
+
+  // 가라앉은 입자(모래/유기물) — 밝고 어두운 점
+  const np=Math.round(W*H/620);
+  for(let i=0;i<np;i++){
+    const x=Math.random()*W, y=Math.random()*H, r=Math.random()*1.5+0.3;
+    c.fillStyle=Math.random()<0.5
+      ?'rgba(214,210,178,'+(Math.random()*0.07).toFixed(3)+')'
+      :'rgba(16,22,16,'+(Math.random()*0.11).toFixed(3)+')';
+    c.beginPath();c.arc(x,y,r,0,TAU);c.fill();
+  }
+
+  // 가장자리 비네팅(깊이로 가라앉음)
+  const vg=c.createRadialGradient(W*0.5,H*0.5,DIAG*0.30,W*0.5,H*0.5,DIAG*0.62);
+  vg.addColorStop(0,'rgba(0,0,0,0)');
+  vg.addColorStop(1,'rgba(10,16,12,0.55)');
+  c.fillStyle=vg;c.fillRect(0,0,W,H);
+}
+
+/* ---------------- 미세 노이즈 타일 ---------------- */
+function paintGrain(){
+  const S=180;
+  gCan.width=S;gCan.height=S;
+  const img=gx.createImageData(S,S);
+  const d=img.data;
+  for(let i=0;i<d.length;i+=4){
+    const v=200+Math.random()*55;        // 밝은 모노
+    d[i]=d[i+1]=d[i+2]=v;
+    d[i+3]=Math.random()*14;             // 매우 옅음
+  }
+  gx.putImageData(img,0,0);
+}
+
+/* ============ 떠다니는 요소 (깊이 레이어) ============
+   - leaf : 연잎(반투명 둥근 원반, V자 노치) — 표면 가까이
+   - disc : 흐릿한 수면 거품/기름막 디스크 — 깊이별 blur
+   - petal: 작은 꽃잎 — 표면, 천천히 표류·회전
+   depth(0=깊음/흐림/어둡, 1=표면/선명/밝음)
+*/
+let floaters=[];
+function rnd(a,b){return a+Math.random()*(b-a);}
+
+function makeFloaters(){
+  floaters=[];
+  const area=W*H;
+  // 연잎
+  const nLeaf=Math.max(3,Math.round(area/240000));
+  for(let i=0;i<nLeaf;i++){
+    floaters.push({
+      kind:'leaf',
+      x:Math.random()*W, y:Math.random()*H,
+      r:rnd(DIAG*0.045,DIAG*0.085),
+      depth:rnd(0.45,0.9),
+      rot:Math.random()*TAU, vr:rnd(-0.04,0.04),
+      drift:Math.random()*TAU, dspd:rnd(0.05,0.14),
+      hue:rnd(96,128), sat:rnd(10,20), li:rnd(24,40),
+      bob:Math.random()*TAU
+    });
+  }
+  // 흐릿한 디스크(거품/기름막)
+  const nDisc=Math.max(6,Math.round(area/120000));
+  for(let i=0;i<nDisc;i++){
+    floaters.push({
+      kind:'disc',
+      x:Math.random()*W, y:Math.random()*H,
+      r:rnd(DIAG*0.012,DIAG*0.060),
+      depth:rnd(0.15,1.0),
+      drift:Math.random()*TAU, dspd:rnd(0.04,0.13),
+      bob:Math.random()*TAU
+    });
+  }
+  // 꽃잎
+  const nPet=Math.max(5,Math.round(area/200000));
+  for(let i=0;i<nPet;i++){
+    floaters.push({
+      kind:'petal',
+      x:Math.random()*W, y:Math.random()*H,
+      r:rnd(DIAG*0.010,DIAG*0.020),
+      depth:rnd(0.6,1.0),
+      rot:Math.random()*TAU, vr:rnd(-0.12,0.12),
+      drift:Math.random()*TAU, dspd:rnd(0.06,0.16),
+      tint:Math.random()<0.5?'#d9b8b0':'#e6d3c0',
+      bob:Math.random()*TAU
+    });
+  }
+  // 깊은 것부터 그리도록 정렬(페인터 알고리즘)
+  floaters.sort((a,b)=>a.depth-b.depth);
+}
+
+function updateFloaters(t,dt){
+  for(const f of floaters){
+    // 느린 표류 — 깊을수록 더 느리게
+    const sp=f.dspd*(0.4+f.depth*0.8);
+    f.drift+=dt*0.05*(Math.random()<0.5?1:-1)*0.0; // 방향 거의 고정
+    f.x+=Math.cos(f.drift)*sp*dt*12;
+    f.y+=Math.sin(f.drift)*sp*dt*12;
+    if(f.rot!==undefined) f.rot+=f.vr*dt;
+    // 화면 랩어라운드(부드럽게)
+    const pad=f.r+10;
+    if(f.x<-pad)f.x=W+pad; else if(f.x>W+pad)f.x=-pad;
+    if(f.y<-pad)f.y=H+pad; else if(f.y>H+pad)f.y=-pad;
+    f.bob+=dt*0.6;
+  }
+}
+
+function drawLeaf(c,f,t){
+  const bobx=Math.sin(f.bob)*f.r*0.02, boby=Math.cos(f.bob*0.8)*f.r*0.02;
+  c.save();
+  c.translate(f.x+bobx,f.y+boby);
+  c.rotate(f.rot);
+  const blur=(1-f.depth)*7;
+  c.filter=blur>0.3?`blur(${blur.toFixed(1)}px)`:'none';
+  const alpha=0.30+f.depth*0.38;
+  // 드리운 그림자(물속 깊이)
+  c.fillStyle='rgba(12,20,14,'+(0.16*f.depth).toFixed(3)+')';
+  c.beginPath();c.ellipse(f.r*0.10,f.r*0.12,f.r*1.02,f.r*1.0,0,0,TAU);c.fill();
+  // 잎 본체 — 라디얼 그라데이션
+  const g=c.createRadialGradient(-f.r*0.25,-f.r*0.25,f.r*0.1,0,0,f.r*1.05);
+  g.addColorStop(0,`hsla(${f.hue},${f.sat}%,${f.li+12}%,${alpha})`);
+  g.addColorStop(0.6,`hsla(${f.hue},${f.sat}%,${f.li}%,${alpha})`);
+  g.addColorStop(1,`hsla(${f.hue},${f.sat+4}%,${f.li-12}%,${alpha})`);
+  c.fillStyle=g;
+  // V 노치가 있는 원반
+  c.beginPath();
+  const notch=0.32; // 노치 각도 폭
+  c.arc(0,0,f.r,notch*0.5,TAU-notch*0.5,false);
+  c.lineTo(0,0);
+  c.closePath();
+  c.fill();
+  // 잎맥(미세한 방사선)
+  c.filter='none';
+  c.strokeStyle=`hsla(${f.hue},${f.sat}%,${f.li-18}%,${alpha*0.5})`;
+  c.lineWidth=Math.max(0.5,f.r*0.012);
+  const veins=7;
+  for(let i=0;i<veins;i++){
+    const a=notch*0.5+ (TAU-notch)*(i/(veins-1));
+    c.beginPath();c.moveTo(0,0);
+    c.lineTo(Math.cos(a)*f.r*0.92,Math.sin(a)*f.r*0.92);c.stroke();
+  }
+  // 가장자리 림 하이라이트
+  c.strokeStyle=`hsla(${f.hue},${f.sat}%,${f.li+22}%,${alpha*0.35})`;
+  c.lineWidth=Math.max(0.6,f.r*0.02);
+  c.beginPath();c.arc(0,0,f.r*0.97,notch*0.5,TAU-notch*0.5,false);c.stroke();
+  c.restore();
+}
+
+function drawDisc(c,f){
+  const blur=(1-f.depth)*9+1.5;
+  c.save();
+  c.translate(f.x,f.y);
+  c.filter=`blur(${blur.toFixed(1)}px)`;
+  const a=0.05+f.depth*0.13;
+  const g=c.createRadialGradient(-f.r*0.3,-f.r*0.3,0,0,0,f.r);
+  g.addColorStop(0,`rgba(150,160,140,${(a*1.4).toFixed(3)})`);
+  g.addColorStop(0.7,`rgba(90,104,86,${(a*0.7).toFixed(3)})`);
+  g.addColorStop(1,'rgba(70,84,66,0)');
+  c.fillStyle=g;
+  c.beginPath();c.arc(0,0,f.r,0,TAU);c.fill();
+  // 옅은 림(표면 장력 느낌)
+  c.strokeStyle=`rgba(190,198,180,${(a*0.6).toFixed(3)})`;
+  c.lineWidth=Math.max(0.5,f.r*0.04);
+  c.beginPath();c.arc(0,0,f.r*0.9,0,TAU);c.stroke();
+  c.restore();
+}
+
+function drawPetal(c,f){
+  const bobx=Math.sin(f.bob)*f.r*0.06;
+  c.save();
+  c.translate(f.x+bobx,f.y);
+  c.rotate(f.rot);
+  const blur=(1-f.depth)*4;
+  c.filter=blur>0.3?`blur(${blur.toFixed(1)}px)`:'none';
+  const a=0.30+f.depth*0.4;
+  // 그림자
+  c.fillStyle='rgba(10,16,12,'+(0.12*f.depth).toFixed(3)+')';
+  c.beginPath();c.ellipse(f.r*0.2,f.r*0.25,f.r*1.0,f.r*0.5,0,0,TAU);c.fill();
+  // 꽃잎(타원, 한쪽 뾰족)
+  c.globalAlpha=a;
+  const g=c.createLinearGradient(-f.r,0,f.r,0);
+  g.addColorStop(0,f.tint);
+  g.addColorStop(1,'rgba(255,255,255,0)');
+  c.fillStyle=f.tint;
+  c.beginPath();
+  c.moveTo(-f.r,0);
+  c.quadraticCurveTo(0,-f.r*0.7,f.r,0);
+  c.quadraticCurveTo(0,f.r*0.7,-f.r,0);
+  c.closePath();c.fill();
+  c.restore();
+  c.globalAlpha=1;
+  c.filter='none';
+}
+
+/* ============ 빗방울 파문 ============
+   각 파문: 중심(x,y), 시작시각, 최대반경, 수명.
+   여러 동심 ring + 중앙 임팩트 점. 천천히 퍼지며 페이드.
+   파문 위에 미세 굴절 하이라이트로 페인터리한 물결 느낌.
+*/
+let ripples=[];
+function spawnRipple(x,y,strength){
+  ripples.push({
+    x,y,t0:nowT,
+    life:rnd(3.6,5.4),
+    maxR:DIAG*rnd(0.05,0.12)*(0.7+strength*0.6),
+    rings:2+(Math.random()*2|0),
+    str:strength
+  });
+  if(ripples.length>60)ripples.shift();
+}
+
+function drawRipple(c,r){
+  const age=nowT-r.t0;
+  if(age>r.life)return false;
+  const p=age/r.life;                 // 0..1
+  const ease=1-Math.pow(1-p,2.2);     // 빠르게 시작해 느려짐
+  const baseR=r.maxR*ease;
+  const fade=Math.pow(1-p,1.4);       // 전체 페이드
+  c.save();
+  c.translate(r.x,r.y);
+
+  // 중앙 임팩트(초반에 살짝 솟구침)
+  if(p<0.25){
+    const ip=1-p/0.25;
+    const ir=r.maxR*0.06*ip;
+    const ig=c.createRadialGradient(0,0,0,0,0,ir+2);
+    ig.addColorStop(0,`rgba(220,228,210,${(0.30*ip).toFixed(3)})`);
+    ig.addColorStop(1,'rgba(220,228,210,0)');
+    c.fillStyle=ig;
+    c.beginPath();c.arc(0,0,ir+2,0,TAU);c.fill();
+  }
+
+  // 동심 ring들
+  for(let i=0;i<r.rings;i++){
+    const off=i*0.16;                 // ring 간 시간차
+    const rp=Math.max(0,p-off);
+    if(rp<=0)continue;
+    const re=1-Math.pow(1-Math.min(1,rp/(1-off)),2.2);
+    const rr=baseR*(1-i*0.18);
+    if(rr<1)continue;
+    const ringFade=fade*(1-i*0.22);
+    // 바깥 어두운 골(굴절 그림자)
+    c.strokeStyle=`rgba(20,30,24,${(0.20*ringFade).toFixed(3)})`;
+    c.lineWidth=Math.max(1,r.maxR*0.018);
+    c.beginPath();c.arc(0,0,rr*1.01,0,TAU);c.stroke();
+    // 밝은 마루(빛 굴절 하이라이트)
+    c.strokeStyle=`rgba(206,216,196,${(0.34*ringFade).toFixed(3)})`;
+    c.lineWidth=Math.max(0.8,r.maxR*0.012);
+    c.beginPath();c.arc(0,0,rr,0,TAU);c.stroke();
+  }
+
+  // 안쪽 매끈한 굴절 채움(물이 살짝 렌즈처럼)
+  if(baseR>2){
+    const lg=c.createRadialGradient(0,0,baseR*0.3,0,0,baseR);
+    lg.addColorStop(0,'rgba(120,132,112,0)');
+    lg.addColorStop(0.85,`rgba(120,132,112,${(0.06*fade).toFixed(3)})`);
+    lg.addColorStop(1,'rgba(120,132,112,0)');
+    c.fillStyle=lg;
+    c.beginPath();c.arc(0,0,baseR,0,TAU);c.fill();
+  }
+  c.restore();
+  return true;
+}
+
+/* ---------------- 합성 ---------------- */
+function compose(t){
+  // 1) 바닥
+  ctx.globalCompositeOperation='source-over';
+  ctx.drawImage(bCan,0,0);
+
+  // 2) 깊은 떠다니는 요소 (정렬되어 있으므로 순서대로)
+  for(const f of floaters){
+    if(f.kind==='leaf')drawLeaf(ctx,f,t);
+    else if(f.kind==='disc')drawDisc(ctx,f);
+    else drawPetal(ctx,f);
+  }
+
+  // 3) 파문(수면) — 떠다니는 요소 위
+  ripples=ripples.filter(r=>drawRipple(ctx,r));
+
+  // 4) 전역 물 틴트(깊이 흐림 통일감) + 상단 약한 빛 그라데이션
+  ctx.globalCompositeOperation='source-over';
+  const wt=ctx.createLinearGradient(0,0,0,H);
+  wt.addColorStop(0,`rgba(${PAL.water[0]},${PAL.water[1]},${PAL.water[2]},0.10)`);
+  wt.addColorStop(0.5,`rgba(${PAL.water[0]},${PAL.water[1]},${PAL.water[2]},0.18)`);
+  wt.addColorStop(1,`rgba(20,28,22,0.26)`);
+  ctx.fillStyle=wt;ctx.fillRect(0,0,W,H);
+
+  // 5) 미세 노이즈(곱하기 느낌 — 옅게 덮기)
+  ctx.globalCompositeOperation='overlay';
+  const tile=gCan.width;
+  const ox=(t*3)%tile, oy=(t*1.5)%tile;
+  for(let y=-tile;y<H+tile;y+=tile){
+    for(let x=-tile;x<W+tile;x+=tile){
+      ctx.drawImage(gCan,x-ox,y-oy);
+    }
+  }
+  ctx.globalCompositeOperation='source-over';
+
+  // 6) 최종 비네팅(부드러운 깊이 흐림 마감)
+  const fv=ctx.createRadialGradient(W*0.5,H*0.46,DIAG*0.26,W*0.5,H*0.5,DIAG*0.66);
+  fv.addColorStop(0,'rgba(0,0,0,0)');
+  fv.addColorStop(1,'rgba(8,14,10,0.42)');
+  ctx.fillStyle=fv;ctx.fillRect(0,0,W,H);
+}
+
+/* ---------------- 레이아웃 ---------------- */
+function resize(){
+  W=window.innerWidth;H=window.innerHeight;
+  DPR=Math.min(window.devicePixelRatio||1,2);
+  DIAG=Math.hypot(W,H);
+  cv.width=Math.round(W*DPR);
+  cv.height=Math.round(H*DPR);
+  cv.style.width=W+'px';cv.style.height=H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  paintBottom();
+  if(!floaters.length)makeFloaters(); else{
+    // 리사이즈 시 화면 안으로
+    for(const f of floaters){f.x=Math.min(W,Math.max(0,f.x));f.y=Math.min(H,Math.max(0,f.y));}
+  }
+}
+window.addEventListener('resize',resize);
+
+/* ---------------- 인터랙션(선택) — 클릭 시 파문 ---------------- */
+cv.addEventListener('pointerdown',e=>{
+  spawnRipple(e.clientX,e.clientY,1.0);
+});
+
+/* ---------------- 메인 루프 ---------------- */
+let nowT=0,last=0;
+let rainAcc=0, rainEvery=0.55;   // 평균 빗방울 간격(초)
+function frame(ts){
+  requestAnimationFrame(frame);
+  const t=ts/1000;
+  nowT=t;
+  const dt=Math.min(0.05,Math.max(0.001,t-last));
+  last=t;
+
+  // 절차적 빗방울: 포아송 느낌으로 무작위 시각에
+  rainAcc+=dt;
+  while(rainAcc>=rainEvery){
+    rainAcc-=rainEvery;
+    spawnRipple(Math.random()*W,Math.random()*H,rnd(0.45,1.0));
+    rainEvery=rnd(0.28,0.85);     // 다음 간격 무작위(고요-간헐)
+  }
+
+  updateFloaters(t,dt);
+  compose(t);
+}
+
+paintGrain();
+resize();
+// 시작 시 잔잔한 파문 몇 개로 빈 화면 방지(첫 페인트가 곧 씬)
+for(let i=0;i<5;i++){
+  const r=spawnRipple(Math.random()*W,Math.random()*H,rnd(0.4,0.9));
+}
+// 초반 파문은 진행된 상태로 보이게 시간 살짝 분산
+ripples.forEach((r,i)=>{r.t0=-(i*0.5);});
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>雲海 — sea of clouds</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@300;400&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#3b4250;}
+  #scene{position:fixed;inset:0;width:100%;height:100%;display:block;}
+  #grain{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;
+    opacity:.045;mix-blend-mode:overlay;}
+  #cap{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);
+    color:rgba(238,240,244,.62);
+    font:300 12px/1.6 "Zen Kaku Gothic New","Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;
+    letter-spacing:.42em;white-space:nowrap;pointer-events:none;
+    text-shadow:0 1px 8px rgba(20,26,38,.55);}
+  #cap b{font-weight:400;letter-spacing:.5em;}
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<canvas id="grain"></canvas>
+<div id="cap"><b>雲 海</b>　 ─ 　しずかに ながれる くものうみ、うえから</div>
+<script>
+'use strict';
+(()=>{
+const TAU=Math.PI*2;
+const sceneC=document.getElementById('scene');
+const grainC=document.getElementById('grain');
+const sx=sceneC.getContext('2d');
+const gx=grainC.getContext('2d');
+
+let W=0,H=0,dpr=1,diag=0;
+
+/* ============================================================
+   雲海 — top-down sea of clouds.
+   Same painterly-ambient grammar as the koi-pond reference, but the
+   medium is cloud, not water:
+     - turbid medium  -> a continuous, low-frequency cloud plain (the "sea")
+     - swimming koi    -> a few slow drifting cloud-islands (the protagonists)
+     - ripple disks    -> faint vapor whorls floating on the surface
+     - depth blur      -> per-layer haze, far = blurrier/cooler
+     - muted palette   -> cool dusk grey-blue valleys, warm low-sun crests
+     - tiny mono caption pinned at the bottom
+   ============================================================ */
+
+/* ---- muted dusk palette ---- */
+const SKY = {
+  deep0:'#262d3c', deep1:'#343b4c', deep2:'#454c5d',  // valley gaps (deep->shallow)
+  shadow:'#525a6c', body:'#888c9b', lit:'#c3c2c6', crest:'#ece7e1',
+  warm:'#d9c4a6'
+};
+
+/* ---------- offscreen layers (for per-depth haze blur) ---------- */
+const layerDefs=[
+  {blur:11, alpha:0.82, speed:0.45, tone:-0.10},  // 0 far  (cooler, hazier, dimmer)
+  {blur:5,  alpha:0.94, speed:0.80, tone: 0.00},  // 1 mid
+  {blur:1.5,alpha:1.00, speed:1.20, tone: 0.10}   // 2 near (warmer, crisper)
+];
+const layers=layerDefs.map(()=>document.createElement('canvas'));
+const lctx=layers.map(c=>c.getContext('2d'));
+const plain=document.createElement('canvas'); const pctx=plain.getContext('2d'); // continuous base sea
+
+/* ---------- color helpers ---------- */
+function lerpHex(a,b,t){
+  const pa=parseInt(a.slice(1),16), pb=parseInt(b.slice(1),16);
+  const ar=(pa>>16)&255,ag=(pa>>8)&255,ab=pa&255;
+  const br=(pb>>16)&255,bg=(pb>>8)&255,bb=pb&255;
+  return [Math.round(ar+(br-ar)*t),Math.round(ag+(bg-ag)*t),Math.round(ab+(bb-ab)*t)];
+}
+const rgba=(c,a)=>`rgba(${c[0]},${c[1]},${c[2]},${a})`;
+function toneColor(tone){ // 0..1 -> shadow..crest, muted
+  tone=Math.min(1,Math.max(0,tone));
+  if(tone<0.45) return lerpHex(SKY.shadow,SKY.body,tone/0.45);
+  if(tone<0.78) return lerpHex(SKY.body,SKY.lit,(tone-0.45)/0.33);
+  return lerpHex(SKY.lit,SKY.crest,(tone-0.78)/0.22);
+}
+
+/* ---------- the continuous cloud plain (low-frequency mass) ----------
+   A field of large, overlapping soft lobes that merge into one breathing
+   sea. Drawn once per frame onto `plain`, then blurred when composited.   */
+const plainLobes=[];
+function buildPlain(){
+  plainLobes.length=0;
+  const n=Math.round((W*H)/95000)+10;
+  for(let i=0;i<n;i++){
+    plainLobes.push({
+      bx:Math.random(), by:Math.random(),
+      r:(0.20+Math.random()*0.26),            // fraction of diag (larger, fuse)
+      tone:0.22+Math.random()*0.62,           // wider tonal spread
+      ph:Math.random()*TAU, ps:0.05+Math.random()*0.10,
+      ax:Math.random()*TAU, ay:Math.random()*TAU,
+      amp:0.012+Math.random()*0.02,
+      drift:(Math.random()-0.5)*0.004
+    });
+  }
+}
+function paintPlain(t){
+  pctx.setTransform(1,0,0,1,0,0);
+  // base wash so gaps still read as deep valley, not black
+  pctx.clearRect(0,0,W,H);
+  pctx.fillStyle=rgba(lerpHex(SKY.deep1,SKY.body,0.12),1);
+  pctx.fillRect(0,0,W,H);
+  pctx.globalCompositeOperation='source-over';
+  for(const l of plainLobes){
+    const breath=1+Math.sin(t*l.ps+l.ph)*0.05;
+    const x=(l.bx + Math.sin(t*0.05+l.ax)*l.amp + t*l.drift)%1.3;
+    const y=(l.by + Math.cos(t*0.045+l.ay)*l.amp);
+    const px=((x+1.3)%1.3 - 0.15)*W, py=y*H;
+    const r=l.r*diag*breath;
+    const tone=l.tone + Math.sin(t*l.ps*0.7+l.ph)*0.06;
+    const c=toneColor(tone);
+    const g=pctx.createRadialGradient(px-r*0.2,py-r*0.25,r*0.04, px,py,r);
+    g.addColorStop(0, rgba(c,0.95));
+    g.addColorStop(0.55, rgba(c,0.7));
+    g.addColorStop(1, rgba(c,0));
+    pctx.fillStyle=g;
+    pctx.beginPath();pctx.arc(px,py,r,0,TAU);pctx.fill();
+  }
+  // soft, FILLED valley shadows (center-dense -> transparent edge): no ring artifact.
+  pctx.globalCompositeOperation='source-over';
+  for(let i=1;i<plainLobes.length;i+=2){
+    const l=plainLobes[i];
+    const px=((l.bx*1.13+0.05)%1)*W, py=((l.by*0.89+0.07)%1)*H;
+    const r=l.r*diag*1.15;
+    const sh=lerpHex(SKY.deep0,SKY.deep1,0.30);
+    const g=pctx.createRadialGradient(px,py+r*0.1,0, px,py+r*0.1,r);
+    g.addColorStop(0, rgba(sh,0.34));
+    g.addColorStop(0.5, rgba(sh,0.16));
+    g.addColorStop(1, rgba(sh,0));
+    pctx.fillStyle=g;
+    pctx.beginPath();pctx.arc(px,py+r*0.1,r,0,TAU);pctx.fill();
+  }
+  // broad warm crest washes (center-dense): lifts a few zones, painterly contrast.
+  for(let i=0;i<plainLobes.length;i+=4){
+    const l=plainLobes[i];
+    const px=((l.bx*0.91+0.02)%1)*W, py=((l.by*1.07)%1)*H;
+    const r=l.r*diag*0.95;
+    const hi=lerpHex(SKY.lit,SKY.warm,0.4);
+    const g=pctx.createRadialGradient(px-r*0.15,py-r*0.2,0, px,py,r);
+    g.addColorStop(0, rgba(hi,0.22));
+    g.addColorStop(0.5, rgba(hi,0.08));
+    g.addColorStop(1, rgba(hi,0));
+    pctx.fillStyle=g;
+    pctx.beginPath();pctx.arc(px,py,r,0,TAU);pctx.fill();
+  }
+}
+
+/* ---------- drifting cloud-islands (the protagonists, = koi) ---------- */
+function makeIsland(layer){
+  const ld=layerDefs[layer];
+  const puffs=[];
+  const np=7+(Math.random()*5|0);
+  const stretch=0.9+Math.random()*0.9;
+  const ang0=Math.random()*TAU;
+  for(let i=0;i<np;i++){
+    // rad^1.1 keeps puffs clustered near center -> they fuse into one mass
+    const a=Math.random()*TAU, rad=Math.pow(Math.random(),1.1);
+    puffs.push({
+      ox:Math.cos(a)*rad*stretch, oy:Math.sin(a)*rad*0.62,
+      r:0.55+Math.random()*0.6, tone:Math.random(),
+      wob:Math.random()*TAU, wobS:0.12+Math.random()*0.22, wobR:0.03+Math.random()*0.05
+    });
+  }
+  const baseR=diag*(0.085+Math.random()*0.06)*(layer===2?1:layer===1?0.84:0.68);
+  const sp=(0.5+Math.random()*0.6);
+  return {
+    layer, x:Math.random()*W, y:Math.random()*H, baseR,
+    dir:ang0, dirT:ang0, turn:0, changeT:Math.random()*4, speed:sp,
+    breath:Math.random()*TAU, breathS:0.05+Math.random()*0.06,
+    rot:Math.random()*TAU, rotS:(Math.random()-0.5)*0.03,
+    puffs
+  };
+}
+let islands=[];
+function buildIslands(){
+  islands=[];
+  const counts=[4,4,3];
+  layerDefs.forEach((ld,li)=>{ for(let i=0;i<counts[li];i++) islands.push(makeIsland(li)); });
+}
+const angDiff=(a,b)=>{let d=a-b;while(d>Math.PI)d-=TAU;while(d<-Math.PI)d+=TAU;return d;};
+
+function paintIsland(ctx,c,t){
+  const breath=1+Math.sin(c.breath)*0.06;
+  const R=c.baseR*breath;
+  ctx.save();
+  ctx.translate(c.x,c.y);
+  ctx.rotate(c.rot + c.dir*0.0);
+  // under-shade (top-down volume)
+  for(const p of c.puffs){
+    const px=p.ox*R, py=p.oy*R+R*0.12, pr=p.r*R*1.08;
+    const g=ctx.createRadialGradient(px,py,0,px,py,pr);
+    g.addColorStop(0,'rgba(24,29,42,0.20)'); g.addColorStop(1,'rgba(24,29,42,0)');
+    ctx.fillStyle=g; ctx.beginPath();ctx.arc(px,py,pr,0,TAU);ctx.fill();
+  }
+  // body puffs (warm rim upper-left)
+  for(const p of c.puffs){
+    const wob=Math.sin(t*p.wobS+p.wob)*p.wobR*R;
+    const px=p.ox*R, py=p.oy*R+wob-R*0.05;
+    const pr=p.r*R*(1+Math.sin(t*p.wobS*1.2+p.wob)*0.05);
+    const lift=(-p.oy*0.55 - p.ox*0.3 + 1)*0.5;
+    const col=toneColor(Math.min(1,p.tone*0.45 + lift*0.55 + ld_tone(c.layer)));
+    const g=ctx.createRadialGradient(px-pr*0.24,py-pr*0.28,0, px,py,pr);
+    g.addColorStop(0, rgba(col,1)); g.addColorStop(0.55, rgba(col,1)); g.addColorStop(1, rgba(col,0));
+    ctx.fillStyle=g; ctx.beginPath();ctx.arc(px,py,pr,0,TAU);ctx.fill();
+  }
+  // crest highlights on upper lobes (warm low-sun rim)
+  for(const p of c.puffs){
+    if(p.oy>0.08) continue;
+    const px=p.ox*R-R*0.05, py=p.oy*R-R*0.08, pr=p.r*R*0.6;
+    const g=ctx.createRadialGradient(px,py,0,px,py,pr);
+    g.addColorStop(0,'rgba(238,229,216,0.55)');
+    g.addColorStop(0.6,'rgba(232,221,205,0.18)');
+    g.addColorStop(1,'rgba(232,221,205,0)');
+    ctx.fillStyle=g; ctx.beginPath();ctx.arc(px,py,pr,0,TAU);ctx.fill();
+  }
+  ctx.restore();
+}
+function ld_tone(l){ return layerDefs[l].tone; }
+
+/* ---------- vapor whorls (ripple-disk echo) ---------- */
+const disks=[];
+function makeDisk(){
+  return{ x:Math.random()*W, y:Math.random()*H, r:diag*(0.018+Math.random()*0.04),
+    a:0, aT:0.10+Math.random()*0.16, life:0, maxLife:16+Math.random()*24,
+    vx:(Math.random()-0.5)*0.16, vy:(Math.random()-0.5)*0.12,
+    spin:Math.random()*TAU, spinS:(Math.random()-0.5)*0.2, squash:0.6+Math.random()*0.35 };
+}
+function seedDisks(){
+  disks.length=0;
+  const n=Math.max(4,Math.round(W*H/320000));
+  for(let i=0;i<n;i++){ const d=makeDisk(); d.life=Math.random()*d.maxLife; d.a=d.aT; disks.push(d); }
+}
+function paintDisk(ctx,d){
+  ctx.save(); ctx.translate(d.x,d.y); ctx.rotate(d.spin); ctx.scale(1,d.squash);
+  const r=d.r;
+  const g=ctx.createRadialGradient(0,0,r*0.1,0,0,r);
+  g.addColorStop(0,rgba([230,228,226],0.16*d.a/Math.max(d.aT,1e-3)*d.aT));
+  g.addColorStop(0.6,rgba([208,208,214],0.08));
+  g.addColorStop(1,'rgba(208,208,214,0)');
+  ctx.fillStyle=g; ctx.beginPath();ctx.arc(0,0,r,0,TAU);ctx.fill();
+  ctx.lineWidth=Math.max(1,r*0.05);
+  ctx.strokeStyle=rgba([236,234,232],0.2*d.a); ctx.beginPath();ctx.arc(0,0,r*0.82,0.5,0.5+5.0);ctx.stroke();
+  ctx.strokeStyle=rgba([66,74,90],0.10*d.a); ctx.beginPath();ctx.arc(0,0,r*0.56,3.1,3.1+4.2);ctx.stroke();
+  ctx.restore();
+}
+
+/* ---------- background ---------- */
+let bgGrad=null;
+function buildBG(){
+  const g=sx.createRadialGradient(W*0.46,H*0.40,0, W*0.5,H*0.55, diag*0.9);
+  g.addColorStop(0.0, SKY.deep2); g.addColorStop(0.5,SKY.deep1); g.addColorStop(1.0, SKY.deep0);
+  bgGrad=g;
+}
+
+/* ---------- update ---------- */
+function update(dt,t){
+  for(const c of islands){
+    const ld=layerDefs[c.layer];
+    c.changeT-=dt;
+    if(c.changeT<=0){ c.dirT=c.dir+(Math.random()-0.5)*1.6; c.changeT=4+Math.random()*6; }
+    const da=angDiff(c.dirT,c.dir);
+    c.dir+=Math.max(-0.3*dt,Math.min(0.3*dt,da));
+    const v=c.speed*ld.speed*8*dt;
+    c.x+=Math.cos(c.dir)*v; c.y+=Math.sin(c.dir)*v;
+    c.breath+=dt*c.breathS; c.rot+=c.rotS*dt;
+    const m=c.baseR*1.7;
+    if(c.x<-m)c.x=W+m; else if(c.x>W+m)c.x=-m;
+    if(c.y<-m)c.y=H+m; else if(c.y>H+m)c.y=-m;
+  }
+  for(let i=disks.length-1;i>=0;i--){
+    const d=disks[i];
+    d.life+=dt; d.x+=d.vx*dt*16; d.y+=d.vy*dt*16; d.spin+=d.spinS*dt;
+    const f=d.life/d.maxLife;
+    if(f<0.2)d.a=d.aT*(f/0.2); else if(f>0.8)d.a=d.aT*(1-(f-0.8)/0.2); else d.a=d.aT;
+    if(d.life>=d.maxLife) disks[i]=makeDisk();
+  }
+}
+
+/* ---------- render ---------- */
+function render(t){
+  sx.globalCompositeOperation='source-over';
+  sx.fillStyle=bgGrad; sx.fillRect(0,0,W,H);
+
+  // continuous cloud sea (slightly blurred so it reads as a soft plain)
+  paintPlain(t);
+  sx.save(); sx.globalAlpha=0.97; sx.filter=`blur(${10*dpr}px)`;
+  sx.drawImage(plain,0,0,W,H); sx.restore();
+
+  // drifting islands per depth layer, far->near, with haze blur
+  layerDefs.forEach((ld,li)=>{
+    const ctx=lctx[li]; ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,W,H);
+    for(const c of islands){ if(c.layer===li) paintIsland(ctx,c,t); }
+  });
+  layerDefs.forEach((ld,li)=>{
+    sx.save(); sx.globalAlpha=ld.alpha; sx.filter=`blur(${ld.blur*dpr}px)`;
+    sx.drawImage(layers[li],0,0,W,H); sx.restore();
+    if(li===1){ // whorls float between mid & near
+      sx.save(); sx.filter=`blur(${1.4*dpr}px)`; sx.globalCompositeOperation='screen';
+      for(const d of disks) paintDisk(sx,d); sx.restore();
+    }
+  });
+
+  // warm low-sun glow (upper-left) + vignette
+  sx.save();
+  const glow=sx.createRadialGradient(W*0.30,H*0.24,0, W*0.30,H*0.24, diag*0.7);
+  glow.addColorStop(0,'rgba(217,196,166,0.13)'); glow.addColorStop(0.5,'rgba(217,196,166,0.03)'); glow.addColorStop(1,'rgba(217,196,166,0)');
+  sx.globalCompositeOperation='screen'; sx.fillStyle=glow; sx.fillRect(0,0,W,H); sx.restore();
+  sx.save();
+  const vg=sx.createRadialGradient(W*0.48,H*0.46,diag*0.24, W*0.5,H*0.52,diag*0.72);
+  vg.addColorStop(0,'rgba(0,0,0,0)'); vg.addColorStop(0.7,'rgba(14,18,28,0.14)'); vg.addColorStop(1,'rgba(10,14,24,0.58)');
+  sx.fillStyle=vg; sx.fillRect(0,0,W,H); sx.restore();
+}
+
+/* ---------- film grain ---------- */
+function buildGrain(){
+  const gw=Math.round(W*0.5), gh=Math.round(H*0.5);
+  grainC.width=gw; grainC.height=gh;
+  const id=gx.createImageData(gw,gh), d=id.data;
+  for(let i=0;i<d.length;i+=4){ const v=Math.random()*255|0; d[i]=d[i+1]=d[i+2]=v; d[i+3]=255; }
+  gx.putImageData(id,0,0);
+}
+
+/* ---------- layout ---------- */
+function resize(){
+  W=window.innerWidth; H=window.innerHeight; dpr=Math.min(window.devicePixelRatio||1,2); diag=Math.hypot(W,H);
+  sceneC.width=W; sceneC.height=H;
+  layers.forEach(c=>{ c.width=W; c.height=H; });
+  plain.width=W; plain.height=H;
+  buildBG(); buildGrain(); buildPlain(); buildIslands(); seedDisks();
+}
+window.addEventListener('resize',()=>{ clearTimeout(window.__rt); window.__rt=setTimeout(resize,150); });
+
+/* ---------- main loop ---------- */
+resize();
+let last=performance.now()/1000;
+function frame(ts){
+  requestAnimationFrame(frame);
+  const t=ts/1000; let dt=t-last; last=t; dt=Math.min(0.05,Math.max(0.001,dt));
+  update(dt,t); render(t);
+}
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

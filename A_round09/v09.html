@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>光 · Sand Mandala of Light</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#04030a; }
+  body {
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+    cursor: crosshair;
+  }
+  #stage { position:fixed; inset:0; display:block; }
+  /* faint vignette + grain feel via CSS layer above canvas, pointer-events none */
+  #vignette {
+    position:fixed; inset:0; pointer-events:none;
+    background:
+      radial-gradient(120% 120% at 50% 50%, rgba(0,0,0,0) 52%, rgba(2,1,8,.55) 100%);
+    mix-blend-mode:multiply;
+  }
+  .ui {
+    position:fixed; pointer-events:none; user-select:none;
+    color:#cdd2ff; text-shadow:0 1px 14px rgba(0,0,0,.8);
+    font-weight:300; letter-spacing:.02em;
+  }
+  #title {
+    left:22px; top:18px; font-size:13px; line-height:1.5;
+    opacity:.9;
+  }
+  #title b { font-weight:600; letter-spacing:.32em; font-size:15px;
+    background:linear-gradient(90deg,#9fb4ff,#ffd9a8,#ff9ad8,#9ff5e0);
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+    filter:drop-shadow(0 0 10px rgba(180,180,255,.25)); }
+  #title span { opacity:.55; font-size:11px; }
+  #hint {
+    right:22px; bottom:18px; text-align:right; font-size:11.5px; line-height:1.7;
+    opacity:.0; transition:opacity 1.1s ease; max-width:62vw;
+  }
+  #hint.show { opacity:.62; }
+  #hint kbd {
+    font:inherit; font-size:10.5px; padding:1px 6px; border-radius:6px;
+    border:1px solid rgba(205,210,255,.28); background:rgba(205,210,255,.07);
+    margin:0 1px;
+  }
+  #readout {
+    left:22px; bottom:18px; font-size:11px; opacity:.5; font-variant-numeric:tabular-nums;
+    letter-spacing:.06em;
+  }
+  #readout b { color:#ffd9a8; font-weight:500; }
+  @media (max-width:520px){
+    #title{font-size:11px;left:14px;top:12px;}
+    #title b{font-size:12.5px;letter-spacing:.22em;}
+    #hint{font-size:10px;right:12px;bottom:12px;max-width:80vw;}
+    #readout{left:14px;bottom:12px;font-size:10px;}
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="vignette"></div>
+<div id="title" class="ui"><b>光 SAND&nbsp;MANDALA</b><br><span>a painting of living light</span></div>
+<div id="readout" class="ui"></div>
+<div id="hint" class="ui">
+  <kbd>move</kbd> paint &nbsp; <kbd>click</kbd> bloom &nbsp; <kbd>scroll</kbd> symmetry<br>
+  <kbd>space</kbd> dissolve &nbsp; <kbd>C</kbd> palette
+</div>
+
+<script>
+(() => {
+"use strict";
+
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', { alpha:false });
+const readout = document.getElementById('readout');
+const hintEl = document.getElementById('hint');
+
+let W=0, H=0, CX=0, CY=0, DPR=1, R=0;
+const TAU = Math.PI*2;
+
+// ---------- palettes (deep, jewel-toned, sand-painting inspired) ----------
+const PALETTES = [
+  { name:'AURORA',  bg:'#04030a', cols:['#5b8cff','#7af0d8','#b88cff','#ffd28a','#ff8fc6'] },
+  { name:'EMBER',   bg:'#0a0402', cols:['#ff7a2d','#ffd166','#ff4d6d','#ffe3a0','#c94bff'] },
+  { name:'JADE',    bg:'#02060a', cols:['#33f0c4','#8affd1','#6fd0ff','#d8ffe9','#a0ffe0'] },
+  { name:'LOTUS',   bg:'#0a0410', cols:['#ff6fae','#ffb3d1','#c98bff','#ffd6a5','#8fb6ff'] },
+  { name:'PHOENIX', bg:'#0a0206', cols:['#ff3d6e','#ff9e2c','#ffe066','#ff6fae','#ffd0a8'] },
+];
+let palIdx = 0;
+let PAL = PALETTES[palIdx];
+
+function hexToRgb(h){ const n=parseInt(h.slice(1),16); return [n>>16&255,n>>8&255,n&255]; }
+const palRGB = () => PAL.cols.map(hexToRgb);
+let RGB = palRGB();
+
+// ---------- state ----------
+let sym = 8;                 // rotational symmetry order (k-fold)
+let mirror = true;           // dihedral mirror -> kaleidoscope
+let t = 0;                   // global clock
+const parts = [];            // light particles
+const MAXP_DESKTOP = 760;
+const MAXP_MOBILE  = 380;
+let MAXP = MAXP_DESKTOP;
+
+const mouse = { x:0, y:0, px:0, py:0, down:false, active:false, lastMove:-9999, vx:0, vy:0 };
+
+// flow-field angle from a smooth pseudo-noise (for idle self-painting)
+function flowAngle(x, y, time){
+  const a = Math.atan2(y-CY, x-CX);
+  const r = Math.hypot(x-CX, y-CY) / (R||1);
+  // swirling field: angular drift + radial breathing
+  return a
+      + Math.sin(r*7.0 - time*0.9) * 1.1
+      + Math.cos(a*3.0 + time*0.5) * 0.8
+      + time*0.12;
+}
+
+// ---------- particle ----------
+// keep total stamps/frame bounded: more symmetry reps => fewer live particles.
+// stamps ~= liveParticles * reps * (mirror?2:1). Budget keeps fps steady.
+const STAMP_BUDGET_DESKTOP = 9000;
+const STAMP_BUDGET_MOBILE  = 4200;
+function liveCap(){
+  const budget = MAXP===MAXP_MOBILE ? STAMP_BUDGET_MOBILE : STAMP_BUDGET_DESKTOP;
+  const perPart = sym * (mirror?2:1);
+  return Math.max(60, Math.min(MAXP, (budget/perPart)|0));
+}
+function spawn(x, y, vx, vy, hue, life, sizeBoost){
+  const cap = liveCap();
+  if (parts.length >= cap) parts.shift();
+  parts.push({
+    x, y, vx, vy,
+    life, max:life,
+    hue: hue,
+    sz: (0.7 + Math.random()*1.6) * (sizeBoost||1),
+    spin: (Math.random()-0.5)*0.04,
+    seed: Math.random()*TAU,
+  });
+}
+
+// emit a brush stroke from a point with velocity -> the symmetry engine mirrors it
+function brush(x, y, vx, vy, strength){
+  const speed = Math.hypot(vx, vy);
+  const count = Math.min(8, 2 + (speed*0.05|0)) * (strength||1);
+  const r = Math.hypot(x-CX, y-CY)/(R||1);
+  for (let i=0;i<count;i++){
+    const ang = flowAngle(x,y,t) ;
+    const jitter = (Math.random()-0.5)*0.6;
+    const sp = 0.6 + speed*0.04 + Math.random()*1.4;
+    const dvx = Math.cos(ang+jitter)*sp + vx*0.10;
+    const dvy = Math.sin(ang+jitter)*sp + vy*0.10;
+    // hue picked by radius so center & rim differ -> banded mandala
+    const hue = (r*4 + i*0.7 + t*0.3) % RGB.length;
+    spawn(x + (Math.random()-0.5)*4, y + (Math.random()-0.5)*4, dvx, dvy, hue, 90+Math.random()*120, 1);
+  }
+}
+
+// a radial "bloom" burst on click — petals shoot outward then curl
+function bloom(x, y){
+  const r = Math.hypot(x-CX, y-CY);
+  const baseAng = Math.atan2(y-CY, x-CX);
+  const n = MAXP===MAXP_MOBILE ? 26 : 44;
+  for (let i=0;i<n;i++){
+    const a = baseAng + (i/n)*TAU*0.0 + (Math.random()-0.5)*0.5;
+    const sp = 2.2 + Math.random()*3.4;
+    const hue = (i/n*RGB.length + t*0.2) % RGB.length;
+    spawn(x, y, Math.cos(a)*sp, Math.sin(a)*sp, hue, 110+Math.random()*120, 1.7);
+  }
+  // ring pulse marker
+  rings.push({ x, y, r:2, vr: 4.2, life:1, hue:(r/R*RGB.length)%RGB.length });
+  pulse = 1;
+}
+
+const rings = [];
+let pulse = 0;
+
+// ---------- resize ----------
+function resize(){
+  // cap DPR at 1.5: full-frame fade fillRect is fill-rate bound; 2x doubles cost for little visible gain on a glow piece
+  DPR = Math.min(window.devicePixelRatio||1, 1.5);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = Math.round(W*DPR); cv.height = Math.round(H*DPR);
+  cv.style.width = W+'px'; cv.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  CX = W/2; CY = H/2;
+  R = Math.min(W,H)*0.46;
+  MAXP = (W < 640 || 'ontouchstart' in window) ? MAXP_MOBILE : MAXP_DESKTOP;
+  // initial wash so first paint isn't pure black
+  paintBackdrop(true);
+  // seed an instant mandala so the FIRST FRAME is already art
+  if (!seeded){ seedMandala(); seeded = true; }
+}
+let seeded = false;
+
+function paintBackdrop(full){
+  ctx.globalCompositeOperation = 'source-over';
+  if (full){
+    // radial deep gradient
+    const g = ctx.createRadialGradient(CX,CY,0, CX,CY, R*1.5);
+    g.addColorStop(0, '#0c0a1c');
+    g.addColorStop(0.5, PAL.bg);
+    g.addColorStop(1, '#020108');
+    ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+  }
+}
+
+// pre-seed: scatter brush points around radius bands so opening frame is a full mandala
+function seedMandala(){
+  const bands = 10;
+  const small = W < 640;
+  for (let b=0;b<bands;b++){
+    const rr = R*(0.20 + b/bands*0.74);
+    // density follows circumference but stays sparse so the opening reads as fine sand
+    const pts = Math.max(9, Math.round(rr * (small?0.11:0.11)));
+    for (let i=0;i<pts;i++){
+      const a = (i/pts)*TAU + b*0.2;
+      const x = CX + Math.cos(a)*rr;
+      const y = CY + Math.sin(a)*rr;
+      const tang = a + Math.PI/2;
+      const sp = 0.8 + Math.random();
+      const hue = (b*0.7 + i*0.12) % RGB.length;
+      spawn(x, y, Math.cos(tang)*sp, Math.sin(tang)*sp, hue, 150+Math.random()*100, 1.1);
+    }
+  }
+}
+
+// paint the seed mandala ONCE so the VERY FIRST frame is already a full mandala.
+// (no multi-frame accumulation -> no white blow-out)
+function primePaint(){
+  paintBackdrop(true);
+  primeMode = true;
+  for (let i=0;i<parts.length;i++) stampParticle(parts[i]);
+  primeMode = false;
+  drawCore();
+}
+
+// ---------- color helper with smooth blending between palette stops ----------
+function hueColor(h, alpha){
+  const n = RGB.length;
+  h = ((h % n) + n) % n;
+  const i0 = Math.floor(h), i1 = (i0+1)%n, f = h - i0;
+  const a = RGB[i0], b = RGB[i1];
+  const r = a[0]+(b[0]-a[0])*f | 0;
+  const g = a[1]+(b[1]-a[1])*f | 0;
+  const bl= a[2]+(b[2]-a[2])*f | 0;
+  return 'rgba('+r+','+g+','+bl+','+alpha+')';
+}
+
+// ---------- pre-baked glow sprites (one soft dot per palette color) ----------
+// Drawing a cached bitmap with drawImage is FAR cheaper than createRadialGradient
+// per particle per symmetry-rep. This is the core performance trick.
+const SPR = 48;                 // sprite texture size
+let sprites = [];               // one canvas per palette color
+function bakeSprites(){
+  sprites = RGB.map(([r,g,b])=>{
+    const s = document.createElement('canvas');
+    s.width = s.height = SPR;
+    const c = s.getContext('2d');
+    const cx = SPR/2;
+    const grd = c.createRadialGradient(cx,cx,0, cx,cx, cx);
+    // small hot core, color-dominant halo -> jewel tones survive instead of washing white
+    grd.addColorStop(0.00, 'rgba(255,255,255,0.85)');
+    grd.addColorStop(0.10, `rgba(${(r+510)/3|0},${(g+510)/3|0},${(b+510)/3|0},0.70)`);
+    grd.addColorStop(0.30, `rgba(${r},${g},${b},0.55)`);
+    grd.addColorStop(0.62, `rgba(${r},${g},${b},0.22)`);
+    grd.addColorStop(1.00, `rgba(${r},${g},${b},0)`);
+    c.fillStyle = grd;
+    c.fillRect(0,0,SPR,SPR);
+    return s;
+  });
+}
+
+// ---------- symmetry stamp via canvas rotation (single drawImage per rep) ----------
+// We work in a translated/scaled space centered at CX,CY. For each particle we
+// compute its polar position once, then rotate the context k times and blit.
+let primeMode = false;
+function stampParticle(p){
+  const dx = p.x - CX, dy = p.y - CY;
+  const baseAng = Math.atan2(dy, dx);
+  const dist = Math.hypot(dx, dy);
+  const lifeR = p.life / p.max;
+  const alpha = Math.min(1, lifeR*1.3) * (primeMode ? 0.24 : 0.42);  // tamed accumulation
+  const draw = sz => {
+    const spr = sprites[((p.hue%sprites.length)+sprites.length)%sprites.length | 0];
+    if (!spr) return;
+    const d = sz*5.4;
+    ctx.drawImage(spr, dist - d/2, -d/2, d, d);
+  };
+  const sz = p.sz * (0.55 + lifeR*0.85);
+  const reps = sym, step = TAU/reps;
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = alpha;
+  ctx.save();
+  ctx.translate(CX, CY);
+  ctx.rotate(baseAng);                 // align +x axis to particle direction
+  for (let k=0;k<reps;k++){
+    draw(sz);
+    if (mirror){
+      ctx.save(); ctx.rotate(-2*baseAng); draw(sz); ctx.restore();
+    }
+    ctx.rotate(step);
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+// thin connecting filament for fast particles -> silk threads in the sand
+function stampFilament(p){
+  const dx = p.x - CX, dy = p.y - CY;
+  const baseAng = Math.atan2(dy, dx);
+  const dist = Math.hypot(dx, dy);
+  const px = p.x - p.vx, py = p.y - p.vy;
+  const bp = Math.atan2(py-CY, px-CX), dp = Math.hypot(px-CX,py-CY);
+  const lifeR = p.life/p.max;
+  const alpha = lifeR*0.18;
+  if (alpha < 0.02) return;
+  const reps = sym, step = TAU/reps;
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineWidth = p.sz*0.9;
+  ctx.strokeStyle = hueColor(p.hue, alpha);
+  for (let k=0;k<reps;k++){
+    for (let m=0;m<(mirror?2:1);m++){
+      const a1 = m===0 ? baseAng+k*step : k*step-baseAng;
+      const a2 = m===0 ? bp+k*step : k*step-bp;
+      ctx.beginPath();
+      ctx.moveTo(CX+Math.cos(a1)*dist, CY+Math.sin(a1)*dist);
+      ctx.lineTo(CX+Math.cos(a2)*dp, CY+Math.sin(a2)*dp);
+      ctx.stroke();
+    }
+  }
+}
+
+// ---------- main loop ----------
+let last = performance.now();
+let fpsAcc = 0, fpsN = 0, fps = 60;
+
+function frame(now){
+  const dt = Math.min(40, now-last); last = now;
+  t += dt*0.001;
+  fpsAcc += 1000/Math.max(1,dt); fpsN++;
+  if (fpsN>=20){ fps = fpsAcc/fpsN; fpsAcc=0; fpsN=0; updateReadout(); }
+
+  // ---- fade the canvas slightly (the "sand" persists, then dissolves) ----
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = 'rgba(5,4,12,'+(0.060 + dissolve)+')';
+  ctx.fillRect(0,0,W,H);
+
+  // ---- mouse velocity smoothing ----
+  mouse.vx = mouse.x - mouse.px;
+  mouse.vy = mouse.y - mouse.py;
+  mouse.px = mouse.x; mouse.py = mouse.y;
+
+  const idle = (now - mouse.lastMove) > 1100;
+
+  // ---- emit from pointer if active & moving ----
+  if (mouse.active && !idle){
+    brush(mouse.x, mouse.y, mouse.vx, mouse.vy, mouse.down?2:1);
+  }
+
+  // ---- idle self-painting: an autonomous brush wanders the flow field ----
+  if (idle){
+    autoBrush();
+  }
+
+  // ---- update + draw particles ----
+  for (let i=parts.length-1;i>=0;i--){
+    const p = parts[i];
+    // flow-field steering -> coherent swirling
+    const fa = flowAngle(p.x, p.y, t);
+    const blend = 0.06;
+    const tvx = Math.cos(fa), tvy = Math.sin(fa);
+    p.vx += (tvx - p.vx*0.0)*blend*0.6;
+    p.vy += (tvy - p.vy*0.0)*blend*0.6;
+    // gentle pull toward a comfortable radius band (keeps mandala bounded)
+    const dx = p.x-CX, dy=p.y-CY, d=Math.hypot(dx,dy)||1;
+    const want = R*0.92;
+    if (d > want){ p.vx -= dx/d*0.20; p.vy -= dy/d*0.20; }
+    // damping
+    p.vx *= 0.965; p.vy *= 0.965;
+    p.x += p.vx; p.y += p.vy;
+    p.life -= dt*0.06;
+    if (p.life <= 0 || d > R*1.25){ parts.splice(i,1); continue; }
+    if (Math.hypot(p.vx,p.vy) > 1.4) stampFilament(p);
+    stampParticle(p);
+  }
+
+  // ---- rings ----
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i=rings.length-1;i>=0;i--){
+    const ri = rings[i];
+    ri.r += ri.vr; ri.vr *= 0.97; ri.life -= 0.02;
+    if (ri.life<=0){ rings.splice(i,1); continue; }
+    drawSymRing(ri);
+  }
+
+  // ---- central core glow (the seed of the mandala) ----
+  drawCore();
+
+  pulse *= 0.92;
+  requestAnimationFrame(frame);
+}
+
+// ring replicated by symmetry -> blossoming concentric petals
+function drawSymRing(ri){
+  const a = ri.life*0.5;
+  const reps = sym, step=TAU/reps;
+  const dx=ri.x-CX, dy=ri.y-CY, base=Math.atan2(dy,dx), dist=Math.hypot(dx,dy);
+  ctx.lineWidth = 1.5;
+  for (let k=0;k<reps;k++){
+    for (let m=0;m<(mirror?2:1);m++){
+      const ang = m===0?base+k*step:k*step-base;
+      const x=CX+Math.cos(ang)*dist, y=CY+Math.sin(ang)*dist;
+      ctx.strokeStyle = hueColor(ri.hue+ri.r*0.01, a*0.5);
+      ctx.beginPath(); ctx.arc(x,y,ri.r,0,TAU); ctx.stroke();
+    }
+  }
+}
+
+function drawCore(){
+  ctx.globalCompositeOperation = 'lighter';
+  const breathe = 0.5 + 0.5*Math.sin(t*1.3);
+  const r = R*0.045*(0.7+breathe*0.6) + pulse*22;
+  const g = ctx.createRadialGradient(CX,CY,0, CX,CY, r*4.5);
+  g.addColorStop(0, hueColor(t*0.4, 0.42));
+  g.addColorStop(0.22, hueColor(t*0.4+1.2, 0.20));
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(CX,CY,r*4.5,0,TAU); ctx.fill();
+}
+
+// autonomous brush — a "ghost hand" that keeps painting when you leave
+const ghost = { x:0, y:0, ang:0, r:0.4, on:false };
+function autoBrush(){
+  if (!ghost.on){ ghost.on=true; ghost.x=CX+R*0.4; ghost.y=CY; }
+  // spiral wandering driven by flow field
+  ghost.r = 0.25 + 0.55*(0.5+0.5*Math.sin(t*0.23));
+  const fa = flowAngle(ghost.x, ghost.y, t);
+  const rr = R*ghost.r;
+  // move along flow but stay near target radius
+  ghost.x += Math.cos(fa)*2.4;
+  ghost.y += Math.sin(fa)*2.4;
+  const dx=ghost.x-CX, dy=ghost.y-CY, d=Math.hypot(dx,dy)||1;
+  ghost.x += (CX+dx/d*rr - ghost.x)*0.04;
+  ghost.y += (CY+dy/d*rr - ghost.y)*0.04;
+  brush(ghost.x, ghost.y, Math.cos(fa)*8, Math.sin(fa)*8, 1);
+}
+
+function updateReadout(){
+  readout.innerHTML = 'symmetry <b>'+sym+(mirror?'×2':'')+'</b> · particles <b>'+parts.length+'</b> · <b>'+(fps|0)+'</b>fps · '+PAL.name;
+}
+
+// ---------- interaction ----------
+let dissolve = 0;
+
+function setMouse(x,y){
+  mouse.x=x; mouse.y=y; mouse.active=true; mouse.lastMove=performance.now();
+  ghost.on=false;
+}
+
+cv.addEventListener('pointermove', e=>{
+  setMouse(e.clientX, e.clientY);
+}, {passive:true});
+
+cv.addEventListener('pointerdown', e=>{
+  setMouse(e.clientX, e.clientY);
+  mouse.down=true;
+  mouse.px=e.clientX; mouse.py=e.clientY;
+  bloom(e.clientX, e.clientY);
+  cv.setPointerCapture && cv.setPointerCapture(e.pointerId);
+}, {passive:true});
+
+window.addEventListener('pointerup', ()=>{ mouse.down=false; }, {passive:true});
+cv.addEventListener('pointerleave', ()=>{ mouse.active=false; }, {passive:true});
+
+// scroll -> change symmetry order (mouse) ; pinch handled separately for touch
+cv.addEventListener('wheel', e=>{
+  e.preventDefault();
+  const dir = e.deltaY>0 ? -1 : 1;
+  sym = Math.max(3, Math.min(16, sym + dir));
+  updateReadout();
+  showHint();
+}, {passive:false});
+
+// keyboard
+window.addEventListener('keydown', e=>{
+  if (e.code==='Space'){ e.preventDefault(); dissolve = 0.16; }
+  else if (e.key==='c'||e.key==='C'){ cyclePalette(); }
+  else if (e.key==='m'||e.key==='M'){ mirror=!mirror; updateReadout(); }
+  else if (e.key==='ArrowUp'){ sym=Math.min(16,sym+1); updateReadout(); }
+  else if (e.key==='ArrowDown'){ sym=Math.max(3,sym-1); updateReadout(); }
+});
+window.addEventListener('keyup', e=>{ if(e.code==='Space') dissolve=0; });
+
+function cyclePalette(){
+  palIdx = (palIdx+1)%PALETTES.length;
+  PAL = PALETTES[palIdx];
+  RGB = palRGB();
+  bakeSprites();
+  updateReadout();
+  showHint();
+}
+
+// touch: two-finger spread/pinch changes symmetry; double-tap cycles palette
+let pinchStart=0, pinchSym=0, lastTap=0;
+cv.addEventListener('touchstart', e=>{
+  if (e.touches.length===2){
+    pinchStart = dist2(e.touches); pinchSym = sym;
+  } else if (e.touches.length===1){
+    const now=performance.now();
+    if (now-lastTap<300){ cyclePalette(); }
+    lastTap=now;
+  }
+}, {passive:true});
+cv.addEventListener('touchmove', e=>{
+  if (e.touches.length===2 && pinchStart){
+    const d = dist2(e.touches);
+    const k = Math.round((d-pinchStart)/40);
+    sym = Math.max(3, Math.min(16, pinchSym + k));
+    updateReadout();
+  }
+}, {passive:true});
+function dist2(tt){ const a=tt[0],b=tt[1]; return Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY); }
+
+let hintT;
+function showHint(){
+  hintEl.classList.add('show');
+  clearTimeout(hintT);
+  hintT = setTimeout(()=>hintEl.classList.remove('show'), 3200);
+}
+
+// ---------- boot ----------
+bakeSprites();
+window.addEventListener('resize', resize);
+resize();
+mouse.x = CX; mouse.y = CY; mouse.px=CX; mouse.py=CY;
+primePaint();              // first paint = full mandala, no blank frame
+updateReadout();
+// reveal hint shortly after load, then let it fade
+setTimeout(showHint, 900);
+requestAnimationFrame(frame);
+
+// expose for verification
+window.__mandala = {
+  state: () => ({ sym, mirror, parts: parts.length, fps, pal: PAL.name, palIdx }),
+  brushAt: (x,y,vx,vy) => brush(x,y,vx||10,vy||0,2),
+  bloomAt: (x,y) => bloom(x,y),
+  setSym: (s) => { sym=s; updateReadout(); },
+  cyclePalette,
+  center: () => ({ CX, CY, R }),
+};
+})();
+</script>
+</body>
+</html>

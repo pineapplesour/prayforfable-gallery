@@ -1,0 +1,917 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>DITHER//DRIFT — 486 lo-fi screensaver</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<style>
+  :root{
+    /* restricted warm 486 palette — also drives CSS chrome */
+    --c-void:#160a0f;
+    --c-maroon:#33141d;
+    --c-deep:#5a2230;
+    --c-rust:#9b3b29;
+    --c-orange:#c75b2c;
+    --c-amber:#e08439;
+    --c-salmon:#ea9c68;
+    --c-peach:#f3c896;
+    --c-cream:#f7e6c4;
+    --c-teal:#1f8a7a;
+    --c-teal-dk:#0e5a52;
+    --c-teal-lt:#5dc3b0;
+    --c-green:#2c5e3c;
+    --ink:#f3c896;
+    --ink-dim:#bd8a64;
+    --line:#2a8c7d;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;width:100%}
+  body{
+    background:
+      radial-gradient(130% 95% at 50% 14%, #2a121a 0%, #160b10 64%, #0c0608 100%);
+    color:var(--ink);
+    font-family:'VT323',monospace;
+    overflow:hidden;
+    -webkit-font-smoothing:none;
+    image-rendering:pixelated;
+    touch-action:none;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    min-height:100%;
+    padding:14px;
+  }
+  .pix{font-family:'Press Start 2P',monospace}
+
+  /* ---------- window frame / chrome ---------- */
+  #frame{
+    position:relative;
+    width:min(96vw,1180px);
+    border:3px solid var(--c-rust);
+    background:var(--c-void);
+    box-shadow:
+      0 0 0 2px var(--c-maroon),
+      0 0 0 4px #0c0608,
+      0 18px 44px rgba(0,0,0,.6),
+      inset 0 0 0 1px #1c0e13;
+    display:flex;
+    flex-direction:column;
+    image-rendering:pixelated;
+  }
+  /* title bar */
+  #titlebar{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    padding:6px 8px;
+    background:linear-gradient(180deg,#7a2c20 0%,#5e2018 100%);
+    border-bottom:3px solid var(--c-rust);
+    color:var(--c-cream);
+  }
+  .tb-dots{display:flex;gap:4px}
+  .tb-dots i{
+    width:11px;height:11px;display:block;border-radius:50%;
+    border:1px solid #2a0f0c;
+  }
+  .tb-dots i:nth-child(1){background:#e7794a}
+  .tb-dots i:nth-child(2){background:#e0b24a}
+  .tb-dots i:nth-child(3){background:#5dc3b0}
+  #titlebar .title{
+    font-size:8px;letter-spacing:1px;color:#f7e6c4;
+    text-shadow:1px 1px 0 #3a120c;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  #titlebar .spacer{flex:1}
+  #titlebar .meta{
+    font-size:7px;letter-spacing:1px;color:#f0bd86;opacity:.85;
+    white-space:nowrap;
+  }
+  .winbtn{
+    width:16px;height:14px;border:1px solid #2a0f0c;background:#caa15a;
+    display:grid;place-items:center;font-size:7px;color:#2a0f0c;
+    font-family:'Press Start 2P';
+  }
+
+  /* main body: canvas + side panel */
+  #body{display:flex;gap:0;min-height:0}
+  #stage{
+    position:relative;
+    flex:1;
+    min-width:0;
+    background:#0c0608;
+    border-right:3px solid var(--c-rust);
+    overflow:hidden;
+    aspect-ratio:16/10;
+  }
+  /* the dither canvas — nearest-neighbor upscale */
+  #screen{
+    position:absolute;inset:0;width:100%;height:100%;
+    image-rendering:pixelated;
+    image-rendering:crisp-edges;
+    display:block;
+  }
+  /* CRT scanline + vignette overlay drawn over canvas */
+  #crt{
+    position:absolute;inset:0;pointer-events:none;
+    background:
+      repeating-linear-gradient(0deg,
+        rgba(0,0,0,0) 0px,
+        rgba(0,0,0,0) 2px,
+        rgba(0,0,0,.16) 3px,
+        rgba(0,0,0,.16) 4px),
+      radial-gradient(120% 120% at 50% 50%,
+        rgba(0,0,0,0) 56%, rgba(8,3,5,.55) 100%);
+    mix-blend-mode:multiply;
+    z-index:3;
+  }
+  #crt.off{display:none}
+  /* readout strip on canvas */
+  #hud{
+    position:absolute;left:8px;top:7px;z-index:4;pointer-events:none;
+    display:flex;flex-direction:column;gap:5px;
+  }
+  .tag{
+    font-family:'Press Start 2P';font-size:7px;letter-spacing:1px;
+    padding:4px 6px;color:#f7e6c4;
+    background:rgba(20,9,12,.62);
+    border:1px solid rgba(231,121,74,.6);
+    text-shadow:1px 1px 0 #160a0f;
+  }
+  .tag b{color:#5dc3b0}
+  #scenename{
+    position:absolute;right:8px;bottom:8px;z-index:4;pointer-events:none;
+    font-family:'Press Start 2P';font-size:7px;letter-spacing:1px;
+    color:#f0bd86;text-shadow:1px 1px 0 #160a0f;
+    background:rgba(20,9,12,.55);padding:4px 6px;
+    border:1px solid rgba(45,140,125,.5);
+  }
+
+  /* ---------- side control panel ---------- */
+  #panel{
+    width:212px;flex:0 0 212px;
+    background:linear-gradient(180deg,#22101a 0%,#190c12 100%);
+    display:flex;flex-direction:column;
+    color:var(--ink);
+  }
+  .ph{
+    font-family:'Press Start 2P';font-size:7px;letter-spacing:1px;
+    padding:7px 9px;color:#f7e6c4;
+    background:linear-gradient(180deg,#1d8a7a 0%,#0e5a52 100%);
+    border-bottom:2px solid #0a443d;
+    display:flex;align-items:center;justify-content:space-between;
+  }
+  .ph i{font-style:normal;color:#cdebe3;font-size:7px}
+  .pbody{padding:10px 10px 12px;display:flex;flex-direction:column;gap:11px}
+  .grp{display:flex;flex-direction:column;gap:6px}
+  .lbl{
+    font-family:'Press Start 2P';font-size:6px;letter-spacing:1px;
+    color:#9ad8cc;
+  }
+  .row{display:flex;flex-wrap:wrap;gap:4px}
+  .chip{
+    font-family:'VT323',monospace;font-size:15px;line-height:1;
+    padding:5px 7px;color:#f0c690;
+    background:#2a131b;
+    border:1px solid #5a2230;
+    border-bottom:2px solid #150a0e;
+    cursor:pointer;user-select:none;
+    letter-spacing:.5px;
+  }
+  .chip:hover{background:#3a1a22;color:#f7e6c4}
+  .chip.on{
+    background:#1f8a7a;color:#06231f;border-color:#0e5a52;
+    border-bottom:2px solid #073e38;font-weight:bold;
+  }
+  .chip.warm.on{background:#c75b2c;color:#1a0a06;border-color:#9b3b29}
+  /* slider */
+  .srow{display:flex;align-items:center;gap:6px}
+  .srow .lbl{flex:0 0 46px}
+  input[type=range]{
+    -webkit-appearance:none;appearance:none;
+    flex:1;height:10px;background:#150a0e;border:1px solid #5a2230;
+    cursor:pointer;
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;width:12px;height:14px;background:#e08439;
+    border:1px solid #160a0f;cursor:pointer;
+  }
+  input[type=range]::-moz-range-thumb{
+    width:12px;height:14px;background:#e08439;border:1px solid #160a0f;cursor:pointer;
+  }
+  .swatch{display:flex;height:14px;border:1px solid #150a0e;margin-top:2px}
+  .swatch span{flex:1}
+  .stat{
+    font-family:'VT323';font-size:14px;color:#bd8a64;
+    border-top:1px dashed #4a2028;padding-top:8px;line-height:1.25;
+  }
+  .stat b{color:#5dc3b0}
+  .panel-foot{
+    margin-top:auto;
+    font-family:'Press Start 2P';font-size:6px;letter-spacing:1px;
+    color:#7a4636;padding:8px 10px;border-top:2px solid #2a131b;
+  }
+
+  /* ---------- status ticker ---------- */
+  #ticker{
+    border-top:3px solid var(--c-rust);
+    background:#1a0c11;
+    overflow:hidden;white-space:nowrap;
+    padding:5px 0;
+  }
+  #ticker .run{
+    display:inline-block;
+    font-family:'Press Start 2P';font-size:7px;letter-spacing:2px;
+    color:#e7945a;
+    animation:scroll 26s linear infinite;
+    padding-left:100%;
+  }
+  #ticker .run b{color:#5dc3b0}
+  #ticker .run em{color:#f3c896;font-style:normal}
+  @keyframes scroll{from{transform:translateX(0)}to{transform:translateX(-100%)}}
+
+  /* mobile */
+  @media(max-width:720px){
+    body{padding:6px}
+    #body{flex-direction:column}
+    #stage{border-right:none;border-bottom:3px solid var(--c-rust);aspect-ratio:16/11}
+    #panel{width:auto;flex:1 1 auto}
+    .pbody{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+    .grp.full{grid-column:1 / -1}
+    .panel-foot{grid-column:1 / -1;margin-top:4px}
+    #titlebar .meta{display:none}
+  }
+  @media(max-width:420px){
+    .chip{font-size:13px;padding:4px 5px}
+    #hud .tag{font-size:6px}
+  }
+</style>
+</head>
+<body>
+<div id="frame">
+
+  <!-- title bar -->
+  <div id="titlebar">
+    <div class="tb-dots"><i></i><i></i><i></i></div>
+    <span class="title pix">DITHER//DRIFT.EXE</span>
+    <span class="spacer"></span>
+    <span class="meta pix">486DX • ORDERED-DITHER • <span id="palname">EMBER</span></span>
+    <span class="winbtn pix">_</span>
+    <span class="winbtn pix">x</span>
+  </div>
+
+  <div id="body">
+    <!-- canvas stage -->
+    <div id="stage">
+      <canvas id="screen"></canvas>
+      <div id="hud">
+        <div class="tag">FPS <b id="fps">--</b> · DOTS <b id="dots">--</b></div>
+        <div class="tag">PAL <b id="palcnt">12</b> · BAYER <b id="bmode">8x8</b></div>
+      </div>
+      <div id="scenename" class="pix">SEA · VESPER DRIFT</div>
+      <div id="crt"></div>
+    </div>
+
+    <!-- side panel -->
+    <aside id="panel">
+      <div class="ph pix">CONTROL <i id="clock">--:--</i></div>
+      <div class="pbody">
+
+        <div class="grp full">
+          <div class="lbl">SCENE</div>
+          <div class="row" id="sceneRow">
+            <div class="chip on" data-scene="sea">SEA</div>
+            <div class="chip" data-scene="toasters">TOASTERS</div>
+            <div class="chip" data-scene="pipes">PIPES</div>
+            <div class="chip" data-scene="plasma">PLASMA</div>
+          </div>
+        </div>
+
+        <div class="grp">
+          <div class="lbl">PALETTE</div>
+          <div class="row" id="palRow">
+            <div class="chip warm on" data-pal="ember">EMBER</div>
+            <div class="chip warm" data-pal="dusk">DUSK</div>
+            <div class="chip warm" data-pal="tide">TIDE</div>
+          </div>
+          <div class="swatch" id="swatch"></div>
+        </div>
+
+        <div class="grp">
+          <div class="lbl">DITHER</div>
+          <div class="row" id="bayerRow">
+            <div class="chip on" data-bayer="8">8x8</div>
+            <div class="chip" data-bayer="4">4x4</div>
+            <div class="chip" data-bayer="0">OFF</div>
+          </div>
+        </div>
+
+        <div class="grp full">
+          <div class="srow"><span class="lbl">TIME</span>
+            <input id="timeSld" type="range" min="0" max="1000" value="640"></div>
+          <div class="srow"><span class="lbl">SPEED</span>
+            <input id="spdSld" type="range" min="0" max="200" value="100"></div>
+          <div class="srow"><span class="lbl">SCALE</span>
+            <input id="resSld" type="range" min="2" max="6" value="4"></div>
+        </div>
+
+        <div class="grp full">
+          <div class="row">
+            <div class="chip on" id="playBtn">► AUTO</div>
+            <div class="chip" id="crtBtn">CRT ✓</div>
+            <div class="chip" id="shotHint">[SPACE]</div>
+          </div>
+        </div>
+
+        <div class="stat full">
+          PHASE <b id="phaseTxt">DUSK</b><br>
+          RES <b id="resTxt">--×--</b> px buffer<br>
+          MOUSE drifts the horizon · CLICK stage = next scene
+        </div>
+
+        <div class="panel-foot">© 199X DEMOSCENE · NO INTRO · FIRST PAINT = DITHER</div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- ticker -->
+  <div id="ticker">
+    <span class="run pix">DITHER//DRIFT &nbsp;//&nbsp; <b>REAL BAYER ORDERED DITHERING</b> — 8×8 THRESHOLD MAP &nbsp;//&nbsp; <em>12-COLOR WARM PALETTE QUANTIZE</em> &nbsp;//&nbsp; PROCEDURAL LIVING SCENE &nbsp;//&nbsp; <b>NO LOADING GATE · DOTS ARE FIRST PAINT</b> &nbsp;//&nbsp; SEA · TOASTERS · PIPES · PLASMA &nbsp;//&nbsp; <em>PRESS [SPACE] FOR STILL · [1-4] SCENES · [P] PALETTE</em> &nbsp;//&nbsp; PRAY FOR FABLE &nbsp;//&nbsp;</span>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* =========================================================================
+   DITHER//DRIFT — single-file lo-fi 486 dither screensaver
+   - genuine Bayer ordered dithering (8x8 / 4x4) onto a small offscreen
+     buffer, palette-quantized to ~12 warm colors, then upscaled
+     nearest-neighbor for crisp mosaic dots.
+   - several procedural living scenes (sea/sun, flying toasters,
+     pipes/megademo, plasma).
+   ========================================================================= */
+
+/* ---- palettes: ordered light->dark-ish ramps, ~12 warm + teal/green ---- */
+function hx(c){return [parseInt(c.slice(1,3),16),parseInt(c.slice(3,5),16),parseInt(c.slice(5,7),16)];}
+const PALETTES = {
+  ember:{ name:"EMBER", cols:[
+    "#160a0f","#33141d","#5a2230","#7c2f24","#9b3b29","#c75b2c",
+    "#e08439","#ea9c68","#f3c896","#f7e6c4","#1f8a7a","#5dc3b0"]},
+  dusk:{ name:"DUSK", cols:[
+    "#120a14","#241225","#3e1b34","#5e2330","#883a2f","#b5532f",
+    "#d6743a","#e69a6a","#f0c39a","#f6e3c5","#2c4e6e","#6f9ec8"]},
+  tide:{ name:"TIDE", cols:[
+    "#0c1414","#10242a","#143a3a","#1f5247","#2c6e4a","#3f8a4f",
+    "#c75b2c","#e08439","#ea9c68","#f3c896","#1f8a7a","#5dc3b0"]},
+};
+// precompute rgb arrays
+for(const k in PALETTES){PALETTES[k].rgb=PALETTES[k].cols.map(hx);}
+
+/* ---- Bayer threshold matrices (normalized 0..1, centered) ---- */
+function bayerMatrix(n){
+  // recursive generation of n x n Bayer matrix (n power of two)
+  if(n===1) return [[0]];
+  const half = bayerMatrix(n/2);
+  const m=[];
+  for(let y=0;y<n;y++) m.push(new Array(n));
+  const h=n/2;
+  for(let y=0;y<h;y++)for(let x=0;x<h;x++){
+    const v=half[y][x]*4;
+    m[y][x]=v+0; m[y][x+h]=v+2; m[y+h][x]=v+3; m[y+h][x+h]=v+1;
+  }
+  return m;
+}
+function makeThresh(n){
+  const m=bayerMatrix(n), N=n*n, out=new Float32Array(N);
+  for(let y=0;y<n;y++)for(let x=0;x<n;x++)
+    out[y*n+x]=(m[y][x]+0.5)/N - 0.5; // range ~ -0.5..0.5
+  return {n,data:out};
+}
+const BAYER = {8:makeThresh(8),4:makeThresh(4),0:null};
+
+/* =========================================================================
+   STATE
+   ========================================================================= */
+const state = {
+  scene:"sea",
+  palKey:"ember",
+  bayer:8,
+  scale:4,        // upscale factor; buffer = stage/scale
+  time:0.64,      // 0..1 time-of-day
+  speed:1.0,
+  playing:true,
+  crt:true,
+  mouseX:0.5, mouseY:0.5,
+  t:0,            // animation clock (seconds, scaled by speed)
+};
+
+/* ---- canvas + buffer ---- */
+const screen = document.getElementById('screen');
+const sctx = screen.getContext('2d',{alpha:false});
+sctx.imageSmoothingEnabled=false;
+let buf, bctx, bw, bh, img, data; // offscreen low-res buffer
+let stage = document.getElementById('stage');
+
+function setupBuffer(){
+  const r = stage.getBoundingClientRect();
+  const dpr = 1; // we WANT chunky pixels; ignore dpr for buffer math
+  const W = Math.max(160, Math.round(r.width));
+  const H = Math.max(120, Math.round(r.height));
+  // backing store for the visible canvas (full res, nearest upscale source)
+  screen.width = W; screen.height = H;
+  sctx.imageSmoothingEnabled=false;
+  // low-res buffer dims
+  bw = Math.max(80, Math.floor(W/state.scale));
+  bh = Math.max(60, Math.floor(H/state.scale));
+  buf = document.createElement('canvas');
+  buf.width=bw; buf.height=bh;
+  bctx = buf.getContext('2d',{alpha:false});
+  bctx.imageSmoothingEnabled=false;
+  img = bctx.createImageData(bw,bh);
+  data = img.data;
+  document.getElementById('resTxt').textContent = bw+"×"+bh;
+  document.getElementById('dots').textContent = (bw*bh).toLocaleString();
+}
+
+/* =========================================================================
+   PALETTE QUANTIZE with ordered dither
+   For each pixel we compute an intensity along the palette ramp plus an
+   optional hue split (warm vs teal). We pick nearest palette index after
+   adding the bayer threshold scaled to one palette step — this produces a
+   genuine ordered-dither mosaic between adjacent palette colors.
+   ========================================================================= */
+let RAMP, RAMP_N;
+function setPalette(){
+  RAMP = PALETTES[state.palKey].rgb;
+  RAMP_N = RAMP.length;
+  // swatch
+  const sw=document.getElementById('swatch'); sw.innerHTML='';
+  PALETTES[state.palKey].cols.forEach(c=>{const s=document.createElement('span');s.style.background=c;sw.appendChild(s);});
+  document.getElementById('palname').textContent=PALETTES[state.palKey].name;
+  document.getElementById('palcnt').textContent=RAMP_N;
+}
+
+/* The scene produces, per pixel, a float "level" in [0,1] over the warm
+   ramp (indices 0..9) plus a separate teal flag/level for accents (10,11).
+   We dither between adjacent ramp entries. */
+
+/* nearest palette color given continuous level 0..(N-1) + bayer threshold */
+function ditherIndex(level, thr){
+  // level in palette-index space; thr in [-0.5,0.5]
+  let v = level + thr;        // ordered-dither offset
+  let i = Math.round(v);
+  if(i<0)i=0; if(i>RAMP_N-1)i=RAMP_N-1;
+  return i;
+}
+
+/* =========================================================================
+   SCENES — each returns nothing; writes a "level field" then dithered.
+   To keep it fast we compute per-pixel level directly in the render loop.
+   ========================================================================= */
+
+// time-of-day -> sun height & sky tints
+function skyParams(){
+  const tod = state.time; // 0 night ->.5 day ->1 night
+  // sun vertical position: high at midday(0.5), below horizon at 0/1
+  const sun = Math.sin(tod*Math.PI); // 0..1..0
+  let phase = "NIGHT";
+  if(tod<0.18||tod>0.82) phase="NIGHT";
+  else if(tod<0.30) phase="DAWN";
+  else if(tod>0.70) phase="DUSK";
+  else phase="DAY";
+  return {sun,phase,tod};
+}
+
+/* ---------- SEA scene: dithered sunset, glittering sea, lighthouse ---------- */
+function renderSea(){
+  const {sun,tod} = skyParams();
+  const t = state.t;
+  const horizon = bh*(0.50 + (state.mouseY-0.5)*0.18);
+  const sunX = bw*(0.5 + (state.mouseX-0.5)*0.35);
+  const sunY = horizon - (sun*bh*0.40) + bh*0.04;
+  const sunR = bw*0.085*(0.85+sun*0.5);
+  const thr = BAYER[state.bayer];
+  const tn = thr?thr.n:0, td=thr?thr.data:null;
+  // night darkening of the warm ramp
+  const dayLift = 0.20 + sun*0.80;       // overall brightness with day
+  let p=0;
+  for(let y=0;y<bh;y++){
+    for(let x=0;x<bw;x++,p+=4){
+      let level; // 0..11
+      const threV = td?td[(y%tn)*tn+(x%tn)]:0;
+      if(y < horizon){
+        /* ---- SKY ---- vertical gradient + radial sun glow ---- */
+        const fy = y/horizon;                 // 0 top ->1 horizon
+        // base sky: dark(2) near top to bright(8) near horizon, lifted by day
+        let sky = 2 + fy*5.2;
+        // radial glow around sun
+        const dx=(x-sunX), dy=(y-sunY);
+        const dist=Math.sqrt(dx*dx+dy*dy);
+        const glow = Math.max(0, 1 - dist/(sunR*5.5));
+        sky += glow*glow*4.0;
+        // the sun disc itself -> brightest cream
+        if(dist < sunR){ sky = 9 + (1-dist/sunR)*0.6; }
+        // apply day brightness
+        sky *= dayLift;
+        // a couple drifting cloud bands (sinusoidal), only as darkening
+        const cloud = Math.sin(x*0.05 + t*0.25 + y*0.12)
+                    + Math.sin(x*0.021 - t*0.13 + 2.0);
+        if(fy<0.7) sky -= Math.max(0,cloud-0.9)*1.3*(0.6+0.4*Math.sin(t*0.1));
+        level = sky;
+      } else {
+        /* ---- SEA ---- reflected gradient + animated glitter + sun column */
+        const fy = (y-horizon)/(bh-horizon+0.0001); // 0 horizon ->1 bottom
+        // sea base darker toward bottom (teal/green range possible)
+        let sea = 6 - fy*4.5;
+        sea *= dayLift;
+        // wave bands: moving horizontal ripples, stronger near horizon
+        const wave = Math.sin((y*0.6) - t*2.2 + Math.sin(x*0.08)*1.4)
+                   * (1.0 - fy*0.7);
+        sea += wave*1.2;
+        // sun reflection column (vertical streak under sun, shimmering)
+        const colW = sunR*(1.4 + fy*5.0);
+        const inCol = Math.abs(x-sunX) < colW;
+        if(inCol){
+          const shim = Math.sin(y*1.3 - t*4.0)*0.5+0.5;
+          const edge = 1-Math.abs(x-sunX)/colW;
+          sea += edge*edge*(2.6+ shim*2.2)*(0.5+sun*0.7);
+        }
+        // teal accent in deep/dark water troughs at night-ish
+        level = sea;
+      }
+      // clamp warm ramp 0..9, let sun reach 10/11 cream? keep cream at 9.
+      if(level>9) level=9;
+      const i = ditherIndex(level, threV*1.0);
+      const c = RAMP[i];
+      data[p]=c[0]; data[p+1]=c[1]; data[p+2]=c[2]; data[p+3]=255;
+    }
+  }
+  bctx.putImageData(img,0,0);
+  // ---- vector-ish overlays drawn in buffer space then re-dithered? Keep
+  // simple: draw lighthouse + beam as solid palette rects on the buffer. ----
+  drawLighthouse(sun);
+  document.getElementById('scenename').textContent="SEA · VESPER DRIFT";
+}
+
+/* lighthouse silhouette + sweeping beam, drawn with palette colors directly */
+function drawLighthouse(sun){
+  const cols = PALETTES[state.palKey].cols;
+  const t = state.t;
+  const lx = Math.round(bw*0.80);
+  const horizon = bh*(0.50 + (state.mouseY-0.5)*0.18);
+  const baseY = Math.round(horizon);
+  const topY = Math.round(horizon - bh*0.30);
+  const wTop = Math.max(3,Math.round(bw*0.020));
+  const wBot = Math.max(5,Math.round(bw*0.042));
+  // beam: rotating triangle of light from lamp
+  const lampX=lx, lampY=topY+2;
+  const ang = t*0.9;
+  for(const a of [ang, ang+Math.PI]){
+    const ca=Math.cos(a), sa=Math.sin(a);
+    if(ca>-0.15){ // only when sweeping toward viewer-ish
+      bctx.save();
+      bctx.globalAlpha=0.22+0.10*Math.sin(t*3);
+      bctx.fillStyle=cols[9];
+      bctx.beginPath();
+      bctx.moveTo(lampX,lampY);
+      const len=bw*0.9, spread=0.16;
+      bctx.lineTo(lampX+Math.cos(a-spread)*len, lampY+Math.sin(a-spread)*len);
+      bctx.lineTo(lampX+Math.cos(a+spread)*len, lampY+Math.sin(a+spread)*len);
+      bctx.closePath(); bctx.fill();
+      bctx.restore();
+    }
+  }
+  // tower body: trapezoid with stripe bands
+  for(let y=topY;y<baseY;y++){
+    const f=(y-topY)/(baseY-topY);
+    const w=Math.round(wTop+(wBot-wTop)*f);
+    const band = (Math.floor((y-topY)/Math.max(2,bh*0.035))%2)===0;
+    bctx.fillStyle = band? cols[9] : cols[4];
+    bctx.fillRect(lx-w, y, w*2, 1);
+  }
+  // lamp room
+  bctx.fillStyle=cols[6];
+  bctx.fillRect(lx-wTop-1, topY-4, (wTop+1)*2, 4);
+  bctx.fillStyle=cols[8];
+  bctx.fillRect(lx-1, topY-5, 2, 2);
+  // tiny gull dots drifting
+  bctx.fillStyle=cols[1];
+  for(let g=0;g<4;g++){
+    const gx=((t*6 + g*40)% (bw+20))-10;
+    const gy= bh*0.16 + Math.sin(t*0.5+g)*6 + g*5;
+    bctx.fillRect(Math.round(gx),Math.round(gy),2,1);
+    bctx.fillRect(Math.round(gx+2),Math.round(gy-1),1,1);
+    bctx.fillRect(Math.round(gx-2),Math.round(gy-1),1,1);
+  }
+}
+
+/* ---------- TOASTERS: flying-toaster homage over dithered gradient ---------- */
+let toasters=[];
+function initToasters(){
+  toasters=[];
+  for(let i=0;i<10;i++){
+    toasters.push({
+      x:Math.random(), y:Math.random(),
+      sp:0.06+Math.random()*0.10, ph:Math.random()*6.28,
+      toast: Math.random()<0.3
+    });
+  }
+}
+function renderToasters(){
+  const t=state.t;
+  const thr=BAYER[state.bayer]; const tn=thr?thr.n:0,td=thr?thr.data:null;
+  const {sun}=skyParams();
+  const dayLift=0.30+sun*0.7;
+  // background: diagonal dithered gradient
+  let p=0;
+  for(let y=0;y<bh;y++){
+    for(let x=0;x<bw;x++,p+=4){
+      const threV=td?td[(y%tn)*tn+(x%tn)]:0;
+      let level = 1.5 + (x/bw)*3.0 + (y/bh)*3.5;
+      level += Math.sin(x*0.04 - t*0.4)*0.5;
+      level*=dayLift;
+      if(level>9)level=9;
+      const i=ditherIndex(level,threV);
+      const c=RAMP[i];
+      data[p]=c[0];data[p+1]=c[1];data[p+2]=c[2];data[p+3]=255;
+    }
+  }
+  bctx.putImageData(img,0,0);
+  // sprites
+  const cols=PALETTES[state.palKey].cols;
+  for(const o of toasters){
+    o.x -= o.sp*0.01*state.speed; o.y += o.sp*0.006*state.speed;
+    if(o.x< -0.1){o.x=1.1;o.y=Math.random();}
+    if(o.y>1.1){o.y=-0.1;}
+    const px=Math.round(o.x*bw), py=Math.round(o.y*bh + Math.sin(t*2+o.ph)*3);
+    const flap=(Math.floor(t*8+o.ph)%2)===0;
+    if(o.toast) drawToast(px,py,cols);
+    else drawToaster(px,py,flap,cols);
+  }
+  document.getElementById('scenename').textContent="TOASTERS · 199X";
+}
+function drawToaster(x,y,flap,cols){
+  const b=bctx;
+  // body
+  b.fillStyle=cols[10]; b.fillRect(x,y,14,10);
+  b.fillStyle=cols[11]; b.fillRect(x,y,14,2);          // chrome top
+  b.fillStyle=cols[0];  b.fillRect(x+2,y+3,2,1);       // slot
+  b.fillStyle=cols[0];  b.fillRect(x+8,y+3,4,1);       // slot2
+  // toast popping
+  b.fillStyle=cols[7]; b.fillRect(x+8,y-2,4,3);
+  // wing
+  const wy = flap? y-2 : y+1;
+  b.fillStyle=cols[9]; b.fillRect(x-6,wy,6,2);
+  b.fillStyle=cols[8]; b.fillRect(x-5,wy+ (flap?2:-1),5,1);
+}
+function drawToast(x,y,cols){
+  const b=bctx;
+  b.fillStyle=cols[7]; b.fillRect(x,y,9,8);
+  b.fillStyle=cols[8]; b.fillRect(x+1,y+1,7,6);
+  b.fillStyle=cols[5]; b.fillRect(x+2,y+3,1,1);
+  b.fillStyle=cols[5]; b.fillRect(x+5,y+4,1,1);
+}
+
+/* ---------- PIPES: growing 3D-ish pipe network (megademo) ---------- */
+let pipes=[], pipeBuf=null, pipeCtx=null;
+function initPipes(){
+  // persistent buffer that pipes paint onto (don't clear each frame)
+  pipeBuf=document.createElement('canvas'); pipeBuf.width=bw;pipeBuf.height=bh;
+  pipeCtx=pipeBuf.getContext('2d',{alpha:false,willReadFrequently:true});
+  pipeCtx.imageSmoothingEnabled=false;
+  // fill with a subtly lit dark so background dither still reads
+  pipeCtx.fillStyle=PALETTES[state.palKey].cols[1];
+  pipeCtx.fillRect(0,0,bw,bh);
+  pipes=[];
+  for(let i=0;i<5;i++) spawnPipe();
+}
+function spawnPipe(){
+  const dirs=[[1,0],[-1,0],[0,1],[0,-1]];
+  pipes.push({
+    x:Math.floor(Math.random()*bw), y:Math.floor(Math.random()*bh),
+    d:dirs[Math.floor(Math.random()*4)],
+    col: 4+Math.floor(Math.random()*8),
+    life: 40+Math.floor(Math.random()*120)
+  });
+}
+let pipeAccum=0;
+function renderPipes(dt){
+  const cols=PALETTES[state.palKey].cols;
+  const thr=BAYER[state.bayer]; const tn=thr?thr.n:0,td=thr?thr.data:null;
+  // step pipes (rate scaled by speed)
+  pipeAccum += dt*60*state.speed;
+  let steps=Math.min(8,Math.floor(pipeAccum));
+  pipeAccum-=steps;
+  const dirs=[[1,0],[-1,0],[0,1],[0,-1]];
+  while(steps-->0){
+    for(const pp of pipes){
+      // occasionally turn
+      if(Math.random()<0.16){ pp.d=dirs[Math.floor(Math.random()*4)]; }
+      pp.x+=pp.d[0]; pp.y+=pp.d[1];
+      if(pp.x<1)pp.x=bw-2; if(pp.x>bw-2)pp.x=1;
+      if(pp.y<1)pp.y=bh-2; if(pp.y>bh-2)pp.y=1;
+      // draw a 2x2 nub with a light edge for fake 3D
+      pipeCtx.fillStyle=cols[pp.col];
+      pipeCtx.fillRect(pp.x-1,pp.y-1,3,3);
+      pipeCtx.fillStyle=cols[Math.min(11,pp.col+2)];
+      pipeCtx.fillRect(pp.x-1,pp.y-1,3,1);
+      pp.life--;
+      if(pp.life<=0){ Object.assign(pp,{x:Math.floor(Math.random()*bw),y:Math.floor(Math.random()*bh),d:dirs[Math.floor(Math.random()*4)],col:4+Math.floor(Math.random()*8),life:40+Math.floor(Math.random()*120)});}
+    }
+    // slow fade so old pipes recede (gives depth + keeps dither lively)
+    if(Math.random()<0.04){
+      pipeCtx.fillStyle="rgba(22,10,15,0.05)";
+      pipeCtx.fillRect(0,0,bw,bh);
+    }
+  }
+  // now read pipe buffer and re-dither through palette ramp by luminance
+  const src=pipeCtx.getImageData(0,0,bw,bh).data;
+  let p=0;
+  for(let y=0;y<bh;y++)for(let x=0;x<bw;x++,p+=4){
+    const threV=td?td[(y%tn)*tn+(x%tn)]:0;
+    const lum=(src[p]*0.5+src[p+1]*0.4+src[p+2]*0.1)/255; //0..1
+    // lift floor so empty space dithers in the dark warm range (not flat),
+    // and let bright pipe nubs reach cream
+    let level = 1.4 + lum*8.2;
+    const i=ditherIndex(level,threV);
+    const c=RAMP[i];
+    data[p]=c[0];data[p+1]=c[1];data[p+2]=c[2];data[p+3]=255;
+  }
+  bctx.putImageData(img,0,0);
+  document.getElementById('scenename').textContent="PIPES · MEGADEMO";
+}
+
+/* ---------- PLASMA: classic demoscene plasma, dithered ---------- */
+function renderPlasma(){
+  const t=state.t;
+  const thr=BAYER[state.bayer]; const tn=thr?thr.n:0,td=thr?thr.data:null;
+  let p=0;
+  const cx=bw*0.5+(state.mouseX-0.5)*bw*0.4;
+  const cy=bh*0.5+(state.mouseY-0.5)*bh*0.4;
+  for(let y=0;y<bh;y++)for(let x=0;x<bw;x++,p+=4){
+    const threV=td?td[(y%tn)*tn+(x%tn)]:0;
+    let v = Math.sin(x*0.06 + t*1.3)
+          + Math.sin(y*0.07 - t*1.0)
+          + Math.sin((x+y)*0.045 + t*0.7)
+          + Math.sin(Math.sqrt((x-cx)*(x-cx)+(y-cy)*(y-cy))*0.07 - t*1.6);
+    // v in ~ -4..4 -> 0..1
+    const n=(v+4)/8;
+    // second sine field decides warm vs teal accent banding
+    const w = Math.sin(x*0.03 - y*0.025 + t*0.9 + n*3.1);
+    let i;
+    if(w>0.72){
+      // teal accent crest -> dither between the two teal/cream slots (10,11)
+      i = ditherIndex(10 + (w-0.72)*3.2, threV);
+    } else {
+      // map across the FULL warm ramp 1..9 so plasma stays vivid, not muddy
+      let level = 1.0 + n*8.0;
+      i = ditherIndex(level, threV);
+    }
+    const c=RAMP[i];
+    data[p]=c[0];data[p+1]=c[1];data[p+2]=c[2];data[p+3]=255;
+  }
+  bctx.putImageData(img,0,0);
+  document.getElementById('scenename').textContent="PLASMA · SINE STORM";
+}
+
+/* =========================================================================
+   MAIN LOOP
+   ========================================================================= */
+let last=performance.now(), fpsAcc=0, fpsCnt=0, fpsShown=0;
+function frame(now){
+  let dt=(now-last)/1000; if(dt>0.1)dt=0.1; last=now;
+  if(state.playing){ state.t += dt*state.speed; }
+  // auto time-of-day drift when AUTO (slow)
+  if(state.playing && !state.timeLocked){
+    state.time += dt*0.012*state.speed;
+    if(state.time>1)state.time-=1;
+    document.getElementById('timeSld').value = Math.round(state.time*1000);
+  }
+
+  switch(state.scene){
+    case "sea": renderSea(); break;
+    case "toasters": renderToasters(); break;
+    case "pipes": renderPipes(dt); break;
+    case "plasma": renderPlasma(); break;
+  }
+  // upscale buffer to visible canvas, nearest-neighbor
+  sctx.imageSmoothingEnabled=false;
+  sctx.drawImage(buf,0,0,bw,bh,0,0,screen.width,screen.height);
+
+  // hud
+  fpsAcc+=dt;fpsCnt++;
+  if(fpsAcc>=0.5){ fpsShown=Math.round(fpsCnt/fpsAcc); fpsAcc=0;fpsCnt=0;
+    document.getElementById('fps').textContent=fpsShown;
+    const ph=skyParams().phase;
+    document.getElementById('phaseTxt').textContent=ph;
+    // fake clock from time-of-day
+    const mins=Math.round(state.time*1440);
+    const hh=String(Math.floor(mins/60)%24).padStart(2,'0');
+    const mm=String(mins%60).padStart(2,'0');
+    document.getElementById('clock').textContent=hh+":"+mm;
+  }
+  requestAnimationFrame(frame);
+}
+
+/* =========================================================================
+   CONTROLS
+   ========================================================================= */
+function selectChip(rowId, attr, val, cls){
+  document.querySelectorAll('#'+rowId+' .chip').forEach(c=>{
+    c.classList.toggle('on', c.getAttribute(attr)===String(val));
+  });
+}
+document.getElementById('sceneRow').addEventListener('click',e=>{
+  const c=e.target.closest('.chip'); if(!c)return;
+  setScene(c.dataset.scene);
+});
+function setScene(s){
+  state.scene=s;
+  selectChip('sceneRow','data-scene',s);
+  if(s==='toasters')initToasters();
+  if(s==='pipes')initPipes();
+}
+document.getElementById('palRow').addEventListener('click',e=>{
+  const c=e.target.closest('.chip'); if(!c)return;
+  state.palKey=c.dataset.pal; setPalette(); selectChip('palRow','data-pal',state.palKey);
+  if(state.scene==='pipes')initPipes();
+});
+document.getElementById('bayerRow').addEventListener('click',e=>{
+  const c=e.target.closest('.chip'); if(!c)return;
+  state.bayer=parseInt(c.dataset.bayer);
+  selectChip('bayerRow','data-bayer',state.bayer);
+  document.getElementById('bmode').textContent= state.bayer===0?"OFF":(state.bayer+"x"+state.bayer);
+});
+document.getElementById('timeSld').addEventListener('input',e=>{
+  state.time=parseInt(e.target.value)/1000;
+  state.timeLocked=true;
+  clearTimeout(state._tl);
+  state._tl=setTimeout(()=>{state.timeLocked=false;},4000);
+});
+document.getElementById('spdSld').addEventListener('input',e=>{
+  state.speed=parseInt(e.target.value)/100;
+});
+document.getElementById('resSld').addEventListener('input',e=>{
+  state.scale=parseInt(e.target.value); setupBuffer();
+  if(state.scene==='pipes')initPipes();
+});
+const playBtn=document.getElementById('playBtn');
+playBtn.addEventListener('click',()=>{
+  state.playing=!state.playing;
+  playBtn.textContent= state.playing? "► AUTO":"❚❚ STILL";
+  playBtn.classList.toggle('on',state.playing);
+});
+const crtBtn=document.getElementById('crtBtn');
+crtBtn.addEventListener('click',()=>{
+  state.crt=!state.crt;
+  document.getElementById('crt').classList.toggle('off',!state.crt);
+  crtBtn.textContent= state.crt? "CRT ✓":"CRT ✗";
+  crtBtn.classList.toggle('on',state.crt);
+});
+crtBtn.classList.add('on');
+
+// mouse / touch parallax over the stage
+function ptr(e){
+  const r=stage.getBoundingClientRect();
+  const cx = (e.touches?e.touches[0].clientX:e.clientX);
+  const cy = (e.touches?e.touches[0].clientY:e.clientY);
+  state.mouseX=Math.min(1,Math.max(0,(cx-r.left)/r.width));
+  state.mouseY=Math.min(1,Math.max(0,(cy-r.top)/r.height));
+}
+stage.addEventListener('mousemove',ptr);
+stage.addEventListener('touchmove',e=>{ptr(e);},{passive:true});
+// click stage = next scene
+const sceneOrder=["sea","toasters","pipes","plasma"];
+stage.addEventListener('click',()=>{
+  const i=(sceneOrder.indexOf(state.scene)+1)%sceneOrder.length;
+  setScene(sceneOrder[i]);
+});
+
+// keyboard
+window.addEventListener('keydown',e=>{
+  if(e.key===' '){ e.preventDefault(); playBtn.click(); }
+  else if(e.key==='1')setScene('sea');
+  else if(e.key==='2')setScene('toasters');
+  else if(e.key==='3')setScene('pipes');
+  else if(e.key==='4')setScene('plasma');
+  else if(e.key.toLowerCase()==='p'){
+    const order=["ember","dusk","tide"];
+    const i=(order.indexOf(state.palKey)+1)%order.length;
+    state.palKey=order[i]; setPalette(); selectChip('palRow','data-pal',state.palKey);
+    if(state.scene==='pipes')initPipes();
+  }
+  else if(e.key.toLowerCase()==='c'){ crtBtn.click(); }
+});
+
+window.addEventListener('resize',()=>{ setupBuffer(); if(state.scene==='pipes')initPipes(); });
+
+/* ---- boot ---- */
+setPalette();
+setupBuffer();
+document.getElementById('bmode').textContent=state.bayer+"x"+state.bayer;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

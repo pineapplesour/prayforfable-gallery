@@ -1,0 +1,645 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>ABYSS — infinite fractal dive</title>
+<style>
+  :root{ --ink:#e9eef7; --dim:#8fa0bd; }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#04060d; }
+  body{ font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; color:var(--ink);
+        -webkit-user-select:none; user-select:none; -webkit-tap-highlight-color:transparent;
+        cursor:crosshair; }
+  #gl{ position:fixed; inset:0; width:100%; height:100%; display:block; }
+
+  /* --- HUD --- */
+  #hud{ position:fixed; inset:0; pointer-events:none; z-index:5;
+        opacity:0; transition:opacity .8s ease; }
+  #hud.on{ opacity:1; }
+  .panel{ position:absolute; backdrop-filter:blur(9px) saturate(1.3);
+          background:rgba(8,12,24,.42); border:1px solid rgba(150,180,255,.16);
+          border-radius:13px; padding:11px 14px; }
+  #title{ top:18px; left:20px; padding-right:18px; }
+  #title h1{ font-size:13px; letter-spacing:.42em; font-weight:600;
+             background:linear-gradient(90deg,#7fd7ff,#b69cff,#ff9ad2);
+             -webkit-background-clip:text; background-clip:text; color:transparent; }
+  #title p{ font-size:9.5px; letter-spacing:.16em; color:var(--dim); margin-top:5px; }
+  #stat{ bottom:18px; left:20px; font-size:10px; line-height:1.85; color:var(--dim);
+         font-variant-numeric:tabular-nums; }
+  #stat b{ color:var(--ink); font-weight:600; }
+  #stat .k{ color:#6b7ea0; display:inline-block; width:54px; }
+
+  /* controls */
+  #ctl{ bottom:18px; right:18px; display:flex; flex-direction:column; gap:7px;
+        align-items:flex-end; pointer-events:auto; }
+  .btn{ pointer-events:auto; cursor:pointer; font:inherit; font-size:10px; letter-spacing:.12em;
+        color:var(--ink); background:rgba(12,18,34,.5); border:1px solid rgba(150,180,255,.2);
+        border-radius:10px; padding:8px 13px; backdrop-filter:blur(8px);
+        transition:.18s; white-space:nowrap; }
+  .btn:hover{ border-color:rgba(160,200,255,.55); background:rgba(30,44,80,.6);
+              box-shadow:0 0 22px rgba(120,160,255,.22); transform:translateY(-1px); }
+  .btn:active{ transform:translateY(0); }
+  .btn.live{ border-color:rgba(255,180,120,.6); color:#ffd9a8;
+             box-shadow:0 0 24px rgba(255,160,90,.25); }
+  #row{ display:flex; gap:7px; }
+
+  /* palette swatch + hint */
+  #hint{ top:18px; right:18px; max-width:230px; font-size:9.5px; line-height:1.85;
+         color:var(--dim); text-align:right; letter-spacing:.04em; }
+  #hint b{ color:#9fd0ff; }
+  @media (max-width:560px){
+    #hint{ display:none; }
+    #title h1{ font-size:11px; letter-spacing:.3em; }
+    #ctl{ bottom:14px; right:12px; }
+    .btn{ font-size:9px; padding:7px 10px; }
+    #stat{ bottom:14px; left:12px; font-size:9px; }
+    #title{ top:12px; left:12px; }
+  }
+  /* fades a gentle vignette so corners feel deep */
+  #vig{ position:fixed; inset:0; pointer-events:none; z-index:4;
+        background:radial-gradient(120% 120% at 50% 46%,transparent 52%,rgba(2,4,10,.62) 100%); }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="vig"></div>
+
+<div id="hud">
+  <div id="title" class="panel">
+    <h1>A B Y S S</h1>
+    <p>INFINITE FRACTAL DIVE · MANDELBROT ⇄ JULIA</p>
+  </div>
+
+  <div id="hint" class="panel">
+    <b>스크롤/핀치</b> 커서로 줌 · <b>드래그</b> 이동<br>
+    <b>클릭</b> 줄리아 씨앗 + 모핑 · <b>더블클릭</b> 그곳으로 다이브<br>
+    <b>D</b> 시네마 다이브 · <b>R</b> 리셋 · <b>P</b> 팔레트
+  </div>
+
+  <div id="stat" class="panel">
+    <div><span class="k">zoom</span><b id="sZoom">1×</b></div>
+    <div><span class="k">center</span><b id="sCtr">−0.5, 0.0</b></div>
+    <div><span class="k">iter</span><b id="sIter">256</b></div>
+    <div><span class="k">fps</span><b id="sFps">—</b></div>
+  </div>
+
+  <div id="ctl">
+    <div id="row">
+      <button class="btn" id="bPal">PALETTE</button>
+      <button class="btn" id="bMorph">JULIA</button>
+    </div>
+    <div id="row">
+      <button class="btn" id="bReset">RESET</button>
+      <button class="btn" id="bDive">◐ CINEMA DIVE</button>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+(function(){
+const cv = document.getElementById('gl');
+const gl = cv.getContext('webgl',{antialias:false,depth:false,stencil:false,
+            premultipliedAlpha:false,preserveDrawingBuffer:true,powerPreference:'high-performance'});
+if(!gl){ document.body.innerHTML='<p style="color:#fff;padding:40px;font-family:monospace">WebGL이 필요합니다.</p>'; return; }
+
+/* ----------------------------- shaders ----------------------------- */
+const VERT = `
+attribute vec2 p;
+void main(){ gl_Position = vec4(p,0.0,1.0); }
+`;
+
+// Fragment: smooth-iteration Mandelbrot / Julia with emulated double precision
+// for the center offset so deep zoom stays crisp far beyond float32.
+const FRAG = `
+precision highp float;
+
+uniform vec2  uRes;        // pixel resolution
+uniform vec2  uCenterHi;   // center (hi part)
+uniform vec2  uCenterLo;   // center (lo part) for extra precision
+uniform float uScale;      // half-height of view in complex plane
+uniform float uIter;       // max iterations
+uniform float uTime;       // seconds
+uniform float uMorph;      // 0 = mandelbrot, 1 = julia
+uniform vec2  uSeed;       // julia seed
+uniform float uPalette;    // palette id (float, blended)
+uniform float uAA;         // 1.0 or 2.0 (supersample edge count)
+uniform float uGlow;       // bailout glow factor
+
+// --- double-single arithmetic (Dekker) for crisp deep zoom ---
+vec2 ds_add(vec2 a, vec2 b){
+  float s = a.x + b.x;
+  float v = s - a.x;
+  float e = (a.x - (s - v)) + (b.x - v) + a.y + b.y;
+  float r = s + e;
+  return vec2(r, e - (r - s));
+}
+vec2 ds_set(float a){ return vec2(a,0.0); }
+
+// cosine-gradient palettes (Inigo Quilez style), several moods blended by uPalette
+vec3 palCos(float t, vec3 a, vec3 b, vec3 c, vec3 d){
+  return a + b*cos(6.28318530718*(c*t + d));
+}
+vec3 paletteAt(float t, float pid){
+  // four moods
+  vec3 p0 = palCos(t, vec3(0.55,0.45,0.50), vec3(0.50,0.50,0.55),
+                      vec3(1.0,1.0,1.0), vec3(0.00,0.15,0.32));   // aurora
+  vec3 p1 = palCos(t, vec3(0.50,0.40,0.35), vec3(0.55,0.45,0.40),
+                      vec3(1.0,1.0,1.0), vec3(0.00,0.10,0.20));   // ember
+  vec3 p2 = palCos(t, vec3(0.45,0.50,0.55), vec3(0.45,0.45,0.50),
+                      vec3(1.0,1.2,1.4), vec3(0.30,0.20,0.10));   // deep sea
+  vec3 p3 = palCos(t, vec3(0.60,0.50,0.55), vec3(0.45,0.45,0.45),
+                      vec3(2.0,1.0,1.0), vec3(0.50,0.20,0.25));   // candy nebula
+  // smooth blend across the 4 moods by pid in [0,4)
+  float f = mod(pid, 4.0);
+  vec3 a = mix(p0,p1, clamp(f,0.0,1.0));
+  vec3 bb= mix(p1,p2, clamp(f-1.0,0.0,1.0));
+  vec3 cc= mix(p2,p3, clamp(f-2.0,0.0,1.0));
+  vec3 dd= mix(p3,p0, clamp(f-3.0,0.0,1.0));
+  vec3 col = a;
+  col = mix(col, bb, clamp(f-0.999,0.0,1.0));
+  col = mix(col, cc, clamp(f-1.999,0.0,1.0));
+  col = mix(col, dd, clamp(f-2.999,0.0,1.0));
+  return col;
+}
+
+// iterate one sample; returns color
+vec3 sample(vec2 frag){
+  // pixel -> complex offset from center, in double-single
+  vec2 uv = (frag - 0.5*uRes) / uRes.y;     // y-normalized, center at 0
+  // complex coordinate = center(hi+lo) + uv*2*uScale.
+  // Add the tiny per-pixel offset onto the *lo* part first (both small),
+  // then fold in hi — this preserves precision near the center far past
+  // what a single float32 of the absolute coordinate could hold.
+  vec2 ox = ds_add(vec2(uCenterHi.x, uCenterLo.x), ds_set(uv.x * 2.0 * uScale));
+  vec2 oy = ds_add(vec2(uCenterHi.y, uCenterLo.y), ds_set(uv.y * 2.0 * uScale));
+  float cx = ox.x + ox.y;
+  float cy = oy.x + oy.y;
+
+  vec2 c, z;
+  if(uMorph < 0.5 + 0.5){
+    // blend: in julia mode c = seed, z = pixel ; in mandel mode c = pixel, z = 0
+    c = mix(vec2(cx,cy), uSeed, uMorph);
+    z = mix(vec2(0.0),   vec2(cx,cy), uMorph);
+  }
+
+  float i;
+  float maxI = uIter;
+  float esc = 0.0;
+  float trap = 1e9;          // orbit trap (distance to a moving point) for extra detail
+  vec2 tp = 0.42*vec2(cos(uTime*0.13), sin(uTime*0.11));
+  for(float k=0.0; k<2000.0; k+=1.0){
+    if(k>=maxI) break;
+    float x2 = z.x*z.x, y2 = z.y*z.y;
+    if(x2+y2 > 256.0){ esc=1.0; i=k; break; }
+    z = vec2(x2 - y2, 2.0*z.x*z.y) + c;
+    trap = min(trap, length(z - tp));
+    i = k;
+  }
+
+  if(esc < 0.5){
+    // inside set: near-black with a faint breathing orbit-trap shimmer
+    float inner = exp(-trap*2.2);
+    vec3 deep = paletteAt(0.62 + 0.05*sin(uTime*0.4), uPalette);
+    return deep * inner * 0.10;
+  }
+
+  // smooth (continuous) iteration count
+  float logz = log(z.x*z.x + z.y*z.y) * 0.5;
+  float nu = log(logz / log(2.0)) / log(2.0);
+  float si = i + 1.0 - nu;
+
+  // color mapping: cycle by smooth iter, modulated by zoom depth & time & trap
+  float depth = log(1.0/uScale);
+  float t = si*0.018 + uTime*0.020 + depth*0.020;
+  vec3 col = paletteAt(t, uPalette);
+
+  // orbit-trap highlight: thin glowing filaments
+  float fil = exp(-trap*9.0);
+  col += fil * paletteAt(t+0.5, uPalette) * 1.4;
+
+  // bailout glow near the boundary
+  float edge = smoothstep(0.0, 1.0, fract(si)*uGlow);
+  col *= 0.55 + 0.55*edge;
+
+  // gentle inner brightness shaping
+  col = pow(col, vec3(0.92));
+  return col;
+}
+
+void main(){
+  vec3 col;
+  if(uAA > 1.5){
+    // 2x2 rotated-grid supersample for clean edges on idle frames
+    vec2 o = vec2(0.25);
+    col  = sample(gl_FragCoord.xy + vec2(-o.x,-o.y));
+    col += sample(gl_FragCoord.xy + vec2( o.y,-o.x));
+    col += sample(gl_FragCoord.xy + vec2(-o.y, o.x));
+    col += sample(gl_FragCoord.xy + vec2( o.x, o.y));
+    col *= 0.25;
+  } else {
+    col = sample(gl_FragCoord.xy);
+  }
+  // film-ish tonemap + tiny vignette baked subtle
+  col = col / (col + vec3(0.85));         // reinhard-ish
+  col = pow(col, vec3(1.0/1.9));          // gamma
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+function compile(type, src){
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+    console.error('shader error:', gl.getShaderInfoLog(s));
+    throw new Error('shader compile failed');
+  }
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog, gl.LINK_STATUS)){
+  console.error('link error:', gl.getProgramInfoLog(prog));
+  throw new Error('link failed');
+}
+gl.useProgram(prog);
+
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+const aP = gl.getAttribLocation(prog,'p');
+gl.enableVertexAttribArray(aP);
+gl.vertexAttribPointer(aP, 2, gl.FLOAT, false, 0, 0);
+
+const U = {};
+['uRes','uCenterHi','uCenterLo','uScale','uIter','uTime','uMorph',
+ 'uSeed','uPalette','uAA','uGlow'].forEach(n=>U[n]=gl.getUniformLocation(prog,n));
+
+/* ----------------------------- state ----------------------------- */
+const S = {
+  // double-single center (hi + lo)
+  cxHi:-0.5, cxLo:0, cyHi:0, cyLo:0,
+  scale:1.35,                 // half-height of view
+  iter:256,
+  morph:0,  morphTarget:0,    // 0..1 Mandelbrot<->Julia
+  seed:{x:-0.8, y:0.156},     // julia seed
+  palette:0.0, paletteTarget:0.0,
+  glow:1.0,
+  time0:performance.now(),
+};
+
+// split a double into hi/lo (single-double)
+function splitTo(target, prefix, val){
+  const hi = Math.fround(val);
+  const lo = val - hi;
+  S[prefix+'Hi']=hi; S[prefix+'Lo']=lo;
+}
+function getC(prefix){ return S[prefix+'Hi'] + S[prefix+'Lo']; }
+function addC(prefix, d){ splitTo(0, prefix, getC(prefix)+d); }
+
+/* ----------------------------- sizing ----------------------------- */
+let DPR = Math.min(window.devicePixelRatio||1, 2);
+let resScale = 1.0;          // adaptive resolution multiplier (perf)
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  const w = Math.max(2, Math.floor(window.innerWidth  * DPR * resScale));
+  const h = Math.max(2, Math.floor(window.innerHeight * DPR * resScale));
+  if(cv.width!==w || cv.height!==h){
+    cv.width=w; cv.height=h;
+  }
+  cv.style.width=window.innerWidth+'px';
+  cv.style.height=window.innerHeight+'px';
+  gl.viewport(0,0,cv.width,cv.height);
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* ----------------------------- interaction ----------------------------- */
+let dragging=false, lastX=0, lastY=0, moved=false, pressT=0;
+let interacting=false, interactT=0;   // recent interaction => lower-quality fast frames
+function markInteract(){ interacting=true; interactT=performance.now(); }
+
+// screen pixel -> complex plane delta from center
+function pxToComplex(px, py){
+  const rect = cv.getBoundingClientRect();
+  const h = rect.height;
+  const nx = (px - rect.width*0.5) / h;
+  const ny = (py - rect.height*0.5) / h;
+  return { dx: nx*2*S.scale, dy: -ny*2*S.scale }; // screen y is flipped vs complex
+}
+
+// zoom toward a screen point
+function zoomAt(px, py, factor){
+  const before = pxToComplex(px, py);
+  // world point under cursor
+  const wx = getC('cx') + before.dx;
+  const wy = getC('cy') + before.dy;
+  S.scale *= factor;
+  S.scale = Math.max(1e-13, Math.min(2.5, S.scale));
+  // keep that world point under the cursor
+  const after = pxToComplex(px, py);
+  splitTo(0,'cx', wx - after.dx);
+  splitTo(0,'cy', wy - after.dy);
+  autoIter();
+  markInteract();
+}
+function autoIter(){
+  // more iterations as we dive deeper
+  const depth = Math.max(0, -Math.log2(S.scale));
+  S.iter = Math.min(1400, Math.floor(180 + depth*52));
+}
+
+// wheel zoom
+cv.addEventListener('wheel', e=>{
+  e.preventDefault();
+  const f = e.deltaY>0 ? 1.12 : 1/1.12;
+  zoomAt(e.clientX, e.clientY, f);
+  cancelDive();
+}, {passive:false});
+
+// mouse drag pan + click julia seed + dblclick dive
+cv.addEventListener('mousedown', e=>{
+  dragging=true; moved=false; lastX=e.clientX; lastY=e.clientY; pressT=performance.now();
+  cancelDive();
+});
+window.addEventListener('mousemove', e=>{
+  if(!dragging) return;
+  const dx=e.clientX-lastX, dy=e.clientY-lastY;
+  if(Math.abs(dx)+Math.abs(dy)>3) moved=true;
+  const rect=cv.getBoundingClientRect();
+  const sc = 2*S.scale/rect.height;
+  splitTo(0,'cx', getC('cx') - dx*sc);
+  splitTo(0,'cy', getC('cy') + dy*sc);
+  lastX=e.clientX; lastY=e.clientY;
+  markInteract();
+});
+window.addEventListener('mouseup', e=>{
+  if(dragging && !moved && performance.now()-pressT < 350){
+    // click: set julia seed to the clicked world point + morph toward julia
+    const c = pxToComplex(e.clientX, e.clientY);
+    S.seed.x = getC('cx') + c.dx;
+    S.seed.y = getC('cy') + c.dy;
+    S.morphTarget = (S.morphTarget < 0.5) ? 1 : 1; // ensure julia on
+    setMorphBtn();
+    markInteract();
+  }
+  dragging=false;
+});
+cv.addEventListener('dblclick', e=>{
+  // dive toward the double-clicked point
+  diveTo(e.clientX, e.clientY);
+});
+
+// touch: pan, pinch-zoom, tap=seed
+let touchMode=null, pinchD0=0, pinchScale0=0, pinchMid=null, tStart=0, tMoved=false;
+cv.addEventListener('touchstart', e=>{
+  cancelDive();
+  if(e.touches.length===1){
+    touchMode='pan'; lastX=e.touches[0].clientX; lastY=e.touches[0].clientY;
+    tStart=performance.now(); tMoved=false;
+  } else if(e.touches.length===2){
+    touchMode='pinch';
+    const a=e.touches[0], b=e.touches[1];
+    pinchD0=Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY);
+    pinchScale0=S.scale;
+    pinchMid={x:(a.clientX+b.clientX)/2, y:(a.clientY+b.clientY)/2};
+  }
+}, {passive:false});
+cv.addEventListener('touchmove', e=>{
+  e.preventDefault();
+  if(touchMode==='pan' && e.touches.length===1){
+    const t=e.touches[0];
+    const dx=t.clientX-lastX, dy=t.clientY-lastY;
+    if(Math.abs(dx)+Math.abs(dy)>3) tMoved=true;
+    const rect=cv.getBoundingClientRect();
+    const sc=2*S.scale/rect.height;
+    splitTo(0,'cx', getC('cx') - dx*sc);
+    splitTo(0,'cy', getC('cy') + dy*sc);
+    lastX=t.clientX; lastY=t.clientY; markInteract();
+  } else if(touchMode==='pinch' && e.touches.length===2){
+    const a=e.touches[0], b=e.touches[1];
+    const d=Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY);
+    const mid={x:(a.clientX+b.clientX)/2, y:(a.clientY+b.clientY)/2};
+    // zoom around the pinch midpoint
+    const before=pxToComplex(mid.x, mid.y);
+    const wx=getC('cx')+before.dx, wy=getC('cy')+before.dy;
+    S.scale = Math.max(1e-13, Math.min(2.5, pinchScale0 * (pinchD0/Math.max(1,d))));
+    autoIter();
+    const after=pxToComplex(mid.x, mid.y);
+    splitTo(0,'cx', wx-after.dx); splitTo(0,'cy', wy-after.dy);
+    markInteract();
+  }
+}, {passive:false});
+cv.addEventListener('touchend', e=>{
+  if(touchMode==='pan' && !tMoved && performance.now()-tStart<330){
+    const c=pxToComplex(lastX, lastY);
+    S.seed.x=getC('cx')+c.dx; S.seed.y=getC('cy')+c.dy;
+    S.morphTarget=1; setMorphBtn(); markInteract();
+  }
+  touchMode = e.touches.length>0 ? touchMode : null;
+}, {passive:false});
+
+/* ----------------------------- cinema dive ----------------------------- */
+let diving=false, diveTarget=null, diveZoomRate=0.985;
+// curated deep-zoom destinations (well-known beautiful coordinates)
+const SPOTS = [
+  {x:-0.743643887037151, y:0.13182590420533, name:'seahorse valley'},
+  {x:-0.10109636384562, y:0.95628891195763, name:'spiral arms'},
+  {x:0.2549870375144766, y:-0.0005679790528524, name:'mini brot'},
+  {x:-1.2568856970531969, y:0.3796264201,      name:'tendril'},
+  {x:-0.16070135, y:1.0375665,                  name:'lightning'},
+  {x:-0.74364388703, y:0.13182590421,           name:'deep seahorse'},
+];
+let spotIdx=0;
+function diveTo(px,py){
+  const c=pxToComplex(px,py);
+  diveTarget={x:getC('cx')+c.dx, y:getC('cy')+c.dy, stopScale:1e-12};
+  diving=true; diveZoomRate=0.97;
+}
+function cinemaDive(){
+  if(diving){ cancelDive(); return; }
+  const s=SPOTS[spotIdx % SPOTS.length]; spotIdx++;
+  diveTarget={x:s.x, y:s.y, stopScale: 4e-12 + Math.random()*2e-11};
+  diving=true; diveZoomRate=0.982;
+  // pick a fresh palette mood for the journey
+  S.paletteTarget = (Math.floor(S.paletteTarget)+1+Math.floor(Math.random()*2))%4;
+  bDive.classList.add('live'); bDive.textContent='◑ STOP DIVE';
+}
+function cancelDive(){
+  if(!diving) return;
+  diving=false; diveTarget=null;
+  bDive.classList.remove('live'); bDive.textContent='◐ CINEMA DIVE';
+}
+
+/* ----------------------------- buttons ----------------------------- */
+const bPal=document.getElementById('bPal'),
+      bMorph=document.getElementById('bMorph'),
+      bReset=document.getElementById('bReset'),
+      bDive=document.getElementById('bDive');
+
+function setMorphBtn(){ bMorph.textContent = S.morphTarget<0.5 ? 'JULIA' : 'MANDELBROT';
+                        bMorph.classList.toggle('live', S.morphTarget>=0.5); }
+bPal.addEventListener('click', ()=>{ S.paletteTarget=(Math.floor(S.paletteTarget)+1)%4; markInteract(); });
+bMorph.addEventListener('click', ()=>{
+  S.morphTarget = S.morphTarget<0.5 ? 1 : 0; setMorphBtn(); markInteract();
+});
+bReset.addEventListener('click', resetView);
+bDive.addEventListener('click', cinemaDive);
+
+function resetView(){
+  cancelDive();
+  splitTo(0,'cx',-0.5); splitTo(0,'cy',0);
+  S.scale=1.35; S.morphTarget=0; S.morph=0; autoIter(); setMorphBtn(); markInteract();
+}
+
+// keyboard
+window.addEventListener('keydown', e=>{
+  const k=e.key.toLowerCase();
+  if(k==='d'){ cinemaDive(); }
+  else if(k==='r'){ resetView(); }
+  else if(k==='p'){ S.paletteTarget=(Math.floor(S.paletteTarget)+1)%4; markInteract(); }
+  else if(k==='j'){ S.morphTarget=S.morphTarget<0.5?1:0; setMorphBtn(); markInteract(); }
+});
+
+/* ----------------------------- HUD reveal ----------------------------- */
+const hud=document.getElementById('hud');
+// reveal HUD shortly after first paint (artwork-first)
+setTimeout(()=>hud.classList.add('on'), 650);
+let hudHide=null;
+function pokeHud(){
+  hud.classList.add('on');
+  clearTimeout(hudHide);
+  hudHide=setTimeout(()=>{ if(!dragging && !diving) hud.classList.remove('on'); }, 4200);
+}
+window.addEventListener('mousemove', pokeHud, {passive:true});
+window.addEventListener('touchstart', pokeHud, {passive:true});
+
+/* ----------------------------- HUD numbers ----------------------------- */
+const sZoom=document.getElementById('sZoom'), sCtr=document.getElementById('sCtr'),
+      sIter=document.getElementById('sIter'), sFps=document.getElementById('sFps');
+function fmtZoom(z){
+  if(z<1000) return z.toFixed(1)+'×';
+  const e=Math.floor(Math.log10(z));
+  return (z/Math.pow(10,e)).toFixed(2)+'e'+e+'×';
+}
+
+/* ----------------------------- render loop ----------------------------- */
+let frames=0, fpsT=performance.now(), fps=60, statT=0;
+let lastFrame=performance.now();
+
+function frame(now){
+  const dt = Math.min(0.05, (now-lastFrame)/1000); lastFrame=now;
+
+  // interaction decay
+  if(interacting && now-interactT>140) interacting=false;
+
+  // smooth morph + palette transitions (frame-rate independent, robust at low fps)
+  S.morph += (S.morphTarget - S.morph) * Math.min(1, dt*3.5);
+  if(Math.abs(S.morphTarget - S.morph) < 0.004) S.morph = S.morphTarget;
+  // palette eases toward target
+  let pd = S.paletteTarget - S.palette;
+  S.palette += pd * Math.min(1, dt*3.0);
+  if(Math.abs(pd) < 0.004) S.palette = S.paletteTarget;
+
+  // living auto-drift: when idle in mandelbrot at shallow zoom, the seed breathes;
+  // in julia mode the seed orbits gently so the structure is always alive.
+  const idle = !dragging && !diving && !interacting;
+  if(S.morph>0.5){
+    // julia seed slow orbit (only the *display* seed wobbles, base stays)
+    // keep it subtle so clicked seeds remain recognizable
+  }
+
+  // cinema dive integration
+  if(diving && diveTarget){
+    // ease center firmly toward target while zooming in (clamped, no overshoot).
+    // converge faster than we zoom so the target stays locked in frame.
+    const ease = Math.min(0.5, 1 - Math.pow(1-0.10, dt*60));
+    splitTo(0,'cx', getC('cx') + (diveTarget.x-getC('cx'))*ease);
+    splitTo(0,'cy', getC('cy') + (diveTarget.y-getC('cy'))*ease);
+    S.scale *= Math.pow(diveZoomRate, Math.min(4, dt*60));
+    autoIter();
+    if(S.scale < diveTarget.stopScale){
+      // bounce back out slowly, then pick next on cinema
+      diveZoomRate = 1/diveZoomRate;
+    }
+    if(S.scale > 1.4){ // returned to surface -> next spot
+      if(bDive.classList.contains('live')) cinemaDive(); else cancelDive();
+    }
+    markInteract();
+  }
+
+  // adaptive resolution: while interacting, drop to perf res; idle => full + AA
+  let wantScale, wantAA;
+  if(interacting || diving){ wantScale = (DPR>1?0.62:0.78); wantAA=1.0; }
+  else                     { wantScale = 1.0;               wantAA=2.0; }
+  if(Math.abs(wantScale-resScale)>0.02){ resScale=wantScale; resize(); }
+
+  // ---- draw ----
+  gl.useProgram(prog);
+  gl.uniform2f(U.uRes, cv.width, cv.height);
+  gl.uniform2f(U.uCenterHi, S.cxHi, S.cyHi);
+  gl.uniform2f(U.uCenterLo, S.cxLo, S.cyLo);
+  gl.uniform1f(U.uScale, S.scale);
+  gl.uniform1f(U.uIter, S.iter);
+  gl.uniform1f(U.uTime, (now-S.time0)/1000);
+  gl.uniform1f(U.uMorph, S.morph);
+  gl.uniform2f(U.uSeed, S.seed.x, S.seed.y);
+  gl.uniform1f(U.uPalette, S.palette);
+  gl.uniform1f(U.uAA, wantAA);
+  gl.uniform1f(U.uGlow, S.glow);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  // ---- fps + HUD ----
+  frames++;
+  if(now-fpsT>=500){ fps = frames*1000/(now-fpsT); frames=0; fpsT=now; }
+  if(now-statT>120){
+    statT=now;
+    const zoom = 1.35/S.scale;
+    sZoom.textContent = fmtZoom(zoom);
+    sCtr.textContent  = getC('cx').toFixed(zoom>1e6?9:5)+', '+getC('cy').toFixed(zoom>1e6?9:5);
+    sIter.textContent = S.iter|0;
+    sFps.textContent  = fps.toFixed(0);
+  }
+
+  requestAnimationFrame(frame);
+}
+
+autoIter(); setMorphBtn();
+requestAnimationFrame(frame);
+
+/* ----------------------------- test hooks ----------------------------- */
+window.__abyss = {
+  state:()=>({ cx:getC('cx'), cy:getC('cy'), scale:S.scale, zoom:1.35/S.scale,
+               iter:S.iter, morph:S.morph, morphTarget:S.morphTarget,
+               palette:S.palette, paletteTarget:S.paletteTarget, diving, fps }),
+  zoomAt:(x,y,f)=>zoomAt(x,y,f),
+  setSeed:(x,y)=>{ S.seed.x=x; S.seed.y=y; S.morphTarget=1; setMorphBtn(); },
+  toggleMorph:()=>{ S.morphTarget=S.morphTarget<0.5?1:0; setMorphBtn(); },
+  cycPalette:()=>{ S.paletteTarget=(Math.floor(S.paletteTarget)+1)%4; },
+  dive:()=>cinemaDive(),
+  setView:(cx,cy,scale,pal)=>{ cancelDive(); splitTo(0,'cx',cx); splitTo(0,'cy',cy);
+                 S.scale=scale; if(pal!=null){ S.palette=pal; S.paletteTarget=pal; }
+                 autoIter(); markInteract(); },
+  reset:resetView,
+  pan:(dx,dy)=>{ const sc=2*S.scale/cv.getBoundingClientRect().height;
+                 splitTo(0,'cx',getC('cx')-dx*sc); splitTo(0,'cy',getC('cy')+dy*sc); markInteract(); },
+  // sample a few pixels to confirm the canvas is not blank
+  pixelEnergy:()=>{
+    const w=cv.width, h=cv.height;
+    const px=new Uint8Array(4*16);
+    let sum=0,n=0;
+    for(let i=0;i<16;i++){
+      const x=Math.floor(((i%4)+0.5)/4*w), y=Math.floor((Math.floor(i/4)+0.5)/4*h);
+      gl.readPixels(x,y,1,1,gl.RGBA,gl.UNSIGNED_BYTE,px.subarray(i*4,i*4+4));
+    }
+    for(let i=0;i<16;i++){ sum+=px[i*4]+px[i*4+1]+px[i*4+2]; n++; }
+    return sum/n;
+  }
+};
+})();
+</script>
+</body>
+</html>

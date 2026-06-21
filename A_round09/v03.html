@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>VENA — living growth</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#04050a; }
+  body {
+    font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+    cursor: crosshair;
+  }
+  #stage { position:fixed; inset:0; display:block; }
+  #glow  { position:fixed; inset:0; display:block; mix-blend-mode:screen; pointer-events:none; }
+
+  .hud {
+    position:fixed; z-index:5; color:#cfe7ff; pointer-events:none;
+    text-transform:uppercase; letter-spacing:.28em; font-size:10px;
+    text-shadow:0 0 14px rgba(80,160,255,.55);
+    opacity:0; animation:fade 2.2s ease 0.4s forwards;
+  }
+  @keyframes fade { to { opacity:.62; } }
+  #title  { left:22px; top:20px; font-size:13px; letter-spacing:.42em; opacity:0; animation:fade 1.6s ease .2s forwards; }
+  #sub    { left:23px; top:42px; font-size:9px; letter-spacing:.30em; color:#7fa8d6; }
+  #tip    { left:22px; bottom:18px; line-height:1.9; }
+  #mode   { right:22px; top:20px; text-align:right; }
+  #meter  { right:22px; bottom:18px; text-align:right; font-variant-numeric:tabular-nums; }
+  #fps    { position:fixed; left:-9999px; top:-9999px; } /* machine-readable */
+  b.k { color:#ff5fa2; text-shadow:0 0 12px rgba(255,95,162,.7); font-weight:400; }
+  @media (max-width:620px){
+    #title{font-size:11px;} #sub{display:none;} .hud{font-size:9px;}
+    #tip{line-height:1.7;}
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<canvas id="glow"></canvas>
+
+<div id="title" class="hud">V E N A</div>
+<div id="sub"   class="hud">space-colonization · living growth</div>
+<div id="tip"   class="hud">
+  move — <b class="k">nourish</b> &nbsp;·&nbsp; click — <b class="k">bloom</b><br>
+  scroll — <b class="k">morph</b> tree ↔ vein &nbsp;·&nbsp; space — reseed
+</div>
+<div id="mode"  class="hud">canopy</div>
+<div id="meter" class="hud">veins 0</div>
+<div id="fps">60</div>
+
+<script>
+"use strict";
+(() => {
+/* =========================================================================
+   VENA — real-time space-colonization growth (tree / vascular morph)
+   Single file, no deps. Canvas2D + low-res additive bloom buffer.
+
+   Growth model (the fix that makes it actually grow):
+   - Attractors form the nutrient field.
+   - Each tip looks for attractors inside ATTRACT_R -> classic colonization.
+   - If a tip has NOTHING in range, it SEEKS: it grows toward the nearest
+     attractor cluster (long range) until it makes contact. This lets a
+     ground trunk reliably reach a crown far above it.
+   ========================================================================= */
+
+const stage = document.getElementById('stage');
+const glow  = document.getElementById('glow');
+const ctx   = stage.getContext('2d', { alpha:false });
+const gtx   = glow.getContext('2d',  { alpha:true  });
+const modeEl  = document.getElementById('mode');
+const meterEl = document.getElementById('meter');
+const fpsEl   = document.getElementById('fps');
+
+let W=0,H=0,DPR=1;
+const GS=0.5;          // glow buffer downsample factor
+let GW=0,GH=0;
+
+const TAU=Math.PI*2;
+const rnd=(a=1,b)=> b===undefined? Math.random()*a : a+Math.random()*(b-a);
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const lerp=(a,b,t)=>a+(b-a)*t;
+const frac=x=>x-Math.floor(x);
+const dist2=(ax,ay,bx,by)=>{const dx=ax-bx,dy=ay-by;return dx*dx+dy*dy;};
+const hsl=(h,s,l,a=1)=>`hsla(${h},${s}%,${l}%,${a})`;
+
+/* ---------------- viewport ---------------- */
+function resize(){
+  const w=window.innerWidth,h=window.innerHeight;
+  DPR=Math.min(window.devicePixelRatio||1,2);
+  if(w<620) DPR=Math.min(DPR,1.6);
+  W=w;H=h;
+  stage.width=Math.round(w*DPR); stage.height=Math.round(h*DPR);
+  stage.style.width=w+'px'; stage.style.height=h+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  GW=Math.max(2,Math.round(w*GS)); GH=Math.max(2,Math.round(h*GS));
+  glow.width=GW; glow.height=GH; glow.style.width=w+'px'; glow.style.height=h+'px';
+  buildGrid(); makeBg(); rebuildAttractors(); reseed();
+}
+window.addEventListener('resize', ()=>{ clearTimeout(resize._t); resize._t=setTimeout(resize,180); });
+
+/* =========================================================================
+   ATTRACTORS + spatial hash
+   ========================================================================= */
+let attractors=[];          // {x,y,a}
+let cell=70,cols=0,rows=0,grid=null;
+const MAX_ATTR=4600;
+function buildGrid(){
+  cols=Math.max(1,Math.ceil(W/cell));
+  rows=Math.max(1,Math.ceil(H/cell));
+  grid=Array.from({length:cols*rows},()=>[]);
+}
+const gx=x=>clamp((x/cell)|0,0,cols-1);
+const gy=y=>clamp((y/cell)|0,0,rows-1);
+function reindex(){
+  for(let i=0;i<grid.length;i++) grid[i].length=0;
+  for(let i=0;i<attractors.length;i++){
+    const a=attractors[i]; if(a.a<=0) continue;
+    grid[gy(a.y)*cols+gx(a.x)].push(i);
+  }
+}
+
+let MORPH=0, morphTarget=0;
+const NSEED=()=> W<620? 560 : 1100;
+
+/* deterministic per-seed position; blends canopy<->vein by morph m */
+function seedPos(seed,m){
+  const r1=frac(Math.sin(seed*12.9898)*43758.5453);
+  const r2=frac(Math.sin(seed*78.233 )*12345.6789);
+  const r3=frac(Math.sin(seed*39.425 )*9876.5432);
+
+  // canopy crown (lobed ellipse high in frame) + sky dust
+  let cx,cy;
+  const ccx=W*0.5, ccy=H*0.33, crx=W*0.40, cry=H*0.27;
+  if(r3<0.88){
+    const ang=r1*TAU, rad=Math.sqrt(r2);
+    const lobe=1+0.24*Math.sin(ang*5+seed);
+    cx=ccx+Math.cos(ang)*crx*rad*lobe;
+    cy=ccy+Math.sin(ang)*cry*rad*lobe - rad*H*0.04;
+  }else{ cx=r1*W; cy=r2*H*0.55; }
+
+  // vein: full-frame tissue with carved voids
+  let vx=r1*W, vy=r2*H;
+  const voids=[[0.26,0.30,0.15],[0.74,0.40,0.17],[0.50,0.74,0.19],[0.17,0.78,0.12]];
+  for(const[vn,wn,vr]of voids){
+    const ddx=vx/W-vn, ddy=vy/H-wn, dd=Math.hypot(ddx,ddy);
+    if(dd<vr){ const pu=(vr-dd)/vr; vx+=ddx/(dd+1e-3)*pu*vr*W; vy+=ddy/(dd+1e-3)*pu*vr*H; }
+  }
+  vx=clamp(vx,8,W-8); vy=clamp(vy,8,H-8);
+
+  const mm=clamp(m+(r3-0.5)*0.16,0,1);
+  return [lerp(cx,vx,mm), lerp(cy,vy,mm)];
+}
+function rebuildAttractors(){
+  const n=NSEED();
+  attractors.length=0;
+  for(let s=1;s<=n;s++){ const[x,y]=seedPos(s,MORPH); attractors.push({x,y,a:1,seed:s}); }
+  reindex();
+}
+function remapAttractors(){
+  for(const a of attractors){ if(a.seed){ const[x,y]=seedPos(a.seed,MORPH); a.x=x;a.y=y; a.a=Math.max(a.a,0.6);} }
+  reindex();
+}
+
+/* =========================================================================
+   GROWTH — flat arrays for nodes
+   ========================================================================= */
+let NX,NY,NPAR,NGEN,NDIR,NW,NHUE;
+let nodeCount=0, capacity=0;
+let tips=[];                 // tip node indices (the live frontier)
+let MAX_NODES=0;
+let growthDone=false;
+
+const ATTRACT_R=130, ATTRACT_R2=ATTRACT_R*ATTRACT_R;
+const KILL_R=18,     KILL_R2=KILL_R*KILL_R;
+const STEP=7.0;
+const SEEK_STEP=8.5;         // long-range reach step
+
+function alloc(cap){
+  capacity=cap;
+  NX=new Float32Array(cap); NY=new Float32Array(cap);
+  NPAR=new Int32Array(cap);  NGEN=new Float32Array(cap);
+  NDIR=new Float32Array(cap*2); NW=new Float32Array(cap); NHUE=new Float32Array(cap);
+  nodeCount=0; tips.length=0;
+}
+function addNode(x,y,par,dx,dy,gen,hue){
+  if(nodeCount>=capacity) return -1;
+  const i=nodeCount++;
+  NX[i]=x;NY[i]=y;NPAR[i]=par;NGEN[i]=gen;
+  NDIR[i*2]=dx;NDIR[i*2+1]=dy;NW[i]=0.6;NHUE[i]=hue;
+  return i;
+}
+
+let roots=[];
+function reseed(){
+  MAX_NODES = W<620? 7000 : 14000;
+  alloc(MAX_NODES+16);
+  roots.length=0; tips.length=0;
+  const baseHue=lerp(165,338,MORPH);
+  if(MORPH<0.5){
+    const n=1+(Math.random()<0.45?1:0);
+    for(let k=0;k<n;k++){
+      const rx=W*(0.5+(n>1?(k?0.17:-0.17):0)+rnd(-0.03,0.03));
+      const i=addNode(rx,H*0.995,-1,0,-1,0,baseHue+rnd(-10,10));
+      roots.push(i); tips.push(i);
+    }
+  }else{
+    const n=3;
+    for(let k=0;k<n;k++){
+      const rx=W*(0.2+0.6*((k+0.5)/n))+rnd(-30,30);
+      const ry=H*(k%2?0.26:0.76)+rnd(-20,20);
+      const a=rnd(0,TAU);
+      const i=addNode(rx,ry,-1,Math.cos(a),Math.sin(a),0,baseHue+rnd(-14,14));
+      roots.push(i); tips.push(i);
+    }
+  }
+  for(const a of attractors) a.a=1;
+  reindex();
+  growthDone=false;
+}
+
+/* tip grid rebuilt per grow tick */
+let tipGrid=null;
+function buildTipGrid(){
+  if(!tipGrid||tipGrid.length!==cols*rows) tipGrid=Array.from({length:cols*rows},()=>[]);
+  else for(let i=0;i<tipGrid.length;i++) tipGrid[i].length=0;
+  for(let t=0;t<tips.length;t++){ const i=tips[t]; tipGrid[gy(NY[i])*cols+gx(NX[i])].push(i); }
+}
+
+let pullBuf=null;
+function ensurePull(){ if(!pullBuf||pullBuf.length<capacity*3) pullBuf=new Float32Array(capacity*3); }
+
+/* one colonization tick. budget caps new nodes per tick for steady fps. */
+function growStep(budget){
+  if(tips.length===0){ growthDone=true; return; }
+  ensurePull();
+  for(let t=0;t<tips.length;t++){ const i=tips[t]; pullBuf[i*3]=0;pullBuf[i*3+1]=0;pullBuf[i*3+2]=0; }
+
+  // 1) attractors pull nearest in-range tip
+  let consumed=0, anyPull=false;
+  for(let ai=0;ai<attractors.length;ai++){
+    const a=attractors[ai]; if(a.a<=0) continue;
+    const cx=gx(a.x),cy=gy(a.y);
+    let best=-1,bd=ATTRACT_R2;
+    for(let oy=-1;oy<=1;oy++){const ry=cy+oy; if(ry<0||ry>=rows)continue;
+      for(let ox=-1;ox<=1;ox++){const rx=cx+ox; if(rx<0||rx>=cols)continue;
+        const bucket=tipGrid[ry*cols+rx];
+        for(let b=0;b<bucket.length;b++){ const ti=bucket[b]; const d=dist2(a.x,a.y,NX[ti],NY[ti]); if(d<bd){bd=d;best=ti;} }
+      }}
+    if(best>=0){
+      if(bd<KILL_R2){ a.a=0; consumed++; continue; }
+      const inv=1/(Math.sqrt(bd)+1e-6);
+      pullBuf[best*3]+=(a.x-NX[best])*inv; pullBuf[best*3+1]+=(a.y-NY[best])*inv; pullBuf[best*3+2]+=1;
+      anyPull=true;
+    }
+  }
+
+  // 2) advance tips
+  const next=[];
+  let added=0;
+  for(let t=0;t<tips.length;t++){
+    const i=tips[t];
+    const cnt=pullBuf[i*3+2];
+    if(added>=budget){ next.push(i); continue; }
+
+    let dx,dy,step,seeking=false;
+    if(cnt>0){
+      dx=pullBuf[i*3]; dy=pullBuf[i*3+1];
+      const l=Math.hypot(dx,dy)||1; dx/=l;dy/=l; step=STEP;
+    }else{
+      // SEEK: head toward nearest attractor anywhere (long range)
+      const tgt=nearestAttractor(NX[i],NY[i]);
+      if(!tgt){ continue; } // nothing left -> tip dies (branch frozen)
+      dx=tgt.x-NX[i]; dy=tgt.y-NY[i];
+      const l=Math.hypot(dx,dy)||1; dx/=l;dy/=l; step=SEEK_STEP; seeking=true;
+    }
+    // momentum smoothing
+    const pdx=NDIR[i*2],pdy=NDIR[i*2+1];
+    const blend = seeking? 0.30 : 0.24;
+    dx=dx*(1-blend)+pdx*blend; dy=dy*(1-blend)+pdy*blend;
+    // wander so seeking lines aren't ruler-straight; bias trunk upward in canopy
+    if(seeking){
+      let a=Math.atan2(dy,dx)+rnd(-0.22,0.22);
+      if(MORPH<0.5){ // nudge toward straight-up (-PI/2) for a natural trunk
+        const up=-Math.PI/2; let da=up-a; while(da>Math.PI)da-=TAU; while(da<-Math.PI)da+=TAU; a+=da*0.18;
+      }
+      dx=Math.cos(a);dy=Math.sin(a);
+    }
+    const nl=Math.hypot(dx,dy)||1; dx/=nl;dy/=nl;
+
+    const nx=NX[i]+dx*step, ny=NY[i]+dy*step;
+    const hue=NHUE[i]+(Math.random()<0.05?rnd(-6,6):0);
+    const ni=addNode(nx,ny,i,dx,dy,NGEN[i]+1,hue);
+    if(ni<0){ growthDone=true; break; }
+    next.push(ni); added++;
+
+    // fork when richly fed -> lush canopy / dense capillaries
+    if(cnt>2.2 && Math.random()<0.18 && nodeCount<capacity-2){
+      const a=Math.atan2(dy,dx)+rnd(-1.0,1.0);
+      const fdx=Math.cos(a),fdy=Math.sin(a);
+      const fi=addNode(NX[i]+fdx*step,NY[i]+fdy*step,i,fdx,fdy,NGEN[i]+1,hue+rnd(-8,8));
+      if(fi>=0) next.push(fi);
+    }
+  }
+  tips=next;
+  if(nodeCount>=capacity-4) growthDone=true;
+  if(tips.length===0) growthDone=true;
+}
+
+/* nearest live attractor via expanding ring of grid cells */
+function nearestAttractor(x,y){
+  const cx=gx(x),cy=gy(y);
+  let best=null,bd=1e18;
+  for(let r=0;r<Math.max(cols,rows);r++){
+    const x0=Math.max(0,cx-r),x1=Math.min(cols-1,cx+r);
+    const y0=Math.max(0,cy-r),y1=Math.min(rows-1,cy+r);
+    for(let yy=y0;yy<=y1;yy++) for(let xx=x0;xx<=x1;xx++){
+      if(r>0 && xx>x0 && xx<x1 && yy>y0 && yy<y1) continue; // ring only
+      const bucket=grid[yy*cols+xx];
+      for(let b=0;b<bucket.length;b++){ const a=attractors[bucket[b]]; if(a.a<=0)continue;
+        const d=dist2(x,y,a.x,a.y); if(d<bd){bd=d;best=a;} }
+    }
+    if(best && r>=1) break; // found within current ring -> good enough
+  }
+  return best;
+}
+
+/* thickening: leaf-flow propagated to ancestors -> roots fatten */
+function accumulateWidth(){
+  for(let i=0;i<nodeCount;i++) NW[i]=0.6;
+  for(let i=0;i<nodeCount;i++){
+    NW[i]+=0.5;
+    let p=NPAR[i],g=0;
+    while(p>=0&&g++<5000){ NW[p]+=0.30; p=NPAR[p]; }
+  }
+  const cap = MORPH<0.5? 11 : 7.5;
+  for(let i=0;i<nodeCount;i++) NW[i]=clamp(Math.pow(NW[i],0.42)*0.9,0.5,cap);
+}
+
+/* =========================================================================
+   POINTER — nourish / bloom / morph
+   ========================================================================= */
+const ptr={x:-1e3,y:-1e3,px:-1e3,py:-1e3,active:false,vx:0,vy:0};
+function addAttractors(x,y,count,spread){
+  for(let i=0;i<count;i++){
+    if(attractors.length>=MAX_ATTR) break;
+    const a=rnd(0,TAU), r=Math.sqrt(Math.random())*spread;
+    const ax=clamp(x+Math.cos(a)*r,4,W-4), ay=clamp(y+Math.sin(a)*r,4,H-4);
+    attractors.push({x:ax,y:ay,a:1,seed:0});
+    grid[gy(ay)*cols+gx(ax)].push(attractors.length-1);
+  }
+  wakeNear(x,y,spread*1.5);
+}
+function wakeNear(x,y,r){
+  const r2=r*r; let woke=0;
+  for(let i=Math.max(0,nodeCount-3000);i<nodeCount&&woke<10;i++){
+    if(dist2(x,y,NX[i],NY[i])<r2){
+      const dx=x-NX[i],dy=y-NY[i],l=Math.hypot(dx,dy)||1;
+      NDIR[i*2]=dx/l;NDIR[i*2+1]=dy/l; tips.push(i); woke++;
+    }
+  }
+  if(woke) growthDone=false;
+}
+function setPtr(x,y){ ptr.px=ptr.x;ptr.py=ptr.y;ptr.x=x;ptr.y=y;ptr.active=true;ptr.vx=ptr.x-ptr.px;ptr.vy=ptr.y-ptr.py; }
+
+stage.addEventListener('pointermove',e=>{
+  setPtr(e.clientX,e.clientY);
+  const sp=Math.hypot(ptr.vx,ptr.vy);
+  if(sp>1.5) addAttractors(ptr.x,ptr.y,clamp((sp*0.35)|0,1,6),24+sp*0.6);
+},{passive:true});
+stage.addEventListener('pointerdown',e=>{ setPtr(e.clientX,e.clientY); bloom(ptr.x,ptr.y); });
+stage.addEventListener('pointerleave',()=>ptr.active=false);
+
+const blooms=[];
+const flowPulses=[];
+function bloom(x,y){
+  addAttractors(x,y,W<620?70:120,95);
+  blooms.push({x,y,r:2,life:1,hue:lerp(165,338,MORPH)+rnd(-22,22)});
+  const ni=nearestNode(x,y); if(ni>=0) flowPulses.push({i:ni,t:0,hue:lerp(185,330,MORPH)});
+}
+function nearestNode(x,y){
+  let best=-1,bd=1e18;
+  for(let i=Math.max(0,nodeCount-3500);i<nodeCount;i++){ const d=dist2(x,y,NX[i],NY[i]); if(d<bd){bd=d;best=i;} }
+  return best;
+}
+
+window.addEventListener('wheel',e=>{ morphTarget=clamp(morphTarget+(e.deltaY>0?0.08:-0.08),0,1); e.preventDefault(); },{passive:false});
+let lastTY=null;
+window.addEventListener('touchmove',e=>{
+  if(e.touches.length===2){ const y=e.touches[0].clientY; if(lastTY!=null) morphTarget=clamp(morphTarget+(y-lastTY)*0.002,0,1); lastTY=y; }
+},{passive:true});
+window.addEventListener('touchend',()=>lastTY=null);
+window.addEventListener('keydown',e=>{ if(e.code==='Space'){ e.preventDefault(); reseed(); blooms.length=0; } });
+
+function spawnAmbientPulse(){ if(nodeCount<8) return; const i=(Math.random()*nodeCount)|0; flowPulses.push({i,t:0,hue:NHUE[i]+rnd(-10,10)}); }
+
+/* =========================================================================
+   RENDER
+   ========================================================================= */
+let bgGrad=null;
+function makeBg(){
+  bgGrad=ctx.createRadialGradient(W*0.5,H*0.42,0,W*0.5,H*0.5,Math.hypot(W,H)*0.62);
+  bgGrad.addColorStop(0, MORPH<0.5?'#06080f':'#0a060c');
+  bgGrad.addColorStop(1, MORPH<0.5?'#02030a':'#05020a');
+}
+
+let lastT=performance.now(), smoothFps=60;
+function frame(now){
+  const dt=Math.min(40,now-lastT); lastT=now;
+  smoothFps=lerp(smoothFps,1000/Math.max(1,dt),0.08);
+
+  if(Math.abs(MORPH-morphTarget)>0.001){
+    MORPH=lerp(MORPH,morphTarget,0.06);
+    remapAttractors(); makeBg();
+    modeEl.textContent = MORPH<0.33?'canopy':MORPH>0.66?'vein':'morphing';
+    growthDone=false;
+  }
+
+  if(!growthDone){
+    buildTipGrid();
+    const iters = smoothFps<45?2: smoothFps<55?3:4;
+    const budget = W<620?100:170;
+    for(let k=0;k<iters&&!growthDone;k++) growStep(budget);
+    accumulateWidth();
+  }
+  if(Math.random()<0.2) spawnAmbientPulse();
+
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.globalCompositeOperation='source-over';
+  ctx.fillStyle=bgGrad||'#04050a'; ctx.fillRect(0,0,W,H);
+
+  drawVessels();
+  drawDust();
+  drawPulses(dt);
+  drawBlooms(dt);
+  drawPointer();
+  composeGlow();
+
+  meterEl.textContent='veins '+nodeCount.toString().padStart(5,'0')+'  ·  '+Math.round(smoothFps)+'fps';
+  fpsEl.textContent=Math.round(smoothFps);
+  requestAnimationFrame(frame);
+}
+
+function drawVessels(){
+  ctx.lineCap='round'; ctx.lineJoin='round';
+  gtx.setTransform(GS,0,0,GS,0,0);
+  gtx.globalCompositeOperation='source-over'; gtx.clearRect(0,0,W/GS,H/GS);
+  gtx.globalCompositeOperation='lighter'; gtx.lineCap='round';
+
+  const t=performance.now()*0.001;
+  const breathe=0.5+0.5*Math.sin(t*1.1);
+
+  for(let i=1;i<nodeCount;i++){
+    const p=NPAR[i]; if(p<0) continue;
+    const w=NW[i], gen=NGEN[i];
+    const tn=clamp(gen*0.016,0,1);
+    // canopy: trunk teal -> branch amber -> tip warm crimson
+    // vein:   root crimson -> branch magenta -> tip hot pink
+    const h = MORPH<0.5
+      ? NHUE[i] + tn*tn*120        // 165(teal) -> ~+amber/red toward tips
+      : NHUE[i] - tn*46;           // 338 -> magenta/violet tips
+    const light=lerp(30,72,tn)+breathe*5;
+    const sat=lerp(72,98,tn);
+    const al=lerp(0.46,0.95,tn);
+    ctx.strokeStyle=hsl(h,sat,light,al); ctx.lineWidth=w;
+    ctx.beginPath(); ctx.moveTo(NX[p],NY[p]); ctx.lineTo(NX[i],NY[i]); ctx.stroke();
+    // keep the bloom buffer tinted (not white): lower lightness so hue survives upscale
+    if(w<3.6||tn>0.5){
+      gtx.strokeStyle=hsl(h,100,lerp(46,64,tn),0.42*tn+0.08);
+      gtx.lineWidth=Math.max(0.6,w*0.75);
+      gtx.beginPath(); gtx.moveTo(NX[p],NY[p]); gtx.lineTo(NX[i],NY[i]); gtx.stroke();
+    }
+  }
+
+  ctx.globalCompositeOperation='lighter';
+  for(let k=0;k<tips.length;k++){
+    const i=tips[k]; const h=NHUE[i]+(MORPH<0.5?40:-30);
+    const pu=0.6+0.4*Math.sin(t*4+i);
+    ctx.fillStyle=hsl(h,100,76,0.9*pu);
+    ctx.beginPath(); ctx.arc(NX[i],NY[i],1.6+pu*1.2,0,TAU); ctx.fill();
+    gtx.fillStyle=hsl(h,100,82,0.5);
+    gtx.beginPath(); gtx.arc(NX[i],NY[i],3+pu*2,0,TAU); gtx.fill();
+  }
+  ctx.globalCompositeOperation='source-over';
+}
+
+function drawDust(){
+  ctx.globalCompositeOperation='lighter';
+  const h=lerp(190,320,MORPH), t=performance.now()*0.001;
+  let n=0;
+  for(let i=0;i<attractors.length;i++){
+    const a=attractors[i]; if(a.a<=0) continue;
+    if((i&1)&&attractors.length>1500) continue;
+    const tw=0.25+0.25*Math.sin(t*2+(a.seed||i));
+    ctx.fillStyle=hsl(h,80,72,0.09+tw*0.10);
+    ctx.fillRect(a.x-0.5,a.y-0.5,1.3,1.3);
+    if(++n>2400) break;
+  }
+  ctx.globalCompositeOperation='source-over';
+}
+
+function drawPulses(dt){
+  ctx.globalCompositeOperation='lighter'; gtx.globalCompositeOperation='lighter';
+  for(let k=flowPulses.length-1;k>=0;k--){
+    const p=flowPulses[k];
+    if(p.i<0||p.i>=nodeCount){ flowPulses.splice(k,1); continue; }
+    p.t+=dt*0.006;
+    if(p.t>=1){ const par=NPAR[p.i]; if(par<0){flowPulses.splice(k,1);continue;} p.i=par; p.t=0; }
+    const par=NPAR[p.i]; if(par<0){flowPulses.splice(k,1);continue;}
+    const x=lerp(NX[p.i],NX[par],p.t), y=lerp(NY[p.i],NY[par],p.t);
+    const r=1.4+NW[p.i]*0.35;
+    ctx.fillStyle=hsl(p.hue,100,82,0.95); ctx.beginPath(); ctx.arc(x,y,r,0,TAU); ctx.fill();
+    gtx.fillStyle=hsl(p.hue,100,85,0.7); gtx.beginPath(); gtx.arc(x,y,r*2.2,0,TAU); gtx.fill();
+  }
+  ctx.globalCompositeOperation='source-over';
+  if(flowPulses.length>280) flowPulses.splice(0,flowPulses.length-280);
+}
+
+function drawBlooms(dt){
+  ctx.globalCompositeOperation='lighter';
+  for(let k=blooms.length-1;k>=0;k--){
+    const b=blooms[k];
+    b.r+=dt*0.16*(1+b.life); b.life-=dt*0.0016;
+    if(b.life<=0){ blooms.splice(k,1); continue; }
+    const g=ctx.createRadialGradient(b.x,b.y,0,b.x,b.y,b.r);
+    g.addColorStop(0,hsl(b.hue,100,80,0));
+    g.addColorStop(0.7,hsl(b.hue,100,70,0.18*b.life));
+    g.addColorStop(0.82,hsl(b.hue,100,85,0.42*b.life));
+    g.addColorStop(1,hsl(b.hue,100,75,0));
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,TAU); ctx.fill();
+  }
+  ctx.globalCompositeOperation='source-over';
+}
+
+function drawPointer(){
+  if(!ptr.active) return;
+  ctx.globalCompositeOperation='lighter';
+  const h=lerp(180,330,MORPH);
+  const g=ctx.createRadialGradient(ptr.x,ptr.y,0,ptr.x,ptr.y,42);
+  g.addColorStop(0,hsl(h,100,80,0.30)); g.addColorStop(1,hsl(h,100,70,0));
+  ctx.fillStyle=g; ctx.beginPath(); ctx.arc(ptr.x,ptr.y,42,0,TAU); ctx.fill();
+  ctx.globalCompositeOperation='source-over';
+}
+
+/* low-res glow buffer upscaled = cheap bloom; #glow also visible (screen) */
+function composeGlow(){
+  ctx.globalCompositeOperation='lighter';
+  ctx.imageSmoothingEnabled=true;
+  ctx.globalAlpha=0.50; ctx.drawImage(glow,0,0,GW,GH,0,0,W,H);
+  ctx.globalAlpha=0.26; ctx.drawImage(glow,0,0,GW,GH,-3,-3,W+6,H+6);
+  ctx.globalAlpha=1; ctx.globalCompositeOperation='source-over';
+  gtx.setTransform(1,0,0,1,0,0);
+}
+
+/* ---------------- boot ---------------- */
+resize();
+requestAnimationFrame(frame);
+
+window.__VENA={
+  nodes:()=>nodeCount, tips:()=>tips.length, morph:()=>MORPH,
+  bloom:(x,y)=>bloom(x,y), reseed:()=>reseed(), setMorph:m=>{morphTarget=clamp(m,0,1);}
+};
+})();
+</script>
+</body>
+</html>

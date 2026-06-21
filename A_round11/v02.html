@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>천극 · Celestial Pole</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#000; }
+  body {
+    font-family: -apple-system, "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+    cursor: crosshair;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+  }
+  #stage { display:block; position:fixed; inset:0; }
+  /* live ink trail canvas sits under the star pass canvas */
+  .ui {
+    position:fixed; left:0; right:0; bottom:0;
+    padding: 18px 22px 20px;
+    pointer-events:none;
+    display:flex; justify-content:space-between; align-items:flex-end;
+    z-index:5;
+    background: linear-gradient(to top, rgba(0,0,0,.42), rgba(0,0,0,0));
+    mix-blend-mode: screen;
+  }
+  .title {
+    font-weight:300; letter-spacing:.42em; text-transform:uppercase;
+    font-size: clamp(11px, 2.6vw, 15px);
+    color: rgba(220,232,255,.78);
+    text-shadow: 0 0 18px rgba(120,170,255,.35);
+  }
+  .title b { font-weight:600; letter-spacing:.28em; color:rgba(238,244,255,.92); }
+  .hint {
+    text-align:right; font-size: clamp(9px,2.2vw,11px); line-height:1.6;
+    letter-spacing:.12em; color: rgba(150,178,222,.55); font-weight:300;
+    text-transform:uppercase;
+  }
+  .hint span{ color: rgba(196,214,255,.82); }
+  .read {
+    position:fixed; top:18px; left:22px; z-index:5; pointer-events:none;
+    font-size: clamp(9px,2.1vw,11px); letter-spacing:.22em; text-transform:uppercase;
+    color: rgba(150,178,222,.5); font-weight:300; line-height:1.9;
+    mix-blend-mode: screen;
+  }
+  .read b{ color: rgba(210,224,255,.85); font-weight:500; font-variant-numeric:tabular-nums; }
+  /* fade UI in after first frame so first paint is the art itself */
+  .ui,.read{ opacity:0; transition:opacity 1.4s ease 0.3s; }
+  body.lit .ui, body.lit .read{ opacity:1; }
+  @media (max-width:520px){
+    .read{ top:14px; left:16px; }
+    .ui{ padding:14px 16px 16px; }
+    .hint{ max-width:46%; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div class="read">
+  노출 <b id="rExp">—</b><br>
+  천극고도 <b id="rAlt">—</b><br>
+  별 <b id="rN">—</b>
+</div>
+
+<div class="ui">
+  <div class="title"><b>천극</b> · long&nbsp;exposure of a turning sky</div>
+  <div class="hint">
+    drag — <span>move the pole</span><br>
+    scroll — <span>exposure / altitude</span><br>
+    click — <span>meteor shower</span>
+  </div>
+</div>
+
+<script>
+(() => {
+"use strict";
+
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', { alpha:false });
+
+// Offscreen "accumulation" buffer holds the painted light trails (the long exposure).
+// We composite stars onto it each frame with a faint global fade so arcs build up.
+const trail = document.createElement('canvas');
+const tctx = trail.getContext('2d', { alpha:false });
+
+let W=0,H=0,DPR=1, MINPX=0;
+const TAU = Math.PI*2;
+
+// --- celestial pole (rotation centre), in CSS px ---
+const pole = { x:0, y:0, tx:0, ty:0 };
+// --- exposure controls ---
+let exposure = 0.040;   // arc length factor (drives angular speed of trail buildup)
+let altitude = 0.46;    // 0=pole on horizon .. 1=overhead; affects star band + horizon
+let warp = 0;           // transient zoom/twist on click
+
+// pointer
+const ptr = { x:0, y:0, down:false, vx:0, vy:0, active:false };
+
+// ---------- star field ----------
+// Each star: polar coords around current pole are derived live (pole moves),
+// but we store a fixed sky position (unit-ish) + intrinsic brightness/colour.
+let stars = [];
+let SKY_R = 1000;        // sky radius reference
+let rotation = 0;        // global accumulated rotation (radians)
+
+// colour by temperature: t in [0,1] cool(blue) -> warm(gold)
+function starColor(t, b){
+  // blend between three anchors
+  // hot blue-white -> white -> warm amber
+  let r,g,bl;
+  if(t < 0.5){
+    const k = t*2;
+    r = 170 + 85*k; g = 196 + 59*k; bl = 255;
+  } else {
+    const k = (t-0.5)*2;
+    r = 255; g = 255 - 70*k; bl = 255 - 150*k;
+  }
+  return [r,g,bl];
+}
+
+function rand(a,b){ return a + Math.random()*(b-a); }
+
+function buildStars(){
+  stars.length = 0;
+  // density scales with area but capped for perf
+  const area = (W*H);
+  let count = Math.round(area / 2600);
+  count = Math.max(420, Math.min(count, 1500));
+  for(let i=0;i<count;i++){
+    // distribute over a disc larger than screen so arcs sweep across edges
+    // bias toward a milky-way band: pick angle, with a clustered band
+    let r, ang;
+    if(Math.random() < 0.34){
+      // milky way band: clustered radius + angle band, with scatter
+      ang = rand(0,TAU);
+      r = SKY_R * Math.pow(Math.random(), 0.5) * rand(0.35,1.25);
+    } else {
+      ang = rand(0,TAU);
+      r = SKY_R * Math.sqrt(Math.random()) * rand(0.15,1.35);
+    }
+    // brightness: power-law (few bright, many faint)
+    const u = Math.random();
+    const bright = Math.pow(u, 3.0);           // 0..1, heavy tail of faint
+    const mag = 0.25 + bright*1.0;             // line width / glow factor
+    const temp = rand(0,1);
+    // twinkle phase + speed
+    stars.push({
+      r, ang,
+      mag,
+      temp,
+      base: 0.30 + bright*0.70,                // base alpha
+      tw: rand(0,TAU),
+      tws: rand(0.6, 2.2),
+      isBand: false
+    });
+  }
+  // a denser, dimmer milky-way dust band (drawn as soft points, also trailed)
+  const band = Math.min(900, Math.round(count*0.9));
+  for(let i=0;i<band;i++){
+    const ang = rand(0,TAU);
+    const r = SKY_R * (0.55 + Math.random()*0.7);
+    stars.push({
+      r, ang,
+      mag: rand(0.15,0.4),
+      temp: rand(0.15,0.6),
+      base: rand(0.04,0.16),
+      tw: rand(0,TAU),
+      tws: rand(0.3,1.0),
+      isBand:true
+    });
+  }
+}
+
+// ---------- meteors ----------
+let meteors = [];
+function spawnMeteor(x,y,burst){
+  const ang = rand(0,TAU);
+  const sp = rand(9,18) * DPR;
+  meteors.push({
+    x: x ?? rand(0,W), y: y ?? rand(-40, H*0.5),
+    vx: Math.cos(ang)*sp, vy: Math.sin(ang)*sp * 0.6 + 3*DPR,
+    life: 1, len: rand(60,160)*DPR,
+    hue: rand(0,1)
+  });
+}
+function meteorShower(x,y){
+  const n = 7 + (Math.random()*6|0);
+  for(let i=0;i<n;i++){
+    setTimeout(()=>spawnMeteor(
+      x + rand(-120,120)*DPR, y + rand(-120,40)*DPR, true), i*55);
+  }
+}
+
+// ---------- horizon silhouette ----------
+let ridge = [];
+function buildRidge(){
+  ridge = [];
+  // layered ridgeline: deterministic-ish smooth noise via sines
+  const segs = 220;
+  const seeds = [];
+  for(let k=0;k<6;k++) seeds.push({a:rand(0.3,2.2), f:rand(0.4,3.2), p:rand(0,TAU)});
+  for(let i=0;i<=segs;i++){
+    const t = i/segs;
+    let h = 0;
+    for(const s of seeds) h += Math.sin(t*TAU*s.f + s.p)*s.a;
+    ridge.push(h);
+  }
+}
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  const w = window.innerWidth, h = window.innerHeight;
+  W = Math.floor(w*DPR); H = Math.floor(h*DPR);
+  MINPX = Math.min(W,H);
+  cv.width=W; cv.height=H; cv.style.width=w+'px'; cv.style.height=h+'px';
+  trail.width=W; trail.height=H;
+  SKY_R = Math.hypot(W,H)*0.62;
+  pole.x = pole.tx = W*0.30;
+  pole.y = pole.ty = H*0.34;
+  ptr.x = W*0.5; ptr.y = H*0.5;
+  buildStars();
+  buildRidge();
+  // seed the trail buffer black
+  tctx.fillStyle='#01030a'; tctx.fillRect(0,0,W,H);
+}
+
+// ---------- background gradient (deep sky), drawn into trail base occasionally ----------
+function skyGradient(g, polex, poley){
+  // night gradient: deeper near top, faint glow near horizon + near pole
+  const grd = g.createLinearGradient(0,0,0,H);
+  grd.addColorStop(0, '#02030a');
+  grd.addColorStop(0.55, '#04060f');
+  grd.addColorStop(0.82, '#070a16');
+  grd.addColorStop(1, '#0a0d1c');
+  g.fillStyle = grd; g.fillRect(0,0,W,H);
+  // subtle airglow near horizon
+  const ag = g.createRadialGradient(W*0.5,H*1.02,H*0.2, W*0.5,H*1.02,H*0.95);
+  ag.addColorStop(0,'rgba(40,70,90,0.16)');
+  ag.addColorStop(1,'rgba(0,0,0,0)');
+  g.fillStyle=ag; g.fillRect(0,0,W,H);
+
+}
+
+// diffuse milky-way band sweeping diagonally — drawn each frame on final composite
+// with 'screen' so it persists as a soft colour wash (alpha intensity = inten).
+function drawMilkyWay(g, inten){
+  g.save();
+  g.globalCompositeOperation='screen';
+  g.translate(W*0.5, H*0.40);
+  g.rotate(-0.52);
+  const bw = Math.hypot(W,H);
+  const mw = g.createLinearGradient(0,-bw*0.30,0,bw*0.30);
+  const a = inten;
+  mw.addColorStop(0.00,'rgba(0,0,0,0)');
+  mw.addColorStop(0.34,`rgba(46,40,78,${0.05*a})`);
+  mw.addColorStop(0.46,`rgba(86,74,124,${0.12*a})`);
+  mw.addColorStop(0.52,`rgba(128,102,156,${0.15*a})`);
+  mw.addColorStop(0.58,`rgba(74,84,136,${0.11*a})`);
+  mw.addColorStop(0.66,`rgba(40,46,84,${0.05*a})`);
+  mw.addColorStop(1.00,'rgba(0,0,0,0)');
+  g.fillStyle=mw; g.fillRect(-bw, -bw*0.30, bw*2, bw*0.60);
+  // a couple of darker dust lanes for texture
+  const dust = g.createLinearGradient(0,-bw*0.06,0,bw*0.06);
+  dust.addColorStop(0,'rgba(0,0,0,0)');
+  dust.addColorStop(0.5,`rgba(10,8,18,${0.0})`);
+  dust.addColorStop(1,'rgba(0,0,0,0)');
+  g.restore();
+}
+
+// soft initial paint so the very first frame already reads as a sky
+function seedSky(){
+  skyGradient(tctx, pole.x, pole.y);
+  // pre-bake a faint set of arcs so first paint shows trails immediately
+  const steps = 26;
+  for(let s=0;s<steps;s++){
+    drawStarPass(tctx, -s*0.010, 0.5 - s*0.012, true);
+  }
+}
+
+let lastT = performance.now();
+let frameStars = 0;
+
+// draw one rotational "slice" of stars onto target context g.
+// dRot offset relative to current rotation; alphaScale dims for pre-bake.
+function drawStarPass(g, dRot, alphaScale, prebake){
+  const px = pole.x, py = pole.y;
+  const cosA = Math.cos(rotation + dRot);
+  const sinA = Math.sin(rotation + dRot);
+  g.globalCompositeOperation = 'lighter';
+  let drawn = 0;
+  const n = stars.length;
+  // angular smear per frame -> short bright segment that lighter-blends into arc
+  for(let i=0;i<n;i++){
+    const s = stars[i];
+    const a = s.ang;
+    // current point
+    const ca = Math.cos(a), sa = Math.sin(a);
+    const x = px + s.r*(ca*cosA - sa*sinA);
+    const y = py + s.r*(ca*sinA + sa*cosA);
+    // cheap cull
+    if(x < -80 || x > W+80 || y < -80 || y > H+80) continue;
+    // altitude masks lower sky (below horizon ridge) — skip if below ground
+    // computed later in compositing; here we still draw, ground overlay covers.
+    let alpha = s.base * alphaScale;
+    if(!prebake){
+      // twinkle
+      const tw = 0.78 + 0.22*Math.sin(s.tw);
+      alpha *= tw;
+      // pole proximity: stars far from pole move faster (longer visual streak) -> brighter head
+      // pointer attraction glow: stars near pointer flare
+      const dpx = x-ptr.x, dpy = y-ptr.y;
+      const d2 = dpx*dpx+dpy*dpy;
+      const flare = ptr.active ? Math.max(0, 1 - d2/(220*220*DPR*DPR)) : 0;
+      alpha *= (1 + flare*2.2);
+    }
+    if(alpha < 0.006) continue;
+    const col = starColor(s.temp, s.base);
+    const w = s.mag * DPR * (s.isBand?0.7:1);
+
+    if(s.isBand){
+      g.fillStyle = `rgba(${col[0]|0},${col[1]|0},${col[2]|0},${alpha})`;
+      g.fillRect(x, y, w*1.2, w*1.2);
+      drawn++;
+      continue;
+    }
+    // bright stars get a tiny glow head; trails come from accumulation fade
+    const r = Math.max(0.5, w*0.85);
+    if(s.mag > 0.8){
+      const gr = g.createRadialGradient(x,y,0,x,y,r*3.2);
+      gr.addColorStop(0,`rgba(${col[0]|0},${col[1]|0},${col[2]|0},${alpha})`);
+      gr.addColorStop(0.5,`rgba(${col[0]|0},${col[1]|0},${col[2]|0},${alpha*0.4})`);
+      gr.addColorStop(1,`rgba(${col[0]|0},${col[1]|0},${col[2]|0},0)`);
+      g.fillStyle=gr;
+      g.beginPath(); g.arc(x,y,r*3.2,0,TAU); g.fill();
+    } else {
+      g.fillStyle = `rgba(${col[0]|0},${col[1]|0},${col[2]|0},${alpha})`;
+      g.beginPath(); g.arc(x,y,r,0,TAU); g.fill();
+    }
+    drawn++;
+  }
+  g.globalCompositeOperation = 'source-over';
+  return drawn;
+}
+
+function drawMeteors(g, dt){
+  if(!meteors.length) return;
+  g.globalCompositeOperation='lighter';
+  for(let i=meteors.length-1;i>=0;i--){
+    const m=meteors[i];
+    m.x += m.vx*dt*60; m.y += m.vy*dt*60;
+    m.vy += 0.06*DPR*dt*60;
+    m.life -= 0.012*dt*60;
+    const col = starColor(m.hue, 1);
+    const tailx = m.x - m.vx*5, taily = m.y - m.vy*5;
+    const grad = g.createLinearGradient(m.x,m.y,tailx,taily);
+    const a = Math.max(0,m.life);
+    grad.addColorStop(0,`rgba(255,255,255,${a})`);
+    grad.addColorStop(0.25,`rgba(${col[0]|0},${col[1]|0},${col[2]|0},${a*0.8})`);
+    grad.addColorStop(1,`rgba(${col[0]|0},${col[1]|0},${col[2]|0},0)`);
+    g.strokeStyle=grad; g.lineWidth=1.8*DPR; g.lineCap='round';
+    g.beginPath(); g.moveTo(m.x,m.y); g.lineTo(tailx,taily); g.stroke();
+    // bright head
+    g.fillStyle=`rgba(255,255,255,${a})`;
+    g.beginPath(); g.arc(m.x,m.y,1.6*DPR,0,TAU); g.fill();
+    if(m.life<=0 || m.y>H+60 || m.x< -120 || m.x>W+120) meteors.splice(i,1);
+  }
+  g.globalCompositeOperation='source-over';
+}
+
+// ground silhouette + foreground glow, drawn on the FINAL composite (not accumulated)
+function drawGround(g){
+  // horizon line height controlled by altitude (higher altitude -> lower horizon)
+  const baseY = H*(0.80 + (1-altitude)*0.12);
+  const amp = H*0.10;
+  // far ridge (lighter)
+  g.beginPath();
+  g.moveTo(0,H);
+  for(let i=0;i<ridge.length;i++){
+    const x = (i/(ridge.length-1))*W;
+    const y = baseY - amp*0.45 + ridge[i]*amp*0.16 + H*0.03;
+    g.lineTo(x,y);
+  }
+  g.lineTo(W,H); g.closePath();
+  g.fillStyle='#04060d'; g.fill();
+  // near ridge (darker, taller)
+  g.beginPath();
+  g.moveTo(0,H);
+  for(let i=0;i<ridge.length;i++){
+    const x = (i/(ridge.length-1))*W;
+    const y = baseY + ridge[i]*amp*0.55;
+    g.lineTo(x,y);
+  }
+  g.lineTo(W,H); g.closePath();
+  g.fillStyle='#000208'; g.fill();
+}
+
+function vignette(g){
+  const r = Math.hypot(W,H)*0.62;
+  const vg = g.createRadialGradient(W*0.5,H*0.45,r*0.45, W*0.5,H*0.5,r);
+  vg.addColorStop(0,'rgba(0,0,0,0)');
+  vg.addColorStop(1,'rgba(0,0,0,0.55)');
+  g.fillStyle=vg; g.fillRect(0,0,W,H);
+}
+
+// pole marker: faint cross + glow at rotation centre
+function drawPole(g){
+  const px=pole.x, py=pole.y;
+  if(px<-50||px>W+50||py<-50||py>H+50) return;
+  g.globalCompositeOperation='lighter';
+  const gr=g.createRadialGradient(px,py,0,px,py,46*DPR);
+  gr.addColorStop(0,'rgba(190,212,255,0.5)');
+  gr.addColorStop(0.4,'rgba(140,170,255,0.12)');
+  gr.addColorStop(1,'rgba(0,0,0,0)');
+  g.fillStyle=gr; g.beginPath(); g.arc(px,py,46*DPR,0,TAU); g.fill();
+  // tiny bright pole star
+  g.fillStyle='rgba(235,242,255,0.95)';
+  g.beginPath(); g.arc(px,py,1.7*DPR,0,TAU); g.fill();
+  g.globalCompositeOperation='source-over';
+}
+
+let started=false;
+
+function loop(now){
+  const dt = Math.min(0.05,(now-lastT)/1000); lastT=now;
+
+  // ease pole toward target
+  pole.x += (pole.tx-pole.x)*0.10;
+  pole.y += (pole.ty-pole.y)*0.10;
+
+  // pointer-based speed boost: closer pointer to pole-relative motion ... simply
+  // angular speed scales with exposure + a touch from pointer drag energy
+  const dragE = Math.min(1, Math.hypot(ptr.vx,ptr.vy)/(40));
+  const speed = exposure * (0.55 + 0.9*dragE) * (1+warp*0.6);
+  rotation += speed * (dt*60) * 0.072;
+  warp *= 0.92;
+  ptr.vx*=0.85; ptr.vy*=0.85;
+
+  // --- accumulation pass: fade the trail buffer slightly, then add a star slice ---
+  // fade amount = how fast trails decay. lower exposure -> longer trails.
+  // gentler fade so arcs survive long enough to read as concentric circles.
+  const fade = 0.014 + (1-Math.min(1,exposure/0.09))*0.012;
+  tctx.globalCompositeOperation='source-over';
+  tctx.fillStyle=`rgba(2,3,10,${fade})`;
+  tctx.fillRect(0,0,W,H);
+
+  frameStars = drawStarPass(tctx, 0, 1, false);
+
+  // --- composite to screen ---
+  ctx.globalCompositeOperation='source-over';
+  ctx.drawImage(trail,0,0);
+  drawMilkyWay(ctx, 1);
+
+  drawMeteors(ctx, dt);
+  drawPole(ctx);
+  drawGround(ctx);
+  vignette(ctx);
+
+  // readouts
+  if(started && (now%120)<17){
+    const expN = Math.round(1/exposure*4);
+    rExp.textContent = expN+'s';
+    rAlt.textContent = Math.round(altitude*90)+'°';
+    rN.textContent = stars.length.toLocaleString();
+  }
+
+  requestAnimationFrame(loop);
+}
+
+// ---------- interaction ----------
+function setPole(cx,cy){
+  pole.tx = Math.max(-W*0.3, Math.min(W*1.3, cx));
+  pole.ty = Math.max(-H*0.3, Math.min(H*1.3, cy));
+  // altitude follows vertical pole position loosely
+  altitude = Math.max(0.05, Math.min(1, 1 - cy/H + 0.15));
+}
+
+function pointerPos(e){
+  const t = e.touches ? e.touches[0] : e;
+  return { x:t.clientX*DPR, y:t.clientY*DPR };
+}
+
+cv.addEventListener('pointerdown', e=>{
+  ptr.down=true; ptr.active=true;
+  const p=pointerPos(e); ptr.x=p.x; ptr.y=p.y;
+  cv.setPointerCapture && cv.setPointerCapture(e.pointerId);
+});
+cv.addEventListener('pointermove', e=>{
+  const p=pointerPos(e);
+  ptr.vx = p.x-ptr.x; ptr.vy = p.y-ptr.y;
+  ptr.x=p.x; ptr.y=p.y; ptr.active=true;
+  if(ptr.down) setPole(p.x,p.y);
+});
+function up(){ ptr.down=false; setTimeout(()=>ptr.active=false, 1200); }
+cv.addEventListener('pointerup', up);
+cv.addEventListener('pointercancel', up);
+cv.addEventListener('pointerleave', ()=>{ if(!ptr.down) ptr.active=false; });
+
+// click (no drag) -> meteor shower at point
+let downPt=null, downTime=0;
+cv.addEventListener('pointerdown', e=>{ const p=pointerPos(e); downPt=p; downTime=performance.now(); });
+cv.addEventListener('pointerup', e=>{
+  const p=pointerPos(e);
+  if(downPt && Math.hypot(p.x-downPt.x,p.y-downPt.y)<10*DPR && performance.now()-downTime<350){
+    meteorShower(p.x,p.y);
+    warp = 0.8;
+  }
+});
+
+// wheel: shift -> altitude, plain -> exposure
+window.addEventListener('wheel', e=>{
+  e.preventDefault();
+  if(e.shiftKey){
+    altitude = Math.max(0.05, Math.min(1, altitude - e.deltaY*0.0008));
+  } else {
+    exposure = Math.max(0.012, Math.min(0.10, exposure + e.deltaY*0.00006));
+  }
+}, {passive:false});
+
+// keyboard nicety
+window.addEventListener('keydown', e=>{
+  if(e.key===' '){ meteorShower(ptr.x||W*0.5, (ptr.y||H*0.3)); warp=0.9; }
+});
+
+window.addEventListener('resize', ()=>{ resize(); seedSky(); });
+
+// ---------- boot ----------
+resize();
+seedSky();
+// draw one real composite immediately so the FIRST paint is already the art
+ctx.drawImage(trail,0,0); drawMilkyWay(ctx,1); drawPole(ctx); drawGround(ctx); vignette(ctx);
+requestAnimationFrame((t)=>{ lastT=t; started=true; document.body.classList.add('lit'); loop(t); });
+
+// a few ambient meteors over time
+setInterval(()=>{ if(Math.random()<0.5 && meteors.length<6) spawnMeteor(); }, 4200);
+
+})();
+</script>
+</body>
+</html>

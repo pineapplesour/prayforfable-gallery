@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Drift — 해파리 앰비언트 · 글래스 날씨</title>
+<style>
+  :root{
+    --glass-bg: rgba(18,26,38,0.30);
+    --glass-bg-soft: rgba(255,255,255,0.06);
+    --glass-border: rgba(255,255,255,0.30);
+    --glass-hi: rgba(255,255,255,0.35);
+    --txt: #f3f7ff;
+    --txt-dim: rgba(233,242,255,0.74);
+    --txt-mute: rgba(210,224,245,0.55);
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;overflow:hidden;background:#03070b;}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Pretendard","Helvetica Neue",
+      "Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;
+    color:var(--txt);
+    -webkit-font-smoothing:antialiased;
+    cursor:default;
+  }
+  #scene{position:fixed;inset:0;width:100%;height:100%;display:block;z-index:0;}
+
+  /* faint vignette + top light shaft, sits above canvas but below glass */
+  #atmos{
+    position:fixed;inset:0;z-index:1;pointer-events:none;
+    background:
+      radial-gradient(120% 80% at 50% -10%, rgba(120,200,210,0.16), rgba(0,0,0,0) 55%),
+      radial-gradient(140% 120% at 50% 120%, rgba(0,0,0,0.55), rgba(0,0,0,0) 60%);
+    mix-blend-mode:screen;
+  }
+  #atmos::after{
+    content:"";position:absolute;inset:0;mix-blend-mode:normal;
+    background:radial-gradient(130% 130% at 50% 50%, rgba(0,0,0,0) 52%, rgba(0,0,0,0.40) 100%);
+  }
+
+  /* ---------- liquid glass panels ---------- */
+  .panel{
+    position:absolute;
+    z-index:4;
+    color:var(--txt);
+    border-radius:26px;
+    background:var(--glass-bg);
+    border:1px solid var(--glass-border);
+    box-shadow:
+      0 28px 70px rgba(0,0,0,0.42),
+      0 2px 10px rgba(0,0,0,0.28),
+      inset 0 1px 0 var(--glass-hi),
+      inset 0 0 32px rgba(120,180,210,0.06);
+    -webkit-backdrop-filter:blur(22px) saturate(1.5);
+    backdrop-filter:blur(22px) saturate(1.5);
+    -webkit-user-select:none;user-select:none;
+    will-change:transform;
+    transition:box-shadow .25s ease;
+  }
+  .panel::before{
+    /* curved top sheen — the liquid-glass highlight */
+    content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+    background:linear-gradient(160deg, rgba(255,255,255,0.20), rgba(255,255,255,0.0) 38%);
+    -webkit-mask:linear-gradient(#000,#000);
+    opacity:.9;
+  }
+  .panel.drag{cursor:grab;}
+  .panel.dragging{cursor:grabbing;box-shadow:
+      0 40px 90px rgba(0,0,0,0.55),
+      inset 0 1px 0 var(--glass-hi),
+      inset 0 0 40px rgba(140,200,220,0.10);}
+  .grip{position:absolute;top:11px;left:50%;transform:translateX(-50%);
+    width:44px;height:5px;border-radius:99px;background:rgba(255,255,255,0.22);
+    cursor:grab;}
+
+  /* ---- main weather widget ---- */
+  #w-main{ left:6vw; top:50%; width:clamp(290px,30vw,392px); padding:26px 28px 24px; }
+  .loc-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:2px;}
+  .loc{font-size:15px;font-weight:700;letter-spacing:.2px;display:flex;align-items:center;gap:7px;}
+  .loc .dot{width:7px;height:7px;border-radius:50%;background:#7fe3c6;
+    box-shadow:0 0 10px #7fe3c6;}
+  .now-pill{font-size:11.5px;font-weight:700;color:var(--txt-dim);
+    border:1px solid rgba(255,255,255,0.22);background:rgba(255,255,255,0.05);
+    border-radius:999px;padding:4px 11px;}
+  .temp-row{display:flex;align-items:flex-start;gap:14px;margin:14px 0 4px;}
+  .temp{font-size:74px;line-height:.86;font-weight:300;letter-spacing:-3px;}
+  .temp sup{font-size:26px;font-weight:400;top:-1.5em;left:2px;}
+  .cond{padding-top:8px;}
+  .cond .ic{font-size:34px;line-height:1;filter:drop-shadow(0 4px 10px rgba(0,0,0,.4));}
+  .cond .lbl{font-size:14px;font-weight:600;color:var(--txt-dim);margin-top:3px;}
+  .feels{font-size:12.5px;color:var(--txt-mute);margin:2px 0 18px;font-weight:600;}
+
+  .metrics{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:18px;}
+  .metric{border:1px solid rgba(255,255,255,0.16);background:rgba(255,255,255,0.05);
+    border-radius:16px;padding:11px 8px 10px;text-align:center;}
+  .metric .v{font-size:17px;font-weight:700;}
+  .metric .k{font-size:10.5px;font-weight:700;color:var(--txt-mute);margin-top:3px;
+    letter-spacing:.04em;text-transform:uppercase;}
+
+  .hours{display:flex;gap:7px;}
+  .hour{flex:1;border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.045);
+    border-radius:18px;padding:11px 4px 12px;text-align:center;}
+  .hour.h-now{background:rgba(127,227,198,0.13);border-color:rgba(127,227,198,0.4);}
+  .hour .ht{font-size:11px;font-weight:700;color:var(--txt-dim);}
+  .hour .hi{font-size:18px;margin:8px 0 6px;line-height:1;}
+  .hour .hv{font-size:13.5px;font-weight:700;}
+
+  /* ---- side stat widget ---- */
+  #w-side{ right:6vw; top:14%; width:clamp(212px,18vw,248px); padding:18px 18px 16px; }
+  #w-side h3{margin:0 0 13px;font-size:12px;font-weight:800;letter-spacing:.12em;
+    text-transform:uppercase;color:var(--txt-dim);}
+  .stat{display:flex;align-items:center;gap:12px;padding:9px 0;}
+  .stat + .stat{border-top:1px solid rgba(255,255,255,0.09);}
+  .stat .si{width:34px;height:34px;flex:0 0 auto;border-radius:11px;
+    background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.16);
+    display:flex;align-items:center;justify-content:center;font-size:17px;}
+  .stat .sl{font-size:12px;color:var(--txt-mute);font-weight:600;}
+  .stat .sv{font-size:16.5px;font-weight:700;margin-top:1px;}
+  .stat .meta{margin-left:auto;text-align:right;}
+  .uv-bar{margin-top:13px;height:6px;border-radius:99px;overflow:hidden;
+    background:rgba(255,255,255,0.12);}
+  .uv-bar i{display:block;height:100%;width:42%;border-radius:99px;
+    background:linear-gradient(90deg,#7fe3c6,#ffd166 70%,#ff7d6b);}
+  .uv-cap{display:flex;justify-content:space-between;font-size:10px;font-weight:700;
+    color:var(--txt-mute);margin-top:6px;letter-spacing:.04em;}
+
+  /* ---- floating mini card ---- */
+  #w-mini{ right:11vw; bottom:9%; width:clamp(196px,16vw,224px); padding:15px 17px;
+    border-radius:22px;}
+  #w-mini .mt{font-size:11px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--txt-mute);}
+  #w-mini .ml{font-size:20px;font-weight:700;margin-top:6px;display:flex;align-items:center;gap:9px;}
+  #w-mini .ml .mi{font-size:24px;}
+  #w-mini .md{font-size:12px;color:var(--txt-dim);margin-top:5px;line-height:1.45;font-weight:500;}
+  #w-mini .moon{display:flex;gap:5px;margin-top:11px;}
+  #w-mini .moon span{flex:1;height:5px;border-radius:99px;background:rgba(255,255,255,0.13);}
+  #w-mini .moon span.on{background:rgba(190,210,255,0.85);}
+
+  /* ---- signature / brand ---- */
+  #brand{position:fixed;left:6vw;bottom:7%;z-index:3;pointer-events:none;
+    font-size:12px;font-weight:700;letter-spacing:.28em;color:var(--txt-mute);
+    text-transform:uppercase;}
+  #brand b{color:var(--txt);font-weight:800;letter-spacing:.18em;}
+  #hint{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);z-index:3;
+    font-size:12px;letter-spacing:.1em;color:rgba(233,242,255,0.62);
+    background:rgba(8,18,26,0.34);border:1px solid rgba(255,255,255,0.12);
+    padding:7px 18px;border-radius:99px;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
+    pointer-events:none;transition:opacity 1.4s ease;white-space:nowrap;}
+
+  @media (max-width:520px){
+    #w-main{left:50%;top:auto;bottom:5%;transform:translateX(-50%);
+      width:min(92vw,420px);padding:20px 20px 18px;border-radius:24px;}
+    .temp{font-size:60px;}
+    #w-side{right:auto;left:50%;top:4%;transform:translateX(-50%);width:min(92vw,360px);}
+    #w-side .stat{padding:7px 0;}
+    #w-mini{display:none;}
+    #brand{left:50%;transform:translateX(-50%);bottom:auto;top:calc(4% + 152px);text-align:center;}
+    #hint{display:none;}
+  }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<div id="atmos"></div>
+
+<!-- main weather glass -->
+<section id="w-main" class="panel drag" aria-label="현재 날씨">
+  <div class="grip"></div>
+  <div class="loc-row">
+    <div class="loc"><span class="dot"></span>심해 정거장 · 12층</div>
+    <div class="now-pill">오후 8:42</div>
+  </div>
+  <div class="temp-row">
+    <div class="temp">19<sup>°</sup></div>
+    <div class="cond">
+      <div class="ic">🌊</div>
+      <div class="lbl">잔잔한 해류</div>
+    </div>
+  </div>
+  <div class="feels">체감 17° · 종일 흐림, 깊은 곳은 고요합니다</div>
+  <div class="metrics">
+    <div class="metric"><div class="v">62%</div><div class="k">습도</div></div>
+    <div class="metric"><div class="v">8 km/h</div><div class="k">해류</div></div>
+    <div class="metric"><div class="v">1014</div><div class="k">기압</div></div>
+  </div>
+  <div class="hours">
+    <div class="hour h-now"><div class="ht">지금</div><div class="hi">🌊</div><div class="hv">19°</div></div>
+    <div class="hour"><div class="ht">9시</div><div class="hi">🫧</div><div class="hv">18°</div></div>
+    <div class="hour"><div class="ht">10시</div><div class="hi">🌙</div><div class="hv">17°</div></div>
+    <div class="hour"><div class="ht">11시</div><div class="hi">✨</div><div class="hv">16°</div></div>
+    <div class="hour"><div class="ht">12시</div><div class="hi">🌙</div><div class="hv">16°</div></div>
+  </div>
+</section>
+
+<!-- side stats glass -->
+<section id="w-side" class="panel drag" aria-label="상세 지표">
+  <div class="grip"></div>
+  <h3>오늘의 바다</h3>
+  <div class="stat">
+    <div class="si">🪼</div>
+    <div><div class="sl">해파리 밀도</div><div class="sv">보통</div></div>
+    <div class="meta"><div class="sv">7</div><div class="sl">개체</div></div>
+  </div>
+  <div class="stat">
+    <div class="si">🌡️</div>
+    <div><div class="sl">수온</div><div class="sv">12.4°</div></div>
+    <div class="meta"><div class="sl">−0.6°</div></div>
+  </div>
+  <div class="stat">
+    <div class="si">👁️</div>
+    <div><div class="sl">가시거리</div><div class="sv">14 m</div></div>
+    <div class="meta"><div class="sl">맑음</div></div>
+  </div>
+  <div class="uv-bar"><i></i></div>
+  <div class="uv-cap"><span>광량 약함</span><span>2 / 11</span></div>
+</section>
+
+<!-- floating mini card -->
+<section id="w-mini" class="panel drag" aria-label="야간 정보">
+  <div class="grip"></div>
+  <div class="mt">발광 지수</div>
+  <div class="ml"><span class="mi">🪼</span> 높음</div>
+  <div class="md">밤이 깊어질수록 해파리가 더 밝게 빛납니다. 패널을 끌어 옮겨보세요.</div>
+  <div class="moon"><span class="on"></span><span class="on"></span><span class="on"></span><span class="on"></span><span></span></div>
+</section>
+
+<div id="brand"><b>DRIFT</b> &nbsp;·&nbsp; ambient weather</div>
+<div id="hint">패널을 드래그 · 마우스로 깊이를 흔들어 보세요</div>
+
+<script>
+'use strict';
+(()=>{
+const TAU=Math.PI*2;
+const canvas=document.getElementById('scene');
+const ctx=canvas.getContext('2d');
+let W=0,H=0,DPR=1;
+
+/* pointer parallax target */
+let pmx=0.5,pmy=0.5, mx=0.5,my=0.5;
+
+function resize(){
+  W=window.innerWidth; H=window.innerHeight;
+  DPR=Math.min(window.devicePixelRatio||1,2);
+  canvas.width=Math.round(W*DPR);
+  canvas.height=Math.round(H*DPR);
+  canvas.style.width=W+'px'; canvas.style.height=H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  buildField();
+}
+window.addEventListener('resize',resize);
+
+/* ---------------- background field: drifting plankton / motes ---------------- */
+let motes=[];
+function buildField(){
+  motes=[];
+  const n=Math.round(W*H/14000);
+  for(let i=0;i<n;i++){
+    const depth=Math.random();            // 0 far .. 1 near
+    motes.push({
+      x:Math.random()*W, y:Math.random()*H,
+      r:0.5+depth*2.4,
+      depth,
+      sp:(0.05+depth*0.22),               // downward/upward drift speed
+      drift:(Math.random()-0.5)*0.4,
+      ph:Math.random()*TAU,
+      twk:0.6+Math.random()*1.6,
+      a:0.06+depth*0.30
+    });
+  }
+}
+
+/* ---------------- jellyfish ---------------- */
+function makeJelly(seed){
+  const scale=0.62+Math.random()*0.95;
+  const hue=180+Math.random()*70;         // teal -> blue -> violet
+  return{
+    x:Math.random()*W,
+    y:Math.random()*H,
+    scale,
+    depth:0.25+Math.random()*0.75,        // affects parallax + blur + size
+    hue,
+    bellW:46*scale,
+    bellH:40*scale,
+    phase:Math.random()*TAU,
+    pulse:0.9+Math.random()*0.5,          // pulses per second-ish
+    vx:(Math.random()-0.5)*6,
+    vy:-(6+Math.random()*10),             // jellies tend to drift up then sink
+    sway:Math.random()*TAU,
+    swaySp:0.25+Math.random()*0.4,
+    nTent:7+(Math.random()*4|0),
+    glow:0.5+Math.random()*0.5,
+    seed:seed||Math.random()*1000
+  };
+}
+let jellies=[];
+function initJellies(){
+  jellies=[];
+  const count=Math.max(5,Math.min(8,Math.round(W/240)));
+  for(let i=0;i<count;i++)jellies.push(makeJelly(i*13.7));
+}
+
+function updateJelly(j,dt,t){
+  // vertical bob: rise on pulse, sink between
+  const pulse=Math.sin(j.phase);
+  j.phase+=dt*j.pulse*2.0;
+  // contraction propels upward
+  const thrust=Math.max(0,Math.cos(j.phase))* (28+18*j.scale);
+  j.sway+=dt*j.swaySp;
+  j.x += (j.vx + Math.sin(j.sway)*9*j.depth) * dt;
+  j.y += (j.vy - thrust*0.35 + 9) * dt * 0.6;  // gentle: gravity vs thrust
+  // wrap-around softly
+  const pad=120*j.scale;
+  if(j.y < -pad){ j.y=H+pad*0.6; j.x=Math.random()*W; }
+  if(j.y > H+pad){ j.y=-pad*0.6; j.x=Math.random()*W; }
+  if(j.x < -pad) j.x=W+pad;
+  if(j.x > W+pad) j.x=-pad;
+}
+
+function drawJelly(j,t){
+  const px=(mx-0.5)*60*j.depth;          // parallax offset
+  const py=(my-0.5)*38*j.depth;
+  const x=j.x+px, y=j.y+py;
+  const pulse=Math.sin(j.phase);         // -1..1
+  const contract=0.5+0.5*Math.cos(j.phase); // 0..1, 1 = contracted
+  const bw=j.bellW*(1 - contract*0.16);
+  const bh=j.bellH*(1 + contract*0.22);
+  const blur=(1-j.depth)*5.5;
+  const col=(a)=>`hsla(${j.hue}, 70%, ${62}%, ${a})`;
+  const colDeep=(a)=>`hsla(${j.hue+10}, 80%, 70%, ${a})`;
+
+  ctx.save();
+  ctx.translate(x,y);
+  ctx.filter = blur>0.3 ? `blur(${blur.toFixed(1)}px)` : 'none';
+  ctx.globalCompositeOperation='lighter';
+
+  // ---- outer halo glow ----
+  const haloR=bw*2.6;
+  const halo=ctx.createRadialGradient(0,bh*0.1,0,0,bh*0.1,haloR);
+  halo.addColorStop(0, col(0.16*j.glow));
+  halo.addColorStop(0.4, col(0.07*j.glow));
+  halo.addColorStop(1, col(0));
+  ctx.fillStyle=halo;
+  ctx.beginPath();ctx.arc(0,bh*0.1,haloR,0,TAU);ctx.fill();
+
+  // ---- tentacles (long, wavy, trailing below) ----
+  const tN=j.nTent;
+  for(let i=0;i<tN;i++){
+    const u=(i/(tN-1))-0.5;              // -0.5..0.5
+    const rootX=u*bw*1.1;
+    const rootY=bh*0.62;
+    const len=bh*(3.2+ (i%2?1.1:0) ) * (0.85+0.3*Math.abs(0.5-Math.abs(u)));
+    ctx.beginPath();
+    ctx.moveTo(rootX,rootY);
+    const segs=7;
+    for(let s=1;s<=segs;s++){
+      const sf=s/segs;
+      const yy=rootY+len*sf;
+      const wob=Math.sin(t*1.6 + i*0.9 + sf*5 + j.seed) * (5+8*sf) * (0.6+0.6*contract);
+      const xx=rootX + wob + u*bw*0.5*sf;
+      ctx.lineTo(xx,yy);
+    }
+    ctx.lineWidth=1.1+ (i%2?0.5:0);
+    ctx.strokeStyle=colDeep(0.20*j.glow*(1-0.2*i/tN));
+    ctx.lineCap='round';
+    ctx.stroke();
+  }
+
+  // ---- oral arms (frilly, central, shorter & thicker) ----
+  for(let i=0;i<4;i++){
+    const u=(i/3)-0.5;
+    const rootX=u*bw*0.5;
+    ctx.beginPath();
+    ctx.moveTo(rootX,bh*0.5);
+    const len=bh*2.0;
+    for(let s=1;s<=5;s++){
+      const sf=s/5;
+      const wob=Math.sin(t*1.2 + i*1.3 + sf*3 + j.seed)* (8*sf);
+      ctx.lineTo(rootX+wob, bh*0.5+len*sf);
+    }
+    ctx.lineWidth=2.4*(1-0.1*i);
+    ctx.strokeStyle=col(0.22*j.glow);
+    ctx.lineCap='round';
+    ctx.stroke();
+  }
+
+  // ---- bell body ----
+  // dome
+  const bg=ctx.createRadialGradient(0,-bh*0.25,bw*0.1, 0,-bh*0.1,bw*1.15);
+  bg.addColorStop(0, col(0.42*j.glow));
+  bg.addColorStop(0.55, col(0.22*j.glow));
+  bg.addColorStop(1, col(0.02));
+  ctx.fillStyle=bg;
+  ctx.beginPath();
+  // bell as a smooth dome with a scalloped rim
+  ctx.moveTo(-bw,0);
+  ctx.bezierCurveTo(-bw, -bh*1.5, bw, -bh*1.5, bw, 0);
+  // scalloped bottom rim
+  const lobes=6;
+  for(let i=0;i<=lobes;i++){
+    const fx=bw - (i/lobes)*bw*2;
+    const dip=Math.sin((i/lobes)*Math.PI)* bh*0.10;
+    ctx.quadraticCurveTo(fx + bw/lobes, bh*0.18 + (i%2?dip:-dip*0.3), fx, bh*0.06);
+  }
+  ctx.closePath();
+  ctx.fill();
+
+  // bell inner ridges (the gonads / radial canals)
+  ctx.strokeStyle=col(0.30*j.glow);
+  ctx.lineWidth=1.4;
+  for(let i=-2;i<=2;i++){
+    ctx.beginPath();
+    const sx=i*bw*0.28;
+    ctx.moveTo(sx*0.3,-bh*0.7);
+    ctx.quadraticCurveTo(sx, -bh*0.1, sx*1.1, bh*0.02);
+    ctx.stroke();
+  }
+  // crisp rim highlight
+  ctx.strokeStyle=col(0.5*j.glow);
+  ctx.lineWidth=1.6;
+  ctx.beginPath();
+  ctx.moveTo(-bw,0);
+  ctx.bezierCurveTo(-bw,-bh*1.5,bw,-bh*1.5,bw,0);
+  ctx.stroke();
+
+  // top apex sheen
+  const sh=ctx.createRadialGradient(-bw*0.2,-bh*0.9,0,-bw*0.2,-bh*0.9,bw*0.7);
+  sh.addColorStop(0,'rgba(255,255,255,'+(0.34*j.glow)+')');
+  sh.addColorStop(1,'rgba(255,255,255,0)');
+  ctx.fillStyle=sh;
+  ctx.beginPath();ctx.ellipse(-bw*0.18,-bh*0.85,bw*0.5,bh*0.5,0,0,TAU);ctx.fill();
+
+  ctx.restore();
+}
+
+/* ---------------- backdrop water ---------------- */
+function drawWater(t){
+  // deep murky vertical gradient — frangollo-ish but oceanic teal
+  const g=ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0, '#0a2c33');
+  g.addColorStop(0.45,'#072026');
+  g.addColorStop(1, '#03090d');
+  ctx.fillStyle=g;
+  ctx.fillRect(0,0,W,H);
+
+  // slow drifting light shafts from above (god rays)
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  const cx=W*(0.5 + (mx-0.5)*0.08);
+  for(let i=0;i<5;i++){
+    const off=(i-2)*W*0.16;
+    const sway=Math.sin(t*0.18 + i*1.3)*W*0.04;
+    const x0=cx+off+sway;
+    const wTop=14+i*4;
+    const wBot=80+i*30;
+    const lg=ctx.createLinearGradient(x0,-40,x0+ wBot*0.4, H*0.95);
+    lg.addColorStop(0,'rgba(150,225,225,0.10)');
+    lg.addColorStop(0.5,'rgba(120,200,210,0.045)');
+    lg.addColorStop(1,'rgba(120,200,210,0)');
+    ctx.fillStyle=lg;
+    ctx.beginPath();
+    ctx.moveTo(x0-wTop,-40);
+    ctx.lineTo(x0+wTop,-40);
+    ctx.lineTo(x0+ wBot, H);
+    ctx.lineTo(x0- wBot*0.4, H);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+/* ---------------- motes / plankton ---------------- */
+function drawMotes(t,dt){
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  for(const m of motes){
+    m.y -= m.sp;                     // slow rise
+    m.x += Math.sin(t*0.4 + m.ph)*m.drift;
+    if(m.y< -6){ m.y=H+6; m.x=Math.random()*W; }
+    const px=(mx-0.5)*40*m.depth;
+    const py=(my-0.5)*26*m.depth;
+    const tw=0.5+0.5*Math.sin(t*m.twk + m.ph);
+    ctx.fillStyle='rgba(180,235,225,'+ (m.a*(0.5+0.5*tw)).toFixed(3) +')';
+    ctx.beginPath();
+    ctx.arc(m.x+px, m.y+py, m.r, 0, TAU);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+/* ---------------- main loop ---------------- */
+let last=0;
+function frame(ts){
+  requestAnimationFrame(frame);
+  const t=ts/1000;
+  let dt=t-last; last=t;
+  if(dt>0.05)dt=0.05; if(dt<0)dt=0;
+
+  // ease pointer
+  mx += (pmx-mx)*Math.min(1,dt*3.5);
+  my += (pmy-my)*Math.min(1,dt*3.5);
+
+  drawWater(t);
+  drawMotes(t,dt);
+
+  // sort jellies far->near so near ones overlay
+  jellies.sort((a,b)=>a.depth-b.depth);
+  for(const j of jellies){ updateJelly(j,dt,t); drawJelly(j,t); }
+
+  // subtle foreground caustic shimmer
+  ctx.save();
+  ctx.globalCompositeOperation='overlay';
+  ctx.globalAlpha=0.05+0.03*Math.sin(t*0.5);
+  const cg=ctx.createRadialGradient(W*0.5,H*0.35,0,W*0.5,H*0.4,Math.max(W,H)*0.7);
+  cg.addColorStop(0,'rgba(160,230,220,0.6)');
+  cg.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=cg;ctx.fillRect(0,0,W,H);
+  ctx.restore();
+}
+
+/* ---------------- pointer (parallax) ---------------- */
+window.addEventListener('pointermove',e=>{
+  if(draggingEl)return;       // don't fight drag
+  pmx=e.clientX/W; pmy=e.clientY/H;
+});
+
+/* ---------------- draggable glass panels ---------------- */
+let draggingEl=null,dx=0,dy=0;
+function setupDrag(el){
+  // pin to absolute pixel position before first drag so transforms compose cleanly
+  el.addEventListener('pointerdown',e=>{
+    // only start when grabbing panel body / grip (not interactive inner ctrls)
+    draggingEl=el;
+    const r=el.getBoundingClientRect();
+    // convert any centered transform to explicit left/top
+    el.style.left=r.left+'px';
+    el.style.top=r.top+'px';
+    el.style.right='auto'; el.style.bottom='auto'; el.style.transform='none';
+    dx=e.clientX-r.left; dy=e.clientY-r.top;
+    el.classList.add('dragging');
+    el.setPointerCapture(e.pointerId);
+    hideHint();
+    e.preventDefault();
+  });
+  el.addEventListener('pointermove',e=>{
+    if(draggingEl!==el)return;
+    let nx=e.clientX-dx, ny=e.clientY-dy;
+    const r=el.getBoundingClientRect();
+    nx=Math.max(-r.width*0.4,Math.min(W-r.width*0.6,nx));
+    ny=Math.max(0,Math.min(H-44,ny));
+    el.style.left=nx+'px'; el.style.top=ny+'px';
+  });
+  const end=e=>{
+    if(draggingEl!==el)return;
+    el.classList.remove('dragging');
+    try{el.releasePointerCapture(e.pointerId);}catch(_){}
+    draggingEl=null;
+  };
+  el.addEventListener('pointerup',end);
+  el.addEventListener('pointercancel',end);
+  // tilt-on-hover micro interaction handled via parallax; bring to front on grab
+  el.addEventListener('pointerdown',()=>{ el.style.zIndex=20; });
+}
+document.querySelectorAll('.panel.drag').forEach(setupDrag);
+
+let hintHidden=false;
+function hideHint(){ if(hintHidden)return; hintHidden=true;
+  const h=document.getElementById('hint'); if(h)h.style.opacity=0; }
+setTimeout(hideHint, 8000);
+
+/* ---------------- boot ---------------- */
+resize();
+initJellies();
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

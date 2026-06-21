@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>深海の発光</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#02060c;}
+  #scene{position:fixed;inset:0;width:100%;height:100%;display:block;}
+  #grain{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;
+    mix-blend-mode:overlay;opacity:.05;}
+  #cap{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);
+    color:rgba(173,206,224,.62);
+    font:300 11px/1.7 "JetBrains Mono",ui-monospace,monospace;
+    letter-spacing:.30em;white-space:nowrap;pointer-events:none;
+    text-transform:uppercase;user-select:none;}
+  @media (max-width:480px){
+    #cap{font-size:9px;letter-spacing:.22em;bottom:20px;}
+  }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<canvas id="grain"></canvas>
+<div id="cap">deep · bioluminescence · drifting in the silent abyss</div>
+<script>
+'use strict';
+(()=>{
+const TAU=Math.PI*2;
+const cv=document.getElementById('scene'), ctx=cv.getContext('2d');
+const gv=document.getElementById('grain'), gctx=gv.getContext('2d');
+
+let W=0,H=0,DPR=1;
+
+/* ---------- offscreen layer used for soft-glow compositing ---------- */
+const lcv=document.createElement('canvas'), lctx=lcv.getContext('2d');
+
+/* ---------- static grain tile (fine noise, refreshed slowly) ---------- */
+let grainTile=null;
+function buildGrain(){
+  const s=160;
+  const off=document.createElement('canvas');off.width=s;off.height=s;
+  const o=off.getContext('2d');
+  const img=o.createImageData(s,s);
+  const d=img.data;
+  for(let i=0;i<d.length;i+=4){
+    const v=Math.random()*255;
+    d[i]=d[i+1]=d[i+2]=v; d[i+3]=255;
+  }
+  o.putImageData(img,0,0);
+  grainTile=off;
+}
+
+/* ---------- entities ---------- */
+let rng=mulberry;
+function mulberry(){ // deterministic-ish but seeded per build, fine for visuals
+  return Math.random();
+}
+const rand=(a,b)=>a+(b-a)*Math.random();
+const pick=arr=>arr[(Math.random()*arr.length)|0];
+
+/* palette: muted abyssal blues / teals / faint cyan-green glows + rare warm */
+const GLOWS=[
+  [120,210,255], // pale cyan
+  [90,190,220],  // teal
+  [140,235,210], // mint
+  [110,170,255], // periwinkle
+  [180,160,255], // soft violet
+  [255,200,150]  // rare warm amber (lanternfish)
+];
+
+let jellies=[], swimmers=[], discs=[], motes=[], glowballs=[];
+
+function initEntities(){
+  jellies=[]; swimmers=[]; discs=[]; motes=[]; glowballs=[];
+  const area=W*H;
+  const A=area/(1280*720);
+
+  // drifting jellyfish (pulsing bells) — 3 depth bands
+  const nJ=Math.round(rand(5,7)*Math.min(1.6,Math.max(.7,A)));
+  for(let i=0;i<nJ;i++){
+    const depth=Math.random();               // 0 near .. 1 far
+    const g=pick(GLOWS.slice(0,5));
+    jellies.push({
+      x:rand(0,W), y:rand(0,H),
+      depth,
+      r:rand(26,64)*(1.25-depth*.55),
+      vx:rand(-6,6)*(1.1-depth*.6),
+      vy:rand(-14,-5)*(1.1-depth*.6),   // gently rising
+      pulse:Math.random()*TAU,
+      pulseSpd:rand(.5,.9),
+      tent:4+((Math.random()*3)|0),
+      tphase:Math.random()*TAU,
+      col:g,
+      blur:depth*6
+    });
+  }
+
+  // swimming lanternfish-like creatures with photophore dots + wavy tail
+  const nS=Math.round(rand(4,6)*Math.min(1.6,Math.max(.7,A)));
+  for(let i=0;i<nS;i++){
+    const depth=Math.random();
+    const warm=Math.random()<.32;
+    const g=warm?GLOWS[5]:pick([GLOWS[0],GLOWS[1],GLOWS[3]]);
+    swimmers.push({
+      x:rand(0,W), y:rand(0,H),
+      depth,
+      len:rand(40,82)*(1.2-depth*.5),
+      a:Math.random()*TAU,
+      speed:rand(10,26)*(1.1-depth*.55),
+      phase:Math.random()*TAU,
+      turnT:rand(0,3), turn:0,
+      col:g,
+      photo:5+((Math.random()*4)|0),
+      blur:depth*5
+    });
+  }
+
+  // slow rotating glowing disc colonies (echo of reference floating discs)
+  const nD=Math.round(rand(4,6)*Math.min(1.6,Math.max(.7,A)));
+  for(let i=0;i<nD;i++){
+    const depth=Math.random();
+    discs.push({
+      x:rand(0,W), y:rand(0,H),
+      depth,
+      r:rand(34,90)*(1.3-depth*.6),
+      rot:Math.random()*TAU,
+      rspd:rand(-.12,.12),
+      vx:rand(-5,5)*(1-depth*.6),
+      vy:rand(-6,-1)*(1-depth*.6),
+      dots:8+((Math.random()*8)|0),
+      col:pick([GLOWS[0],GLOWS[1],GLOWS[2],GLOWS[4]]),
+      blur:3+depth*7,
+      pulse:Math.random()*TAU
+    });
+  }
+
+  // soft glow orbs — big out-of-focus bokeh for depth
+  const nB=Math.round(rand(5,8)*Math.min(1.6,Math.max(.7,A)));
+  for(let i=0;i<nB;i++){
+    glowballs.push({
+      x:rand(0,W), y:rand(0,H),
+      r:rand(60,170),
+      vx:rand(-3,3), vy:rand(-5,-1),
+      col:pick(GLOWS),
+      a:rand(.04,.12),
+      pulse:Math.random()*TAU,
+      pulseSpd:rand(.2,.5)
+    });
+  }
+
+  // marine snow / plankton motes rising slowly
+  const nM=Math.round(rand(120,170)*Math.min(2,Math.max(.7,A)));
+  for(let i=0;i<nM;i++){
+    const depth=Math.random();
+    motes.push({
+      x:rand(0,W), y:rand(0,H),
+      depth,
+      r:rand(.6,2.4)*(1.4-depth*.7),
+      vy:rand(-22,-6)*(1-depth*.5),
+      drift:rand(-4,4),
+      tw:Math.random()*TAU,
+      twSpd:rand(.6,1.8),
+      glow:Math.random()<.22,
+      col:pick(GLOWS)
+    });
+  }
+}
+
+/* ---------- drawing helpers ---------- */
+function rgba(c,a){return 'rgba('+c[0]+','+c[1]+','+c[2]+','+a+')';}
+
+function paintBackground(t){
+  // deep vertical column: darker at bottom (abyss), faint glow up top (distant surface)
+  const g=ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#0a2236');
+  g.addColorStop(0.28,'#072031');
+  g.addColorStop(0.62,'#04131f');
+  g.addColorStop(1,'#020a12');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+
+  // slow drifting "current" blobs for painterly depth variation
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  for(let i=0;i<5;i++){
+    const px=(0.5+0.42*Math.sin(t*0.05+i*1.7))*W;
+    const py=(0.45+0.4*Math.cos(t*0.037+i*2.1))*H;
+    const r=Math.max(W,H)*(0.34+0.1*Math.sin(t*0.04+i));
+    const rg=ctx.createRadialGradient(px,py,0,px,py,r);
+    const c=GLOWS[i%4];
+    rg.addColorStop(0,rgba(c,0.035));
+    rg.addColorStop(1,rgba(c,0));
+    ctx.fillStyle=rg; ctx.fillRect(0,0,W,H);
+  }
+  ctx.restore();
+
+  // faint top down-welling light shaft
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  const sg=ctx.createLinearGradient(0,0,0,H*0.6);
+  sg.addColorStop(0,'rgba(90,150,180,0.06)');
+  sg.addColorStop(1,'rgba(90,150,180,0)');
+  ctx.fillStyle=sg; ctx.fillRect(0,0,W,H);
+  ctx.restore();
+}
+
+function drawJelly(c,j,t){
+  const a=0.5+0.5*Math.sin(j.pulse);     // contraction
+  const r=j.r*(0.86+0.18*a);
+  const h=r*(1.05-0.28*a);                // bell height squashes on pulse
+  c.save();
+  c.translate(j.x,j.y);
+  if(j.blur>0.3)c.filter='blur('+j.blur.toFixed(1)+'px)';
+  c.globalCompositeOperation='lighter';
+  const baseA=(0.7-j.depth*0.42);
+  // outer halo
+  const halo=c.createRadialGradient(0,0,0,0,0,r*2.0);
+  halo.addColorStop(0,rgba(j.col,0.16*baseA));
+  halo.addColorStop(1,rgba(j.col,0));
+  c.fillStyle=halo;
+  c.beginPath();c.arc(0,0,r*2.0,0,TAU);c.fill();
+  // tentacles (trailing below)
+  c.strokeStyle=rgba(j.col,0.22*baseA);
+  c.lineWidth=Math.max(1,r*0.04);
+  c.lineCap='round';
+  for(let k=0;k<j.tent;k++){
+    const ox=(k/(j.tent-1||1)-0.5)*r*1.1;
+    c.beginPath();
+    c.moveTo(ox*0.6,h*0.2);
+    const sway=Math.sin(j.tphase+t*1.3+k)*r*0.3;
+    c.quadraticCurveTo(ox+sway*0.5,h*0.9+r*0.6,ox*0.5+sway,h*0.6+r*1.8);
+    c.stroke();
+  }
+  // bell
+  const bg=c.createRadialGradient(0,-h*0.2,0,0,0,r);
+  bg.addColorStop(0,rgba(j.col,0.55*baseA));
+  bg.addColorStop(0.6,rgba(j.col,0.30*baseA));
+  bg.addColorStop(1,rgba(j.col,0));
+  c.fillStyle=bg;
+  c.beginPath();
+  c.moveTo(-r,h*0.18);
+  c.bezierCurveTo(-r,-h*1.1,r,-h*1.1,r,h*0.18);
+  c.quadraticCurveTo(r*0.5,h*0.5,0,h*0.30);
+  c.quadraticCurveTo(-r*0.5,h*0.5,-r,h*0.18);
+  c.closePath();c.fill();
+  // bright rim
+  c.strokeStyle=rgba(j.col,0.5*baseA*a);
+  c.lineWidth=Math.max(1,r*0.05);
+  c.beginPath();
+  c.moveTo(-r,h*0.16);
+  c.bezierCurveTo(-r,-h*1.05,r,-h*1.05,r,h*0.16);
+  c.stroke();
+  c.restore();
+}
+
+function drawSwimmer(c,s,t){
+  c.save();
+  c.translate(s.x,s.y);
+  c.rotate(s.a);
+  if(s.blur>0.3)c.filter='blur('+s.blur.toFixed(1)+'px)';
+  c.globalCompositeOperation='lighter';
+  const L=s.len, baseA=(0.75-s.depth*0.42);
+  // body silhouette glow (faint dark-ish bioluminescent outline)
+  const wave=Math.sin(s.phase)*L*0.06;
+  const bg=c.createRadialGradient(0,0,0,0,0,L*0.55);
+  bg.addColorStop(0,rgba(s.col,0.12*baseA));
+  bg.addColorStop(1,rgba(s.col,0));
+  c.fillStyle=bg;
+  c.beginPath();
+  c.ellipse(-L*0.05,0,L*0.5,L*0.16,0,0,TAU);
+  c.fill();
+  // wavy tail streak
+  c.strokeStyle=rgba(s.col,0.16*baseA);
+  c.lineWidth=Math.max(1,L*0.03);
+  c.lineCap='round';
+  c.beginPath();
+  c.moveTo(-L*0.35,0);
+  c.quadraticCurveTo(-L*0.6,wave,-L*0.82,Math.sin(s.phase-1.2)*L*0.12);
+  c.stroke();
+  // photophore dots along the belly — the signature bioluminescence
+  for(let k=0;k<s.photo;k++){
+    const u=k/(s.photo-1||1);
+    const px=(0.42-u*0.78)*L;
+    const py=L*0.12*Math.sin(s.phase*0.5+u*3)+L*0.05;
+    const tw=0.45+0.55*Math.sin(t*3+k*1.3+s.phase);
+    const pr=L*0.05*(0.7+0.5*tw);
+    const dg=c.createRadialGradient(px,py,0,px,py,pr*3);
+    dg.addColorStop(0,rgba(s.col,0.9*baseA*tw));
+    dg.addColorStop(0.4,rgba(s.col,0.5*baseA*tw));
+    dg.addColorStop(1,rgba(s.col,0));
+    c.fillStyle=dg;
+    c.beginPath();c.arc(px,py,pr*3,0,TAU);c.fill();
+  }
+  // a brighter "eye" lure at head
+  const hg=c.createRadialGradient(L*0.42,-L*0.02,0,L*0.42,-L*0.02,L*0.12);
+  hg.addColorStop(0,rgba(s.col,0.95*baseA));
+  hg.addColorStop(1,rgba(s.col,0));
+  c.fillStyle=hg;
+  c.beginPath();c.arc(L*0.42,-L*0.02,L*0.12,0,TAU);c.fill();
+  c.restore();
+}
+
+function drawDisc(c,d,t){
+  c.save();
+  c.translate(d.x,d.y);
+  c.rotate(d.rot);
+  if(d.blur>0.3)c.filter='blur('+d.blur.toFixed(1)+'px)';
+  c.globalCompositeOperation='lighter';
+  const baseA=(0.6-d.depth*0.4);
+  const pa=0.6+0.4*Math.sin(d.pulse);
+  // soft body
+  const bg=c.createRadialGradient(0,0,d.r*0.1,0,0,d.r);
+  bg.addColorStop(0,rgba(d.col,0.10*baseA));
+  bg.addColorStop(0.7,rgba(d.col,0.05*baseA));
+  bg.addColorStop(1,rgba(d.col,0));
+  c.fillStyle=bg;
+  c.beginPath();c.arc(0,0,d.r,0,TAU);c.fill();
+  // ring of dots (colony of photophores)
+  for(let k=0;k<d.dots;k++){
+    const ang=(k/d.dots)*TAU;
+    const rr=d.r*0.66;
+    const px=Math.cos(ang)*rr, py=Math.sin(ang)*rr;
+    const tw=0.4+0.6*Math.sin(t*1.6+k*0.9+d.pulse);
+    const pr=d.r*0.07*(0.7+0.6*tw);
+    const dg=c.createRadialGradient(px,py,0,px,py,pr*2.6);
+    dg.addColorStop(0,rgba(d.col,0.8*baseA*tw*pa));
+    dg.addColorStop(1,rgba(d.col,0));
+    c.fillStyle=dg;
+    c.beginPath();c.arc(px,py,pr*2.6,0,TAU);c.fill();
+  }
+  // faint outline ring
+  c.strokeStyle=rgba(d.col,0.18*baseA*pa);
+  c.lineWidth=Math.max(1,d.r*0.02);
+  c.beginPath();c.arc(0,0,d.r*0.66,0,TAU);c.stroke();
+  c.restore();
+}
+
+function drawGlowball(c,b){
+  c.save();
+  c.globalCompositeOperation='lighter';
+  c.filter='blur(14px)';
+  const a=b.a*(0.6+0.4*Math.sin(b.pulse));
+  const g=c.createRadialGradient(b.x,b.y,0,b.x,b.y,b.r);
+  g.addColorStop(0,rgba(b.col,a));
+  g.addColorStop(1,rgba(b.col,0));
+  c.fillStyle=g;
+  c.beginPath();c.arc(b.x,b.y,b.r,0,TAU);c.fill();
+  c.restore();
+}
+
+function drawMotes(c,t){
+  c.save();
+  c.globalCompositeOperation='lighter';
+  for(const m of motes){
+    const tw=0.4+0.6*Math.sin(m.tw);
+    if(m.glow){
+      const r=m.r*3.2;
+      const g=c.createRadialGradient(m.x,m.y,0,m.x,m.y,r);
+      g.addColorStop(0,rgba(m.col,0.5*tw*(1-m.depth*0.5)));
+      g.addColorStop(1,rgba(m.col,0));
+      c.fillStyle=g;
+      c.beginPath();c.arc(m.x,m.y,r,0,TAU);c.fill();
+    }else{
+      c.fillStyle='rgba(190,215,230,'+(0.10+0.18*tw*(1-m.depth*0.6)).toFixed(3)+')';
+      c.beginPath();c.arc(m.x,m.y,m.r,0,TAU);c.fill();
+    }
+  }
+  c.restore();
+}
+
+/* ---------- update ---------- */
+function wrap(o,pad){
+  if(o.x<-pad)o.x=W+pad; else if(o.x>W+pad)o.x=-pad;
+  if(o.y<-pad)o.y=H+pad; else if(o.y>H+pad)o.y=-pad;
+}
+
+function update(dt,t){
+  for(const j of jellies){
+    j.pulse+=dt*j.pulseSpd*TAU*0.32;
+    const thrust=Math.max(0,Math.sin(j.pulse))*0.6;
+    j.x+=j.vx*dt;
+    j.y+=(j.vy*(0.5+thrust))*dt;
+    j.x+=Math.sin(t*0.3+j.tphase)*4*dt;
+    wrap(j,j.r*2.4);
+  }
+  for(const s of swimmers){
+    s.turnT-=dt;
+    if(s.turnT<=0){ s.turn=rand(-1,1)*0.7; s.turnT=rand(1.5,4); }
+    s.a+=s.turn*dt*0.5 + Math.sin(t*0.4+s.phase)*0.12*dt;
+    s.phase+=dt*(2.2+s.speed*0.04);
+    s.x+=Math.cos(s.a)*s.speed*dt;
+    s.y+=Math.sin(s.a)*s.speed*dt;
+    wrap(s,s.len*0.8);
+  }
+  for(const d of discs){
+    d.rot+=d.rspd*dt;
+    d.pulse+=dt*0.5;
+    d.x+=d.vx*dt; d.y+=d.vy*dt;
+    d.x+=Math.sin(t*0.2+d.pulse)*3*dt;
+    wrap(d,d.r*1.4);
+  }
+  for(const b of glowballs){
+    b.pulse+=dt*b.pulseSpd;
+    b.x+=b.vx*dt; b.y+=b.vy*dt;
+    wrap(b,b.r);
+  }
+  for(const m of motes){
+    m.tw+=dt*m.twSpd;
+    m.y+=m.vy*dt;
+    m.x+=Math.sin(t*0.5+m.tw)*m.drift*dt;
+    if(m.y<-6){ m.y=H+6; m.x=rand(0,W); }
+    if(m.x<-6)m.x=W+6; else if(m.x>W+6)m.x=-6;
+  }
+}
+
+/* ---------- compositing: depth sort by depth desc (far first) ---------- */
+function render(t){
+  paintBackground(t);
+
+  // far bokeh
+  for(const b of glowballs)drawGlowball(ctx,b);
+
+  // collect depth-sorted creatures (far -> near)
+  const items=[];
+  for(const d of discs)items.push({d:d.depth,fn:()=>drawDisc(ctx,d,t)});
+  for(const j of jellies)items.push({d:j.depth,fn:()=>drawJelly(ctx,j,t)});
+  for(const s of swimmers)items.push({d:s.depth,fn:()=>drawSwimmer(ctx,s,t)});
+  items.sort((a,b)=>b.d-a.d);
+  for(const it of items)it.fn();
+  ctx.filter='none';
+
+  // motes on top (fine floating particulate)
+  drawMotes(ctx,t);
+
+  // bottom vignette to deepen abyss edges
+  ctx.save();
+  const vg=ctx.createRadialGradient(W*0.5,H*0.42,Math.min(W,H)*0.2,W*0.5,H*0.5,Math.max(W,H)*0.75);
+  vg.addColorStop(0,'rgba(0,0,0,0)');
+  vg.addColorStop(1,'rgba(0,4,8,0.62)');
+  ctx.fillStyle=vg; ctx.fillRect(0,0,W,H);
+  ctx.restore();
+}
+
+/* ---------- grain overlay ---------- */
+let grainT=0;
+function paintGrain(t){
+  if(t-grainT<0.08)return;     // ~12fps grain shuffle for subtle film texture
+  grainT=t;
+  gctx.clearRect(0,0,gv.width,gv.height);
+  if(!grainTile)return;
+  const tile=grainTile.width;
+  const ox=-(Math.random()*tile)|0, oy=-(Math.random()*tile)|0;
+  for(let y=oy;y<gv.height;y+=tile)
+    for(let x=ox;x<gv.width;x+=tile)
+      gctx.drawImage(grainTile,x,y);
+}
+
+/* ---------- resize ---------- */
+function resize(){
+  W=window.innerWidth; H=window.innerHeight;
+  DPR=Math.min(window.devicePixelRatio||1,2);
+  cv.width=Math.round(W*DPR); cv.height=Math.round(H*DPR);
+  cv.style.width=W+'px'; cv.style.height=H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+
+  // grain canvas at lower res for speed
+  const gscale=0.7;
+  gv.width=Math.round(W*gscale); gv.height=Math.round(H*gscale);
+  gv.style.width=W+'px'; gv.style.height=H+'px';
+
+  initEntities();
+}
+window.addEventListener('resize',resize);
+
+/* ---------- boot ---------- */
+buildGrain();
+resize();
+
+let last=performance.now()/1000;
+function frame(ts){
+  requestAnimationFrame(frame);
+  const t=ts/1000;
+  let dt=t-last; last=t;
+  if(dt>0.05)dt=0.05; if(dt<0)dt=0;
+  update(dt,t);
+  render(t);
+  paintGrain(t);
+}
+requestAnimationFrame(frame);
+
+// first synchronous paint so the scene IS the first frame (no gate/loading)
+update(0.016, last);
+render(last);
+paintGrain(0);
+})();
+</script>
+</body>
+</html>

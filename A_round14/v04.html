@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>AURORA SILK — wind cloth</title>
+<style>
+  html,body{margin:0;height:100%;background:#05060c;overflow:hidden;
+    font-family:-apple-system,"Segoe UI",Roboto,system-ui,sans-serif;
+    touch-action:none;cursor:crosshair;}
+  #c{display:block;width:100vw;height:100vh;}
+  .ui{position:fixed;left:22px;bottom:20px;color:#dfe6ff;pointer-events:none;
+    mix-blend-mode:screen;user-select:none;z-index:5;}
+  .ui h1{margin:0;font-size:13px;letter-spacing:.42em;font-weight:600;
+    text-transform:uppercase;opacity:.9;}
+  .ui p{margin:6px 0 0;font-size:10.5px;letter-spacing:.16em;opacity:.5;line-height:1.7;}
+  .hint{position:fixed;right:22px;bottom:20px;color:#9fb0e0;font-size:10px;
+    letter-spacing:.14em;text-align:right;opacity:.4;pointer-events:none;
+    mix-blend-mode:screen;user-select:none;z-index:5;line-height:1.8;}
+  @media (max-width:640px){ .ui h1{font-size:11px;letter-spacing:.3em;}
+    .ui p,.hint{font-size:9px;} }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="ui"><h1>AURORA&nbsp;SILK</h1><p>드래그=바람 · 클릭=돌풍 · 스크롤=세기</p></div>
+<div class="hint">mass-spring cloth · verlet<br>procedural wind field</div>
+<script>
+(()=>{
+const cv=document.getElementById('c'),g=cv.getContext('2d',{alpha:false});
+let W=0,H=0,DPR=1;
+// ---------- value-noise (smooth, deterministic) ----------
+const PERM=new Uint8Array(512);(()=>{const p=new Uint8Array(256);for(let i=0;i<256;i++)p[i]=i;
+  let s=1337;for(let i=255;i>0;i--){s=(s*16807)%2147483647;const j=s%(i+1);const t=p[i];p[i]=p[j];p[j]=t;}
+  for(let i=0;i<512;i++)PERM[i]=p[i&255];})();
+const fade=t=>t*t*t*(t*(t*6-15)+10);
+const lerp=(a,b,t)=>a+(b-a)*t;
+function grad(h,x,y){const u=(h&1)?-x:x,v=(h&2)?-y:y;return u+v;}
+function noise2(x,y){const X=Math.floor(x)&255,Y=Math.floor(y)&255;x-=Math.floor(x);y-=Math.floor(y);
+  const u=fade(x),v=fade(y),A=PERM[X]+Y,B=PERM[X+1]+Y;
+  return lerp(lerp(grad(PERM[A],x,y),grad(PERM[B],x-1,y),u),
+             lerp(grad(PERM[A+1],x,y-1),grad(PERM[B+1],x-1,y-1),u),v);}
+
+// ---------- cloth grid (2.5D: x,y,z verlet) ----------
+let COLS, ROWS, REST, RESTV, ox, oy, flagW, flagH;
+let px,py,pz, opx,opy,opz, pinned; // verlet arrays
+const ITER=5, GRAV=0.00018;
+
+function buildCloth(){
+  flagW = Math.min(W*0.60, 1120);
+  flagH = flagW*0.60;
+  if(flagH>H*0.70){ flagH=H*0.70; flagW=flagH/0.60; }
+  COLS = Math.max(26, Math.min(56, Math.round(flagW/20)));
+  ROWS = Math.max(18, Math.min(38, Math.round(flagH/20)));
+  REST = flagW/(COLS-1);
+  RESTV= flagH/(ROWS-1);
+  ox = (W - flagW)*0.5 + W*0.03;
+  oy = (H - flagH)*0.5;
+  const n=COLS*ROWS;
+  px=new Float32Array(n); py=new Float32Array(n); pz=new Float32Array(n);
+  opx=new Float32Array(n); opy=new Float32Array(n); opz=new Float32Array(n);
+  pinned=new Uint8Array(n);
+  for(let r=0;r<ROWS;r++)for(let cI=0;cI<COLS;cI++){
+    const i=r*COLS+cI;
+    const x=ox+cI*REST, y=oy+r*RESTV;
+    px[i]=opx[i]=x; py[i]=opy[i]=y; pz[i]=opz[i]=0;
+    if(cI===0) pinned[i]=1; // pin the hoist edge to the pole
+  }
+}
+
+// ---------- interaction state ----------
+const mouse={x:-1e4,y:-1e4,px:-1e4,py:-1e4,down:false,active:false};
+let windStrength=1.0, targetWind=1.0;
+let hue=205, targetHue=205;          // base palette hue
+let t=0;
+const shocks=[]; // {x,y,t,r}
+
+// background ambient motes
+const MOTE=70, motes=[];
+function buildMotes(){motes.length=0;for(let i=0;i<MOTE;i++)motes.push({
+  x:Math.random()*W,y:Math.random()*H,z:0.3+Math.random()*0.7,
+  s:0.6+Math.random()*2.4,ph:Math.random()*6.28});}
+
+// ---------- simulation step ----------
+function simulate(){
+  t+=1;
+  windStrength+=(targetWind-windStrength)*0.05;
+  hue+=((targetHue-hue))*0.04;
+  const tw = t*0.012;
+  const baseGust = (0.85+0.55*Math.sin(t*0.0061)) * windStrength;
+
+  // integrate
+  for(let i=0;i<px.length;i++){
+    if(pinned[i]) continue;
+    const x=px[i],y=py[i],z=pz[i];
+    const r=(i/COLS)|0, cI=i%COLS;
+    const edge=cI/(COLS-1);              // 0 at pole, 1 at free edge
+    const edge2=edge*edge;
+    const nx=x*0.0021, ny=y*0.0021;
+    // layered wind field
+    const wn = noise2(nx*1.5+tw*2.2, ny*1.5)            // big rolls
+             + 0.55*noise2(nx*3.6-tw*3.1, ny*3.6+tw)    // medium
+             + 0.30*noise2(nx*8.0+tw*5.2, ny*8.0);      // ripples
+    const flutter = noise2(nx*6.5+tw*4.0+r*0.35, ny*6.5-tw*2.0);
+    const push = (1.5 + wn) * baseGust * (0.22+edge*1.2) * REST * 0.012;
+    let ax = push*0.9;
+    let ay = flutter * baseGust * (0.22+edge) * REST*0.012 - GRAV*W*0.10;
+    // OUT-OF-PLANE: this is what makes real silk folds. waves travel down the flag.
+    const wave = Math.sin(x*0.026 - t*0.10 + flutter*3.0 + r*0.18);
+    const wave2= Math.sin(x*0.052 - t*0.16 + wn*2.0);
+    const targetZ = (wave*0.7 + wave2*0.4) * REST*1.7 * edge2 * (0.55+0.45*baseGust);
+    let az = (targetZ - z)*0.10;          // pull toward traveling-wave shape
+    az += wn*baseGust*REST*0.006*edge;    // turbulent puff in depth
+
+    // mouse force field (also pushes cloth in z for a billow)
+    if(mouse.active){
+      const dx=x-mouse.x, dy=y-mouse.y, d2=dx*dx+dy*dy, R=190;
+      if(d2<R*R){ const d=Math.sqrt(d2)||1, f=(1-d/R);
+        if(mouse.down){
+          const mvx=mouse.x-mouse.px, mvy=mouse.y-mouse.py;
+          ax+=mvx*f*0.18; ay+=mvy*f*0.18; az+=f*REST*0.5;
+        } else { ax+=dx/d*f*f*REST*0.10; ay+=dy/d*f*f*REST*0.10; az+=f*f*REST*0.6; }
+      }
+    }
+    // shockwaves -> radial pop, mostly in z (a slap on the cloth)
+    for(let s=0;s<shocks.length;s++){const sh=shocks[s];
+      const dx=x-sh.x, dy=y-sh.y, d=Math.hypot(dx,dy)||1;
+      const w=80, diff=Math.abs(d-sh.r);
+      if(diff<w){ const f=(1-diff/w)*sh.life; ax+=dx/d*f*REST*0.10; ay+=dy/d*f*REST*0.10; az+=f*REST*1.6; }
+    }
+
+    const vx=(x-opx[i])*0.985, vy=(y-opy[i])*0.985, vz=(z-opz[i])*0.965;
+    opx[i]=x; opy[i]=y; opz[i]=z;
+    px[i]=x+vx+ax; py[i]=y+vy+ay; pz[i]=z+vz+az;
+  }
+
+  // satisfy distance constraints in 3D (structural)
+  for(let k=0;k<ITER;k++){
+    for(let r=0;r<ROWS;r++)for(let cI=0;cI<COLS;cI++){
+      const i=r*COLS+cI;
+      if(cI<COLS-1) constrain(i,i+1,REST);
+      if(r<ROWS-1) constrain(i,i+COLS,RESTV);
+    }
+  }
+
+  // shock lifetime
+  for(let s=shocks.length-1;s>=0;s--){const sh=shocks[s];sh.r+=15;sh.life*=0.94;
+    if(sh.life<0.02||sh.r>Math.hypot(W,H))shocks.splice(s,1);}
+  // slow wind decay back to baseline
+  targetWind+=(1.0-targetWind)*0.012;
+}
+function constrain(a,b,rest){
+  let dx=px[b]-px[a], dy=py[b]-py[a], dz=pz[b]-pz[a];
+  const d=Math.sqrt(dx*dx+dy*dy+dz*dz)||1e-4;
+  const diff=(d-rest)/d*0.5;
+  const ox_=dx*diff, oy_=dy*diff, oz_=dz*diff;
+  if(!pinned[a]){px[a]+=ox_;py[a]+=oy_;pz[a]+=oz_;}
+  if(!pinned[b]){px[b]-=ox_;py[b]-=oy_;pz[b]-=oz_;}
+}
+
+// ---------- render ----------
+function render(){
+  // background — deep vertical gradient that drifts with hue
+  const h1=hue, h2=(hue+46)%360, h3=(hue+300)%360;
+  const bg=g.createLinearGradient(0,0,W*0.3,H);
+  bg.addColorStop(0,`hsl(${h3},45%,5%)`);
+  bg.addColorStop(0.55,`hsl(${h1},55%,7%)`);
+  bg.addColorStop(1,`hsl(${(hue+20)%360},50%,4%)`);
+  g.fillStyle=bg; g.fillRect(0,0,W,H);
+
+  // ambient glow following wind
+  const gx=ox+flagW*0.6+Math.sin(t*0.01)*120;
+  const rg=g.createRadialGradient(gx,H*0.5,0,gx,H*0.5,W*0.6);
+  rg.addColorStop(0,`hsla(${h2},80%,55%,0.16)`);
+  rg.addColorStop(1,'hsla(0,0%,0%,0)');
+  g.fillStyle=rg; g.fillRect(0,0,W,H);
+
+  // motes
+  g.globalCompositeOperation='lighter';
+  for(const m of motes){
+    m.x-=(0.4+m.z*1.6)*windStrength; m.ph+=0.02;
+    m.y+=Math.sin(m.ph)*0.4;
+    if(m.x<-10){m.x=W+10;m.y=Math.random()*H;}
+    const tw=0.4+0.6*Math.abs(Math.sin(m.ph));
+    g.fillStyle=`hsla(${(h2+m.z*40)%360},90%,${60+m.z*20}%,${0.10*tw*m.z})`;
+    g.beginPath();g.arc(m.x,m.y,m.s*m.z*2.4,0,6.283);g.fill();
+  }
+  g.globalCompositeOperation='source-over';
+
+  // ---- cloth: project z, compute true 3D normals, directional+rim+spec lighting ----
+  // perspective-ish projection: nearer cloth (z>0, toward viewer) shifts slightly and brightens
+  const camZ=1100;
+  const sx=new Float32Array(px.length), sy=new Float32Array(px.length);
+  for(let i=0;i<px.length;i++){
+    const sc=camZ/(camZ - pz[i]);                  // z>0 -> sc>1 (closer/larger)
+    sx[i]=ox + (px[i]-ox)*sc;
+    sy[i]= (H*0.5) + (py[i]-H*0.5)*sc;
+  }
+  // light dir (toward upper-left, out of screen) and view dir (+z)
+  const Lx=-0.42, Ly=-0.48, Lz=0.77;
+  const baseSat=68+windStrength*7;
+  g.lineJoin='round'; g.lineCap='round';
+  const hlen=Math.hypot(Lx,Ly,Lz+1)||1;
+  // precompute per-vertex normal (averaged) + shade -> smooth silk, no flat facets
+  const litArr=new Float32Array(px.length), hueArr=new Float32Array(px.length),
+        satArr=new Float32Array(px.length), specArr=new Float32Array(px.length);
+  for(let r=0;r<ROWS;r++)for(let cI=0;cI<COLS;cI++){
+    const i=r*COLS+cI;
+    // central-difference tangents for a smooth normal at each vertex
+    const iL=cI>0?i-1:i, iR=cI<COLS-1?i+1:i, iU=r>0?i-COLS:i, iD=r<ROWS-1?i+COLS:i;
+    const ux=px[iR]-px[iL], uy=py[iR]-py[iL], uz=pz[iR]-pz[iL];
+    const vx=px[iD]-px[iU], vy=py[iD]-py[iU], vz=pz[iD]-pz[iU];
+    let Nx=uy*vz-uz*vy, Ny=uz*vx-ux*vz, Nz=ux*vy-uy*vx;
+    let nl=Math.hypot(Nx,Ny,Nz)||1; Nx/=nl;Ny/=nl;Nz/=nl;
+    if(Nz<0){Nx=-Nx;Ny=-Ny;Nz=-Nz;}
+    const diff=0.12+Math.max(0,Lx*Nx+Ly*Ny+Lz*Nz)*1.0;
+    const spec=Math.pow(Math.max(0,(Nx*Lx+Ny*Ly+Nz*(Lz+1))/hlen),16)*0.95;
+    const rim=Math.pow(1-Math.max(0,Nz),2.4)*0.5;
+    const depth=pz[i]/(REST*3);
+    hueArr[i]=((hue + Nx*40 + depth*30 + Math.sin(t*0.012+cI*0.12)*10)%360+360)%360;
+    satArr[i]=Math.min(95, baseSat + Math.abs(depth)*20);
+    litArr[i]=Math.max(5,Math.min(94, 9 + diff*50 + spec*40 + rim*28));
+    specArr[i]=spec;
+  }
+  // draw far rows first using mean z; each row = smooth gradient ribbon strip
+  const rowOrder=[];
+  for(let r=0;r<ROWS-1;r++){let zs=0;for(let cI=0;cI<COLS;cI++)zs+=pz[r*COLS+cI]+pz[(r+1)*COLS+cI];rowOrder.push([zs,r]);}
+  rowOrder.sort((a,b)=>a[0]-b[0]);
+  for(let ro=0;ro<rowOrder.length;ro++){
+    const r=rowOrder[ro][1];
+    for(let cI=0;cI<COLS-1;cI++){
+      const i=r*COLS+cI, i2=i+1, i3=i+COLS, i4=i+COLS+1;
+      const mh=hueArr[i], ms=satArr[i], l0=(litArr[i]+litArr[i3])*0.5, l1=(litArr[i2]+litArr[i4])*0.5;
+      const grad=g.createLinearGradient(sx[i],sy[i],sx[i2],sy[i2]);
+      grad.addColorStop(0,`hsl(${mh|0},${ms|0}%,${l0|0}%)`);
+      grad.addColorStop(1,`hsl(${hueArr[i2]|0},${satArr[i2]|0}%,${l1|0}%)`);
+      g.fillStyle=grad;
+      g.beginPath();
+      g.moveTo(sx[i],sy[i]); g.lineTo(sx[i2],sy[i2]); g.lineTo(sx[i4],sy[i4]); g.lineTo(sx[i3],sy[i3]); g.closePath();
+      g.fill();
+      const sp=(specArr[i]+specArr[i2]+specArr[i4]+specArr[i3])*0.25;
+      if(sp>0.2){ g.globalCompositeOperation='lighter';
+        g.fillStyle=`hsla(${(mh+26)%360},88%,82%,${sp*0.5})`; g.fill();
+        g.globalCompositeOperation='source-over'; }
+    }
+  }
+
+  // flag pole + finial
+  const poleX=ox-6;
+  const pg=g.createLinearGradient(poleX-5,0,poleX+5,0);
+  pg.addColorStop(0,'#2a2f3e');pg.addColorStop(0.5,'#aeb6cc');pg.addColorStop(1,'#3a4154');
+  g.fillStyle=pg;
+  g.fillRect(poleX-3, oy-20, 6, flagH+44);
+  g.beginPath();g.fillStyle='#cdd6f0';g.arc(poleX,oy-22,7,0,6.283);g.fill();
+  g.beginPath();g.fillStyle=`hsl(${h2},70%,60%)`;g.arc(poleX,oy-22,3.4,0,6.283);g.fill();
+}
+
+// ---------- loop ----------
+let last=performance.now(), acc=0;
+function frame(now){
+  acc+=now-last; last=now;
+  let steps=0;
+  while(acc>=16.666 && steps<3){ simulate(); acc-=16.666; steps++; }
+  if(steps===0 && acc>33) acc=0; // catch up cap
+  render();
+  // decay mouse motion record
+  mouse.px+=(mouse.x-mouse.px)*0.5; mouse.py+=(mouse.y-mouse.py)*0.5;
+  requestAnimationFrame(frame);
+}
+
+// ---------- input ----------
+function pos(e){const r=cv.getBoundingClientRect();
+  const cx=(e.touches?e.touches[0].clientX:e.clientX)-r.left;
+  const cy=(e.touches?e.touches[0].clientY:e.clientY)-r.top;
+  mouse.px=mouse.x; mouse.py=mouse.y; mouse.x=cx; mouse.y=cy; mouse.active=true;}
+cv.addEventListener('mousemove',pos);
+cv.addEventListener('mousedown',e=>{pos(e);mouse.down=true;targetWind=Math.min(3.2,targetWind+0.6);});
+window.addEventListener('mouseup',()=>mouse.down=false);
+cv.addEventListener('mouseleave',()=>{mouse.active=false;mouse.down=false;});
+cv.addEventListener('click',e=>{pos(e);shocks.push({x:mouse.x,y:mouse.y,r:8,life:1});
+  targetWind=Math.min(3.4,targetWind+0.9); targetHue=(targetHue+38)%360;});
+cv.addEventListener('touchstart',e=>{e.preventDefault();pos(e);mouse.down=true;
+  shocks.push({x:mouse.x,y:mouse.y,r:8,life:1});targetWind=Math.min(3.2,targetWind+0.7);},{passive:false});
+cv.addEventListener('touchmove',e=>{e.preventDefault();pos(e);},{passive:false});
+window.addEventListener('touchend',()=>{mouse.down=false;mouse.active=false;});
+window.addEventListener('wheel',e=>{e.preventDefault();
+  targetWind=Math.max(0.2,Math.min(3.6,targetWind - e.deltaY*0.0016));
+  targetHue=(targetHue + e.deltaY*0.05 +360)%360;},{passive:false});
+
+function resize(){DPR=Math.min(2,window.devicePixelRatio||1);
+  W=window.innerWidth;H=window.innerHeight;
+  cv.width=W*DPR;cv.height=H*DPR;cv.style.width=W+'px';cv.style.height=H+'px';
+  g.setTransform(DPR,0,0,DPR,0,0);
+  buildCloth();buildMotes();}
+window.addEventListener('resize',resize);
+resize();
+// warm up so the very first painted frame is already a flowing flag (no flat/loading look)
+for(let i=0;i<140;i++) simulate();
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

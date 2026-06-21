@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>墨 · 살아있는 먹</title>
+<style>
+  :root{
+    --paper:#ece4d3;
+    --ink:#16110d;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#0a0806;}
+  body{
+    font-family:"Songti SC","SimSun","Nanum Myeongjo",Georgia,serif;
+    -webkit-tap-highlight-color:transparent;
+    cursor:none;
+    touch-action:none;
+  }
+  #stage{position:fixed;inset:0;}
+  canvas{position:absolute;inset:0;display:block;width:100%;height:100%;}
+  /* paper canvas holds the slow ink stain; flow canvas holds the living particles */
+  #paper{z-index:1;}
+  #flow{z-index:2;mix-blend-mode:multiply;}
+  #ui{z-index:5;position:fixed;inset:0;pointer-events:none;}
+
+  /* title seal, top-left, like a hand-inked frontispiece */
+  .frontispiece{
+    position:absolute;left:clamp(20px,4vw,64px);top:clamp(18px,4vh,52px);
+    color:var(--ink);mix-blend-mode:multiply;
+    user-select:none;
+  }
+  .frontispiece .han{
+    font-size:clamp(34px,5.2vw,72px);font-weight:600;letter-spacing:.04em;line-height:.96;
+    text-shadow:0 1px 0 rgba(255,255,255,.18);
+  }
+  .frontispiece .sub{
+    margin-top:.45em;font-size:clamp(10px,1.05vw,13px);letter-spacing:.42em;
+    text-transform:uppercase;color:#5b4a36;opacity:.85;font-family:Georgia,serif;
+  }
+
+  /* the current character label, bottom-right, breathing */
+  .nowchar{
+    position:absolute;right:clamp(18px,3.5vw,56px);bottom:clamp(18px,4vh,48px);
+    text-align:right;color:var(--ink);mix-blend-mode:multiply;user-select:none;
+  }
+  .nowchar .gloss{font-family:Georgia,serif;font-size:clamp(11px,1.1vw,14px);
+    letter-spacing:.34em;text-transform:uppercase;color:#6a563f;opacity:.8;}
+  .nowchar .han2{font-size:clamp(20px,2.4vw,30px);font-weight:600;margin-top:.25em;letter-spacing:.18em;}
+
+  /* hint strip, bottom-center, subtle */
+  .hint{
+    position:absolute;left:50%;bottom:clamp(14px,3.2vh,30px);transform:translateX(-50%);
+    color:#6a563f;font-family:Georgia,serif;font-size:clamp(10px,.95vw,12.5px);
+    letter-spacing:.22em;text-align:center;mix-blend-mode:multiply;
+    opacity:.0;animation:hintIn 1.4s 1.1s ease forwards;white-space:nowrap;
+  }
+  @keyframes hintIn{to{opacity:.72;}}
+
+  /* the seal stamp (朱文) top-right corner accent */
+  .seal{
+    position:absolute;right:clamp(20px,4vw,60px);top:clamp(20px,4.2vh,54px);
+    width:clamp(40px,4.4vw,62px);height:clamp(40px,4.4vw,62px);
+    pointer-events:auto;cursor:none;
+  }
+  .seal svg{width:100%;height:100%;display:block;
+    filter:drop-shadow(0 1px 1px rgba(120,20,10,.25));}
+  .seal .glyph{fill:#fbeede;font-size:30px;font-weight:700;}
+  .seal rect{fill:#b3372a;}
+  @media (max-width:480px){
+    .frontispiece .sub{letter-spacing:.3em;}
+    .hint{letter-spacing:.14em;font-size:10px;}
+    .nowchar .han2{letter-spacing:.1em;}
+  }
+  /* the soft custom cursor — a wet brush tip */
+  #brush{position:fixed;z-index:9;left:0;top:0;pointer-events:none;
+    width:46px;height:46px;margin:-23px 0 0 -23px;will-change:transform;}
+  #brush svg{width:100%;height:100%;display:block;}
+</style>
+</head>
+<body>
+  <div id="stage">
+    <canvas id="paper"></canvas>
+    <canvas id="flow"></canvas>
+  </div>
+
+  <div id="ui">
+    <div class="frontispiece">
+      <div class="han">墨韻</div>
+      <div class="sub">living ink · breath of the brush</div>
+    </div>
+    <div class="seal" id="seal" title="다시 적시기">
+      <svg viewBox="0 0 100 100"><rect x="3" y="3" width="94" height="94" rx="9"/>
+      <text class="glyph" x="50" y="62" text-anchor="middle">墨</text></svg>
+    </div>
+    <div class="nowchar">
+      <div class="gloss" id="gloss">flow</div>
+      <div class="han2" id="han2">流</div>
+    </div>
+    <div class="hint">움직여 먹을 끌어보세요 · 클릭=먹 한 방울 · 스크롤=글자 전환 · 누르고 있으면 비바람</div>
+  </div>
+
+  <div id="brush">
+    <svg viewBox="0 0 46 46">
+      <defs>
+        <radialGradient id="bg" cx="50%" cy="42%" r="55%">
+          <stop offset="0%" stop-color="rgba(20,12,8,.85)"/>
+          <stop offset="60%" stop-color="rgba(20,12,8,.32)"/>
+          <stop offset="100%" stop-color="rgba(20,12,8,0)"/>
+        </radialGradient>
+      </defs>
+      <circle cx="23" cy="23" r="22" fill="url(#bg)"/>
+      <circle cx="23" cy="23" r="3.4" fill="rgba(10,6,4,.9)"/>
+    </svg>
+  </div>
+
+<script>
+(function(){
+"use strict";
+
+// ---------- canvases ----------
+const paper = document.getElementById('paper');
+const flow  = document.getElementById('flow');
+const pctx  = paper.getContext('2d');
+const fctx  = flow.getContext('2d');
+const brush = document.getElementById('brush');
+
+let W=0,H=0,DPR=1;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  for(const c of [paper,flow]){
+    c.width = Math.floor(W*DPR);
+    c.height= Math.floor(H*DPR);
+  }
+  pctx.setTransform(DPR,0,0,DPR,0,0);
+  fctx.setTransform(DPR,0,0,DPR,0,0);
+  paintPaperGround();
+  buildField();      // attractor field depends on size
+  placeChar(curIndex,true);
+}
+
+// ---------- paper ground (the slow stain layer) ----------
+function paintPaperGround(){
+  // base wash
+  const g = pctx.createLinearGradient(0,0,W,H);
+  g.addColorStop(0,'#efe7d6');
+  g.addColorStop(.5,'#e8dfca');
+  g.addColorStop(1,'#e2d6bd');
+  pctx.fillStyle=g;
+  pctx.fillRect(0,0,W,H);
+  // fibrous paper noise — sparse warm flecks
+  const n = Math.floor((W*H)/2600);
+  for(let i=0;i<n;i++){
+    const x=Math.random()*W, y=Math.random()*H;
+    const a=Math.random()*0.05;
+    pctx.fillStyle = Math.random()<.5
+      ? `rgba(120,96,60,${a})`
+      : `rgba(255,250,238,${a*1.4})`;
+    const r=Math.random()*1.4+.3;
+    pctx.fillRect(x,y,r,r);
+  }
+  // faint vignette to lift the center
+  const v = pctx.createRadialGradient(W*0.5,H*0.46,Math.min(W,H)*0.18, W*0.5,H*0.5,Math.max(W,H)*0.72);
+  v.addColorStop(0,'rgba(255,250,238,0.14)');
+  v.addColorStop(1,'rgba(60,44,24,0.16)');
+  pctx.fillStyle=v;
+  pctx.fillRect(0,0,W,H);
+}
+
+// ---------- the calligraphy library ----------
+// Each char is a list of strokes; each stroke is a polyline of [x,y] in 0..1 space,
+// plus a width profile. We sample these into target points that particles flock to.
+// Coordinates hand-tuned to read as the actual glyph.
+const GLYPHS = [
+  { han:'流', gloss:'flow', strokes:[
+      [[0.18,0.20],[0.10,0.34],[0.12,0.52],[0.20,0.70]],                 // left water radical drip
+      [[0.16,0.40],[0.27,0.36]],
+      [[0.18,0.60],[0.30,0.56]],
+      [[0.40,0.16],[0.84,0.16]],                                         // top bar
+      [[0.50,0.16],[0.49,0.40]],                                        // left vertical
+      [[0.74,0.16],[0.74,0.40]],                                        // right vertical
+      [[0.42,0.40],[0.86,0.40]],                                        // mid bar
+      [[0.46,0.52],[0.45,0.84]],[[0.60,0.52],[0.59,0.84]],[[0.74,0.52],[0.73,0.84]] // three falling streams
+  ]},
+  { han:'風', gloss:'wind', strokes:[
+      [[0.22,0.14],[0.80,0.14]],                                        // top
+      [[0.78,0.14],[0.82,0.30],[0.80,0.74],[0.70,0.88]],               // right sweep down
+      [[0.24,0.14],[0.22,0.86]],                                        // left vertical
+      [[0.22,0.86],[0.70,0.88]],                                        // bottom join
+      [[0.36,0.34],[0.66,0.34]],                                        // inner box top
+      [[0.36,0.34],[0.36,0.60]],[[0.66,0.34],[0.66,0.60]],
+      [[0.36,0.60],[0.66,0.60]],
+      [[0.50,0.40],[0.50,0.54]],                                        // inner tick
+      [[0.46,0.66],[0.40,0.82]]                                         // inner stroke
+  ]},
+  { han:'夢', gloss:'dream', strokes:[
+      [[0.28,0.10],[0.72,0.10]],                                        // grass top
+      [[0.40,0.04],[0.39,0.18]],[[0.60,0.04],[0.59,0.18]],
+      [[0.26,0.24],[0.74,0.24]],                                        // eye box top
+      [[0.26,0.24],[0.26,0.50]],[[0.74,0.24],[0.74,0.50]],
+      [[0.26,0.37],[0.74,0.37]],[[0.26,0.50],[0.74,0.50]],
+      [[0.30,0.58],[0.70,0.58]],                                        // cover
+      [[0.42,0.58],[0.40,0.74]],[[0.58,0.58],[0.60,0.74]],
+      [[0.30,0.80],[0.66,0.80],[0.72,0.92]]                            // evening sweep
+  ]},
+  { han:'靜', gloss:'stillness', strokes:[
+      [[0.10,0.20],[0.40,0.20]],                                        // 靑 left top
+      [[0.16,0.12],[0.16,0.34]],[[0.30,0.12],[0.30,0.34]],
+      [[0.10,0.34],[0.40,0.34]],
+      [[0.12,0.46],[0.40,0.46]],[[0.12,0.60],[0.40,0.60]],
+      [[0.16,0.46],[0.16,0.86]],[[0.34,0.46],[0.34,0.86]],
+      [[0.12,0.86],[0.40,0.86]],
+      [[0.56,0.16],[0.56,0.46]],                                        // 爭 right
+      [[0.50,0.30],[0.86,0.30]],
+      [[0.62,0.46],[0.88,0.46]],[[0.62,0.60],[0.88,0.60]],
+      [[0.74,0.16],[0.74,0.74]],
+      [[0.60,0.74],[0.86,0.70],[0.66,0.90]]
+  ]},
+  { han:'墨', gloss:'ink', strokes:[
+      [[0.28,0.08],[0.72,0.08]],                                        // 黑 top
+      [[0.50,0.08],[0.50,0.22]],
+      [[0.26,0.22],[0.74,0.22]],
+      [[0.26,0.22],[0.26,0.50]],[[0.74,0.22],[0.74,0.50]],
+      [[0.26,0.36],[0.74,0.36]],[[0.26,0.50],[0.74,0.50]],
+      [[0.42,0.30],[0.42,0.44]],[[0.58,0.30],[0.58,0.44]],
+      [[0.34,0.62],[0.34,0.64]],[[0.46,0.62],[0.46,0.64]],[[0.58,0.62],[0.58,0.64]],[[0.70,0.62],[0.70,0.64]], // 4 dots (fire)
+      [[0.20,0.74],[0.80,0.74]],                                        // 土 top bar
+      [[0.50,0.74],[0.50,0.94]],
+      [[0.30,0.94],[0.70,0.94]]
+  ]}
+];
+
+// ---------- sample strokes into target points ----------
+let targets=[];      // {x,y} in pixels for current glyph
+let curIndex=0;
+let glyphScale=1, glyphOX=0, glyphOY=0;
+
+function sampleStroke(stroke, out, density){
+  // catmull-ish: just linear resample with a touch of spline smoothing
+  for(let s=0;s<stroke.length-1;s++){
+    const a=stroke[s], b=stroke[s+1];
+    const dx=b[0]-a[0], dy=b[1]-a[1];
+    const len=Math.hypot(dx,dy);
+    const steps=Math.max(2, Math.floor(len*density));
+    for(let i=0;i<steps;i++){
+      const t=i/steps;
+      out.push([a[0]+dx*t, a[1]+dy*t]);
+    }
+  }
+  out.push(stroke[stroke.length-1]);
+}
+
+function placeChar(idx, instant){
+  curIndex = ((idx%GLYPHS.length)+GLYPHS.length)%GLYPHS.length;
+  const g = GLYPHS[curIndex];
+  // layout box: centered, square, sized to viewport
+  const box = Math.min(W,H)* (W<560? 0.78 : 0.62);
+  glyphScale = box;
+  glyphOX = (W-box)/2;
+  glyphOY = (H-box)/2 + (W<560? -H*0.02 : -H*0.03);
+
+  const raw=[];
+  const density = 110; // points per unit length -> continuous strokes
+  for(const st of g.strokes) sampleStroke(st, raw, density);
+
+  // shuffle so particles don't all snap in reading order
+  for(let i=raw.length-1;i>0;i--){const j=(Math.random()*(i+1))|0;[raw[i],raw[j]]=[raw[j],raw[i]];}
+
+  targets = raw.map(p=>({x: glyphOX+p[0]*glyphScale, y: glyphOY+p[1]*glyphScale}));
+
+  // update labels
+  document.getElementById('gloss').textContent = g.gloss;
+  document.getElementById('han2').textContent  = g.han;
+
+  // assign each particle a fresh target
+  for(let i=0;i<particles.length;i++){
+    const tp = targets[i % targets.length];
+    const P = particles[i];
+    P.tx = tp.x + (Math.random()-.5)*2.5;
+    P.ty = tp.y + (Math.random()-.5)*2.5;
+    if(instant){ /* keep flying in for grace */ }
+    P.settle = Math.random()*0.4; // staggered eagerness
+  }
+  morphPulse = 1.0;
+}
+
+// ---------- ambient curl-noise field (the air the ink drifts in) ----------
+let field=null, FCOLS=0, FROWS=0, FCELL=44;
+function buildField(){
+  FCELL = Math.max(34, Math.min(W,H)/16);
+  FCOLS = Math.ceil(W/FCELL)+2;
+  FROWS = Math.ceil(H/FCELL)+2;
+  field = new Float32Array(FCOLS*FROWS*2);
+}
+// cheap value-noise-ish flow using layered sines; animated by time
+function fieldAt(x,y,t){
+  const s1 = Math.sin((x*0.0042)+(y*0.0031)+t*0.20);
+  const s2 = Math.cos((x*0.0026)-(y*0.0052)+t*0.16);
+  const ang = (s1+s2)*1.35 + Math.sin(t*0.1)*0.6;
+  return ang;
+}
+
+// ---------- particles ----------
+const particles=[];
+let PCOUNT=0;
+function makeParticles(){
+  particles.length=0;
+  // cap by area for perf; mobile gets fewer but still dense enough to read as ink
+  const area=W*H;
+  PCOUNT = Math.round(Math.min( W<560? 2600 : 4600, area/360 ));
+  for(let i=0;i<PCOUNT;i++){
+    particles.push({
+      x: Math.random()*W, y: Math.random()*H,
+      px:0,py:0,
+      vx:(Math.random()-.5)*0.6, vy:(Math.random()-.5)*0.6,
+      tx:W/2, ty:H/2,
+      settle: Math.random()*0.4,
+      hue: Math.random(),         // 0..1 across ink palette
+      size: Math.random()*1.6+0.7,
+      life: Math.random(),        // for shimmer
+      wet: Math.random()*0.5+0.5, // ink load
+      // ~18% are eternal wanderers: they never lock to the glyph, instead drifting
+      // through the curl field as fine living filaments so the canvas always breathes.
+      wander: Math.random()<0.18
+    });
+  }
+}
+
+// ---------- pointer / state ----------
+const pointer={x:-9999,y:-9999,px:-9999,py:-9999,down:false,active:false,vx:0,vy:0};
+let storm=0;        // 0..1 ramps up while pressed -> "비바람"
+let morphPulse=0;   // brief energy burst on glyph change
+let tGlobal=0;
+let firstPaintDone=false;
+
+function onMove(x,y){
+  pointer.px=pointer.x; pointer.py=pointer.y;
+  pointer.x=x; pointer.y=y;
+  pointer.vx = pointer.x-pointer.px;
+  pointer.vy = pointer.y-pointer.py;
+  pointer.active=true;
+  brush.style.transform=`translate(${x}px,${y}px)`;
+}
+window.addEventListener('mousemove',e=>onMove(e.clientX,e.clientY),{passive:true});
+window.addEventListener('mousedown',e=>{pointer.down=true; dropBlot(e.clientX,e.clientY);});
+window.addEventListener('mouseup',()=>{pointer.down=false;});
+window.addEventListener('mouseleave',()=>{pointer.active=false;});
+window.addEventListener('touchstart',e=>{
+  const t=e.touches[0]; onMove(t.clientX,t.clientY); pointer.down=true; dropBlot(t.clientX,t.clientY);
+},{passive:true});
+window.addEventListener('touchmove',e=>{const t=e.touches[0]; onMove(t.clientX,t.clientY);},{passive:true});
+window.addEventListener('touchend',()=>{pointer.down=false; pointer.active=false;},{passive:true});
+
+// scroll / wheel cycles glyphs (debounced)
+let wheelLock=0;
+window.addEventListener('wheel',e=>{
+  const now=performance.now();
+  if(now-wheelLock<420) return;
+  wheelLock=now;
+  placeChar(curIndex + (e.deltaY>0?1:-1));
+},{passive:true});
+
+// keyboard arrows too
+window.addEventListener('keydown',e=>{
+  if(e.key==='ArrowRight'||e.key==='ArrowDown'){placeChar(curIndex+1);}
+  else if(e.key==='ArrowLeft'||e.key==='ArrowUp'){placeChar(curIndex-1);}
+  else if(e.key===' '){placeChar(curIndex+1); e.preventDefault();}
+});
+
+// seal click = re-wet the paper (clear stain, fresh splash)
+document.getElementById('seal').addEventListener('click',()=>{
+  paintPaperGround();
+  for(let k=0;k<3;k++){
+    dropBlot(glyphOX+glyphScale*(0.3+Math.random()*0.4), glyphOY+glyphScale*(0.3+Math.random()*0.4));
+  }
+  morphPulse=1.0;
+});
+
+// a wet ink blot that stains the paper and shoves particles
+function dropBlot(x,y){
+  const r = 26+Math.random()*40;
+  const grd = pctx.createRadialGradient(x,y,0,x,y,r);
+  grd.addColorStop(0,'rgba(18,12,8,0.42)');
+  grd.addColorStop(0.5,'rgba(22,15,10,0.18)');
+  grd.addColorStop(1,'rgba(22,15,10,0)');
+  pctx.fillStyle=grd;
+  pctx.beginPath(); pctx.arc(x,y,r,0,Math.PI*2); pctx.fill();
+  // satellite spatter
+  for(let i=0;i<7;i++){
+    const a=Math.random()*Math.PI*2, d=r*(0.6+Math.random()*0.9);
+    const sx=x+Math.cos(a)*d, sy=y+Math.sin(a)*d, sr=Math.random()*3+0.6;
+    pctx.fillStyle=`rgba(18,12,8,${Math.random()*0.3+0.08})`;
+    pctx.beginPath(); pctx.arc(sx,sy,sr,0,Math.PI*2); pctx.fill();
+  }
+  // kick particles outward
+  for(const P of particles){
+    const dx=P.x-x, dy=P.y-y, dd=dx*dx+dy*dy;
+    if(dd<r*r*5){
+      const inv=1/Math.sqrt(dd+1);
+      const f=(1-Math.sqrt(dd)/(r*2.6))*6;
+      if(f>0){P.vx+=dx*inv*f; P.vy+=dy*inv*f; P.wet=Math.min(1,P.wet+0.4);}
+    }
+  }
+}
+
+// ---------- ink palette ----------
+// from warm sumi-brown to deep blue-black, with rare crimson (seal echo)
+function inkColor(h, alpha){
+  // h in 0..1
+  if(h>0.93){ return `rgba(150,40,32,${alpha})`; }        // crimson accent (rare)
+  if(h<0.4){ // brown sumi
+    const t=h/0.4;
+    const r=58-22*t, g=40-18*t, b=26-12*t;
+    return `rgba(${r|0},${g|0},${b|0},${alpha})`;
+  }
+  // blue-black
+  const t=(h-0.4)/0.53;
+  const r=24-14*t, g=22-10*t, b=24+10*t;
+  return `rgba(${r|0},${g|0},${b|0},${alpha})`;
+}
+
+// ---------- main loop ----------
+let last=performance.now();
+function tick(now){
+  const dt = Math.min(40, now-last)/16.6667; // normalized to ~60fps step
+  last=now;
+  tGlobal += dt*0.016;
+
+  // storm ramp
+  if(pointer.down) storm = Math.min(1, storm + dt*0.03);
+  else             storm = Math.max(0, storm - dt*0.02);
+  if(morphPulse>0) morphPulse = Math.max(0, morphPulse - dt*0.02);
+
+  // trail fade on flow layer (gives the silky comet tails).
+  // gentler fade => ink lingers and builds, reads as wet brushwork rather than stipple.
+  fctx.globalCompositeOperation='source-over';
+  fctx.fillStyle = `rgba(236,228,211,${0.085 + storm*0.10})`;
+  fctx.fillRect(0,0,W,H);
+
+  const pAngBase = tGlobal;
+  const stormWind = storm* (W<560?0.9:1.4);
+
+  for(let i=0;i<particles.length;i++){
+    const P=particles[i];
+    P.px=P.x; P.py=P.y;
+
+    // 1) ambient curl field
+    const ang = fieldAt(P.x,P.y,pAngBase);
+    let ax = Math.cos(ang), ay = Math.sin(ang);
+    let fx = ax*(0.10 + morphPulse*0.2), fy = ay*(0.10 + morphPulse*0.2);
+
+    // 2) attraction to glyph target (the writing force)
+    const dx=P.tx-P.x, dy=P.ty-P.y;
+    const dist=Math.hypot(dx,dy)+0.0001;
+    if(P.wander){
+      // wanderers ride the curl field with extra energy; never settle.
+      fx += ax*0.42; fy += ay*0.42;
+      // gentle leash toward canvas center so they don't all wrap to edges
+      fx += (W*0.5-P.x)*0.00018; fy += (H*0.5-P.y)*0.00018;
+    } else {
+      // pull strength rises as storm calms; storm scatters the writing
+      const settleK = (0.020 + P.settle*0.012) * (1-storm*0.85) * (1+morphPulse*1.2);
+      fx += dx*settleK; fy += dy*settleK;
+    }
+
+    // 3) storm: push everything along a sweeping wind + turbulence
+    if(stormWind>0){
+      const wAng = pAngBase*0.8 + P.y*0.004;
+      fx += Math.cos(wAng)*stormWind*0.9 + (Math.random()-.5)*stormWind*0.7;
+      fy += Math.sin(wAng)*stormWind*0.5 + 0.3*stormWind + (Math.random()-.5)*stormWind*0.7;
+    }
+
+    // 4) pointer interaction — drag the wet ink
+    if(pointer.active){
+      const mx=P.x-pointer.x, my=P.y-pointer.y;
+      const md=mx*mx+my*my;
+      const R= (W<560?120:160);
+      if(md < R*R){
+        const d=Math.sqrt(md)+0.001;
+        const fall=1-d/R;
+        // swirl + carry by pointer velocity (brush drag)
+        const tangX=-my/d, tangY=mx/d;
+        fx += tangX*fall*1.4 + pointer.vx*fall*0.18;
+        fy += tangY*fall*1.4 + pointer.vy*fall*0.18;
+        P.wet=Math.min(1,P.wet+fall*0.05);
+      }
+    }
+
+    // integrate
+    P.vx = P.vx*0.86 + fx;
+    P.vy = P.vy*0.86 + fy;
+    // clamp speed
+    const sp=Math.hypot(P.vx,P.vy), MX=9;
+    if(sp>MX){P.vx*=MX/sp; P.vy*=MX/sp;}
+    P.x += P.vx; P.y += P.vy;
+
+    // wrap softly at edges (so storm doesn't empty the field)
+    if(P.x<-20)P.x=W+20; else if(P.x>W+20)P.x=-20;
+    if(P.y<-20)P.y=H+20; else if(P.y>H+20)P.y=-20;
+
+    // dry out slowly, re-wet near target
+    P.wet = Math.max(0.18, P.wet - 0.004*dt);
+    if(dist<14) P.wet=Math.min(1,P.wet+0.02);
+
+    // ---- draw: tapered ink stroke from prev to cur ----
+    // settled particles sit ON the glyph -> draw them BOLD & opaque so the character
+    // reads as confident sumi brushwork; drifting ones stay as fine flowing filaments.
+    const settled = P.wander ? 0 : (1 - Math.min(1, dist/ (Math.min(W,H)*0.42)));
+    const sett2 = settled*settled;            // sharpen the bold/thin contrast
+    let baseA = (0.10 + sett2*0.78) * P.wet * (1-storm*0.30);
+    let lw = (P.size*(0.6 + sett2*4.2)) * (1+storm*0.35);
+    if(P.wander){ baseA = (0.10 + Math.min(sp,4)*0.05) * P.wet; lw = P.size*1.1*(1+storm*0.3); }
+    fctx.lineCap='round';
+    fctx.strokeStyle = inkColor(P.hue, baseA);
+    fctx.lineWidth = lw;
+    fctx.beginPath();
+    fctx.moveTo(P.px,P.py);
+    fctx.lineTo(P.x,P.y);
+    fctx.stroke();
+
+    // ink bleed: when firmly settled, lay a soft dark pool so strokes fuse into solid
+    // wet-on-wet calligraphy. Sampled (every other particle by life) to keep it cheap.
+    if(sett2>0.6 && (i&1)){
+      fctx.fillStyle = inkColor(P.hue, 0.06*P.wet*sett2);
+      fctx.beginPath(); fctx.arc(P.x,P.y, lw*0.9+1.2, 0, Math.PI*2); fctx.fill();
+    }
+
+    // glistening wet head when moving with a full brush
+    if(P.wet>0.7 && sp>1.4){
+      fctx.fillStyle=`rgba(48,36,26,${0.16*P.wet})`;
+      fctx.beginPath(); fctx.arc(P.x,P.y, lw*0.5, 0, Math.PI*2); fctx.fill();
+    }
+  }
+
+  if(!firstPaintDone){ firstPaintDone=true; }
+  requestAnimationFrame(tick);
+}
+
+// ---------- boot ----------
+window.addEventListener('resize', ()=>{ clearTimeout(window.__rz); window.__rz=setTimeout(resize,120); });
+
+// initialize
+resize();
+makeParticles();
+placeChar(0,true);
+// seed particles roughly onto the first glyph so FIRST PAINT already reads as ink art
+for(let i=0;i<particles.length;i++){
+  const tp=targets[i%targets.length];
+  const P=particles[i];
+  P.x = tp.x + (Math.random()-.5)*40;
+  P.y = tp.y + (Math.random()-.5)*40;
+  P.px=P.x; P.py=P.y;
+}
+// pre-stamp a faint ink wash of the glyph so the very first frame is rich
+(function preStamp(){
+  fctx.fillStyle='rgba(236,228,211,1)'; fctx.fillRect(0,0,W,H);
+  for(const t of targets){
+    fctx.fillStyle='rgba(20,14,9,0.30)';
+    fctx.beginPath(); fctx.arc(t.x,t.y,1.6,0,Math.PI*2); fctx.fill();
+  }
+})();
+brush.style.transform=`translate(${W/2}px,${H*0.5}px)`;
+requestAnimationFrame(tick);
+
+// expose for verification
+window.__ink = {
+  state:()=>({chars:GLYPHS.length, cur:curIndex, han:GLYPHS[curIndex].han,
+              particles:particles.length, storm:Math.round(storm*100)/100,
+              targets:targets.length, firstPaint:firstPaintDone}),
+  next:()=>placeChar(curIndex+1),
+  prev:()=>placeChar(curIndex-1),
+  move:(x,y)=>onMove(x,y),
+  press:()=>{pointer.down=true;},
+  release:()=>{pointer.down=false;},
+  blot:(x,y)=>dropBlot(x,y)
+};
+})();
+</script>
+</body>
+</html>

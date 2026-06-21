@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>SHADOW PLAY — 그림자 극장</title>
+<style>
+  html,body{margin:0;height:100%;background:#05060a;overflow:hidden;cursor:none;
+    font-family:'Georgia','Times New Roman',serif;-webkit-tap-highlight-color:transparent;}
+  #stage{display:block;width:100vw;height:100vh;}
+  .vig{position:fixed;inset:0;pointer-events:none;
+    box-shadow:inset 0 0 22vmin 6vmin rgba(0,0,0,.72);mix-blend-mode:multiply;}
+  .ttl{position:fixed;left:clamp(16px,3.4vw,52px);top:clamp(14px,3vh,42px);
+    pointer-events:none;color:#f4e4c4;mix-blend-mode:screen;user-select:none;}
+  .ttl h1{margin:0;font-size:clamp(15px,1.5vw,22px);letter-spacing:.42em;
+    font-weight:400;text-transform:uppercase;opacity:.92;}
+  .ttl p{margin:.5em 0 0;font-size:clamp(9px,.78vw,12px);letter-spacing:.34em;
+    opacity:.5;font-style:italic;}
+  .hint{position:fixed;left:50%;bottom:clamp(14px,3vh,34px);transform:translateX(-50%);
+    pointer-events:none;color:#e9cfae;mix-blend-mode:screen;
+    font-size:clamp(9px,.74vw,11px);letter-spacing:.3em;opacity:.42;text-align:center;
+    text-transform:uppercase;transition:opacity 1.4s;}
+  .hint.gone{opacity:0;}
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div class="vig"></div>
+<div class="ttl"><h1>Shadow&nbsp;Play</h1><p>당신이 빛이 됩니다 · move · click · scroll</p></div>
+<div class="hint" id="hint">움직여 빛을 옮기고 · 눌러 등불을 켜고 · 스크롤로 막을 좁히세요</div>
+
+<script>
+/* ============================================================
+   SHADOW PLAY — light-casting silhouette theater
+   Real per-pixel soft shadows: each pixel marches toward every
+   lamp through a field of drifting occluder shapes (capsules /
+   discs). Penumbra from light radius. WebGL single fragment pass.
+   ============================================================ */
+const cvs = document.getElementById('stage');
+const gl  = cvs.getContext('webgl',{antialias:false,alpha:false,premultipliedAlpha:false,preserveDrawingBuffer:true});
+if(!gl){ document.body.innerHTML='<div style="color:#caa;font:16px serif;padding:40px">WebGL이 필요합니다.</div>'; }
+
+const VERT = `
+attribute vec2 p; void main(){ gl_Position = vec4(p,0.,1.); }`;
+
+/* ---- occluder budget ---- */
+const NOCC = 12;   // drifting performers
+const NLAMP = 4;   // light sources (1 cursor + 3 drifting)
+
+const FRAG = `
+precision highp float;
+uniform vec2  iRes;
+uniform float iTime;
+uniform float iCurtain;     // 0..1 how closed the curtain is
+uniform vec3  iLamp[${NLAMP}];   // xy = pos (uv space), z = radius(softness)
+uniform vec3  iLampCol[${NLAMP}];
+uniform float iLampI[${NLAMP}]; // intensity
+uniform vec4  iOcc[${NOCC}];    // xy=center, z=half-len, w=radius  (capsule)
+uniform vec2  iOccDir[${NOCC}]; // orientation unit vector
+uniform float iSeed;
+
+#define PI 3.14159265
+
+/* signed distance to a capsule (the body of a performer) */
+float sdCapsule(vec2 p, vec2 c, vec2 dir, float hl, float r){
+  vec2 a = c - dir*hl;
+  vec2 b = c + dir*hl;
+  vec2 pa = p - a, ba = b - a;
+  float h = clamp(dot(pa,ba)/dot(ba,ba),0.,1.);
+  return length(pa - ba*h) - r;
+}
+
+/* min distance to ANY occluder at point p (the scene SDF) */
+float sceneSDF(vec2 p){
+  float d = 1e9;
+  for(int i=0;i<${NOCC};i++){
+    float di = sdCapsule(p, iOcc[i].xy, iOccDir[i], iOcc[i].z, iOcc[i].w);
+    d = min(d, di);
+  }
+  return d;
+}
+
+/* soft shadow factor for point p toward lamp L (penumbra via min-ratio march) */
+float softShadow(vec2 p, vec2 lpos, float lrad){
+  vec2 dir = lpos - p;
+  float distL = length(dir);
+  if(distL < 1e-4) return 1.0;
+  dir /= distL;
+  float res = 1.0;
+  float t = 0.012;            // start offset to avoid self-shadow
+  // k controls penumbra sharpness; smaller lrad -> harder edge
+  float k = mix(48.0, 7.0, clamp(lrad*9.0,0.,1.));
+  for(int s=0;s<40;s++){
+    if(t >= distL-0.012) break;
+    vec2 sp = p + dir*t;
+    float h = sceneSDF(sp);
+    if(h < 0.0005){ res = 0.0; break; }       // fully blocked
+    res = min(res, k*h/t);
+    t += clamp(h, 0.004, 0.05);
+  }
+  return clamp(res,0.0,1.0);
+}
+
+/* hash + value noise for dust / grain */
+float hash(vec2 q){ return fract(sin(dot(q,vec2(127.1,311.7)))*43758.5453); }
+float vnoise(vec2 q){
+  vec2 i=floor(q), f=fract(q); f=f*f*(3.-2.*f);
+  float a=hash(i), b=hash(i+vec2(1,0)), c=hash(i+vec2(0,1)), d=hash(i+vec2(1,1));
+  return mix(mix(a,b,f.x),mix(c,d,f.x),f.y);
+}
+
+void main(){
+  vec2 uv = gl_FragCoord.xy / iRes.xy;
+  float asp = iRes.x/iRes.y;
+  vec2 p = vec2((uv.x-0.5)*asp, uv.y-0.5);   // centered, aspect-correct
+
+  /* ---- accumulate light from each lamp ---- */
+  vec3 col = vec3(0.0);
+  float litAmt = 0.0;
+  for(int i=0;i<${NLAMP};i++){
+    vec2 lpos = vec2((iLamp[i].x-0.5)*asp, iLamp[i].y-0.5);
+    float lrad = iLamp[i].z;
+    float d  = length(p - lpos);
+    // radial falloff of the lamp itself
+    float fall = iLampI[i] / (1.0 + 26.0*d*d);
+    float sh = softShadow(p, lpos, lrad);
+    // wrap a little ambient bounce so umbra isn't pure black
+    float lambert = 0.85*sh + 0.15;
+    col += iLampCol[i] * fall * lambert;
+    litAmt += fall*sh;
+    // glowing core of the lamp (the bulb)
+    float core = smoothstep(lrad*0.9+0.012, 0.0, d);
+    col += iLampCol[i]*core*core*2.4;
+  }
+
+  /* ---- material tint of occluder bodies when grazed by light (rim) ---- */
+  float bodyD = sceneSDF(p);
+  float onBody = smoothstep(0.006, 0.0, bodyD);          // inside a performer
+  float rim    = smoothstep(0.018,0.0,abs(bodyD));        // silhouette edge band
+  // bodies are near-black silhouettes; edges catch a warm rim
+  col = mix(col, col*0.06, onBody);
+  col += vec3(1.0,0.74,0.42)*rim*onBody* (0.0) ; // (edge glow handled below)
+  // rim catch-light: only on the side facing nearest bright lamp-ish -> approx by litAmt
+  col += vec3(1.0,0.78,0.5) * rim * (1.0-onBody) * clamp(litAmt*0.6,0.,1.0) * 0.9;
+
+  /* ---- volumetric dust motes drifting in the beams ---- */
+  vec2 dp = p*3.4 + vec2(iTime*0.04, -iTime*0.02);
+  float dust = vnoise(dp)*vnoise(dp*2.1+7.0);
+  dust = pow(dust,3.0);
+  col += dust * (col*1.6 + vec3(0.05,0.04,0.03)) * 1.3;
+
+  /* fine film grain to kill banding */
+  float g = hash(gl_FragCoord.xy + iTime*60.0);
+  col += (g-0.5)*0.025;
+
+  /* ---- the stage curtain (theatrical reveal you control via scroll) ---- */
+  float cx = abs(uv.x-0.5)*2.0;             // 0 center .. 1 edge
+  float open = 1.0 - iCurtain;              // 1 = fully open
+  float curtainMask = smoothstep(open-0.04, open+0.04, cx); // 1 where curtain covers
+  // velvet curtain shading with vertical folds
+  float folds = 0.62 + 0.38*sin((uv.x* (32.0) ) + sin(uv.x*9.0)*1.5);
+  vec3 velvet = vec3(0.34,0.03,0.06) * folds;
+  velvet *= 0.5 + 0.5*smoothstep(0.0,0.3,uv.y); // darker at bottom
+  velvet += vec3(0.5,0.32,0.12)*pow(folds,6.0)*0.4; // gold thread highlight
+  col = mix(col, velvet, curtainMask);
+
+  /* tone map (filmic-ish) + theatrical color grade */
+  col = col / (col + vec3(0.92));
+  col = pow(col, vec3(0.86,0.92,1.02));      // lift highlights, cool shadows slightly
+  col *= 1.06;
+
+  /* subtle screen-edge bloom-ish vignette done in CSS too; keep gentle here */
+  float vg = smoothstep(1.25,0.25,length(uv-0.5)*1.5);
+  col *= mix(0.7,1.0,vg);
+
+  gl_FragColor = vec4(col,1.0);
+}`;
+
+/* ---------- GL boilerplate ---------- */
+function sh(type,src){
+  const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(s),src);
+  return s;
+}
+const prog=gl.createProgram();
+gl.attachShader(prog,sh(gl.VERTEX_SHADER,VERT));
+gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,FRAG));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog,gl.LINK_STATUS)) console.error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+
+const buf=gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 3,-1, -1,3]),gl.STATIC_DRAW);
+const pl=gl.getAttribLocation(prog,'p');
+gl.enableVertexAttribArray(pl);
+gl.vertexAttribPointer(pl,2,gl.FLOAT,false,0,0);
+
+const U={};
+['iRes','iTime','iCurtain','iSeed'].forEach(n=>U[n]=gl.getUniformLocation(prog,n));
+U.iLamp    = gl.getUniformLocation(prog,'iLamp');
+U.iLampCol = gl.getUniformLocation(prog,'iLampCol');
+U.iLampI   = gl.getUniformLocation(prog,'iLampI');
+U.iOcc     = gl.getUniformLocation(prog,'iOcc');
+U.iOccDir  = gl.getUniformLocation(prog,'iOccDir');
+
+/* ---------- responsive sizing with resolution cap ---------- */
+let W,H,DPR;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  // cap total pixels for 60fps headroom on the heavy shader
+  const cssW=window.innerWidth, cssH=window.innerHeight;
+  const maxPix = (cssW < 520) ? 760000 : 1750000;  // tighter on phones
+  let scale = DPR;
+  while(cssW*cssH*scale*scale > maxPix && scale>0.5) scale -= 0.1;
+  W = Math.max(2,Math.floor(cssW*scale));
+  H = Math.max(2,Math.floor(cssH*scale));
+  cvs.width=W; cvs.height=H;
+  cvs.style.width=cssW+'px'; cvs.style.height=cssH+'px';
+  gl.viewport(0,0,W,H);
+}
+window.addEventListener('resize',resize); resize();
+
+/* ---------- lamps ---------- */
+const PAL = [
+  [1.00,0.62,0.26],   // amber (cursor)
+  [0.18,0.85,0.92],   // teal
+  [0.95,0.28,0.62],   // magenta
+  [0.55,0.42,1.00],   // violet
+];
+const lamps=[];
+for(let i=0;i<NLAMP;i++){
+  lamps.push({
+    x:0.5, y:0.5,
+    bx:0.2+Math.random()*0.6, by:0.25+Math.random()*0.5,
+    ph:Math.random()*6.28, sp:0.10+Math.random()*0.16,
+    amp:0.16+Math.random()*0.16,
+    rad: i===0?0.05:0.07+Math.random()*0.05,
+    intens: i===0?1.0:0.55,
+    targetI: i===0?1.0:0.55,
+    col:PAL[i].slice(),
+  });
+}
+/* cursor lamp = lamps[0] */
+let mx=0.5,my=0.55, tmx=0.5,tmy=0.55;
+let extraLamps=1;   // how many drifting lamps are "on" (besides cursor)
+
+/* ---------- occluders (the cast) ---------- */
+const occ=[];
+for(let i=0;i<NOCC;i++){
+  occ.push({
+    ox:(Math.random()-0.5)*1.1, oy:(Math.random()-0.5)*0.9,
+    dx:(Math.random()-0.5)*0.04, dy:(Math.random()-0.5)*0.03,
+    hl:0.02+Math.random()*0.10,
+    r :0.012+Math.random()*0.045,
+    ang:Math.random()*6.28, av:(Math.random()-0.5)*0.5,
+    bob:Math.random()*6.28, bobsp:0.4+Math.random()*0.9,
+  });
+}
+
+let curtain=0.0, tCurtain=0.0;   // 0 open .. ~0.9 closed
+
+/* ---------- interaction ---------- */
+function setPointer(cx,cy){
+  tmx = cx/window.innerWidth;
+  tmy = 1.0 - cy/window.innerHeight;
+}
+window.addEventListener('pointermove',e=>setPointer(e.clientX,e.clientY),{passive:true});
+window.addEventListener('pointerdown',e=>{
+  setPointer(e.clientX,e.clientY);
+  // click: ignite / cycle the next drifting lamp on, and pulse the cursor lamp
+  extraLamps = extraLamps>=NLAMP-1 ? 0 : extraLamps+1;
+  pulse=1.0;
+  hideHint();
+},{passive:true});
+window.addEventListener('touchmove',e=>{ if(e.touches[0]) setPointer(e.touches[0].clientX,e.touches[0].clientY); },{passive:true});
+
+/* scroll / wheel = draw the curtain in/out */
+window.addEventListener('wheel',e=>{
+  tCurtain = Math.min(0.92, Math.max(0.0, tCurtain + Math.sign(e.deltaY)*0.06));
+  hideHint();
+},{passive:true});
+// touch vertical drag also moves curtain a touch
+let lastTY=null;
+window.addEventListener('touchstart',e=>{ if(e.touches[0]) lastTY=e.touches[0].clientY; },{passive:true});
+window.addEventListener('touchmove',e=>{
+  if(e.touches[0] && lastTY!=null){
+    tCurtain = Math.min(0.92, Math.max(0.0, tCurtain + (e.touches[0].clientY-lastTY)/window.innerHeight*0.8));
+    lastTY=e.touches[0].clientY;
+  }
+},{passive:true});
+
+let pulse=0;
+let hintGone=false;
+function hideHint(){ if(!hintGone){hintGone=true; document.getElementById('hint').classList.add('gone');} }
+setTimeout(hideHint, 7000);
+
+/* ---------- arrays for uniforms ---------- */
+const aLamp=new Float32Array(NLAMP*3);
+const aLampCol=new Float32Array(NLAMP*3);
+const aLampI=new Float32Array(NLAMP);
+const aOcc=new Float32Array(NOCC*4);
+const aOccDir=new Float32Array(NOCC*2);
+
+/* ---------- main loop ---------- */
+let t0=performance.now();
+function frame(now){
+  const t=(now-t0)/1000;
+
+  // smooth pointer + curtain
+  mx += (tmx-mx)*0.14;  my += (tmy-my)*0.14;
+  curtain += (tCurtain-curtain)*0.08;
+  pulse *= 0.92;
+
+  // cursor lamp
+  lamps[0].x=mx; lamps[0].y=my;
+  lamps[0].rad = 0.045 + pulse*0.03;
+  lamps[0].targetI = 1.0 + pulse*0.8;
+  lamps[0].intens += (lamps[0].targetI-lamps[0].intens)*0.2;
+
+  // drifting lamps fade in/out depending on how many are "on"
+  for(let i=1;i<NLAMP;i++){
+    const L=lamps[i];
+    L.x = L.bx + Math.cos(t*L.sp+L.ph)*L.amp;
+    L.y = L.by + Math.sin(t*L.sp*1.3+L.ph)*L.amp*0.7;
+    const on = (i<=extraLamps);
+    L.targetI = on ? 0.6 : 0.0;
+    L.intens += (L.targetI-L.intens)*0.05;
+  }
+
+  // pack lamps
+  for(let i=0;i<NLAMP;i++){
+    aLamp[i*3]=lamps[i].x; aLamp[i*3+1]=lamps[i].y; aLamp[i*3+2]=lamps[i].rad;
+    aLampCol[i*3]=lamps[i].col[0]; aLampCol[i*3+1]=lamps[i].col[1]; aLampCol[i*3+2]=lamps[i].col[2];
+    aLampI[i]=lamps[i].intens;
+  }
+
+  // update occluders: drift, wrap, bob, spin (aspect-correct space [-asp/2..]/[-.5..])
+  const asp=W/H;
+  const HX=asp*0.62;
+  for(let i=0;i<NOCC;i++){
+    const o=occ[i];
+    o.ox+=o.dx*0.016; o.oy+=o.dy*0.016;
+    if(o.ox> HX) o.ox=-HX; if(o.ox<-HX) o.ox= HX;
+    if(o.oy> 0.62) o.oy=-0.62; if(o.oy<-0.62) o.oy= 0.62;
+    o.ang+=o.av*0.016;
+    const by=Math.sin(t*o.bobsp+o.bob)*0.018;
+    aOcc[i*4]=o.ox; aOcc[i*4+1]=o.oy+by; aOcc[i*4+2]=o.hl; aOcc[i*4+3]=o.r;
+    aOccDir[i*2]=Math.cos(o.ang); aOccDir[i*2+1]=Math.sin(o.ang);
+  }
+
+  // uniforms
+  gl.uniform2f(U.iRes,W,H);
+  gl.uniform1f(U.iTime,t);
+  gl.uniform1f(U.iCurtain,curtain);
+  gl.uniform1f(U.iSeed,1.0);
+  gl.uniform3fv(U.iLamp,aLamp);
+  gl.uniform3fv(U.iLampCol,aLampCol);
+  gl.uniform1fv(U.iLampI,aLampI);
+  gl.uniform4fv(U.iOcc,aOcc);
+  gl.uniform2fv(U.iOccDir,aOccDir);
+
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>SYNAPSE — living network organism</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#05060a; }
+  body {
+    font-family: "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+    -webkit-user-select:none; user-select:none; -webkit-tap-highlight-color:transparent;
+    cursor:crosshair;
+  }
+  #stage { position:fixed; inset:0; display:block; }
+  /* ---------- HUD ---------- */
+  .hud {
+    position:fixed; z-index:10; pointer-events:none;
+    color:#cfe8ff; font-weight:300; letter-spacing:.04em;
+    text-shadow:0 0 18px rgba(80,180,255,.35);
+  }
+  #title {
+    top:26px; left:30px;
+    font-size:13px; line-height:1.5;
+  }
+  #title b {
+    display:block; font-size:25px; font-weight:600; letter-spacing:.32em;
+    background:linear-gradient(90deg,#8fe3ff,#c9a7ff 55%,#ff9ad9);
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+    margin-bottom:2px;
+  }
+  #title span { opacity:.45; font-size:11px; letter-spacing:.22em; }
+  #hint {
+    bottom:24px; left:30px; font-size:11.5px; line-height:1.9; opacity:.55;
+    letter-spacing:.06em;
+  }
+  #hint kbd {
+    font-family:inherit; font-size:10.5px; padding:2px 7px; border-radius:6px;
+    border:1px solid rgba(150,200,255,.28); background:rgba(120,180,255,.07);
+    color:#dff0ff; margin-right:5px; letter-spacing:.05em;
+  }
+  #readout {
+    top:26px; right:30px; text-align:right; font-size:11px; line-height:1.85;
+    opacity:.6; font-variant-numeric:tabular-nums;
+  }
+  #readout .v { color:#9fe6ff; font-weight:500; }
+  #mode {
+    position:fixed; left:50%; bottom:26px; transform:translateX(-50%);
+    z-index:10; pointer-events:none; font-size:11px; letter-spacing:.34em;
+    color:#bfe0ff; opacity:0; transition:opacity .4s ease; text-transform:uppercase;
+    text-shadow:0 0 24px rgba(120,200,255,.6);
+  }
+  #mode.show { opacity:.85; }
+  @media (max-width:640px){
+    #title b{font-size:20px;letter-spacing:.22em;}
+    #title{top:18px;left:18px;font-size:11px;}
+    #readout{top:18px;right:16px;font-size:10px;}
+    #hint{left:18px;bottom:18px;font-size:10px;line-height:1.7;}
+    #hint .desktop-only{display:none;}
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div id="title" class="hud">
+  <b>SYNAPSE</b>
+  <span>living force-directed organism</span>
+</div>
+<div id="readout" class="hud">
+  <div>nodes <span class="v" id="rNodes">0</span></div>
+  <div>links <span class="v" id="rLinks">0</span></div>
+  <div><span class="v" id="rFps">0</span> fps</div>
+</div>
+<div id="hint" class="hud">
+  <div><kbd>move</kbd> the field bends toward you</div>
+  <div><kbd>drag</kbd> grab &amp; fling a cell</div>
+  <div><kbd>click</kbd> seed a new neuron</div>
+  <div class="desktop-only"><kbd>space</kbd> attract / repel &nbsp; <kbd>P</kbd> pulse &nbsp; <kbd>R</kbd> reseed</div>
+</div>
+<div id="mode" class="hud">attract</div>
+
+<script>
+(() => {
+"use strict";
+
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', { alpha:false });
+
+// ---------- responsive sizing ----------
+let W=0,H=0,DPR=1,cx=0,cy=0;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = Math.floor(W*DPR); cv.height = Math.floor(H*DPR);
+  cv.style.width = W+'px'; cv.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  cx = W/2; cy = H/2;
+}
+window.addEventListener('resize', resize); resize();
+
+// ---------- palette ----------
+// bioluminescent hues; node hue mapped from a fixed spectrum for harmony
+const HUES = [192, 205, 262, 290, 318]; // cyan -> azure -> violet -> magenta -> rose
+function hueFor(seed){ return HUES[seed % HUES.length]; }
+
+// ---------- model ----------
+const rand = (a,b)=>a+Math.random()*(b-a);
+let nodes=[], links=[];
+let nextId=0;
+
+function makeNode(x,y,fixed){
+  const seed = nextId;
+  return {
+    id: nextId++,
+    x, y,
+    px:x, py:y,
+    vx:0, vy:0,
+    deg:0,
+    r:0,                       // visual radius (derived)
+    baseR: rand(2.4,4.2),
+    hue: hueFor(seed),
+    phase: Math.random()*Math.PI*2,   // breathing phase
+    pulse: 0,                  // 0..1 transient glow
+    born: performance.now(),
+    fixed: !!fixed
+  };
+}
+
+function connect(a,b){
+  if(a===b) return;
+  for(const l of links){ if((l.a===a&&l.b===b)||(l.a===b&&l.b===a)) return; }
+  const A=nodes[a], B=nodes[b];
+  links.push({
+    a, b,
+    rest: Math.max(70, Math.hypot(A.x-B.x, A.y-B.y)) * rand(1.05,1.35),
+    flow: Math.random(),       // signal position 0..1
+    speed: rand(.18,.55),      // signal travel speed
+    dir: Math.random()<.5?1:-1,
+    energy: rand(.35,1)
+  });
+  A.deg++; B.deg++;
+}
+
+// build an organic seed graph: a few hubs + organic growth
+function seed(){
+  nodes=[]; links=[]; nextId=0;
+  const N = Math.max(34, Math.min(110, Math.round((W*H)/22000)));
+  // central cluster spawn
+  for(let i=0;i<N;i++){
+    const ang = Math.random()*Math.PI*2;
+    const rad = Math.pow(Math.random(),0.6) * Math.min(W,H)*0.36;
+    makeNodePush(cx+Math.cos(ang)*rad, cy+Math.sin(ang)*rad);
+  }
+  // preferential-attachment-ish wiring -> hubs emerge
+  for(let i=1;i<nodes.length;i++){
+    // connect to nearest 1-2 lower-index nodes weighted by proximity & degree
+    const cand=[];
+    for(let j=0;j<i;j++){
+      const d = Math.hypot(nodes[i].x-nodes[j].x, nodes[i].y-nodes[j].y);
+      cand.push({j, w: (1/(d+40)) * (1+nodes[j].deg*0.5)});
+    }
+    cand.sort((p,q)=>q.w-p.w);
+    const k = 1 + (Math.random()<0.45?1:0);
+    for(let m=0;m<k && m<cand.length;m++) connect(i, cand[m].j);
+  }
+}
+function makeNodePush(x,y){ nodes.push(makeNode(x,y)); return nodes.length-1; }
+
+// ---------- spatial hash for repulsion (keeps it ~O(n)) ----------
+const CELL=90;
+let grid=new Map();
+function gkey(gx,gy){ return gx*73856093 ^ gy*19349663; }
+function rebuildGrid(){
+  grid.clear();
+  for(let i=0;i<nodes.length;i++){
+    const n=nodes[i];
+    const gx=Math.floor(n.x/CELL), gy=Math.floor(n.y/CELL);
+    const k=gkey(gx,gy);
+    let arr=grid.get(k); if(!arr){arr=[];grid.set(k,arr);} arr.push(i);
+  }
+}
+
+// ---------- interaction state ----------
+const pointer={x:cx,y:cy,active:false,down:false};
+let dragNode=-1, dragDX=0, dragDY=0;
+let attractMode=true; // space toggles
+let lastMove=performance.now();
+
+function setMode(txt){
+  const el=document.getElementById('mode');
+  el.textContent=txt; el.classList.add('show');
+  clearTimeout(setMode._t); setMode._t=setTimeout(()=>el.classList.remove('show'),900);
+}
+
+function nodeAt(x,y){
+  let best=-1, bd=1e9;
+  for(let i=0;i<nodes.length;i++){
+    const n=nodes[i]; const d=Math.hypot(n.x-x,n.y-y);
+    const hit = n.r+10;
+    if(d<hit && d<bd){bd=d;best=i;}
+  }
+  return best;
+}
+
+function ptr(e){
+  const t = e.touches ? e.touches[0] : e;
+  return { x:t.clientX, y:t.clientY };
+}
+
+cv.addEventListener('pointermove', e=>{
+  const p=ptr(e); pointer.x=p.x; pointer.y=p.y; pointer.active=true; lastMove=performance.now();
+  if(dragNode>=0){
+    const n=nodes[dragNode]; n.x=p.x+dragDX; n.y=p.y+dragDY; n.vx=0; n.vy=0;
+  }
+});
+cv.addEventListener('pointerdown', e=>{
+  const p=ptr(e); pointer.x=p.x; pointer.y=p.y; pointer.down=true; pointer.active=true;
+  const hit=nodeAt(p.x,p.y);
+  if(hit>=0){ dragNode=hit; dragDX=nodes[hit].x-p.x; dragDY=nodes[hit].y-p.y; nodes[hit].pulse=1; }
+  else { pointer._spawnX=p.x; pointer._spawnY=p.y; pointer._maybeSpawn=true; }
+  try{ cv.setPointerCapture(e.pointerId); }catch(_){}
+});
+cv.addEventListener('pointerup', e=>{
+  pointer.down=false;
+  if(dragNode>=0){ nodes[dragNode].pulse=1; dragNode=-1; }
+  else if(pointer._maybeSpawn){ spawnNeuron(pointer._spawnX, pointer._spawnY); pointer._maybeSpawn=false; }
+});
+cv.addEventListener('pointerleave', ()=>{ pointer.active=false; });
+
+window.addEventListener('keydown', e=>{
+  const k=e.key.toLowerCase();
+  if(k===' '){ e.preventDefault(); attractMode=!attractMode; setMode(attractMode?'attract':'repel'); }
+  else if(k==='p'){ firePulse(); setMode('pulse'); }
+  else if(k==='r'){ seed(); setMode('reseed'); }
+});
+
+// spawn a neuron that wires into the nearest existing cells (organic growth)
+function spawnNeuron(x,y){
+  if(nodes.length>180) return;
+  const idx=makeNodePush(x,y);
+  nodes[idx].pulse=1;
+  // connect to 2-3 nearest
+  const cand=[];
+  for(let j=0;j<idx;j++){
+    const d=Math.hypot(nodes[idx].x-nodes[j].x, nodes[idx].y-nodes[j].y);
+    cand.push({j,d});
+  }
+  cand.sort((p,q)=>p.d-q.d);
+  const k=2+(Math.random()<.5?1:0);
+  for(let m=0;m<k&&m<cand.length;m++) connect(idx, cand[m].j);
+  // ripple pulse outward from new node
+  for(let m=0;m<k&&m<cand.length;m++){ const j=cand[m].j; nodes[j].pulse=Math.max(nodes[j].pulse,.8); }
+}
+
+// fire a propagating signal wave from the highest-degree hub
+function firePulse(){
+  let hub=0,bd=-1;
+  for(let i=0;i<nodes.length;i++){ if(nodes[i].deg>bd){bd=nodes[i].deg;hub=i;} }
+  pulseFrom(hub, new Set(), 0);
+}
+function pulseFrom(i, seen, depth){
+  if(depth>6 || seen.has(i)) return; seen.add(i);
+  nodes[i].pulse=Math.max(nodes[i].pulse,1);
+  const neigh=[];
+  for(const l of links){ if(l.a===i) neigh.push(l.b); else if(l.b===i) neigh.push(l.a); }
+  for(const nb of neigh){
+    if(!seen.has(nb)) setTimeout(()=>pulseFrom(nb,seen,depth+1), 70);
+  }
+}
+
+// ---------- physics ----------
+const REPULSE = 2600;   // node-node repulsion strength
+const SPRING  = 0.010;  // edge spring
+const DAMP    = 0.88;
+const CENTER  = 0.00035;// gentle pull to center (keeps it framed, not collapsed)
+const POINTER_R = 220;
+
+function step(dt){
+  rebuildGrid();
+  const t = performance.now()*0.001;
+
+  // recompute visual radius from degree (smoothly)
+  for(const n of nodes){
+    const target = n.baseR + Math.sqrt(n.deg)*2.6;
+    n.r += (target - n.r)*0.08;
+  }
+
+  // forces
+  for(let i=0;i<nodes.length;i++){
+    const n=nodes[i];
+    if(n.fixed || i===dragNode) continue;
+    let fx=0, fy=0;
+
+    // repulsion via neighboring grid cells
+    const gx=Math.floor(n.x/CELL), gy=Math.floor(n.y/CELL);
+    for(let ox=-1;ox<=1;ox++) for(let oy=-1;oy<=1;oy++){
+      const arr=grid.get(gkey(gx+ox,gy+oy)); if(!arr) continue;
+      for(const j of arr){
+        if(j===i) continue;
+        const o=nodes[j];
+        let dx=n.x-o.x, dy=n.y-o.y;
+        let d2=dx*dx+dy*dy; if(d2<0.01)d2=0.01;
+        if(d2<CELL*CELL*4){
+          const inv=1/d2; const f=REPULSE*inv;
+          const d=Math.sqrt(d2);
+          fx+=dx/d*f; fy+=dy/d*f;
+        }
+      }
+    }
+
+    // gentle centering + slow non-uniform drift (keeps it "breathing", asymmetric/organic)
+    fx += (cx-n.x)*CENTER; fy += (cy-n.y)*CENTER;
+    // wander field via low-freq noise per-node -> organic shimmer, no rigid orbit
+    const wt = t*0.18;
+    fx += Math.cos(wt + n.phase) * 0.05 + Math.sin(wt*0.6 + n.id*0.7) * 0.035;
+    fy += Math.sin(wt*1.3 + n.phase) * 0.05 + Math.cos(wt*0.5 + n.id*0.9) * 0.035;
+
+    // pointer field
+    if(pointer.active){
+      let dx=pointer.x-n.x, dy=pointer.y-n.y;
+      const d=Math.hypot(dx,dy)||1;
+      if(d<POINTER_R){
+        const fall=(1-d/POINTER_R);
+        const strength = attractMode ? 0.9 : -1.3;
+        fx += (dx/d)*fall*strength;
+        fy += (dy/d)*fall*strength;
+        // near pointer, nodes light up
+        if(d<70) n.pulse=Math.max(n.pulse, fall*0.6);
+      }
+    }
+
+    n.vx=(n.vx+fx)*DAMP;
+    n.vy=(n.vy+fy)*DAMP;
+    // clamp speed
+    const sp=Math.hypot(n.vx,n.vy), MAX=6;
+    if(sp>MAX){ n.vx*=MAX/sp; n.vy*=MAX/sp; }
+    n.x+=n.vx; n.y+=n.vy;
+  }
+
+  // springs (edges)
+  for(const l of links){
+    const A=nodes[l.a], B=nodes[l.b];
+    let dx=B.x-A.x, dy=B.y-A.y;
+    let d=Math.hypot(dx,dy)||1;
+    const f=(d-l.rest)*SPRING;
+    const nx=dx/d, ny=dy/d;
+    if(!A.fixed && l.a!==dragNode){ A.x+=nx*f; A.y+=ny*f; }
+    if(!B.fixed && l.b!==dragNode){ B.x-=nx*f; B.y-=ny*f; }
+    // advance flowing signal
+    l.flow += l.speed*l.dir*dt*0.06;
+    if(l.flow>1) l.flow-=1; if(l.flow<0) l.flow+=1;
+  }
+
+  // decay pulses & soft bounds
+  for(const n of nodes){
+    n.pulse*=0.94;
+    const m=40;
+    if(n.x<m){n.x=m;n.vx*=-0.4;} if(n.x>W-m){n.x=W-m;n.vx*=-0.4;}
+    if(n.y<m){n.y=m;n.vy*=-0.4;} if(n.y>H-m){n.y=H-m;n.vy*=-0.4;}
+  }
+}
+
+// ---------- rendering ----------
+let bgGrad=null, bgW=-1, bgH=-1;
+function ensureBg(){
+  if(bgW===W&&bgH===H) return;
+  bgW=W;bgH=H;
+  bgGrad=ctx.createRadialGradient(cx,cy*0.92,0, cx,cy, Math.hypot(W,H)*0.62);
+  bgGrad.addColorStop(0,'#0c1226');
+  bgGrad.addColorStop(0.45,'#070a16');
+  bgGrad.addColorStop(1,'#04050a');
+}
+
+function draw(t){
+  ensureBg();
+  // trailing fade for motion blur / comet feel
+  ctx.globalCompositeOperation='source-over';
+  ctx.fillStyle=bgGrad;
+  ctx.fillRect(0,0,W,H);
+  // faint vignette dust
+  ctx.fillStyle='rgba(4,5,12,0.18)';
+  ctx.fillRect(0,0,W,H);
+
+  // ---- edges (additive, curved, gradient) ----
+  ctx.globalCompositeOperation='lighter';
+  for(const l of links){
+    const A=nodes[l.a], B=nodes[l.b];
+    const dx=B.x-A.x, dy=B.y-A.y;
+    const d=Math.hypot(dx,dy);
+    if(d>360) continue; // cull overstretched
+    const mx=(A.x+B.x)/2, my=(A.y+B.y)/2;
+    // perpendicular gentle bow for organic curve
+    const nx=-dy/(d||1), ny=dx/(d||1);
+    const bow=Math.sin(t*0.0006 + l.flow*6) * Math.min(d*0.12, 22);
+    const cxp=mx+nx*bow, cyp=my+ny*bow;
+
+    const alpha = 0.10 + l.energy*0.13;
+    const hA=A.hue, hB=B.hue;
+    const g=ctx.createLinearGradient(A.x,A.y,B.x,B.y);
+    g.addColorStop(0,`hsla(${hA},90%,65%,${alpha})`);
+    g.addColorStop(1,`hsla(${hB},90%,65%,${alpha})`);
+    ctx.strokeStyle=g;
+    ctx.lineWidth=0.7+l.energy*0.9;
+    ctx.beginPath();
+    ctx.moveTo(A.x,A.y);
+    ctx.quadraticCurveTo(cxp,cyp,B.x,B.y);
+    ctx.stroke();
+
+    // flowing signal dot along the edge (bezier point)
+    const f=l.flow;
+    const omf=1-f;
+    const sx=omf*omf*A.x + 2*omf*f*cxp + f*f*B.x;
+    const sy=omf*omf*A.y + 2*omf*f*cyp + f*f*B.y;
+    const sh=(hA+hB)/2;
+    const sr=1.6+l.energy*1.6;
+    const sg=ctx.createRadialGradient(sx,sy,0,sx,sy,sr*4);
+    sg.addColorStop(0,`hsla(${sh},100%,82%,${0.7*l.energy})`);
+    sg.addColorStop(1,`hsla(${sh},100%,70%,0)`);
+    ctx.fillStyle=sg;
+    ctx.beginPath(); ctx.arc(sx,sy,sr*4,0,Math.PI*2); ctx.fill();
+  }
+
+  // ---- nodes (glow + core) ----
+  for(const n of nodes){
+    const breathe = 1 + Math.sin(t*0.001 + n.phase)*0.10;
+    const rr = n.r*breathe;
+    const pulse = n.pulse;
+    const light = 60 + pulse*22;
+    // outer halo
+    const hr = rr*(4.5 + pulse*4);
+    const hg=ctx.createRadialGradient(n.x,n.y,0,n.x,n.y,hr);
+    hg.addColorStop(0,`hsla(${n.hue},95%,${light}%,${0.30+pulse*0.5})`);
+    hg.addColorStop(0.4,`hsla(${n.hue},95%,${light-8}%,${0.10+pulse*0.2})`);
+    hg.addColorStop(1,`hsla(${n.hue},95%,55%,0)`);
+    ctx.fillStyle=hg;
+    ctx.beginPath(); ctx.arc(n.x,n.y,hr,0,Math.PI*2); ctx.fill();
+  }
+  // bright cores on top
+  for(const n of nodes){
+    const breathe = 1 + Math.sin(t*0.001 + n.phase)*0.10;
+    const rr=n.r*breathe;
+    ctx.fillStyle=`hsla(${n.hue},100%,${82+n.pulse*15}%,${0.92})`;
+    ctx.beginPath(); ctx.arc(n.x,n.y,Math.max(0.8,rr*0.55),0,Math.PI*2); ctx.fill();
+    // tiny white hotcenter
+    ctx.fillStyle=`rgba(255,255,255,${0.5+n.pulse*0.4})`;
+    ctx.beginPath(); ctx.arc(n.x,n.y,Math.max(0.5,rr*0.22),0,Math.PI*2); ctx.fill();
+  }
+
+  // ---- pointer field aura ----
+  if(pointer.active){
+    ctx.globalCompositeOperation='lighter';
+    const pr=POINTER_R*0.9;
+    const pg=ctx.createRadialGradient(pointer.x,pointer.y,0,pointer.x,pointer.y,pr);
+    const ph = attractMode ? 200 : 320;
+    pg.addColorStop(0,`hsla(${ph},90%,70%,0.08)`);
+    pg.addColorStop(1,`hsla(${ph},90%,70%,0)`);
+    ctx.fillStyle=pg;
+    ctx.beginPath(); ctx.arc(pointer.x,pointer.y,pr,0,Math.PI*2); ctx.fill();
+    // crosshair ring
+    ctx.strokeStyle=`hsla(${ph},90%,80%,0.22)`;
+    ctx.lineWidth=1;
+    ctx.beginPath(); ctx.arc(pointer.x,pointer.y, 18+Math.sin(t*0.004)*3 ,0,Math.PI*2); ctx.stroke();
+  }
+  ctx.globalCompositeOperation='source-over';
+}
+
+// ---------- main loop ----------
+let last=performance.now();
+let fpsT=last, fpsN=0, fps=60;
+let totalLinks=0;
+const $n=document.getElementById('rNodes'), $l=document.getElementById('rLinks'), $f=document.getElementById('rFps');
+
+function frame(now){
+  let dt=(now-last); last=now;
+  if(dt>50) dt=50; // avoid jumps after tab switch
+  dt = dt/16.6667;
+
+  // idle gentle attractor: if pointer hasn't moved, breathe via center
+  step(dt);
+  draw(now);
+
+  // HUD
+  fpsN++; if(now-fpsT>500){ fps=Math.round(fpsN*1000/(now-fpsT)); fpsN=0; fpsT=now;
+    $n.textContent=nodes.length; $l.textContent=links.length; $f.textContent=fps;
+  }
+
+  requestAnimationFrame(frame);
+}
+
+seed();
+$n.textContent=nodes.length; $l.textContent=links.length;
+requestAnimationFrame(frame);
+
+// reseed on big resize so layout stays centered
+let rt; window.addEventListener('resize', ()=>{ clearTimeout(rt); rt=setTimeout(()=>{ /* keep nodes, just recentre handled in forces */ }, 200); });
+
+})();
+</script>
+</body>
+</html>

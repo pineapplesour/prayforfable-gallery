@@ -1,0 +1,864 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>VOIDFRAG // Floating Arena</title>
+<style>
+  :root{ --ink:#cfe8ff; --bg:#05070d; --hot:#ff7a2a; --acid:#9dff5b; --rail:#b489ff; --warn:#ff486b; }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; overflow:hidden; background:var(--bg); }
+  #view{
+    margin:0; width:100vw; height:100vh;
+    font:13px/13px ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    color:var(--ink); white-space:pre; overflow:hidden;
+    letter-spacing:0; user-select:none; cursor:crosshair;
+    background:#05070d;
+  }
+  /* HUD */
+  #hud{ position:fixed; inset:0; pointer-events:none; font-family:ui-monospace,Menlo,monospace; z-index:5; }
+  #cross{ position:fixed; left:50%; top:50%; transform:translate(-50%,-50%); color:#fff; font:18px/18px ui-monospace,monospace; opacity:.85; text-shadow:0 0 6px #000; }
+  .stat{ position:fixed; bottom:14px; font:700 26px/26px ui-monospace,monospace; text-shadow:0 0 8px #000,0 0 14px rgba(0,0,0,.7); }
+  #hp{ left:18px; color:var(--acid); }
+  #ar{ left:170px; color:#7fd0ff; }
+  #am{ right:18px; color:var(--hot); text-align:right; }
+  #wpn{ position:fixed; bottom:46px; right:18px; font:12px/14px ui-monospace,monospace; color:#ffd9a8; text-align:right; text-shadow:0 0 6px #000; }
+  #frags{ position:fixed; top:12px; left:50%; transform:translateX(-50%); font:700 15px/15px ui-monospace,monospace; color:#fff; text-shadow:0 0 8px #000; background:rgba(8,12,20,.55); border:1px solid #1d2a44; padding:6px 14px; border-radius:6px; }
+  #msg{ position:fixed; top:54px; left:50%; transform:translateX(-50%); font:13px/16px ui-monospace,monospace; color:#ffd9a8; text-shadow:0 0 8px #000; text-align:center; opacity:0; transition:opacity .25s; max-width:90vw; }
+  #map{ position:fixed; top:12px; right:14px; font:9px/9px ui-monospace,monospace; color:#6fa8d8; white-space:pre; text-shadow:0 0 4px #000; opacity:.78; background:rgba(6,10,18,.5); padding:6px; border:1px solid #16223a; border-radius:5px; }
+  #flash{ position:fixed; inset:0; pointer-events:none; z-index:6; background:transparent; transition:background .08s; }
+  #credit{ position:fixed; bottom:2px; left:50%; transform:translateX(-50%); font:10px/12px ui-monospace,monospace; color:#5b6f8f; z-index:7; text-align:center; white-space:nowrap; }
+  /* overlays */
+  #intro,#dead{
+    position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    text-align:center; background:radial-gradient(circle at 50% 35%, #0c1426 0%, #05070d 70%); z-index:20;
+    font-family:ui-monospace,Menlo,monospace; color:var(--ink); padding:26px; transition:opacity .5s;
+  }
+  #intro h1{ font-size:46px; letter-spacing:14px; margin:0 0 6px; color:#fff; text-shadow:0 0 18px rgba(157,255,91,.35); text-indent:14px; }
+  #intro .sub{ font-size:13px; color:var(--hot); letter-spacing:4px; margin:0 0 22px; }
+  #intro p,#dead p{ font-size:13px; line-height:1.9; max-width:520px; color:#9fc0e0; margin:5px 0; }
+  .key{ display:inline-block; border:1px solid #2a3c5c; border-radius:4px; padding:2px 7px; margin:2px; color:#cfe8ff; background:#0c1426; }
+  #intro .go{ margin-top:24px; font-size:15px; color:#9dff5b; letter-spacing:3px; animation:pulse 1.3s ease-in-out infinite; }
+  @keyframes pulse{ 0%,100%{opacity:.4} 50%{opacity:1} }
+  #dead h2{ font-size:34px; letter-spacing:8px; color:var(--warn); margin:0 0 10px; }
+  .hidden{ opacity:0 !important; pointer-events:none !important; }
+  /* touch controls */
+  #touch{ position:fixed; inset:0; z-index:8; display:none; pointer-events:none; }
+  .pad{ position:fixed; pointer-events:auto; border:1px solid #2a3c5c; background:rgba(12,20,38,.5); color:#cfe8ff; border-radius:50%;
+        font:700 18px/1 ui-monospace,monospace; display:flex; align-items:center; justify-content:center; user-select:none; }
+  #tstick{ left:16px; bottom:18px; width:128px; height:128px; border-radius:18px; background:rgba(12,20,38,.4); }
+  #tknob{ position:absolute; left:42px; top:42px; width:44px; height:44px; border-radius:50%; background:rgba(120,170,255,.35); border:1px solid #4a6da0; }
+  #tfire{ right:20px; bottom:30px; width:92px; height:92px; color:var(--hot); border-color:var(--hot); font-size:13px; }
+  #tjump{ right:122px; bottom:34px; width:64px; height:64px; color:var(--acid); font-size:12px; }
+  #tswap{ right:30px; bottom:140px; width:64px; height:64px; font-size:11px; }
+  @media (pointer:coarse){ #touch{ display:block; } #map{ font-size:8px; } }
+</style>
+</head>
+<body>
+<pre id="view"></pre>
+<div id="flash"></div>
+
+<div id="hud">
+  <div id="frags">FRAGS 0 / 10</div>
+  <div id="cross">+</div>
+  <div id="msg"></div>
+  <div id="map"></div>
+  <div class="stat" id="hp">100</div>
+  <div class="stat" id="ar">0</div>
+  <div class="stat" id="am">∞</div>
+  <div id="wpn">ROCKETEER</div>
+</div>
+
+<div id="credit">Quake (id Software)에서 영감 — © id Software. 오리지널 구현 · VOIDFRAG</div>
+
+<div id="touch">
+  <div class="pad" id="tstick"><div id="tknob"></div></div>
+  <div class="pad" id="tjump">JUMP</div>
+  <div class="pad" id="tfire">FIRE</div>
+  <div class="pad" id="tswap">SWAP</div>
+</div>
+
+<div id="intro">
+  <h1>VOIDFRAG</h1>
+  <div class="sub">FLOATING PLATFORM ARENA · ASCII RAYCAST</div>
+  <p>부서진 부유 플랫폼 위의 데스매치. 봇 사냥꾼들이 당신을 노린다.<br>
+  10 프래그를 먼저 따내라. 떨어지면 리스폰된다.</p>
+  <p style="margin-top:14px">
+    <span class="key">W A S D</span> 이동 &nbsp;
+    <span class="key">마우스 / ← →</span> 조준 &nbsp;
+    <span class="key">SPACE</span> 점프 &nbsp;
+    <span class="key">클릭 / CTRL</span> 발사 &nbsp;
+    <span class="key">1 2 3 / Q</span> 무기
+  </p>
+  <p style="color:#7fa8d0">발밑에 쏘면 <b style="color:#ff7a2a">로켓 점프</b>. 빛나는 <b style="color:#9dff5b">패드</b>를 밟으면 솟구친다.</p>
+  <div class="go">▶ 클릭하여 입장 (포인터 잠금)</div>
+</div>
+
+<div id="dead" class="hidden">
+  <h2>FRAGGED</h2>
+  <p id="dead-text"></p>
+  <p class="go" id="dead-go" style="animation:pulse 1.3s infinite">▶ 클릭하여 리스폰</p>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  // ============================================================
+  //  VOIDFRAG — original Quake-inspired ASCII raycast arena FPS.
+  //  Renderer inherits the DDA raycast + source-as-texture idea
+  //  from the "내부" reference (walls built of literal glyphs),
+  //  re-themed into a dark floating-arena deathmatch with sprites,
+  //  rockets, splash damage, rocket-jump, jump pads & bot AI.
+  // ============================================================
+
+  // ---- source-as-wall-texture (homage to reference) ----
+  const rawSrc = document.documentElement.outerHTML;
+  const SRC = (rawSrc.replace(/[^\x21-\x7E]/g, "") || "VOIDFRAG").slice(0, 60000);
+
+  // ---- rng ----
+  function mulberry32(a){ return ()=>{ a|=0; a=(a+0x6D2B79F5)|0; let t=Math.imul(a^(a>>>15),1|a); t=(t+Math.imul(t^(t>>>7),61|t))^t; return ((t^(t>>>14))>>>0)/4294967296; }; }
+  const rng = mulberry32(0xF1A7);
+  const rnd = (a=1,b)=> b===undefined ? rng()*a : a+rng()*(b-a);
+
+  // ============================================================
+  //  ARENA MAP — hand-authored floating platform layout.
+  //  0 = floor void (walkable), 1 = solid wall, 9 = void edge
+  //  (the platform is surrounded by emptiness -> fall = respawn)
+  //  letters mark special tiles, decoded into floor flags below.
+  // ============================================================
+  const RAW = [
+    "999999999999999999999",
+    "9...1.......1.....P..9",
+    "9.J.1.111.1.1.111.1..9",
+    "9...1...1.....1...1..9",
+    "9.111.1.1.111.1.1.11.9",
+    "9.....1...1.....1....9",
+    "9.1.111.1.1.1.111.1.J9",
+    "9.1.....1...1.....1..9",
+    "9.1.1.111.1.1.111.1..9",
+    "9...1.....C.....1....9",
+    "9.111.1.111.111.1.11.9",
+    "9.....1.....1.....1..9",
+    "9P1.111.1.1.1.111.1..9",
+    "9.1.....1...1.....1..9",
+    "9.1.111.1.1.1.111.1.J9",
+    "9.....1...1.....1....9",
+    "9.111.1.111.111.1.11.9",
+    "9...1.......1.....1..9",
+    "9.J.1.111.1.1.111....9",
+    "9...1.....1.....1.P..9",
+    "999999999999999999999",
+  ];
+  const MH = RAW.length, MW = RAW[0].length;
+  const map = [];              // 0 walkable / 1 wall / 9 void
+  const jumpPads = [];         // {x,y}
+  const spawnPts = [];         // pickup/spawn anchors {x,y}
+  let centerCell = {x:10,y:9};
+  for (let y=0;y<MH;y++){
+    map[y]=[];
+    for (let x=0;x<MW;x++){
+      const c = RAW[y][x];
+      if (c==="9"){ map[y][x]=9; continue; }
+      if (c==="1"){ map[y][x]=1; continue; }
+      map[y][x]=0;
+      if (c==="J"){ jumpPads.push({x:x+0.5,y:y+0.5}); }
+      if (c==="P"){ spawnPts.push({x:x+0.5,y:y+0.5}); }
+      if (c==="C"){ centerCell={x,y}; }
+    }
+  }
+  const isSolid = (x,y)=>{ const cx=x|0, cy=y|0; if(cx<0||cy<0||cx>=MW||cy>=MH) return true; const v=map[cy][cx]; return v===1; };
+  const isVoid  = (x,y)=>{ const cx=x|0, cy=y|0; if(cx<0||cy<0||cx>=MW||cy>=MH) return true; return map[cy][cx]===9; };
+
+  // ============================================================
+  //  WEAPONS — original names & feel.
+  //   0 ROCKETEER  : slow projectile, splash, rocket-jump
+  //   1 HYPERFLUX   : rapid hitscan-ish bolts, low dmg, fast
+  //   2 RAILSPIKE   : instant rail, big dmg, slow, pierces 1
+  // ============================================================
+  const WPN = [
+    { name:"ROCKETEER", key:"1", glyph:"◉", col:"#ff7a2a", dmg:55, splash:2.0, rate:0.78, speed:9.5, proj:true, ammo:"rkt" },
+    { name:"HYPERFLUX", key:"2", glyph:"•", col:"#9dff5b", dmg:11, splash:0,   rate:0.085, speed:18, proj:true, ammo:"cell" },
+    { name:"RAILSPIKE", key:"3", glyph:"┃", col:"#b489ff", dmg:70, splash:0,   rate:1.15, instant:true, ammo:"slug" },
+  ];
+
+  // ============================================================
+  //  PLAYER
+  // ============================================================
+  const player = { x:0,y:0, dir:0, z:0, vz:0, onGround:true, hp:100, armor:0, frags:0,
+                   ammo:{rkt:20, cell:80, slug:10}, wpn:0, cool:0, alive:true, dead:false };
+  function spawnPlayer(){
+    const s = spawnPts[(rnd()*spawnPts.length)|0] || {x:2.5,y:2.5};
+    player.x=s.x; player.y=s.y; player.z=0; player.vz=0; player.onGround=true;
+    player.hp=100; player.armor=0; player.alive=true; player.dead=false;
+    player.dir = rnd(0,Math.PI*2);
+  }
+
+  // ============================================================
+  //  ENTITIES — bots, projectiles, pickups, fx
+  // ============================================================
+  const bots=[], shots=[], pickups=[], fx=[], rails=[];
+  const BOT_NAMES=["GLITCH","HOLLOW","REVENANT","SPECTER","CARRION"];
+  const TARGET_FRAGS=10;
+
+  function freeCell(){ // random walkable non-wall non-void cell center
+    for(let i=0;i<200;i++){ const x=(rnd(1,MW-1))|0, y=(rnd(1,MH-1))|0; if(map[y][x]===0) return {x:x+0.5,y:y+0.5}; }
+    return {x:2.5,y:2.5};
+  }
+  function spawnBot(){
+    const p=freeCell();
+    bots.push({ x:p.x,y:p.y, dir:rnd(0,6.28), hp:60, cool:rnd(0.4,1.6), alive:true, respawn:0,
+                name:BOT_NAMES[(rnd()*BOT_NAMES.length)|0], frags:0, wob:rnd(0,6.28),
+                strafe: rnd()<.5?1:-1, repath:0 });
+  }
+  function spawnPickup(kind,x,y){ pickups.push({kind,x,y,active:true,respawn:0,t:rnd(0,6.28)}); }
+
+  function initEntities(){
+    bots.length=0; shots.length=0; pickups.length=0; fx.length=0; rails.length=0;
+    for(let i=0;i<4;i++) spawnBot();
+    // pickups around the arena
+    const pk=["health","health","armor","rkt","cell","slug","health","armor"];
+    for(const k of pk){ const p=freeCell(); spawnPickup(k,p.x,p.y); }
+    // a mega-armor at center room
+    spawnPickup("megaarmor", centerCell.x+0.5, centerCell.y+0.5);
+  }
+
+  // ============================================================
+  //  SCREEN / RENDER
+  // ============================================================
+  const view=document.getElementById("view");
+  let W=110,H=46,CW=7.8, FOV=0.70;
+  function fit(){
+    const probe=document.createElement("span");
+    probe.style.cssText="position:absolute;visibility:hidden;font:13px/13px ui-monospace,Menlo,monospace;white-space:pre";
+    probe.textContent="M".repeat(100); document.body.appendChild(probe);
+    CW=probe.getBoundingClientRect().width/100||7.8; probe.remove();
+    W=Math.max(60,Math.min(240,Math.floor(innerWidth/CW)));
+    H=Math.max(28,Math.min(120,Math.floor(innerHeight/13)));
+  }
+  fit(); addEventListener("resize",fit);
+
+  // shading ramps (near -> far)
+  const FLOOR=" ..::-=+".split("");
+  const CEIL =" ...''`".split("");
+  // depth buffer reused each frame
+  let zbuf=new Float32Array(W);
+
+  function wallChar(ix,iy,tx,ty,d,side){
+    if(d>15) return " ";
+    if(d>11) return "·";
+    const seed=((ix*73856093)^(iy*19349663))>>>0;
+    const idx=(seed + ((tx*16)|0)*131 + ((ty*16)|0)*37) % SRC.length;
+    let ch=SRC[idx];
+    if(d>7.5) return /[a-z0-9]/i.test(ch)?ch.toLowerCase():":";
+    if(side) return ch; // darker side keeps glyph
+    return ch;
+  }
+
+  // sprite buffer: collect drawable sprites each frame, sort far->near
+  function gatherSprites(){
+    const sp=[];
+    for(const b of bots){ if(b.alive) sp.push({x:b.x,y:b.y,z:0,type:"bot",ref:b}); }
+    for(const s of shots){ sp.push({x:s.x,y:s.y,z:s.z||0,type:"shot",ref:s}); }
+    for(const p of pickups){ if(p.active) sp.push({x:p.x,y:p.y,z:0,type:"pickup",ref:p}); }
+    for(const f of fx){ sp.push({x:f.x,y:f.y,z:f.z||0,type:"fx",ref:f}); }
+    return sp;
+  }
+
+  const ART = {
+    bot:[ " ╓▣╖ ",
+          "▕███▏",
+          " ╨┃╨ " ],
+    botFar:[" ▣ ","███"," ┃ "],
+  };
+
+  function render(){
+    if(zbuf.length!==W) zbuf=new Float32Array(W);
+    const grid=new Array(H);
+    const colGrid=new Array(H); // per-cell color override (null = default)
+    for(let y=0;y<H;y++){ grid[y]=new Array(W).fill(" "); colGrid[y]=new Array(W).fill(0); }
+    const horizon = (H>>1) + Math.round(player.z*6); // bob with jump height
+    const cosD=Math.cos(player.dir), sinD=Math.sin(player.dir);
+    const planeX=Math.cos(player.dir+Math.PI/2)*FOV, planeY=Math.sin(player.dir+Math.PI/2)*FOV;
+
+    // --- walls (DDA) ---
+    for(let x=0;x<W;x++){
+      const cam=(2*x)/W-1;
+      const rdx=cosD+planeX*cam, rdy=sinD+planeY*cam;
+      let mx=player.x|0, my=player.y|0;
+      const ddx=Math.abs(1/(rdx||1e-9)), ddy=Math.abs(1/(rdy||1e-9));
+      let sx,sy,sdx,sdy,side=0;
+      if(rdx<0){ sx=-1; sdx=(player.x-mx)*ddx; } else { sx=1; sdx=(mx+1-player.x)*ddx; }
+      if(rdy<0){ sy=-1; sdy=(player.y-my)*ddy; } else { sy=1; sdy=(my+1-player.y)*ddy; }
+      let hit=0,guard=0,isWall=false;
+      while(!hit && guard++<48){
+        if(sdx<sdy){ sdx+=ddx; mx+=sx; side=0; } else { sdy+=ddy; my+=sy; side=1; }
+        if(mx<0||my<0||mx>=MW||my>=MH){ hit=1; isWall=false; break; }
+        const v=map[my][mx];
+        if(v===1){ hit=1; isWall=true; }
+        else if(v===9){ hit=1; isWall=false; } // void edge -> open sky beyond
+      }
+      const dist=Math.max(0.08, side===0? sdx-ddx : sdy-ddy);
+      zbuf[x]=dist;
+      if(!isWall){
+        // void / sky column: just floor+ceiling gradient, very far
+        zbuf[x]=99;
+      }
+      const lh=isWall? Math.min(H*4,(H/dist)|0) : 0;
+      const ds=Math.max(0,horizon-(lh>>1));
+      const de=Math.min(H-1,horizon+(lh>>1));
+      let wallX = side===0 ? player.y+dist*rdy : player.x+dist*rdx; wallX-=wallX|0;
+
+      for(let y=0;y<H;y++){
+        if(isWall && y>=ds && y<=de){
+          const ty = lh>0 ? (y-(horizon-lh/2))/lh : 0;
+          grid[y][x]=wallChar(mx,my,wallX,Math.abs(ty%1),dist+(side?1.4:0),side);
+          colGrid[y][x]= side? 2:1; // wall shading code
+        } else if(y<horizon){
+          // ceiling / sky
+          const cd=(horizon-y)/(horizon+1);
+          grid[y][x]=CEIL[Math.min(CEIL.length-1,((1-cd)*CEIL.length)|0)]||" ";
+          colGrid[y][x]=3;
+        } else {
+          // floor — but if this column saw void, render abyss (blank/dots)
+          const fd=(y-horizon)/(H-horizon+1);
+          if(zbuf[x]===99){
+            grid[y][x]= fd>0.86? FLOOR[1] : " ";  // abyss: mostly empty
+            colGrid[y][x]=5;
+          } else {
+            grid[y][x]=FLOOR[Math.min(FLOOR.length-1,((fd)*FLOOR.length)|0)]||" ";
+            colGrid[y][x]=4;
+          }
+        }
+      }
+    }
+
+    // --- sprites (billboarded) ---
+    const sp=gatherSprites();
+    for(const s of sp){ s.rx=s.x-player.x; s.ry=s.y-player.y; s.dd=s.rx*s.rx+s.ry*s.ry; }
+    sp.sort((a,b)=>b.dd-a.dd);
+    const invDet=1/(planeX*sinD - cosD*planeY);
+    for(const s of sp){
+      const tx2 = invDet*(sinD*s.rx - cosD*s.ry);
+      const ty2 = invDet*(-planeY*s.rx + planeX*s.ry); // depth
+      if(ty2<=0.18) continue;
+      const screenX=((W/2)*(1+tx2/ty2))|0;
+      const dist=ty2;
+      let size;
+      let cells=null, ch=null, colCode=6;
+      if(s.type==="bot"){ size=Math.min(H*2.0,(H/dist)|0); cells = dist>6?ART.botFar:ART.bot; colCode= s.ref.hurt>0?9:6; }
+      else if(s.type==="shot"){ size=Math.max(1,(H*0.5/dist)|0); ch=WPN[s.ref.w].glyph; colCode=10+s.ref.w; }
+      else if(s.type==="pickup"){ size=Math.max(2,(H*0.7/dist)|0); ch=pickupGlyph(s.ref.kind); colCode=20+pickupColor(s.ref.kind); }
+      else { size=Math.max(1,(H*0.9/dist)|0); ch=s.ref.ch||"*"; colCode=30; }
+
+      const zOff = Math.round((s.z||0)*(H/dist)*0.5);
+      const spH=size, spW = cells? Math.round(size*0.9): Math.max(1,(size*0.5)|0);
+      const vMove = s.type==="pickup"? Math.sin((s.ref.t||0))*size*0.12 : 0;
+      const cy0 = horizon - (spH>>1) - zOff + (vMove|0);
+      const cx0 = screenX - (spW>>1);
+      // floor-anchored for bots/pickups
+      const baseY = horizon + Math.round((H*0.5)/dist*0.0); // keep centered-ish
+      for(let yy=0;yy<spH;yy++){
+        const py=cy0+yy; if(py<0||py>=H) continue;
+        for(let xx=0;xx<spW;xx++){
+          const pxs=cx0+xx; if(pxs<0||pxs>=W) continue;
+          if(dist>=zbuf[pxs]+0.05) continue; // occluded by wall
+          let glyph;
+          if(cells){
+            const ry=Math.min(cells.length-1,(yy/spH*cells.length)|0);
+            const rowS=cells[ry]; const rx=Math.min(rowS.length-1,(xx/spW*rowS.length)|0);
+            glyph=rowS[rx]; if(glyph===" ") continue;
+          } else {
+            // round-ish blob for projectiles/pickups
+            const cxn=(xx-spW/2)/(spW/2||1), cyn=(yy-spH/2)/(spH/2||1);
+            if(cxn*cxn+cyn*cyn>1.05) continue;
+            glyph=ch;
+          }
+          grid[py][pxs]=glyph; colGrid[py][pxs]=colCode;
+        }
+      }
+    }
+
+    // --- rail beams (instant lines) ---
+    for(const r of rails){
+      // sample along beam in world, project
+      const steps=42;
+      for(let i=0;i<steps;i++){
+        const t=i/steps;
+        const wx=r.x0+(r.x1-r.x0)*t, wy=r.y0+(r.y1-r.y0)*t;
+        const rx=wx-player.x, ry=wy-player.y;
+        const tx2=invDet*(sinD*rx - cosD*ry);
+        const ty2=invDet*(-planeY*rx + planeX*ry);
+        if(ty2<=0.18) continue;
+        const scrX=((W/2)*(1+tx2/ty2))|0;
+        if(scrX<0||scrX>=W) continue;
+        if(ty2>=zbuf[scrX]+0.05) continue;
+        const py=horizon + Math.round(Math.sin(t*Math.PI)* -1);
+        if(py>=0&&py<H){ grid[py][scrX]="┃"; colGrid[py][scrX]=12; }
+      }
+    }
+
+    // --- weapon viewmodel (bottom, first-person) ---
+    drawViewmodel(grid,colGrid,horizon);
+
+    // --- compose with color spans ---
+    let html="";
+    for(let y=0;y<H;y++){
+      let run="", runCol=-1;
+      for(let x=0;x<W;x++){
+        let g=grid[y][x]; const c=colGrid[y][x];
+        if(g==="<"||g===">"||g==="&") g={ "<":"&lt;", ">":"&gt;", "&":"&amp;" }[g];
+        if(c!==runCol){ if(run) html+=span(runCol,run); run=g; runCol=c; }
+        else run+=g;
+      }
+      if(run) html+=span(runCol,run);
+      html+="\n";
+    }
+    view.innerHTML=html;
+  }
+
+  function span(c,t){
+    const col=COL[c]||COL[0];
+    return `<span style="color:${col}">${t}</span>`;
+  }
+  const COL={
+    0:"#6f8fb0",
+    1:"#a9d4ff",  // wall lit
+    2:"#52708f",  // wall dark side
+    3:"#1c2b44",  // ceiling/sky
+    4:"#33506f",  // floor near
+    5:"#0c1626",  // abyss
+    6:"#ff486b",  // bot body
+    9:"#ffe08a",  // bot hurt flash
+    10:"#ff7a2a", // rocket
+    11:"#9dff5b", // hyperflux
+    12:"#c39bff", // rail/slug
+    20:"#9dff5b", // pickup health
+    21:"#7fd0ff", // pickup armor
+    22:"#ff7a2a", // pickup ammo rkt
+    23:"#9dff5b", // pickup ammo cell
+    24:"#c39bff", // pickup ammo slug
+    25:"#ffd34d", // megaarmor
+    30:"#ffb070", // fx
+    40:"#ff9a3a", // viewmodel
+    41:"#cfe8ff",
+  };
+
+  function pickupGlyph(k){ return {health:"+",armor:"▢",rkt:"◉",cell:"※",slug:"╪",megaarmor:"◆"}[k]||"?"; }
+  function pickupColor(k){ return {health:0,armor:1,rkt:2,cell:3,slug:4,megaarmor:5}[k]||0; }
+
+  // weapon viewmodel ascii (drawn into grid, bottom center-right)
+  function drawViewmodel(grid,colGrid,horizon){
+    const w=player.wpn;
+    const kick = player.cool>0? Math.min(2, player.cool*3):0;
+    const baseY = H-1 - (kick|0);
+    const cx = (W*0.66)|0;
+    let art;
+    if(w===0) art=[" ___","(◉=≡","  ‾‾"];       // rocketeer
+    else if(w===1) art=["__ ","[•≣","‾‾ "];     // hyperflux
+    else art=[" __","╪══","‾‾ "];               // railspike
+    for(let i=0;i<art.length;i++){
+      const row=art[i]; const py=baseY-(art.length-1-i);
+      for(let j=0;j<row.length;j++){
+        const g=row[j]; if(g===" ") continue;
+        const px=cx+j; if(px<0||px>=W||py<0||py>=H) continue;
+        grid[py][px]=g; colGrid[py][px]= 40 + (i===0?1:0);
+      }
+    }
+    // muzzle flash
+    if(player.cool> WPN[w].rate-0.09){
+      const fyR=baseY-3, fxR=cx+1;
+      if(fyR>=0&&fxR<W){ grid[fyR][fxR]="*"; colGrid[fyR][fxR]=10+w; }
+    }
+  }
+
+  // ============================================================
+  //  GAME LOGIC
+  // ============================================================
+  const keys={};
+  let mouseDX=0;
+  const msgEl=document.getElementById("msg"); let msgT=0;
+  function say(t){ msgEl.textContent=t; msgEl.style.opacity="1"; msgT=2.2; }
+
+  function tryMoveEntity(ent,nx,ny){
+    const m=0.20;
+    const cx=nx+Math.sign(nx-ent.x)*m, cy=ny+Math.sign(ny-ent.y)*m;
+    if(!isSolid(cx,ent.y) && !isVoid(cx,ent.y)) ent.x=nx;
+    else if(!isSolid(cx,ent.y)) ent.x=nx; // allow stepping toward void (so you can fall off)
+    if(!isSolid(ent.x,cy) && !isVoid(ent.x,cy)) ent.y=ny;
+    else if(!isSolid(ent.x,cy)) ent.y=ny;
+  }
+  // movement that permits falling into void (player can drop off edges)
+  function movePlayer(nx,ny){
+    const m=0.16;
+    const sxp=Math.sign(nx-player.x), syp=Math.sign(ny-player.y);
+    // x
+    if(!isSolid(nx+sxp*m,player.y)) player.x=nx;
+    // y
+    if(!isSolid(player.x,ny+syp*m)) player.y=ny;
+  }
+
+  function fireWeapon(){
+    if(!player.alive) return;
+    const w=WPN[player.wpn];
+    if(player.cool>0) return;
+    // ammo
+    if(w.ammo!=="none"){
+      if(player.ammo[w.ammo]<=0){ say("탄약 없음 — "+w.name); player.cool=0.25; return; }
+      player.ammo[w.ammo]--;
+    }
+    player.cool=w.rate;
+    flash(w.col,0.10);
+    if(w.instant){
+      // RAILSPIKE: instant ray
+      railShot(player.x,player.y,player.dir,w.dmg,true);
+    } else {
+      const sp=w.speed;
+      shots.push({ x:player.x+Math.cos(player.dir)*0.4, y:player.y+Math.sin(player.dir)*0.4,
+                   z:player.z+0.0, dx:Math.cos(player.dir)*sp, dy:Math.sin(player.dir)*sp,
+                   w:player.wpn, dmg:w.dmg, splash:w.splash, life:2.5, owner:"player" });
+    }
+  }
+
+  function railShot(ox,oy,ang,dmg,fromPlayer){
+    const dx=Math.cos(ang), dy=Math.sin(ang);
+    let hx=ox,hy=oy, hit=false, hitBot=null, dist=0;
+    const step=0.08;
+    for(let i=0;i<260;i++){
+      hx+=dx*step; hy+=dy*step; dist+=step;
+      if(isSolid(hx,hy)){ hit=true; break; }
+      if(isVoid(hx,hy)){ break; }
+      if(fromPlayer){
+        for(const b of bots){ if(b.alive){ const ddx=b.x-hx, ddy=b.y-hy; if(ddx*ddx+ddy*ddy<0.18){ damageBot(b,dmg); hitBot=b; break; } } }
+        if(hitBot) break;
+      } else {
+        const ddx=player.x-hx, ddy=player.y-hy; if(ddx*ddx+ddy*ddy<0.18){ damagePlayer(dmg,"RAILSPIKE"); hit=true; break; }
+      }
+    }
+    rails.push({x0:ox,y0:oy,x1:hx,y1:hy,life:0.12,col:fromPlayer?"#c39bff":"#ff486b"});
+    fx.push({x:hx,y:hy,z:0,ch:"x",life:0.2,col:"#fff"});
+  }
+
+  function explode(x,y,dmg,radius,owner){
+    fx.push({x,y,z:0,ch:"◉",life:0.28});
+    fx.push({x:x+rnd(-.3,.3),y:y+rnd(-.3,.3),z:0,ch:"*",life:0.22});
+    fx.push({x:x+rnd(-.3,.3),y:y+rnd(-.3,.3),z:0,ch:"+",life:0.18});
+    // bots
+    for(const b of bots){ if(!b.alive) continue; const d=Math.hypot(b.x-x,b.y-y); if(d<radius){ damageBot(b, dmg*(1-d/radius)); } }
+    // player (splash + rocket jump)
+    const pd=Math.hypot(player.x-x,player.y-y);
+    if(pd<radius){
+      const frac=1-pd/radius;
+      if(owner==="bot") damagePlayer(dmg*frac*0.8,"폭발");
+      else if(pd<1.1){
+        // self splash from own rocket -> rocket jump
+        const kick=Math.min(0.7, frac*0.75);
+        player.vz += kick;                       // launch up
+        const ang=Math.atan2(player.y-y, player.x-x);
+        player.x += Math.cos(ang)*frac*0.5; player.y += Math.sin(ang)*frac*0.5;
+        damagePlayer(dmg*frac*0.45,"자기폭발");
+      }
+    }
+    flash("#ff7a2a", Math.min(0.25, radius*0.08));
+  }
+
+  function damageBot(b,dmg){
+    b.hp-=dmg; b.hurt=0.18;
+    if(b.hp<=0 && b.alive){
+      b.alive=false; b.respawn=2.4 + rnd(0,1.5);
+      player.frags++; say("FRAG! "+b.name+" 처치 ("+player.frags+"/"+TARGET_FRAGS+")");
+      explodeGib(b.x,b.y);
+      if(player.frags>=TARGET_FRAGS){ winGame(); }
+    }
+  }
+  function explodeGib(x,y){ for(let i=0;i<5;i++) fx.push({x:x+rnd(-.4,.4),y:y+rnd(-.4,.4),z:rnd(0,.3),ch:"%xX*+".charAt((rnd()*5)|0),life:rnd(.2,.5)}); }
+
+  function damagePlayer(dmg,src){
+    if(!player.alive) return;
+    if(player.armor>0){ const ab=Math.min(player.armor,dmg*0.6); player.armor-=ab; dmg-=ab; }
+    player.hp-=dmg; flash("#ff486b",0.18);
+    if(player.hp<=0 && player.alive){ player.alive=false; player.dead=true; deathScreen(src); }
+  }
+
+  function checkPickup(){
+    for(const p of pickups){
+      if(!p.active) continue;
+      if(Math.hypot(p.x-player.x,p.y-player.y)<0.5){
+        let took=true;
+        if(p.kind==="health"){ if(player.hp>=100) took=false; else { player.hp=Math.min(100,player.hp+25); say("+25 HEALTH"); } }
+        else if(p.kind==="armor"){ if(player.armor>=100) took=false; else { player.armor=Math.min(100,player.armor+30); say("+30 ARMOR"); } }
+        else if(p.kind==="megaarmor"){ player.armor=Math.min(150,player.armor+100); player.hp=Math.min(150,player.hp+50); say("MEGA ARMOR!"); }
+        else if(p.kind==="rkt"){ player.ammo.rkt+=8; say("+8 ROCKETS"); }
+        else if(p.kind==="cell"){ player.ammo.cell+=40; say("+40 CELLS"); }
+        else if(p.kind==="slug"){ player.ammo.slug+=6; say("+6 SLUGS"); }
+        if(took){ p.active=false; p.respawn=10; flash("#9dff5b",0.06); }
+      }
+    }
+  }
+
+  // ---- bot AI ----
+  function losClear(ax,ay,bx,by){
+    const d=Math.hypot(bx-ax,by-ay); const steps=(d/0.18)|0;
+    for(let i=1;i<steps;i++){ const t=i/steps; if(isSolid(ax+(bx-ax)*t, ay+(by-ay)*t)) return false; }
+    return true;
+  }
+  function updateBots(dt){
+    for(const b of bots){
+      if(!b.alive){ b.respawn-=dt; if(b.respawn<=0){ const p=freeCell(); b.x=p.x;b.y=p.y;b.hp=60;b.alive=true; } continue; }
+      if(b.hurt>0) b.hurt-=dt;
+      const toP=Math.atan2(player.y-b.y, player.x-b.x);
+      const dP=Math.hypot(player.x-b.x,player.y-b.y);
+      const see = player.alive && dP<11 && losClear(b.x,b.y,player.x,player.y);
+      b.wob+=dt*3;
+      let mvAng;
+      if(see){
+        // face player, strafe & approach to mid range
+        b.dir += clampAng(toP-b.dir)*Math.min(1,dt*6);
+        let desire = toP + (dP<3.5? Math.PI : 0); // back off if too close
+        if(dP>2.5 && dP<7) desire = toP + b.strafe*0.9; // circle strafe
+        mvAng=desire;
+        // shoot
+        b.cool-=dt;
+        if(b.cool<=0 && Math.abs(clampAng(toP-b.dir))<0.35){
+          b.cool=rnd(0.7,1.6);
+          if(rnd()<0.35){ railShot(b.x,b.y,toP+rnd(-0.06,0.06),18,false); }
+          else { const sp=8; shots.push({x:b.x+Math.cos(toP)*0.4,y:b.y+Math.sin(toP)*0.4,z:0,
+                   dx:Math.cos(toP)*sp,dy:Math.sin(toP)*sp,w:0,dmg:26,splash:1.6,life:2.2,owner:"bot"}); }
+        }
+        if(rnd()<dt*0.4) b.strafe*=-1;
+      } else {
+        // wander
+        b.repath-=dt;
+        if(b.repath<=0){ b.dir=rnd(0,6.28); b.repath=rnd(1,2.5); }
+        mvAng=b.dir;
+      }
+      const speed = (see? 1.9:1.3)*dt;
+      const nx=b.x+Math.cos(mvAng)*speed, ny=b.y+Math.sin(mvAng)*speed;
+      // bots avoid void & walls
+      if(!isSolid(nx,b.y)&&!isVoid(nx,b.y)) b.x=nx; else b.dir=rnd(0,6.28);
+      if(!isSolid(b.x,ny)&&!isVoid(b.x,ny)) b.y=ny; else b.dir=rnd(0,6.28);
+    }
+  }
+  function clampAng(a){ while(a>Math.PI)a-=2*Math.PI; while(a<-Math.PI)a+=2*Math.PI; return a; }
+
+  // ---- projectiles ----
+  function updateShots(dt){
+    for(let i=shots.length-1;i>=0;i--){
+      const s=shots[i];
+      const steps=3;
+      let dead=false;
+      for(let k=0;k<steps && !dead;k++){
+        const nx=s.x+s.dx*dt/steps, ny=s.y+s.dy*dt/steps;
+        if(isSolid(nx,ny)){ if(s.splash>0) explode(nx,ny,s.dmg,s.splash,s.owner); else fx.push({x:nx,y:ny,z:0,ch:"x",life:0.15}); dead=true; break; }
+        if(isVoid(nx,ny)){ dead=true; break; }
+        s.x=nx; s.y=ny;
+        if(s.owner==="player"){
+          for(const b of bots){ if(b.alive && Math.hypot(b.x-s.x,b.y-s.y)<0.45){
+            if(s.splash>0) explode(s.x,s.y,s.dmg,s.splash,s.owner); else damageBot(b,s.dmg);
+            dead=true; break; } }
+        } else {
+          if(player.alive && Math.hypot(player.x-s.x,player.y-s.y)<0.45){
+            if(s.splash>0) explode(s.x,s.y,s.dmg,s.splash,s.owner); else damagePlayer(s.dmg,"투사체");
+            dead=true; break; }
+        }
+      }
+      s.life-=dt; if(s.life<=0) dead=true;
+      if(dead) shots.splice(i,1);
+    }
+  }
+  function updateFx(dt){
+    for(let i=fx.length-1;i>=0;i--){ fx[i].life-=dt; if(fx[i].life<=0) fx.splice(i,1); }
+    for(let i=rails.length-1;i>=0;i--){ rails[i].life-=dt; if(rails[i].life<=0) rails.splice(i,1); }
+  }
+  function updatePickups(dt){
+    for(const p of pickups){ p.t=(p.t||0)+dt*3; if(!p.active){ p.respawn-=dt; if(p.respawn<=0) p.active=true; } }
+  }
+
+  // ---- jump / gravity / void ----
+  const GRAV=2.4, JUMP=0.9, PADJUMP=1.6;
+  function updatePlayerPhys(dt){
+    // vertical
+    player.vz -= GRAV*dt;
+    player.z += player.vz*dt;
+    if(player.z<=0){ player.z=0; if(!player.onGround){} player.vz=0; player.onGround=true; }
+    else player.onGround=false;
+    // jump pad
+    if(player.onGround){
+      for(const jp of jumpPads){ if(Math.hypot(jp.x-player.x,jp.y-player.y)<0.5){ player.vz=PADJUMP; player.onGround=false; flash("#9dff5b",0.1); say("JUMP PAD"); } }
+    }
+    // fall into void -> respawn
+    if(isVoid(player.x,player.y) && player.z<0.02){
+      damagePlayer(34,"낙하"); if(player.alive){ const s=spawnPts[(rnd()*spawnPts.length)|0]; player.x=s.x;player.y=s.y;player.z=0;player.vz=0; }
+    }
+  }
+
+  // ============================================================
+  //  FLASH / OVERLAYS
+  // ============================================================
+  const flashEl=document.getElementById("flash"); let flashT=0;
+  function flash(col,t){ flashEl.style.background=col; flashEl.style.opacity="0.32"; flashT=Math.max(flashT,t); }
+  const fragsEl=document.getElementById("frags");
+  const hpEl=document.getElementById("hp"), arEl=document.getElementById("ar"), amEl=document.getElementById("am"), wpnEl=document.getElementById("wpn");
+  function updateHUD(){
+    fragsEl.textContent="FRAGS "+player.frags+" / "+TARGET_FRAGS;
+    hpEl.textContent=Math.max(0,Math.round(player.hp));
+    arEl.textContent=Math.round(player.armor);
+    const w=WPN[player.wpn];
+    amEl.textContent = player.ammo[w.ammo];
+    wpnEl.textContent=w.name+"  [ROCKETEER·HYPERFLUX·RAILSPIKE]".split("[")[1].replace("]","");
+    wpnEl.textContent=w.name;
+    wpnEl.style.color=w.col;
+  }
+  // minimap
+  const mapEl=document.getElementById("map");
+  function updateMap(){
+    const rows=[];
+    for(let y=0;y<MH;y++){ let r="";
+      for(let x=0;x<MW;x++){
+        if(((player.x|0)===x)&&((player.y|0)===y)) r+="@";
+        else { const v=map[y][x]; r+= v===1?"#": v===9?" ":"·"; }
+      } rows.push(r);
+    }
+    // overlay bots
+    const grid=rows.map(r=>r.split(""));
+    for(const b of bots){ if(b.alive){ const bx=b.x|0,by=b.y|0; if(grid[by]&&grid[by][bx]&&grid[by][bx]!=="@") grid[by][bx]="x"; } }
+    for(const p of pickups){ if(p.active){ const px=p.x|0,py=p.y|0; if(grid[py]&&grid[py][px]==="·") grid[py][px]="+"; } }
+    mapEl.textContent=grid.map(r=>r.join("")).join("\n");
+  }
+
+  const introEl=document.getElementById("intro");
+  const deadEl=document.getElementById("dead"), deadText=document.getElementById("dead-text");
+  let started=false, paused=false;
+  function deathScreen(src){
+    paused=true;
+    deadText.innerHTML=`${src}에 의해 파괴되었다.<br>현재 프래그: <b style="color:#9dff5b">${player.frags}</b> / ${TARGET_FRAGS}`;
+    deadEl.classList.remove("hidden");
+  }
+  function winGame(){
+    paused=true;
+    deadText.innerHTML=`<b style="color:#9dff5b">아레나 제패!</b><br>${TARGET_FRAGS} 프래그 달성. 부유 플랫폼은 당신의 것이다.`;
+    document.querySelector("#dead h2").textContent="VICTORY";
+    document.querySelector("#dead h2").style.color="#9dff5b";
+    deadEl.classList.remove("hidden");
+    player.won=true;
+  }
+  function respawnFlow(){
+    deadEl.classList.add("hidden");
+    document.querySelector("#dead h2").textContent="FRAGGED";
+    document.querySelector("#dead h2").style.color="#ff486b";
+    if(player.won){ player.frags=0; player.won=false; initEntities(); }
+    spawnPlayer(); paused=false;
+    if(usingPointerLock) view.requestPointerLock?.();
+  }
+
+  // ============================================================
+  //  INPUT
+  // ============================================================
+  let usingPointerLock=false;
+  function startGame(){
+    if(started) return; started=true;
+    introEl.classList.add("hidden");
+    spawnPlayer(); initEntities();
+    view.requestPointerLock?.();
+  }
+  addEventListener("keydown",e=>{
+    const k=e.key.toLowerCase();
+    if(!started){ if(k==="enter"||k===" ") startGame(); }
+    keys[k]=true;
+    if(["arrowup","arrowdown","arrowleft","arrowright"," ","control"].includes(k)) e.preventDefault();
+    if(k==="1") player.wpn=0;
+    if(k==="2") player.wpn=1;
+    if(k==="3") player.wpn=2;
+    if(k==="q"){ player.wpn=(player.wpn+1)%WPN.length; }
+  });
+  addEventListener("keyup",e=>{ keys[e.key.toLowerCase()]=false; });
+
+  // mouse / pointer lock
+  introEl.addEventListener("click",startGame);
+  deadEl.addEventListener("click",()=>{ if(player.dead||player.won) respawnFlow(); });
+  document.addEventListener("pointerlockchange",()=>{ usingPointerLock = (document.pointerLockElement===view); });
+  document.addEventListener("mousemove",e=>{ if(usingPointerLock) mouseDX += e.movementX; });
+  addEventListener("mousedown",e=>{
+    if(!started){ startGame(); return; }
+    if(player.dead||player.won){ respawnFlow(); return; }
+    if(!usingPointerLock){ view.requestPointerLock?.(); return; }
+    keys["fire"]=true;
+  });
+  addEventListener("mouseup",()=>{ keys["fire"]=false; });
+
+  // ---- touch controls ----
+  const tstick=document.getElementById("tstick"), tknob=document.getElementById("tknob");
+  let stickActive=false, stickX=0, stickY=0, stickId=null;
+  function setKnob(dx,dy){ const R=42; const m=Math.hypot(dx,dy)||1; const cl=Math.min(1,m/R); const ux=dx/m*cl*R, uy=dy/m*cl*R; tknob.style.left=(42+ux)+"px"; tknob.style.top=(42+uy)+"px"; stickX=dx/R; stickY=dy/R; }
+  tstick.addEventListener("touchstart",e=>{ e.preventDefault(); if(!started)startGame(); stickActive=true; const t=e.changedTouches[0]; stickId=t.identifier; const r=tstick.getBoundingClientRect(); setKnob(t.clientX-(r.left+r.width/2), t.clientY-(r.top+r.height/2)); },{passive:false});
+  tstick.addEventListener("touchmove",e=>{ e.preventDefault(); for(const t of e.changedTouches){ if(t.identifier===stickId){ const r=tstick.getBoundingClientRect(); setKnob(t.clientX-(r.left+r.width/2), t.clientY-(r.top+r.height/2)); } } },{passive:false});
+  tstick.addEventListener("touchend",e=>{ for(const t of e.changedTouches){ if(t.identifier===stickId){ stickActive=false; stickX=stickY=0; tknob.style.left="42px"; tknob.style.top="42px"; } } });
+  // look: drag on right portion of screen
+  let lookId=null, lookLast=0;
+  view.addEventListener("touchstart",e=>{ if(!started){startGame();return;} for(const t of e.changedTouches){ if(t.clientX>innerWidth*0.45 && lookId===null){ lookId=t.identifier; lookLast=t.clientX; } } },{passive:true});
+  view.addEventListener("touchmove",e=>{ for(const t of e.changedTouches){ if(t.identifier===lookId){ mouseDX += (t.clientX-lookLast)*1.4; lookLast=t.clientX; } } },{passive:true});
+  view.addEventListener("touchend",e=>{ for(const t of e.changedTouches){ if(t.identifier===lookId) lookId=null; } });
+  const tfire=document.getElementById("tfire"), tjump=document.getElementById("tjump"), tswap=document.getElementById("tswap");
+  function bindHold(el,on,off){ el.addEventListener("touchstart",e=>{e.preventDefault(); if(!started){startGame();} if(player.dead||player.won){respawnFlow();return;} on();},{passive:false}); el.addEventListener("touchend",e=>{e.preventDefault(); off&&off();},{passive:false}); }
+  bindHold(tfire,()=>keys["fire"]=true,()=>keys["fire"]=false);
+  bindHold(tjump,()=>keys[" "]=true,()=>keys[" "]=false);
+  tswap.addEventListener("touchstart",e=>{e.preventDefault(); if(!started){startGame();return;} player.wpn=(player.wpn+1)%WPN.length;},{passive:false});
+
+  // ============================================================
+  //  MAIN LOOP
+  // ============================================================
+  let lastT=performance.now(), racc=0;
+  function loop(t){
+    const dt=Math.min(0.05,(t-lastT)/1000); lastT=t;
+    if(started && !paused){
+      // look
+      player.dir += mouseDX*0.0026; mouseDX=0;
+      const rs=2.6*dt;
+      if(keys["arrowleft"]) player.dir-=rs;
+      if(keys["arrowright"]) player.dir+=rs;
+      // move (keyboard)
+      const fx2=Math.cos(player.dir), fy2=Math.sin(player.dir);
+      let mvx=0,mvy=0;
+      const ms=2.7*dt;
+      if(keys["w"]||keys["arrowup"]){ mvx+=fx2; mvy+=fy2; }
+      if(keys["s"]||keys["arrowdown"]){ mvx-=fx2; mvy-=fy2; }
+      if(keys["a"]){ mvx+=fy2; mvy-=fx2; }
+      if(keys["d"]){ mvx-=fy2; mvy+=fx2; }
+      // touch stick
+      if(stickActive){ mvx+=fx2*(-stickY)+fy2*(stickX); mvy+=fy2*(-stickY)-fx2*(stickX); }
+      const mlen=Math.hypot(mvx,mvy);
+      if(mlen>0.01){ mvx=mvx/mlen*ms; mvy=mvy/mlen*ms; movePlayer(player.x+mvx, player.y+mvy); }
+      // jump
+      if((keys[" "]) && player.onGround){ player.vz=JUMP; player.onGround=false; }
+      // fire
+      if((keys["fire"]||keys["control"]) && player.alive) fireWeapon();
+      if(player.cool>0) player.cool-=dt;
+
+      updatePlayerPhys(dt);
+      updateBots(dt);
+      updateShots(dt);
+      updatePickups(dt);
+      checkPickup();
+      updateFx(dt);
+    }
+    // flash decay
+    if(flashT>0){ flashT-=dt; if(flashT<=0){ flashEl.style.opacity="0"; } }
+    if(msgT>0){ msgT-=dt; if(msgT<=0) msgEl.style.opacity="0"; }
+
+    racc+=dt;
+    if(racc>1/34 || !started){
+      racc=0;
+      render(); updateHUD(); updateMap();
+    }
+    requestAnimationFrame(loop);
+  }
+  // draw an idle backdrop before start (orbit camera over arena)
+  player.x=10.5; player.y=10.5; player.dir=0;
+  render();
+  requestAnimationFrame(loop);
+
+  // gentle idle camera spin before game starts
+  setInterval(()=>{ if(!started){ player.dir+=0.004; } }, 16);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>CRYSTALLINE — 결정의 성장</title>
+<style>
+  :root{ --ink:#dfeaff; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#04060d; }
+  body{
+    font-family:"SF Mono",ui-monospace,"Menlo","Consolas",monospace;
+    color:var(--ink);
+    -webkit-tap-highlight-color:transparent;
+    -webkit-font-smoothing:antialiased;
+    cursor:crosshair;
+  }
+  #c{ display:block; position:fixed; inset:0; width:100%; height:100%; touch-action:none; }
+
+  .ui{ position:fixed; z-index:5; pointer-events:none; user-select:none; }
+
+  #title{ top:clamp(20px,3.6vw,46px); left:clamp(20px,3.6vw,46px); }
+  #title .k{
+    font-size:clamp(22px,3vw,40px);
+    font-weight:600; letter-spacing:.42em;
+    line-height:1; color:#f1f6ff;
+    text-shadow:0 0 24px rgba(120,200,255,.5);
+    opacity:0; transform:translateY(8px);
+    animation:rise 1.6s .15s cubic-bezier(.2,.7,.2,1) forwards;
+  }
+  #title .s{
+    margin-top:14px; font-size:clamp(9px,1vw,12px);
+    letter-spacing:.5em; font-weight:400;
+    color:rgba(170,200,235,.62);
+    opacity:0; animation:rise 1.6s .45s cubic-bezier(.2,.7,.2,1) forwards;
+  }
+
+  #read{ left:clamp(20px,3.6vw,46px); bottom:clamp(20px,3.6vw,46px); }
+  #read .v{
+    font-size:clamp(13px,1.5vw,18px); letter-spacing:.16em; font-weight:600;
+    color:#eaf3ff; text-shadow:0 0 18px rgba(120,200,255,.45);
+  }
+  #read .v b{ color:#9fd8ff; font-weight:600; }
+  #read .shape{
+    margin-top:7px; font-size:clamp(10px,1.1vw,13px);
+    letter-spacing:.32em; color:rgba(160,195,235,.78);
+  }
+  #read .hint{
+    margin-top:16px; font-size:clamp(8.5px,.95vw,11px);
+    letter-spacing:.34em; color:rgba(150,180,220,.4);
+  }
+
+  #mute{
+    right:clamp(18px,3.4vw,40px); top:clamp(18px,3.4vw,40px);
+    pointer-events:auto; cursor:pointer;
+    width:40px; height:40px; border-radius:50%;
+    border:1px solid rgba(150,190,235,.28);
+    display:flex; align-items:center; justify-content:center;
+    color:rgba(190,215,245,.85); font-size:14px;
+    background:rgba(120,170,225,.05);
+    backdrop-filter:blur(4px); transition:.3s;
+  }
+  #mute:hover{ border-color:rgba(150,200,255,.6); background:rgba(120,170,225,.12); }
+
+  @keyframes rise{ to{ opacity:1; transform:translateY(0); } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="title" class="ui">
+  <div class="k">CRYSTALLINE</div>
+  <div class="s">결정 · 눈송이 의 성장</div>
+</div>
+
+<div id="read" class="ui">
+  <div class="v">T <b id="tval">−13.0</b> °C</div>
+  <div class="shape" id="sval">STELLAR DENDRITE</div>
+  <div class="hint">DRAG 회전 · SCROLL 온도 · CLICK 개화</div>
+</div>
+
+<div id="mute" class="ui" title="sound">♪</div>
+
+<script>
+(() => {
+  "use strict";
+  const cv = document.getElementById('c');
+  const ctx = cv.getContext('2d');
+  const frost = document.createElement('canvas');     // persistent crystal accumulation
+  const fctx = frost.getContext('2d');
+
+  let W = 0, H = 0, dpr = 1, cx = 0, cy = 0, R = 0;
+  const clamp = (v,a,b)=> v<a?a:v>b?b:v;
+  const lerp = (a,b,t)=> a+(b-a)*t;
+  const rnd = (a,b)=> a+Math.random()*(b-a);
+
+  // ---------- pointer / interaction state ----------
+  let mx = innerWidth/2, my = innerHeight/2;
+  let down=false, dragDist=0, lastX=0, lastY=0;
+  let userRot=0, autoRot=0;
+  let scale=1, scaleT=1;
+  let T = -13;                 // temperature (°C) — Nakaya morphology control
+
+  // ---------- resize ----------
+  function resize(){
+    W = innerWidth; H = innerHeight;
+    dpr = Math.min(devicePixelRatio||1, 2);
+    cv.width = W*dpr; cv.height = H*dpr;
+    cv.style.width = W+'px'; cv.style.height = H+'px';
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    frost.width = W*dpr; frost.height = H*dpr;
+    fctx.setTransform(dpr,0,0,dpr,0,0);
+    cx = W/2; cy = H/2; R = Math.min(W,H)*0.5;
+    buildAir(); buildDust();
+    reseed(true);
+  }
+
+  // ---------- Nakaya morphology from temperature ----------
+  const g = (x,m,s)=> Math.exp(-((x-m)*(x-m))/(2*s*s));
+  function morph(t){
+    const branch = clamp(0.12 + 0.95*g(t,-14,2.3) + 0.75*g(t,-3.4,1.5), 0, 1);
+    const plate  = clamp(0.18 + 0.80*g(t,-9,1.8) + 0.62*g(t,-1.7,1.0) + 0.55*g(t,-19,2.4), 0, 1);
+    let name;
+    if(branch>0.66) name = (branch>0.85?'STELLAR DENDRITE':'FERN DENDRITE');
+    else if(plate>0.6) name = (t>-4?'THIN PLATE':'SECTORED PLATE');
+    else if(t<-16) name = 'COLUMN · BULLET';
+    else name = 'HOLLOW NEEDLE';
+    return {
+      branch, plate, name,
+      branchProb: 0.018 + 0.13*branch,
+      ribProb:    0.10*plate + 0.02,
+      jitter:     0.030 + 0.055*branch,
+      speed:      1.05 + 0.55*branch,
+      childScale: 0.46 + 0.16*branch,
+      maxLen:     R*(0.60 + 0.26*(1-plate*0.45)),
+      hueBase:    192 + (t+12)*-1.1,
+      hueSpread:  46 + 60*branch
+    };
+  }
+
+  // ---------- crystal growth ----------
+  let tips = [];
+  let segBudget = 0;
+  let phase = 'grow';       // grow -> hold -> (reseed)
+  let holdT = 0;
+  let nucleusPulse = 0;
+
+  function reseed(hard){
+    if(hard){
+      fctx.save();
+      fctx.setTransform(1,0,0,1,0,0);
+      fctx.clearRect(0,0,frost.width,frost.height);
+      fctx.restore();
+    }
+    const m = morph(T);
+    tips = [{ x:0, y:0, dir:0, len:0, max:m.maxLen, gen:0, w:rnd(2.2,3.0), alive:true }];
+    // a faint inner hexagon facet for plate morphologies
+    if(m.plate>0.45){
+      const f = m.maxLen*0.16*m.plate;
+      seg(0,0,f,0, m.hueBase+8, 70, 1.2, 0.5);
+    }
+    segBudget = 1100 + (m.branch*900)|0;
+    phase = 'grow';
+    nucleusPulse = 1;
+  }
+
+  // draw one segment with full D6 (6-fold dihedral) snowflake symmetry, additive glow
+  function seg(x0,y0,x1,y1,hue,light,w,a){
+    fctx.lineCap = 'round';
+    for(let k=0;k<6;k++){
+      const rot = k*Math.PI/3;
+      for(let mr=0;mr<2;mr++){
+        fctx.save();
+        fctx.translate(cx,cy);
+        fctx.rotate(rot);
+        if(mr) fctx.scale(1,-1);
+        // glow halo
+        fctx.strokeStyle = `hsla(${hue},92%,${light}%,${a*0.42})`;
+        fctx.lineWidth = w*3.1;
+        fctx.beginPath(); fctx.moveTo(x0,y0); fctx.lineTo(x1,y1); fctx.stroke();
+        // bright core
+        fctx.strokeStyle = `hsla(${hue},78%,${Math.min(99,light+22)}%,${a})`;
+        fctx.lineWidth = w;
+        fctx.beginPath(); fctx.moveTo(x0,y0); fctx.lineTo(x1,y1); fctx.stroke();
+        fctx.restore();
+      }
+    }
+  }
+
+  function growStep(m){
+    if(!tips.length){ if(phase==='grow'){ phase='hold'; holdT=0; } return; }
+    const next = [];
+    for(let i=0;i<tips.length;i++){
+      const tp = tips[i];
+      if(!tp.alive) continue;
+      // gentle bias toward nearest hex axis (60°) — crystalline lattice
+      const snap = Math.round(tp.dir/(Math.PI/3))*(Math.PI/3);
+      tp.dir += (snap - tp.dir)*0.06 + (Math.random()-0.5)*m.jitter;
+      const st = m.speed;
+      const nx = tp.x + Math.cos(tp.dir)*st;
+      const ny = tp.y + Math.sin(tp.dir)*st;
+      const lr = clamp(tp.len/tp.max, 0, 1);
+      const hue = m.hueBase + lr*m.hueSpread + (Math.random()-0.5)*8;
+      const light = 58 + lr*30;
+      seg(tp.x,tp.y,nx,ny, hue, light, tp.w, 0.5);
+      tp.x=nx; tp.y=ny; tp.len+=st; tp.w*=0.9965; segBudget--;
+
+      // side branches (dendrite) at ±60°
+      if(segBudget>0 && tp.gen<4 && tp.len>tp.max*0.12 && tp.len<tp.max*0.93
+         && Math.random()<m.branchProb){
+        const sgn = Math.random()<0.5?1:-1;
+        next.push({ x:tp.x, y:tp.y, dir:tp.dir + sgn*(Math.PI/3) + rnd(-0.12,0.12),
+                    len:0, max:tp.max*m.childScale, gen:tp.gen+1, w:tp.w*0.82, alive:true });
+      }
+      // ribs / facets (plate) — short perpendicular spurs
+      if(segBudget>0 && tp.gen<3 && Math.random()<m.ribProb){
+        const sgn = Math.random()<0.5?1:-1;
+        next.push({ x:tp.x, y:tp.y, dir:tp.dir + sgn*(Math.PI/2),
+                    len:0, max:tp.max*0.18, gen:tp.gen+2, w:tp.w*0.7, alive:true });
+      }
+      if(tp.len>=tp.max || tp.w<0.45 || segBudget<=0){ tp.alive=false; continue; }
+      next.push(tp);
+    }
+    // cap for performance
+    tips = next.length>620 ? next.slice(0,620) : next;
+    // audio chime when junctions form
+    if(audioOn && next.length && Math.random()<0.05) chime(m);
+  }
+
+  // ---------- air frost particles ----------
+  let air = [];
+  function buildAir(){
+    const n = Math.round(clamp((W*H)/14000, 60, 150));
+    air = [];
+    for(let i=0;i<n;i++){
+      air.push({ x:Math.random()*W, y:Math.random()*H, z:rnd(0.25,1),
+                 r:rnd(0.5,2.0), ph:rnd(0,6.28), sp:rnd(0.4,1.2), sw:rnd(0.4,1.4) });
+    }
+  }
+  let dust = [];
+  function buildDust(){
+    const n = Math.round(clamp((W*H)/9000, 90, 220));
+    dust = [];
+    for(let i=0;i<n;i++) dust.push({ x:Math.random()*W, y:Math.random()*H, r:rnd(0.4,1.1), ph:rnd(0,6.28), sp:rnd(0.4,1.6) });
+  }
+
+  // ---------- sparkles (bloom burst) ----------
+  let sp = [];
+  function bloom(){
+    reseed(false);
+    nucleusPulse = 1.4;
+    const m = morph(T);
+    const n = 70;
+    for(let i=0;i<n;i++){
+      const a = (i/n)*6.283 + rnd(-0.1,0.1);
+      const v = rnd(1.5,6.2);
+      sp.push({ x:cx, y:cy, vx:Math.cos(a)*v, vy:Math.sin(a)*v, life:1, hue:m.hueBase+rnd(0,m.hueSpread) });
+    }
+    unlockAudio(); chord(m);
+  }
+
+  // ---------- background ----------
+  function blob(x,y,r,col){
+    const gr = ctx.createRadialGradient(x,y,0,x,y,r);
+    gr.addColorStop(0,col); gr.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle = gr; ctx.fillRect(0,0,W,H);
+  }
+  function drawBG(t){
+    const lg = ctx.createLinearGradient(0,0,0,H);
+    lg.addColorStop(0,'#05080f'); lg.addColorStop(.45,'#070e1e'); lg.addColorStop(1,'#04060c');
+    ctx.fillStyle = lg; ctx.fillRect(0,0,W,H);
+
+    ctx.globalCompositeOperation = 'lighter';
+    blob(cx + Math.sin(t*0.00012)*W*0.32, cy*0.55 + Math.cos(t*0.00009)*H*0.18, Math.max(W,H)*0.55, 'rgba(36,118,150,0.10)');
+    blob(cx + Math.cos(t*0.00010)*W*0.30, cy*1.15 + Math.sin(t*0.00013)*H*0.15, Math.max(W,H)*0.50, 'rgba(80,60,150,0.085)');
+    blob(cx*1.4 + Math.sin(t*0.00007)*W*0.2, cy*0.9, Math.max(W,H)*0.40, 'rgba(150,70,120,0.05)');
+
+    // star dust
+    for(let i=0;i<dust.length;i++){
+      const d = dust[i];
+      const tw = 0.35 + 0.65*Math.abs(Math.sin(t*0.001*d.sp + d.ph));
+      ctx.fillStyle = `rgba(190,215,245,${0.05+tw*0.16})`;
+      ctx.beginPath(); ctx.arc(d.x,d.y,d.r*(0.7+tw*0.6),0,6.283); ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+
+    // vignette
+    const vg = ctx.createRadialGradient(cx,cy,R*0.45,cx,cy,Math.max(W,H)*0.8);
+    vg.addColorStop(0,'rgba(0,0,0,0)'); vg.addColorStop(1,'rgba(0,0,0,0.55)');
+    ctx.fillStyle = vg; ctx.fillRect(0,0,W,H);
+  }
+
+  // ---------- main loop ----------
+  let last = performance.now(), hudAcc=0;
+  function frame(now){
+    const dt = Math.min(40, now-last); last = now;
+    const steps = dt>26?2:1;
+
+    const m = morph(T);
+
+    // crystal growth
+    for(let s=0;s<steps;s++) growStep(m);
+
+    // hold / reseed lifecycle
+    if(phase==='hold'){
+      holdT += dt;
+      // slow fade of the matured flake
+      fctx.globalCompositeOperation = 'destination-out';
+      fctx.fillStyle = 'rgba(0,0,0,0.016)';
+      fctx.fillRect(0,0,W,H);
+      fctx.globalCompositeOperation = 'lighter';
+      if(holdT>2600){ T = clamp(T + rnd(-2.4,2.4), -22, -1); reseed(false); }
+    } else {
+      // tiny ambient fade keeps highlights from clipping
+      fctx.globalCompositeOperation = 'destination-out';
+      fctx.fillStyle = 'rgba(0,0,0,0.003)';
+      fctx.fillRect(0,0,W,H);
+      fctx.globalCompositeOperation = 'lighter';
+    }
+
+    // rotation & scale easing
+    autoRot += 0.00045*dt;
+    const md = Math.hypot(mx-cx, my-cy)/Math.max(R,1);
+    scaleT = 0.92 + (1-clamp(md,0,1))*0.26;
+    scale += (scaleT-scale)*0.05;
+    const rot = autoRot + userRot;
+
+    // ---- render ----
+    drawBG(now);
+
+    // crystal with bloom halo + sharp core
+    ctx.save();
+    ctx.translate(cx,cy);
+    ctx.rotate(rot);
+    ctx.scale(scale,scale);
+    ctx.globalCompositeOperation = 'lighter';
+    const blur = Math.min(W,H) < 520 ? 5 : 8;
+    try{ ctx.filter = 'blur('+blur+'px)'; }catch(e){}
+    ctx.globalAlpha = 0.55;
+    ctx.drawImage(frost, -cx, -cy, W, H);
+    try{ ctx.filter = 'none'; }catch(e){}
+    ctx.globalAlpha = 1;
+    ctx.drawImage(frost, -cx, -cy, W, H);
+    ctx.restore();
+    ctx.globalCompositeOperation = 'source-over';
+
+    // nucleus glow
+    nucleusPulse *= 0.94;
+    const np = 0.35 + nucleusPulse;
+    ctx.globalCompositeOperation = 'lighter';
+    const ng = ctx.createRadialGradient(cx,cy,0,cx,cy,40*np+18);
+    ng.addColorStop(0,'rgba(235,248,255,'+(0.5+nucleusPulse*0.4)+')');
+    ng.addColorStop(0.4,'rgba(150,210,255,0.35)');
+    ng.addColorStop(1,'rgba(120,180,255,0)');
+    ctx.fillStyle = ng; ctx.beginPath(); ctx.arc(cx,cy,40*np+18,0,6.283); ctx.fill();
+
+    // air frost (parallax)
+    const wx = (mx-cx)/W, wy=(my-cy)/H;
+    for(let i=0;i<air.length;i++){
+      const p = air[i];
+      p.y += (0.18 + p.z*0.55)*(dt/16);
+      p.x += Math.sin(now*0.0006*p.sw + p.ph)*0.3*p.z*(dt/16);
+      if(p.y>H+6){ p.y=-6; p.x=Math.random()*W; }
+      const px = p.x - wx*60*p.z, py = p.y - wy*40*p.z;
+      const tw = 0.4 + 0.6*Math.abs(Math.sin(now*0.0014*p.sp + p.ph));
+      ctx.fillStyle = `rgba(205,228,255,${(0.12+tw*0.34)*p.z})`;
+      ctx.beginPath(); ctx.arc(px,py,p.r*(0.6+tw*0.7),0,6.283); ctx.fill();
+    }
+
+    // sparkles
+    for(let i=sp.length-1;i>=0;i--){
+      const s2 = sp[i];
+      s2.x += s2.vx*(dt/16); s2.y += s2.vy*(dt/16);
+      s2.vx*=0.96; s2.vy*=0.96; s2.life-=0.018*(dt/16);
+      if(s2.life<=0){ sp.splice(i,1); continue; }
+      ctx.fillStyle = `hsla(${s2.hue},90%,80%,${s2.life})`;
+      const r = 1.4*s2.life+0.4;
+      ctx.beginPath(); ctx.arc(s2.x,s2.y,r,0,6.283); ctx.fill();
+    }
+
+    // cursor light
+    const cg = ctx.createRadialGradient(mx,my,0,mx,my,120);
+    cg.addColorStop(0,'rgba(150,210,255,0.10)'); cg.addColorStop(1,'rgba(150,210,255,0)');
+    ctx.fillStyle = cg; ctx.beginPath(); ctx.arc(mx,my,120,0,6.283); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+
+    // HUD throttle
+    hudAcc += dt;
+    if(hudAcc>120){ hudAcc=0;
+      document.getElementById('tval').textContent = (T<0?'−':'')+Math.abs(T).toFixed(1);
+      document.getElementById('sval').textContent = m.name;
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  // ---------- audio (subtle, gesture-gated) ----------
+  let actx=null, drone=null, droneGain=null, audioOn=false, lastBell=0;
+  const scaleNotes = [0,3,5,7,10,12,15];
+  function unlockAudio(){
+    if(actx) return;
+    try{
+      actx = new (window.AudioContext||window.webkitAudioContext)();
+      droneGain = actx.createGain(); droneGain.gain.value = 0.0; droneGain.connect(actx.destination);
+      const o1 = actx.createOscillator(), o2 = actx.createOscillator();
+      o1.type='sine'; o2.type='sine'; o1.frequency.value=73.4; o2.frequency.value=110.1;
+      const f = actx.createBiquadFilter(); f.type='lowpass'; f.frequency.value=420;
+      o1.connect(f); o2.connect(f); f.connect(droneGain); o1.start(); o2.start();
+      drone={o1,o2};
+      audioOn=true; droneGain.gain.linearRampToValueAtTime(0.04, actx.currentTime+2.0);
+      setMute(false);
+    }catch(e){}
+  }
+  function chime(m){
+    if(!actx||!audioOn) return;
+    const now = actx.currentTime;
+    if(now-lastBell<0.10) return; lastBell=now;
+    const semi = scaleNotes[(Math.random()*scaleNotes.length)|0] + (m.branch>0.6?12:0);
+    const freq = 523.25*Math.pow(2,semi/12)*(Math.random()<0.5?1:0.5);
+    const o=actx.createOscillator(), gg=actx.createGain();
+    o.type='sine'; o.frequency.value=freq;
+    gg.gain.value=0; o.connect(gg); gg.connect(actx.destination);
+    gg.gain.linearRampToValueAtTime(0.05, now+0.01);
+    gg.gain.exponentialRampToValueAtTime(0.0001, now+1.1);
+    o.start(now); o.stop(now+1.15);
+  }
+  function chord(m){
+    if(!actx||!audioOn) return;
+    [0,4,7,11].forEach((s,i)=>{ setTimeout(()=>{ if(audioOn) chime(m); }, i*70); });
+  }
+  function setMute(off){
+    audioOn = !off;
+    if(droneGain&&actx) droneGain.gain.linearRampToValueAtTime(off?0:0.04, actx.currentTime+0.4);
+    document.getElementById('mute').textContent = off?'·':'♪';
+    document.getElementById('mute').style.opacity = off?0.5:1;
+  }
+
+  // ---------- events ----------
+  document.getElementById('mute').addEventListener('click', e=>{
+    e.stopPropagation();
+    if(!actx){ unlockAudio(); return; }
+    setMute(audioOn);
+  });
+  cv.addEventListener('pointerdown', e=>{ down=true; dragDist=0; lastX=e.clientX; lastY=e.clientY; mx=e.clientX; my=e.clientY; });
+  window.addEventListener('pointermove', e=>{
+    mx=e.clientX; my=e.clientY;
+    if(down){
+      const dx=e.clientX-lastX, dy=e.clientY-lastY;
+      dragDist += Math.hypot(dx,dy);
+      userRot += dx*0.005;
+      lastX=e.clientX; lastY=e.clientY;
+    }
+  });
+  window.addEventListener('pointerup', ()=>{ if(down && dragDist<6) bloom(); down=false; });
+  window.addEventListener('wheel', e=>{
+    T = clamp(T + (e.deltaY>0?-0.7:0.7), -22, -1);
+    e.preventDefault();
+  }, {passive:false});
+  window.addEventListener('resize', resize);
+
+  resize();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

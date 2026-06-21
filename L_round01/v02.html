@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>궤도 정거장 · 내부</title>
+<style>
+  :root{
+    --paper:#ece3cf; --ink:#2a261f; --dim:#6f6450;
+    --hull:#0b0d12; --steel:#aeb6c2; --glow:#8fd3c8; --amber:#e7b85a; --warn:#e4795b;
+  }
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--hull);}
+  *{box-sizing:border-box;}
+  /* ---- 무대 ---- */
+  #stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#05070a;}
+  #view{
+    margin:0;
+    font:13px/13px ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    color:#cdd5df; white-space:pre; letter-spacing:0; user-select:none;
+    text-shadow:0 0 6px rgba(120,200,255,.06);
+    will-change:contents;
+  }
+  /* 화면 비네팅 + 스캔라인으로 "관측창/모니터" 질감 */
+  #scan{position:fixed;inset:0;pointer-events:none;z-index:5;
+    background:
+      repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0 2px, rgba(0,0,0,.10) 2px 3px),
+      radial-gradient(120% 120% at 50% 45%, rgba(0,0,0,0) 52%, rgba(0,0,0,.55) 100%);
+    mix-blend-mode:multiply;}
+  /* 중앙 조준점 */
+  #retic{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:6;
+    color:rgba(180,230,255,.55);font:16px/16px ui-monospace,monospace;pointer-events:none;
+    transition:color .15s, text-shadow .15s;}
+  #retic.hot{color:var(--glow);text-shadow:0 0 10px var(--glow);}
+
+  /* ---- HUD ---- */
+  #hud{position:fixed;left:0;right:0;top:0;z-index:7;display:flex;justify-content:space-between;
+    padding:8px 12px;font:11px/1.5 ui-monospace,Menlo,monospace;color:#aab3c0;
+    text-shadow:0 1px 2px #000; pointer-events:none;}
+  #hud .room{color:var(--glow);letter-spacing:2px;font-weight:600;}
+  #hud .right{text-align:right;color:#8b94a2;}
+  #hud .inv{color:var(--amber);}
+  #prompt{position:fixed;left:50%;top:62%;transform:translateX(-50%);z-index:7;
+    font:12px/1.6 ui-monospace,Menlo,monospace;color:#0b0d12;background:var(--glow);
+    padding:5px 12px;border-radius:2px;letter-spacing:.5px;opacity:0;transition:opacity .15s;
+    pointer-events:none;white-space:nowrap;box-shadow:0 0 16px rgba(143,211,200,.4);}
+  #prompt.show{opacity:.94;}
+  #log{position:fixed;left:0;right:0;bottom:0;z-index:7;height:30px;line-height:30px;
+    background:linear-gradient(to right,#0a0c10,#10141c);
+    color:#cfe6ff;font:12px/30px ui-monospace,Menlo,monospace;
+    padding:0 14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    border-top:1px solid rgba(143,211,200,.25);}
+  #log b{color:var(--amber);font-weight:600;}
+
+  /* ---- 인트로(차분한 페이퍼 톤) ---- */
+  #intro{position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;text-align:center;padding:24px;
+    background:var(--paper);color:var(--ink);
+    font-family:"Noto Serif KR",Georgia,serif;transition:opacity 1s ease;}
+  #intro h1{font-size:42px;font-weight:600;letter-spacing:14px;margin:0 0 6px;text-indent:14px;}
+  #intro .sub{font-size:13px;letter-spacing:6px;color:var(--dim);margin-bottom:26px;}
+  #intro p{font-size:15px;line-height:2;max-width:520px;margin:5px 0;}
+  #intro pre.art{font:10px/10px ui-monospace,Menlo,monospace;color:#7d7355;margin:14px 0 18px;}
+  #intro .keys{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--dim);
+    margin-top:26px;line-height:2;}
+  #intro .go{margin-top:18px;font:13px/1 ui-monospace,monospace;color:var(--ink);
+    border:1px solid var(--ink);padding:10px 22px;border-radius:2px;letter-spacing:3px;
+    cursor:pointer;background:transparent;animation:pulse 2.2s ease-in-out infinite;}
+  @keyframes pulse{0%,100%{opacity:.55}50%{opacity:1}}
+  #intro.hidden{opacity:0;pointer-events:none;}
+
+  /* ---- 터치 컨트롤 ---- */
+  #touch{position:fixed;inset:0;z-index:8;display:none;pointer-events:none;}
+  #touch .pad{position:absolute;bottom:46px;left:18px;width:150px;height:150px;pointer-events:auto;}
+  #touch .btn{position:absolute;width:48px;height:48px;border:1px solid rgba(143,211,200,.5);
+    background:rgba(10,14,20,.55);color:var(--glow);border-radius:8px;
+    font:18px/48px ui-monospace,monospace;text-align:center;backdrop-filter:blur(2px);}
+  #touch .up{left:51px;top:0}#touch .dn{left:51px;top:102px}
+  #touch .lf{left:0;top:51px}#touch .rt{left:102px;top:51px}
+  #touch .act{position:absolute;bottom:60px;right:22px;width:78px;height:78px;border-radius:50%;
+    border:1px solid var(--glow);background:rgba(143,211,200,.14);color:var(--glow);
+    font:13px/78px ui-monospace,monospace;text-align:center;pointer-events:auto;letter-spacing:1px;}
+  #touch .rot{position:absolute;bottom:150px;right:22px;width:78px;display:flex;gap:6px;pointer-events:auto;}
+  #touch .rot .btn{position:static;width:36px;height:36px;line-height:36px;font-size:15px;}
+  body.touch #touch{display:block;}
+
+  @media (max-width:480px){
+    #intro h1{font-size:30px;letter-spacing:8px}
+    #intro p{font-size:13px}
+    #view{font-size:11px;line-height:11px}
+  }
+</style>
+</head>
+<body>
+<div id="stage"><pre id="view"></pre></div>
+<div id="scan"></div>
+<div id="retic">+</div>
+
+<div id="hud">
+  <div><span class="room" id="hud-room">— 도킹 —</span><br><span id="hud-pos"></span></div>
+  <div class="right"><span class="inv" id="hud-inv">소지품: 없음</span><br><span id="hud-obj"></span></div>
+</div>
+<div id="prompt"></div>
+<div id="log">시스템 대기 중…</div>
+
+<div id="touch">
+  <div class="pad">
+    <div class="btn up" data-k="w">▲</div>
+    <div class="btn dn" data-k="s">▼</div>
+    <div class="btn lf" data-k="a">◀</div>
+    <div class="btn rt" data-k="d">▶</div>
+  </div>
+  <div class="rot">
+    <div class="btn" data-k="q">↺</div>
+    <div class="btn" data-k="e2">↻</div>
+  </div>
+  <div class="act" data-k="e">작동<br>E</div>
+</div>
+
+<div id="intro">
+  <h1>궤도 정거장</h1>
+  <div class="sub">O R B I T A L &nbsp; S T A T I O N &nbsp;·&nbsp; 내부</div>
+  <p>지구 저궤도 410km. 무인이 된 정거장 <b>하란-7</b>에 도킹했다.</p>
+  <p>여섯 개의 모듈이 회랑으로 이어져 있다.<br>각 방은 아스키로 짜인 입체 공간으로 떠 있다.</p>
+  <pre class="art">     .---.        ___
+    /  o  \   __ /   \__   ____
+====[==|==]=={==(  +  )==}=[==|==]====
+    \_____/      \___/        '--'
+        |          |            |
+     큐폴라     중앙코어      거주구</pre>
+  <p class="keys">W A S D 이동 &nbsp;·&nbsp; ← → 회전 &nbsp;·&nbsp; E 살펴보기 / 작동 / 줍기</p>
+  <button class="go" id="go">▶ 도킹 해제 · 입장</button>
+</div>
+
+<script>
+(() => {
+"use strict";
+/* =====================================================================
+   궤도 정거장 — 단일 HTML 아스키 3D 탐험
+   엔진: DDA 레이캐스트로 회랑/벽을 그리고, 스프라이트(3D 아스키 사물)를
+   z-버퍼에 합성. 방=타일맵의 구역(module). E로 상호작용.
+   ===================================================================== */
+
+  /* ---------- 맵: 0=빈공간 통로, 1~..=벽 텍스처군, 글자=문 게이트 ----------
+     여러 "모듈"을 회랑으로 연결. 각 칸 1.0 = 한 타일.
+     아래 ASCII 도면이 곧 정거장 평면도다. (가독성 위해 문자로 작성) */
+  const RAW = [
+    "###############################################",
+    "#.........#........A........#.................#",
+    "#.. AIR ..#........#........#...  CUPOLA  ...##",
+    "#.........#........#........#.................#",
+    "#....1....+........#........+.......2.........#",
+    "#.........#........#........#.................#",
+    "#.........#........#........#.................#",
+    "###+#######........#........#######+###########",
+    "....#.............#........#..........#........",
+    "....#.............#........#..........#........",
+    "#####........CORRIDOR.......#..........#####...",
+    "#...#.......................#..........#...#...",
+    "#...+.......................+..........+...#...",
+    "#...#.......................#..........#...#...",
+    "#...#....HYDRO....#.........#...CORE....#...#..",
+    "#...#.....3.......#.........#....5......#...#..",
+    "#...#.............#.........#...........#...#..",
+    "#####+#############.........############+#####.",
+    "....#.......................#..........#......",
+    "....#.......................#..........#......",
+    "#...#......CREW.............#...REACTOR.#.....",
+    "#...#.......4...............#.....6.....#.....",
+    "#...#.......................#..........#......",
+    "#...#.......................#..........#......",
+    "###############################################",
+  ];
+  const MH = RAW.length, MW = RAW[0].length;
+  // 벽 여부 격자 (true=막힘). 통로 글자(., 방이름 글자, 문)는 통과.
+  const map = [];
+  const doors = {}; // "x,y" -> {open:false}
+  for (let y=0;y<MH;y++){
+    const row=[];
+    for (let x=0;x<MW;x++){
+      const ch = RAW[y][x] || '#';
+      if (ch==='+'){ doors[x+","+y]={open:false}; row.push(2); }      // 닫힌 문 = 벽처럼
+      else if (ch==='#'){ row.push(1); }                              // 외벽/내벽
+      else row.push(0);                                               // 통로/방 바닥(글자 라벨 포함)
+    }
+    map.push(row);
+  }
+  function solid(x,y){
+    if (x<0||y<0||x>=MW||y>=MH) return true;
+    const c=map[y|0][x|0];
+    if (c===1) return true;
+    if (c===2){ const d=doors[(x|0)+","+(y|0)]; return !(d&&d.open); }
+    return false;
+  }
+
+  /* ---------- 방(모듈) 정의: 영역 + 이름 + 팔레트 ---------- */
+  const ROOMS = [
+    {id:"air",  name:"에어로크",   x0:1, y0:1, x1:9,  y1:6,  tint:"#9fb0bf"},
+    {id:"cup",  name:"큐폴라 관측실",x0:28,y0:1, x1:44, y1:6,  tint:"#7fb8d8"},
+    {id:"cor",  name:"중앙 회랑",   x0:10,y0:7, x1:44, y1:17, tint:"#aeb6c2"},
+    {id:"hyd",  name:"수경 재배실", x0:4, y0:11,x1:17, y1:17, tint:"#9fd39a"},
+    {id:"core", name:"제어 코어",   x0:27,y0:11,x1:38, y1:17, tint:"#cdb6e2"},
+    {id:"crew", name:"승무원 거주구",x0:4, y0:18,x1:26, y1:23, tint:"#d8c79f"},
+    {id:"rea",  name:"원자로실",    x0:27,y0:18,x1:38, y1:23, tint:"#e0a98a"},
+  ];
+  function roomAt(x,y){
+    for(const r of ROOMS) if(x>=r.x0&&x<=r.x1&&y>=r.y0&&y<=r.y1) return r;
+    return {id:"cor",name:"중앙 회랑",tint:"#aeb6c2"};
+  }
+
+  /* ---------- 3D 아스키 스프라이트(사물) ----------
+     각 art는 정면에서 본 아스키. 렌더 시 거리에 따라 축소/명암.
+     interact: examine|operate|pickup. */
+  function A(s){return s.split("\n");}
+  const PROPS = [
+    { id:"console", room:"core", x:31.5, y:13.5, kind:"operate", color:"#9ad0ff",
+      label:"중앙 제어 콘솔",
+      art:A(
+"  _______________\n"+
+" /::::::::::::::::\\\n"+
+"|: [#][#][#] [==] :|\n"+
+"|: ()()()  >>>>>  :|\n"+
+"|:_______________:|\n"+
+" |  || === ||  |\n"+
+" |__||_____||__|"),
+      done:false,
+      onExamine:"매끈한 제어 콘솔. 화면에 「주 시스템 ─ 대기」가 깜빡인다.",
+      onOperate:["주 동력 버스를 올린다… 정거장 전체에 불이 들어온다.","제어 코어가 깨어났다. 다른 모듈의 시스템도 응답하기 시작한다."] },
+
+    { id:"window", room:"cup", x:36, y:3, kind:"operate", color:"#bfe3ff",
+      label:"관측창 셔터",
+      art:A(
+"+===================+\n"+
+"|####### []  #######|\n"+
+"|####### []  #######|\n"+
+"|####### []  #######|\n"+
+"|#######[//]#######|\n"+
+"+===================+"),
+      artOpen:A(
+"+===================+\n"+
+"|   .    *      .   |\n"+
+"| *   .--._    .  * |\n"+
+"|  .-(  EARTH )-.   |\n"+
+"| (  ~~~~~~~~~~  )  |\n"+
+"+========[//]=======+"),
+      done:false,
+      onExamine:"두꺼운 차폐 셔터가 관측창을 막고 있다. 옆에 개폐 레버.",
+      onOperate:["셔터가 천천히 갈라진다…","창밖으로 푸른 지구가 회전하며 떠오른다. 한참을 바라본다."] },
+
+    { id:"plant", room:"hyd", x:8, y:14, kind:"pickup", color:"#9cf08a",
+      label:"발아한 묘목",
+      art:A(
+"     \\|/\n"+
+"   \\  |  /\n"+
+"  --(@)(@)--\n"+
+"    \\ | /\n"+
+"   ===|===\n"+
+"   [~~~~~~]\n"+
+"   [::::::]"),
+      done:false, item:"묘목",
+      onExamine:"수경 재배대에서 자란 어린 묘목. 무중력에서도 잎이 위를 향한다.",
+      onPickup:"묘목을 조심스레 채취했다. 손바닥 위에서 잎이 가늘게 떨린다." },
+
+    { id:"rack", room:"hyd", x:13, y:14, kind:"examine", color:"#88d6c8",
+      label:"수경 재배 랙",
+      art:A(
+"#=============#\n"+
+"|: ~ ~ ~ ~ ~ :|\n"+
+"#=============#\n"+
+"|: ~ ~ ~ ~ ~ :|\n"+
+"#=============#\n"+
+"|: ~ ~ ~ ~ ~ :|\n"+
+"#======|======#"),
+      onExamine:"영양액이 순환하는 재배 랙. 펌프 소리만 규칙적으로 들린다." },
+
+    { id:"reactor", room:"rea", x:32.5, y:20.5, kind:"operate", color:"#ffb060",
+      label:"원자로 격자",
+      art:A(
+"      /\\\n"+
+"     /||\\\n"+
+"    /=||=\\\n"+
+"   < (()) >\n"+
+"    \\=||=/\n"+
+"     \\||/\n"+
+"   ###||###\n"+
+"   [__||__]"),
+      done:false,
+      onExamine:"휴면 상태의 핵융합 격자. 노심이 어둡다. 점화 시퀀스 가능.",
+      onOperate:["봉을 인출하고 점화 시퀀스를 건다…","노심에 청백색 빛이 돈다. 정거장의 심장이 다시 뛴다."],
+      needPower:true,
+      lockedMsg:"제어 코어의 주 동력이 꺼져 있다. 콘솔을 먼저 작동시켜야 한다." },
+
+    { id:"pod", room:"crew", x:9, y:20.5, kind:"examine", color:"#e8d39a",
+      label:"수면 포드",
+      art:A(
+"  ________________\n"+
+" /                \\\n"+
+"|  .------------.  |\n"+
+"| | (  z z z  ) | |\n"+
+"|  '------------'  |\n"+
+" \\________________/\n"+
+"   ||        ||"),
+      onExamine:"비어 있는 수면 포드. 안쪽 명패에 누군가의 이름이 긁혀 있다." },
+
+    { id:"locker", room:"crew", x:20, y:20.5, kind:"pickup", color:"#cdd5df",
+      label:"개인 사물함",
+      art:A(
+" .-------------.\n"+
+" |  [o]        |\n"+
+" |     LOCKER  |\n"+
+" |  .-------.  |\n"+
+" |  | ===== |  |\n"+
+" |  '-------'  |\n"+
+" '-------------'"),
+      done:false, item:"항해 일지",
+      onExamine:"반쯤 열린 사물함. 안에 낡은 항해 일지가 끼워져 있다.",
+      onPickup:"항해 일지를 챙겼다. 마지막 장에 「곧 돌아오겠다」고 적혀 있다." },
+
+    { id:"drone", room:"cor", x:24, y:9.5, kind:"operate", color:"#9fe0ff",
+      label:"정비 드론 (휴면)",
+      art:A(
+"    ___\n"+
+"  _/o o\\_\n"+
+" |  ===  |\n"+
+" |_|   |_|\n"+
+"   |---|\n"+
+"  /\\   /\\\n"+
+" '  '-'  '"),
+      done:false,
+      onExamine:"바닥에 웅크린 정비 드론. 광학 센서가 흐릿하게 깜빡인다.",
+      onOperate:["드론을 깨운다. 부저가 울리며 떠오른다.","드론이 당신을 졸졸 따라다니기 시작한다. 회랑이 덜 외롭다."] },
+
+    { id:"airlock", room:"air", x:5, y:4, kind:"examine", color:"#aab8c4",
+      label:"외부 에어로크",
+      art:A(
+"  +=============+\n"+
+"  | O   AIR   O |\n"+
+"  |  .-------.  |\n"+
+"  |  |  []   |  |\n"+
+"  |  |  []   |  |\n"+
+"  |  '-------'  |\n"+
+"  +=====||======+"),
+      onExamine:"당신이 들어온 외부 에어로크. 바깥은 진공. 도킹 클램프가 잠겨 있다." },
+  ];
+
+  /* ---------- 화면/측정 ---------- */
+  const view=document.getElementById("view");
+  let CW=7.8, CH=13, W=110, H=42;
+  function fit(){
+    const probe=document.createElement("span");
+    probe.style.cssText="position:absolute;visibility:hidden;white-space:pre;"+
+      "font:"+ (innerWidth<480?11:13) +"px/"+(innerWidth<480?11:13)+"px ui-monospace,Menlo,monospace";
+    probe.textContent="M".repeat(100);
+    document.body.appendChild(probe);
+    CW=probe.getBoundingClientRect().width/100||7.8; probe.remove();
+    CH=innerWidth<480?11:13;
+    W=Math.max(50,Math.min(200,Math.floor(innerWidth/CW)-1));
+    H=Math.max(24,Math.floor((innerHeight-2)/CH));
+    if(H%2) H--; // 짝수로 지평선 안정
+  }
+  fit(); addEventListener("resize",fit);
+
+  /* ---------- 상태 ---------- */
+  let px=5.5, py=8.5, dir=0; // 회랑 입구 부근에서 시작
+  const keys={};
+  let entered=false;
+  let power=false;            // 주 동력
+  const inv=[];               // 소지품
+  let lookProp=null;          // 현재 조준 중인 사물
+  let drone=false;
+
+  /* ---------- 텍스처: 정거장 벽(리벳/도관 느낌) ---------- */
+  const WALLTEX = "##==||::++--##[]##||==##::##||##==[]##".split("");
+  function wallChar(ix,iy,wallX,d,side,tint){
+    if(d>16) return " ";
+    if(d>11) return "·";
+    const seed=((ix*73856093)^(iy*19349663))>>>0;
+    const t=((wallX*64)|0);
+    const idx=(seed + t*131 + side*7)%WALLTEX.length;
+    let ch=WALLTEX[idx];
+    if(d>7){ return ch==='#'? ':' : (ch==='='?'.':ch==='|'?':':' '); }
+    // 가까울수록 또렷
+    if(side){ // 측면벽은 약간 어둡게
+      if(ch==='#') ch='=';
+    }
+    return ch;
+  }
+  const FLOORTEX="·--==--··  ".split("");          // 지평선→발치 (멀수록 흐림)
+  const CEILTEX=" ` `   .   `  ".split("");        // 천장 격자/조명 (희박)
+  const VWALL=2.05;                                // 벽 높이 배율 (방 안에 선 느낌)
+  function ceilChar(ix,iy,d){
+    // 천장: 구조보 + 매입 조명. 멀수록(위로 갈수록) 희박.
+    if(d>13) return " ";
+    const seed=((ix*2654435761)^(iy*40503))>>>0;
+    const r=(seed>>(d&7))&15;
+    if(r===0) return "+";        // 보 교차
+    if(r<2) return "-";          // 보
+    if(r===3 && d<7) return "o"; // 조명
+    return " ";
+  }
+
+  /* ---------- 렌더 ---------- */
+  let buf=null, zb=null;
+  function render(){
+    if(!buf||buf.length!==W*H){ buf=new Array(W*H); zb=new Float32Array(W); }
+    const horizon=H>>1;
+    const cosD=Math.cos(dir),sinD=Math.sin(dir);
+    const planeX=Math.cos(dir+Math.PI/2)*0.66, planeY=Math.sin(dir+Math.PI/2)*0.66;
+    const room=roomAt(px,py);
+
+    // 1) 벽 레이캐스트 (열 단위)
+    const colTop=new Int16Array(W), colBot=new Int16Array(W);
+    for(let x=0;x<W;x++){
+      const cam=(2*x)/W-1;
+      const rdx=cosD+planeX*cam, rdy=sinD+planeY*cam;
+      let mx=px|0,my=py|0;
+      const ddx=Math.abs(1/(rdx||1e-9)), ddy=Math.abs(1/(rdy||1e-9));
+      let sx,sy,sdx,sdy,side=0;
+      if(rdx<0){sx=-1;sdx=(px-mx)*ddx;}else{sx=1;sdx=(mx+1-px)*ddx;}
+      if(rdy<0){sy=-1;sdy=(py-my)*ddy;}else{sy=1;sdy=(my+1-py)*ddy;}
+      let hit=0,g=0;
+      while(!hit&&g++<80){
+        if(sdx<sdy){sdx+=ddx;mx+=sx;side=0;}else{sdy+=ddy;my+=sy;side=1;}
+        if(mx<0||my<0||mx>=MW||my>=MH) {hit=1;break;}
+        const c=map[my][mx];
+        if(c===1) hit=1;
+        else if(c===2){ const d=doors[mx+","+my]; if(!(d&&d.open)) hit=1; }
+      }
+      const dist=Math.max(0.10, side===0? sdx-ddx : sdy-ddy);
+      zb[x]=dist;
+      const lh=Math.min(H*5,(H*VWALL/dist)|0);
+      const ds=Math.max(0,horizon-(lh>>1)), de=Math.min(H-1,horizon+(lh>>1));
+      colTop[x]=ds; colBot[x]=de;
+      let wallX=side===0? py+dist*rdy : px+dist*rdx; wallX-=wallX|0;
+      // 셀 채우기
+      for(let y=0;y<H;y++){
+        let ch;
+        if(y<ds){                                              // 천장(구조보+조명)
+          const cd=horizon-y;                                  // 위로 갈수록 멂
+          ch=ceilChar(mx,my+ (y*7|0), cd*0.6+dist*0.4);
+        }
+        else if(y>de){                                         // 바닥(원근 명암 램프)
+          const fd=(y-horizon)/(H-horizon);
+          ch=FLOORTEX[Math.min(FLOORTEX.length-1,(fd*FLOORTEX.length)|0)]||' ';
+        } else {                                               // 벽
+          ch=wallChar(mx,my,wallX,dist+(side?0.8:0),side,room.tint);
+        }
+        buf[y*W+x]=ch;
+      }
+    }
+
+    // 2) 스프라이트(3D 아스키 사물) 합성 — z-버퍼 비교
+    const visProps=PROPS.map(p=>{
+      const dx=p.x-px, dy=p.y-py;
+      const dist=Math.hypot(dx,dy);
+      // 카메라 좌표 변환
+      const invDet=1/(planeX*sinD - cosD*planeY);
+      const tx=invDet*(sinD*dx - cosD*dy);   // 좌우
+      const tz=invDet*(-planeY*dx + planeX*dy); // 깊이
+      return {p,dx,dy,dist,tx,tz};
+    }).filter(o=>o.tz>0.25).sort((a,b)=>b.dist-a.dist); // 먼 것 먼저
+
+    lookProp=null; let bestCenter=1e9;
+    for(const o of visProps){
+      const {p,tx,tz,dist}=o;
+      const art=(p.id==="window"&&p.done)?p.artOpen:p.art;
+      const aw=Math.max(...art.map(r=>r.length)), ah=art.length;
+      // 화면상 크기: 깊이에 반비례, 벽 높이 배율과 보조를 맞춤.
+      const scale=Math.min(5.5, (H*VWALL*0.16)/(tz*ah));   // 사물이 벽 높이에 맞춰 커짐
+      const sw=Math.max(2,(aw*scale*0.62)|0);              // 폭은 모노스페이스 종횡비 보정
+      const sh=Math.max(2,(ah*scale)|0);
+      const scrX=((W/2)*(1+tx/tz))|0;
+      const horizon=H>>1;
+      // 바닥 기준선: 같은 깊이의 벽 밑단에 발을 붙임
+      const floorLine=Math.min(H-1, horizon + (((H*VWALL)/Math.max(tz,0.2))>>1));
+      const top=Math.max(0, floorLine - sh + 1);
+      const left=scrX-(sw>>1);
+      // 조준 판정: 화면 중앙 근처 + 충분히 가까움
+      const centerDist=Math.abs(scrX-W/2);
+      if(centerDist<sw/2+2 && dist<2.6 && centerDist<bestCenter){
+        bestCenter=centerDist; lookProp=p;
+      }
+      // 그리기 (z-버퍼)
+      for(let sy=0;sy<sh;sy++){
+        const ay=(sy/sh*ah)|0;
+        const arow=art[Math.min(ah-1,ay)]||"";
+        const Y=top+sy; if(Y<0||Y>=H) continue;
+        for(let sx2=0;sx2<sw;sx2++){
+          const ax=(sx2/sw*aw)|0;
+          const ch=arow[ax]||" ";
+          if(ch===" ") continue;
+          const X=left+sx2; if(X<0||X>=W) continue;
+          if(tz>=zb[X]-0.02) continue; // 벽 뒤면 가림
+          buf[Y*W+X]=ch;
+        }
+      }
+    }
+
+    // 3) 문자열화
+    let out="";
+    for(let y=0;y<H;y++){
+      out+=buf.slice(y*W,y*W+W).join("")+"\n";
+    }
+    view.textContent=out;
+
+    // 4) 조준 UI
+    const retic=document.getElementById("retic");
+    const prompt=document.getElementById("prompt");
+    if(lookProp){
+      retic.classList.add("hot");
+      const verb = lookProp.kind==="pickup"?"줍기": lookProp.kind==="operate"?"작동":"살펴보기";
+      prompt.textContent="[ E ] "+lookProp.label+" — "+verb;
+      prompt.classList.add("show");
+    }else{
+      retic.classList.remove("hot");
+      prompt.classList.remove("show");
+    }
+  }
+
+  /* ---------- 이동/충돌 + 문 자동개폐 ---------- */
+  function autoDoor(){
+    // 인접 문은 가까이 가면 자동으로 열림(통과 가능)
+    for(const k in doors){
+      const [dx,dy]=k.split(",").map(Number);
+      const near=Math.abs(px-(dx+0.5))<1.4 && Math.abs(py-(dy+0.5))<1.4;
+      doors[k].open=near;
+    }
+  }
+  function tryMove(nx,ny){
+    const m=0.25;
+    const cx=nx+Math.sign(nx-px)*m, cy=ny+Math.sign(ny-py)*m;
+    if(!solid(cx,py)) px=nx;
+    if(!solid(px,cy)) py=ny;
+  }
+
+  /* ---------- 로그/HUD ---------- */
+  const logEl=document.getElementById("log");
+  let logTimer=null;
+  function say(html,hold=4200){
+    logEl.innerHTML=html;
+    if(logTimer) clearTimeout(logTimer);
+  }
+  let cinematic=[]; // 여러 줄 순차 출력
+  function cinematicSay(lines){
+    cinematic=lines.slice();
+    const next=()=>{ if(!cinematic.length) return; say("<b>»</b> "+cinematic.shift());
+      if(cinematic.length) setTimeout(next,2400); };
+    next();
+  }
+  function updateHUD(){
+    const room=roomAt(px,py);
+    document.getElementById("hud-room").textContent="— "+room.name+" —";
+    document.getElementById("hud-pos").textContent="좌표 "+px.toFixed(1)+", "+py.toFixed(1)+
+      "  ·  방위 "+(((dir*180/Math.PI)%360+360)%360|0)+"°  ·  동력 "+(power?"ON":"off")+(drone?"  ·  드론 동행":"");
+    document.getElementById("hud-inv").textContent="소지품: "+(inv.length?inv.join(", "):"없음");
+    document.getElementById("hud-obj").textContent= lookProp?("▶ "+lookProp.label):"";
+  }
+
+  /* ---------- 상호작용 ---------- */
+  function interact(){
+    const p=lookProp; if(!p) return;
+    if(p.kind==="examine"){ say("<b>관찰</b> "+p.onExamine); return; }
+    if(p.kind==="pickup"){
+      if(p.done){ say("이미 비어 있다."); return; }
+      p.done=true; inv.push(p.item);
+      // 줍힌 사물은 스프라이트 목록에서 빈 art로
+      p.art=A("  ( 비어 있음 )"); p.kind="examine"; p.onExamine="여기 있던 것은 이미 챙겼다.";
+      say("<b>획득</b> "+p.onPickup); updateHUD(); return;
+    }
+    if(p.kind==="operate"){
+      if(p.done){ say(p.label+" — 이미 작동 중이다."); return; }
+      if(p.needPower && !power){ say("<b>잠김</b> "+p.lockedMsg); return; }
+      p.done=true;
+      if(p.id==="console") power=true;
+      if(p.id==="drone") drone=true;
+      cinematicSay(p.onOperate);
+      updateHUD(); return;
+    }
+  }
+
+  /* ---------- 입력 ---------- */
+  const intro=document.getElementById("intro");
+  function enter(){
+    if(entered) return; entered=true;
+    intro.classList.add("hidden");
+    document.body.classList.toggle("touch", matchMedia("(pointer:coarse)").matches);
+    say("입장. <b>WASD</b> 이동 · <b>← →</b> 회전 · <b>E</b> 상호작용. 회랑을 따라 여섯 모듈을 탐험하라.");
+    updateHUD();
+  }
+  document.getElementById("go").addEventListener("click",enter);
+  addEventListener("keydown",e=>{
+    if(!entered){ enter(); return; }
+    const k=e.key.toLowerCase();
+    keys[k]=true;
+    if(k==="e"){ interact(); }
+    if(["arrowup","arrowdown","arrowleft","arrowright"," ","w","a","s","d"].includes(k)) e.preventDefault();
+  });
+  addEventListener("keyup",e=>{ keys[e.key.toLowerCase()]=false; });
+
+  // 터치 버튼
+  function bindTouch(){
+    document.querySelectorAll("#touch [data-k]").forEach(el=>{
+      const k=el.getAttribute("data-k");
+      const on=(ev)=>{ ev.preventDefault(); if(!entered){enter();return;}
+        if(k==="e"){ interact(); return; }
+        if(k==="e2"){ keys["arrowright"]=true; return; }
+        if(k==="q"){ keys["arrowleft"]=true; return; }
+        keys[k]=true; };
+      const off=(ev)=>{ ev.preventDefault();
+        if(k==="e2"){ keys["arrowright"]=false; return; }
+        if(k==="q"){ keys["arrowleft"]=false; return; }
+        keys[k]=false; };
+      el.addEventListener("touchstart",on,{passive:false});
+      el.addEventListener("touchend",off,{passive:false});
+      el.addEventListener("mousedown",on);
+      el.addEventListener("mouseup",off);
+      el.addEventListener("mouseleave",off);
+    });
+  }
+  bindTouch();
+  // 인트로에서 아무 터치/키
+  intro.addEventListener("touchstart",e=>{ enter(); },{passive:true});
+
+  /* ---------- 루프 ---------- */
+  let lastT=performance.now(), acc=0, hudAcc=0;
+  function loop(t){
+    const dt=Math.min(0.05,(t-lastT)/1000); lastT=t;
+    if(entered){
+      const rs=2.5*dt, ms=2.7*dt;
+      if(keys["arrowleft"]||keys["q"]) dir-=rs;
+      if(keys["arrowright"]||keys["e2"]) dir+=rs;
+      const fx=Math.cos(dir),fy=Math.sin(dir);
+      if(keys["w"]||keys["arrowup"]) tryMove(px+fx*ms,py+fy*ms);
+      if(keys["s"]||keys["arrowdown"]) tryMove(px-fx*ms,py-fy*ms);
+      if(keys["a"]) tryMove(px+fy*ms,py-fx*ms);
+      if(keys["d"]) tryMove(px-fy*ms,py+fx*ms);
+      autoDoor();
+    }
+    acc+=dt;
+    if(acc>1/30){ acc=0; render();
+      hudAcc++; if(hudAcc>6){ hudAcc=0; updateHUD(); }
+    }
+    requestAnimationFrame(loop);
+  }
+  // 초기 1프레임(인트로 뒤에서도 화면이 살아있도록)
+  updateHUD(); render();
+  requestAnimationFrame(loop);
+
+  // 외부 검증 훅
+  window.__station={get px(){return px}, get py(){return py}, get power(){return power},
+    get inv(){return inv}, get room(){return roomAt(px,py).name}, get look(){return lookProp&&lookProp.label},
+    setPos(x,y){px=x;py=y;}, setDir(d){dir=d;}, enter, interact, props:PROPS};
+})();
+</script>
+</body>
+</html>

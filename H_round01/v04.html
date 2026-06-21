@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>liquid glass · on a code editor</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#05060a;cursor:none}
+  #gl{position:fixed;inset:0;width:100vw;height:100vh;display:block;touch-action:none}
+  #hint{position:fixed;left:50%;bottom:max(22px,env(safe-area-inset-bottom));transform:translateX(-50%);
+    font:11px/1.4 "SF Mono",ui-monospace,Menlo,monospace;letter-spacing:.16em;color:rgba(255,255,255,.5);
+    text-shadow:0 0 8px rgba(0,0,0,.85);pointer-events:none;transition:opacity 1.2s ease;text-transform:uppercase;
+    white-space:nowrap}
+  #fb{position:fixed;inset:0;display:none;place-items:center;color:#7a8088;
+    font:13px/1.6 ui-monospace,monospace;padding:2em;text-align:center}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="hint">move · hold to press · right-drag to tilt · scroll the code</div>
+<div id="fb">WebGL unavailable on this device.</div>
+<script>
+'use strict';
+/* ============================================================
+   "liquid glass on a code editor"
+   A photoreal tumbler of glass pressed against an IDE screen,
+   filmed handheld. Content layer = canvas2d (a full VS-Code-ish
+   editor). Optics = WebGL shader doing real refraction,
+   chromatic rim, caustics, milky veil, speculars + camera post.
+   First paint shows lens + content. No loader, no entry gate.
+   ============================================================ */
+
+const DPR = Math.min(window.devicePixelRatio || 1, 1.75);
+let W = 0, H = 0, mobile = false;
+
+const glCanvas = document.getElementById('gl');
+const gl = glCanvas.getContext('webgl', { antialias:false, preserveDrawingBuffer:false, alpha:false });
+if (!gl) { document.getElementById('fb').style.display = 'grid'; document.body.style.cursor = 'auto'; }
+
+/* ------------------------------------------------------------
+   SCENE — a code editor. Logical space 1600x1000, cover-scaled
+   onto the canvas, tilted a touch like a filmed monitor.
+   ------------------------------------------------------------ */
+const scene = document.createElement('canvas');
+const sx = scene.getContext('2d');
+const LW = 1600, LH = 1000;
+let scrollY = 0;
+const SCROLL_MAX = 1400;
+
+/* editor palette (One Dark-ish, but a touch cooler) */
+const COL = {
+  bg:'#1b1f27', bgDeep:'#14171d', side:'#1e232c', activity:'#181c23',
+  gutter:'#5a6577', text:'#c7cedb', faint:'#7e899c',
+  kw:'#c678dd', fn:'#61afef', str:'#98c379', num:'#d19a66',
+  type:'#e5c07b', com:'#5c6473', op:'#56b6c2', tag:'#e06c75', prop:'#d19a66',
+  cursorLine:'#222834', sel:'#2c4a6e', accent:'#3b9dff', err:'#e06c75', warn:'#e5c07b'
+};
+
+function tw(c, text, x, y, size, color, weight, align, font) {
+  c.fillStyle = color;
+  c.font = (weight||400) + ' ' + size + 'px ' + (font || '"SF Mono","JetBrains Mono",ui-monospace,Menlo,monospace');
+  c.textAlign = align || 'left';
+  c.fillText(text, x, y);
+  c.textAlign = 'left';
+}
+function rr(c, x, y, w, h, r) {
+  c.beginPath();
+  c.moveTo(x+r, y); c.arcTo(x+w, y, x+w, y+h, r); c.arcTo(x+w, y+h, x, y+h, r);
+  c.arcTo(x, y+h, x, y, r); c.arcTo(x, y, x+w, y, r); c.closePath();
+}
+
+/* --- the source code shown in the editor, as colored tokens --- */
+/* each line = array of [text, colorKey] segments. indent baked into first seg. */
+const K = COL;
+const SRC = [
+  [['// optics.glsl — liquid glass refraction kernel', 'com']],
+  [['', 'text']],
+  [['precision ', 'kw'], ['highp ', 'kw'], ['float', 'type'], [';', 'op']],
+  [['uniform ', 'kw'], ['sampler2D ', 'type'], ['uScene', 'text'], [';', 'op']],
+  [['uniform ', 'kw'], ['vec2  ', 'type'], ['uRes', 'text'], [', ', 'op'], ['uGlass', 'text'], [', ', 'op'], ['uTilt', 'text'], [';', 'op']],
+  [['uniform ', 'kw'], ['float ', 'type'], ['uR', 'text'], [', ', 'op'], ['uTime', 'text'], [', ', 'op'], ['uPress', 'text'], [';', 'op']],
+  [['', 'text']],
+  [['vec3 ', 'type'], ['refract_glass', 'fn'], ['(', 'op'], ['vec2 ', 'type'], ['fc', 'text'], [') {', 'op']],
+  [['  vec2 ', 'type'], ['d ', 'text'], ['= ', 'op'], ['fc ', 'text'], ['- ', 'op'], ['uGlass', 'text'], [';', 'op']],
+  [['  float ', 'type'], ['r ', 'text'], ['= ', 'op'], ['length', 'fn'], ['(', 'op'], ['d', 'text'], [')', 'op'], [' / ', 'op'], ['uR', 'text'], [';', 'op']],
+  [['  vec2  ', 'type'], ['dir ', 'text'], ['= ', 'op'], ['normalize', 'fn'], ['(', 'op'], ['d', 'text'], [')', 'op'], [';', 'op']],
+  [['', 'text']],
+  [['  // magnified center, compressed rim', 'com']],
+  [['  float ', 'type'], ['q ', 'text'], ['= ', 'op'], ['clamp', 'fn'], ['(', 'op'], ['r ', 'text'], ['/ ', 'op'], ['0.8', 'num'], [', ', 'op'], ['0.0', 'num'], [', ', 'op'], ['1.0', 'num'], [')', 'op'], [';', 'op']],
+  [['  float ', 'type'], ['mag ', 'text'], ['= ', 'op'], ['mix', 'fn'], ['(', 'op'], ['0.40', 'num'], [', ', 'op'], ['0.34', 'num'], [', ', 'op'], ['uPress', 'text'], [')', 'op'], [';', 'op']],
+  [['  float ', 'type'], ['rs ', 'text'], ['= ', 'op'], ['uR ', 'text'], ['* ', 'op'], ['(', 'op'], ['mag', 'text'], ['*', 'op'], ['q ', 'text'], ['+ ', 'op'], ['(', 'op'], ['1.06', 'num'], ['-', 'op'], ['mag', 'text'], [')', 'op'], ['*', 'op'], ['pow', 'fn'], ['(', 'op'], ['q', 'text'], [',', 'op'], ['5.0', 'num'], [')', 'op'], [')', 'op'], [';', 'op']],
+  [['', 'text']],
+  [['  vec2 ', 'type'], ['uv  ', 'text'], ['= ', 'op'], ['uGlass ', 'text'], ['+ ', 'op'], ['dir ', 'text'], ['* ', 'op'], ['rs', 'text'], [';', 'op']],
+  [['  vec3 ', 'type'], ['col ', 'text'], ['= ', 'op'], ['texture2D', 'fn'], ['(', 'op'], ['uScene', 'text'], [', ', 'op'], ['uv', 'text'], ['/', 'op'], ['uRes', 'text'], [')', 'op'], ['.rgb', 'prop'], [';', 'op']],
+  [['', 'text']],
+  [['  // chromatic split at the glass wall', 'com']],
+  [['  col', 'text'], ['.r ', 'prop'], ['= ', 'op'], ['sample', 'fn'], ['(', 'op'], ['uv ', 'text'], ['* ', 'op'], ['0.972', 'num'], [')', 'op'], ['.r', 'prop'], [';', 'op']],
+  [['  col', 'text'], ['.b ', 'prop'], ['= ', 'op'], ['sample', 'fn'], ['(', 'op'], ['uv ', 'text'], ['* ', 'op'], ['1.028', 'num'], [')', 'op'], ['.b', 'prop'], [';', 'op']],
+  [['', 'text']],
+  [['  // milky veil grows toward the rim', 'com']],
+  [['  float ', 'type'], ['veil ', 'text'], ['= ', 'op'], ['0.05 ', 'num'], ['+ ', 'op'], ['0.17 ', 'num'], ['* ', 'op'], ['r', 'text'], ['*', 'op'], ['r', 'text'], [';', 'op']],
+  [['  col ', 'text'], ['= ', 'op'], ['mix', 'fn'], ['(', 'op'], ['col', 'text'], [', ', 'op'], ['vec3', 'type'], ['(', 'op'], ['0.99', 'num'], [')', 'op'], [', ', 'op'], ['veil', 'text'], [')', 'op'], [';', 'op']],
+  [['', 'text']],
+  [['  return', 'kw'], [' col', 'text'], [';', 'op']],
+  [['}', 'op']],
+  [['', 'text']],
+  [['void ', 'type'], ['main', 'fn'], ['() {', 'op']],
+  [['  gl_FragColor ', 'text'], ['= ', 'op'], ['vec4', 'type'], ['(', 'op'], ['refract_glass', 'fn'], ['(', 'op'], ['gl_FragCoord', 'text'], ['.xy', 'prop'], [')', 'op'], [', ', 'op'], ['1.0', 'num'], [')', 'op'], [';', 'op']],
+  [['}', 'op']],
+  [['', 'text']],
+  [['// — caustics --------------------------------------', 'com']],
+  [['float ', 'type'], ['caustic', 'fn'], ['(', 'op'], ['float ', 'type'], ['th', 'text'], [') {', 'op']],
+  [['  return', 'kw'], [' 0.5', 'num'], ['*', 'op'], ['sin', 'fn'], ['(', 'op'], ['th', 'text'], ['*', 'op'], ['13.0', 'num'], [')', 'op'], [' + ', 'op'], ['0.5', 'num'], ['*', 'op'], ['sin', 'fn'], ['(', 'op'], ['th', 'text'], ['*', 'op'], ['29.0', 'num'], [')', 'op'], [';', 'op']],
+  [['}', 'op']],
+  [['', 'text']],
+  [['const ', 'kw'], ['rim ', 'text'], ['= ', 'op'], ['[', 'op'], ['0.835', 'num'], [', ', 'op'], ['0.920', 'num'], [', ', 'op'], ['0.985', 'num'], [']', 'op'], [';', 'op']],
+  [['let ', 'kw'], ['press ', 'text'], ['= ', 'op'], ['0.0', 'num'], [';', 'op']],
+  [['', 'text']],
+  [['function ', 'kw'], ['frame', 'fn'], ['(', 'op'], ['t', 'text'], [') {', 'op']],
+  [['  press ', 'text'], ['+= ', 'op'], ['(', 'op'], ['target ', 'text'], ['- ', 'op'], ['press', 'text'], [')', 'op'], [' * ', 'op'], ['0.09', 'num'], [';', 'op']],
+  [['  requestAnimationFrame', 'fn'], ['(', 'op'], ['frame', 'text'], [')', 'op'], [';', 'op']],
+  [['}', 'op']],
+  [['', 'text']],
+  [['// TODO: anisotropic blur along the tangent', 'com']],
+  [['// TODO: contact shadow under the tumbler', 'com']],
+  [['// FIXME: rim sparkle aliases at small radius', 'com']],
+  [['', 'text']],
+  [['export ', 'kw'], ['default', 'kw'], [' { ', 'op'], ['refract_glass', 'text'], [', ', 'op'], ['caustic', 'text'], [' }', 'op'], [';', 'op']],
+];
+
+/* file tree for the sidebar */
+const TREE = [
+  ['▾ LIQUID-GLASS', 0, 'folder', true],
+  ['▸ node_modules', 1, 'folder', false],
+  ['▾ src', 1, 'folder', true],
+  ['optics.glsl', 2, 'glsl', 'active'],
+  ['scene.js', 2, 'js', false],
+  ['camera.js', 2, 'js', false],
+  ['index.html', 2, 'html', false],
+  ['▾ shaders', 2, 'folder', true],
+  ['rim.frag', 3, 'glsl', false],
+  ['veil.frag', 3, 'glsl', false],
+  ['caustic.frag', 3, 'glsl', false],
+  ['▸ assets', 1, 'folder', false],
+  ['package.json', 1, 'json', false],
+  ['README.md', 1, 'md', false],
+  ['vite.config.ts', 1, 'ts', false],
+  ['.gitignore', 1, 'file', false],
+];
+
+const TABS = [
+  ['optics.glsl', true, false],
+  ['scene.js', false, true],
+  ['camera.js', false, false],
+  ['README.md', false, false],
+];
+
+function fileDot(c, x, y, kind) {
+  const m = { glsl:'#c678dd', js:'#e5c07b', ts:'#3b9dff', html:'#e06c75', json:'#d19a66', md:'#61afef', file:'#7e899c' };
+  c.fillStyle = m[kind] || '#7e899c';
+  if (kind === 'folder') { c.fillStyle = '#e5c07b'; }
+  c.beginPath(); c.arc(x, y, 4, 0, 7); c.fill();
+}
+
+function drawScene() {
+  scene.width = W; scene.height = H;
+  const c = sx;
+
+  // dark room behind the monitor
+  const rg = c.createRadialGradient(W*0.46, H*0.42, H*0.18, W*0.5, H*0.5, H*0.95);
+  rg.addColorStop(0, '#0d0f13'); rg.addColorStop(1, '#020203');
+  c.fillStyle = rg; c.fillRect(0, 0, W, H);
+
+  // cover-scale logical 1600x1000, slight monitor tilt
+  const sc = Math.max(W / LW, H / LH) * 1.05;
+  c.save();
+  c.translate(W/2, H/2); c.rotate(-0.014); c.scale(sc, sc); c.translate(-LW/2, -LH/2);
+
+  // bezel
+  rr(c, 4, 2, LW-8, LH-4, 20); c.fillStyle = '#0c0d10'; c.fill();
+  c.strokeStyle = '#26282e'; c.lineWidth = 2; c.stroke();
+  // power LED
+  c.fillStyle = '#39d98a'; c.shadowColor = '#39d98a'; c.shadowBlur = 9;
+  c.beginPath(); c.arc(16, 512, 3.2, 0, 7); c.fill(); c.shadowBlur = 0;
+
+  // screen
+  const SXX = 22, SY = 16, SW = LW - 44, SH = LH - 34;
+  rr(c, SXX, SY, SW, SH, 7); c.save(); c.clip();
+  c.fillStyle = K.bg; c.fillRect(SXX, SY, SW, SH);
+
+  // ---- title bar (macOS traffic lights + filename) ----
+  const TBH = 30;
+  c.fillStyle = '#1a1d24'; c.fillRect(SXX, SY, SW, TBH);
+  const tl = ['#ff5f57','#febc2e','#28c840'];
+  tl.forEach((cc, i) => { c.fillStyle = cc; c.beginPath(); c.arc(SXX + 24 + i*20, SY + 15, 6, 0, 7); c.fill(); });
+  tw(c, 'optics.glsl — liquid-glass', SXX + SW/2, SY + 19, 12.5, K.faint, 400, 'center', '-apple-system,"Segoe UI",sans-serif');
+
+  const CY = SY + TBH; // content top
+
+  // ---- activity bar (far left) ----
+  const ABW = 54;
+  c.fillStyle = K.activity; c.fillRect(SXX, CY, ABW, SH - TBH);
+  const acx = SXX + ABW/2;
+  c.lineWidth = 2; c.lineCap = 'round'; c.lineJoin = 'round';
+  const aIcons = [
+    (y)=>{ // files (active)
+      c.strokeStyle = '#e7eaf0'; c.beginPath();
+      c.moveTo(acx-8,y-9); c.lineTo(acx+3,y-9); c.lineTo(acx+8,y-4); c.lineTo(acx+8,y+9); c.lineTo(acx-8,y+9); c.closePath(); c.stroke();
+      c.fillStyle = K.accent; c.fillRect(SXX, y-12, 2.5, 24);
+    },
+    (y)=>{ c.strokeStyle='#6b7382'; c.beginPath(); c.arc(acx-2,y-2,7,0,7); c.stroke(); c.beginPath(); c.moveTo(acx+3,y+3); c.lineTo(acx+8,y+8); c.stroke(); },
+    (y)=>{ c.strokeStyle='#6b7382'; c.beginPath(); c.moveTo(acx-8,y-3); c.lineTo(acx-2,y+3); c.lineTo(acx+8,y-7); c.stroke(); c.beginPath(); c.moveTo(acx-8,y+6); c.lineTo(acx+8,y+6); c.stroke(); },
+    (y)=>{ c.strokeStyle='#6b7382'; rr(c,acx-8,y-8,16,16,3); c.stroke(); c.beginPath(); c.moveTo(acx-3,y-3); c.lineTo(acx+3,y+3); c.moveTo(acx+3,y-3); c.lineTo(acx-3,y+3); c.stroke(); },
+    (y)=>{ c.strokeStyle='#6b7382'; c.beginPath(); c.arc(acx,y,8,0,7); c.stroke(); for(let i=0;i<8;i++){const a=i*Math.PI/4; c.beginPath(); c.moveTo(acx+Math.cos(a)*8,y+Math.sin(a)*8); c.lineTo(acx+Math.cos(a)*10.5,y+Math.sin(a)*10.5); c.stroke();} },
+  ];
+  aIcons.forEach((fn, i) => fn(CY + 34 + i*48));
+  // bottom: account + settings gear
+  c.strokeStyle='#6b7382'; c.beginPath(); c.arc(acx,SY+SH-66,5,0,7); c.stroke(); c.beginPath(); c.arc(acx,SY+SH-55,8,Math.PI*1.1,Math.PI*1.9); c.stroke();
+  c.beginPath(); c.arc(acx,SY+SH-30,7,0,7); c.stroke(); for(let i=0;i<8;i++){const a=i*Math.PI/4; c.beginPath(); c.moveTo(acx+Math.cos(a)*7,SY+SH-30+Math.sin(a)*7); c.lineTo(acx+Math.cos(a)*9.5,SY+SH-30+Math.sin(a)*9.5); c.stroke();}
+
+  // ---- explorer sidebar ----
+  const SBX = SXX + ABW, SBW = 240;
+  c.fillStyle = K.side; c.fillRect(SBX, CY, SBW, SH - TBH);
+  tw(c, 'EXPLORER', SBX + 18, CY + 24, 11, K.faint, 600, 'left', '-apple-system,"Segoe UI",sans-serif');
+  tw(c, '···', SBX + SBW - 22, CY + 22, 13, K.faint);
+  let ty = CY + 52;
+  TREE.forEach(([name, depth, kind, state]) => {
+    if (state === 'active') { c.fillStyle = '#2c333f'; c.fillRect(SBX, ty - 14, SBW, 24);
+      c.fillStyle = K.accent; c.fillRect(SBX, ty - 14, 2.5, 24); }
+    const ix = SBX + 16 + depth * 16;
+    const isFolder = kind === 'folder';
+    let label = name, color = state === 'active' ? '#e7eaf0' : K.text;
+    if (isFolder) { color = K.text; tw(c, label, ix, ty + 4, 13, color, 600); }
+    else { fileDot(c, ix + 4, ty, kind); tw(c, label, ix + 16, ty + 4, 13, color, 400); }
+    ty += 24;
+  });
+  // OPEN EDITORS / OUTLINE separators feel
+  c.strokeStyle = '#262b34'; c.lineWidth = 1;
+  c.beginPath(); c.moveTo(SBX, CY + 36); c.lineTo(SBX + SBW, CY + 36); c.stroke();
+
+  // ---- editor area ----
+  const EX = SBX + SBW;
+  const EW = SXX + SW - EX;
+  c.fillStyle = K.bg; c.fillRect(EX, CY, EW, SH - TBH);
+
+  // tab bar
+  const TABH = 38;
+  c.fillStyle = '#191c23'; c.fillRect(EX, CY, EW, TABH);
+  let tx = EX;
+  TABS.forEach(([nm, active, dirty]) => {
+    c.font = '400 13px ui-monospace,monospace';
+    const tabW = c.measureText(nm).width + 56;
+    if (active) { c.fillStyle = K.bg; c.fillRect(tx, CY, tabW, TABH);
+      c.fillStyle = K.accent; c.fillRect(tx, CY, tabW, 2); }
+    fileDot(c, tx + 18, CY + TABH/2, nm.endsWith('.glsl')?'glsl':nm.endsWith('.js')?'js':nm.endsWith('.md')?'md':'file');
+    tw(c, nm, tx + 30, CY + TABH/2 + 4, 13, active ? '#e7eaf0' : K.faint, 400);
+    if (dirty) { c.fillStyle = '#c7cedb'; c.beginPath(); c.arc(tx + tabW - 18, CY + TABH/2, 3.5, 0, 7); c.fill(); }
+    else { c.strokeStyle = active ? '#8a93a3' : 'transparent'; c.lineWidth = 1.4; c.beginPath();
+      c.moveTo(tx+tabW-22,CY+TABH/2-3.5); c.lineTo(tx+tabW-15,CY+TABH/2+3.5);
+      c.moveTo(tx+tabW-15,CY+TABH/2-3.5); c.lineTo(tx+tabW-22,CY+TABH/2+3.5); c.stroke(); }
+    if (!active) { c.strokeStyle = '#262b34'; c.lineWidth = 1; c.beginPath(); c.moveTo(tx+tabW, CY+8); c.lineTo(tx+tabW, CY+TABH-8); c.stroke(); }
+    tx += tabW;
+  });
+  // breadcrumb
+  c.fillStyle = K.bgDeep; c.fillRect(EX, CY + TABH, EW, 24);
+  tw(c, 'src  ›  optics.glsl  ›  refract_glass()', EX + 16, CY + TABH + 16, 11.5, K.faint, 400, 'left', '-apple-system,sans-serif');
+
+  // code region (clipped + scrollable)
+  const codeTop = CY + TABH + 24;
+  const GUT = 56;               // gutter width
+  const LSTART = EX + GUT;      // code start x
+  const LH2 = 22;               // line height
+  const MINI = 92;              // minimap width
+  const codeRight = EX + EW - MINI;
+  c.save();
+  c.beginPath(); c.rect(EX, codeTop, EW - MINI, SY + SH - codeTop); c.clip();
+
+  // active line + selection (line index, 0-based among SRC)
+  const ACTIVE_LINE = 15;       // the long rs= line
+  const baseY = codeTop + 18 - scrollY;
+
+  // current-line highlight
+  c.fillStyle = K.cursorLine;
+  c.fillRect(EX, baseY + ACTIVE_LINE*LH2 - 15, EW - MINI, LH2);
+
+  SRC.forEach((segs, i) => {
+    const ly = baseY + i*LH2;
+    if (ly < codeTop - LH2 || ly > SY + SH + LH2) return;
+    // line number
+    const isActive = i === ACTIVE_LINE;
+    tw(c, String(i+1).padStart(3,' '), EX + GUT - 14, ly, 12.5, isActive ? '#c7cedb' : K.gutter, 400, 'right');
+    // tokens
+    let cx = LSTART;
+    c.textAlign = 'left';
+    segs.forEach(([t, k]) => {
+      if (!t) return;
+      c.font = '400 14px "SF Mono","JetBrains Mono",ui-monospace,monospace';
+      c.fillStyle = K[k] || K.text;
+      c.fillText(t, cx, ly);
+      cx += c.measureText(t).width;
+    });
+  });
+
+  // selection block on the active line (fake highlighted token)
+  c.font = '400 14px ui-monospace,monospace';
+  const selY = baseY + ACTIVE_LINE*LH2;
+  c.fillStyle = 'rgba(58,120,180,0.40)';
+  c.fillRect(LSTART + 10, selY - 12, 168, 17);
+
+  // text cursor (blink-free, just present)
+  c.fillStyle = '#7fd1ff';
+  c.fillRect(LSTART + 182, selY - 13, 2, 18);
+
+  // a red error squiggle under a token a few lines down
+  const errY = baseY + 47*LH2 + 4;
+  c.strokeStyle = K.err; c.lineWidth = 1.4;
+  c.beginPath();
+  for (let xx = LSTART + 30; xx < LSTART + 320; xx += 4) {
+    c.lineTo(xx, errY + (Math.floor((xx)/4) % 2 ? 1.6 : -1.6));
+  }
+  c.stroke();
+
+  c.restore(); // unclip code
+
+  // ---- minimap ----
+  c.fillStyle = '#181b21'; c.fillRect(codeRight, codeTop, MINI, SY + SH - codeTop);
+  const miniScale = 0.16, mlh = LH2 * miniScale * 3.4;
+  let my = codeTop + 8 - scrollY * miniScale * 3.4;
+  SRC.forEach((segs, i) => {
+    let mx = codeRight + 8;
+    segs.forEach(([t, k]) => {
+      if (!t.trim()) { mx += t.length * 1.0; return; }
+      c.fillStyle = K[k] || K.text; c.globalAlpha = 0.55;
+      const wseg = Math.max(2, t.length * 1.05);
+      c.fillRect(mx, my, wseg, 2.4);
+      mx += wseg + 1.5;
+    });
+    c.globalAlpha = 1;
+    my += mlh;
+  });
+  // minimap viewport box
+  c.strokeStyle = 'rgba(255,255,255,.08)'; c.fillStyle = 'rgba(120,140,180,.10)';
+  const vpH = (SY + SH - codeTop) * 0.42;
+  const vpY = codeTop + scrollY * miniScale * 1.2;
+  c.fillRect(codeRight, vpY, MINI, vpH);
+  c.lineWidth = 1; c.strokeRect(codeRight + 0.5, vpY + 0.5, MINI - 1, vpH - 1);
+
+  // ---- integrated terminal panel (bottom of editor) ----
+  const TERMH = 150;
+  const termTop = SY + SH - TERMH;
+  c.fillStyle = '#15181e'; c.fillRect(EX, termTop, EW, TERMH);
+  c.strokeStyle = '#262b34'; c.lineWidth = 1; c.beginPath(); c.moveTo(EX, termTop); c.lineTo(EX + EW, termTop); c.stroke();
+  // panel tabs
+  const ptabs = ['PROBLEMS','OUTPUT','DEBUG CONSOLE','TERMINAL'];
+  let px = EX + 18;
+  ptabs.forEach((p, i) => {
+    const act = i === 3;
+    tw(c, p, px, termTop + 22, 11, act ? '#e7eaf0' : K.faint, act?600:400, 'left', '-apple-system,sans-serif');
+    if (act) { c.fillStyle = K.accent; const wpp = c.measureText(p).width;
+      c.font='600 11px -apple-system,sans-serif'; c.fillRect(px, termTop + 30, c.measureText(p).width, 2); }
+    c.font = '400 11px -apple-system,sans-serif';
+    px += c.measureText(p).width + 26;
+  });
+  c.strokeStyle = '#262b34'; c.beginPath(); c.moveTo(EX, termTop + 36); c.lineTo(EX + EW, termTop + 36); c.stroke();
+  // terminal lines
+  const term = [
+    [['➜ ', '#39d98a'], ['liquid-glass ', '#61afef'], ['git:(', '#7e899c'], ['main', '#e5c07b'], [') ', '#7e899c'], ['npm run dev', '#c7cedb']],
+    [['', 'c']],
+    [['  VITE ', '#c678dd'], ['v5.4.2', '#7e899c'], ['  ready in ', '#7e899c'], ['243 ms', '#39d98a']],
+    [['', 'c']],
+    [['  ➜  Local:   ', '#7e899c'], ['http://localhost:5173/', '#61afef']],
+    [['  ➜  press ', '#7e899c'], ['h + enter', '#e5c07b'], [' to show help', '#7e899c']],
+    [['  ✓ ', '#39d98a'], ['compiled optics.glsl  (no errors)', '#c7cedb']],
+  ];
+  term.forEach((segs, i) => {
+    let cxx = EX + 18;
+    const ly = termTop + 60 + i*18;
+    segs.forEach(([t, col2]) => { c.fillStyle = col2 === 'c' ? K.text : col2;
+      c.font = '400 12.5px ui-monospace,monospace'; c.fillText(t, cxx, ly); cxx += c.measureText(t).width; });
+  });
+  // blinking-ish cursor block in terminal
+  c.fillStyle = '#5a6577'; c.fillRect(EX + 18, termTop + 60 + term.length*18 - 11, 8, 14);
+
+  // ---- status bar ----
+  const STH = 24;
+  c.fillStyle = K.accent; c.fillRect(SXX, SY + SH - STH, SW, STH);
+  const sby = SY + SH - STH/2 + 4;
+  c.fillStyle = '#fff';
+  // left cluster
+  tw(c, '⎇ main*', SXX + 14, sby, 11.5, '#fff', 600, 'left', '-apple-system,sans-serif');
+  tw(c, '↻ 0  ↑1', SXX + 86, sby, 11.5, 'rgba(255,255,255,.9)', 400, 'left', '-apple-system,sans-serif');
+  tw(c, '✕ 1', SXX + 150, sby, 11.5, '#fff', 400, 'left', '-apple-system,sans-serif');
+  tw(c, '⚠ 3', SXX + 188, sby, 11.5, '#fff', 400, 'left', '-apple-system,sans-serif');
+  // right cluster
+  tw(c, 'Ln 16, Col 42', SXX + SW - 300, sby, 11.5, '#fff', 400, 'left', '-apple-system,sans-serif');
+  tw(c, 'Spaces: 2', SXX + SW - 200, sby, 11.5, '#fff', 400, 'left', '-apple-system,sans-serif');
+  tw(c, 'UTF-8', SXX + SW - 120, sby, 11.5, '#fff', 400, 'left', '-apple-system,sans-serif');
+  tw(c, 'GLSL', SXX + SW - 64, sby, 11.5, '#fff', 600, 'left', '-apple-system,sans-serif');
+
+  // ---- backlight glow ----
+  const sg = c.createRadialGradient(LW/2, LH*0.45, LH*0.2, LW/2, LH/2, LH*0.9);
+  sg.addColorStop(0, 'rgba(120,150,255,0.05)'); sg.addColorStop(1, 'rgba(0,0,20,0.16)');
+  c.fillStyle = sg; c.fillRect(SXX, SY, SW, SH);
+
+  c.restore(); // unclip screen
+  c.restore(); // untilt
+}
+
+/* ------------------------------------------------------------
+   WEBGL — optics: refraction, smear, rim rings, milky veil,
+   speculars, caustics, then handheld-camera post.
+   (ported & retuned from the reference's glass shader)
+   ------------------------------------------------------------ */
+const VS = `
+attribute vec2 aP;
+void main(){ gl_Position = vec4(aP, 0.0, 1.0); }`;
+
+const FS = `
+precision highp float;
+uniform sampler2D uScene;
+uniform vec2  uRes, uGlass, uShake, uTilt;
+uniform float uR, uTime, uPress, uBlur, uExpo, uRot;
+
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+
+vec3 scn(vec2 uv){
+  return texture2D(uScene, clamp(uv / uRes, vec2(0.002), vec2(0.998))).rgb;
+}
+vec2 cam(vec2 v){
+  vec2 cen = uRes * 0.5;
+  vec2 p = v - cen;
+  float ca = cos(uRot), sa = sin(uRot);
+  p = vec2(ca*p.x - sa*p.y, sa*p.x + ca*p.y);
+  float rr = dot(p, p) / dot(cen, cen);
+  p *= 1.0 + 0.045 * rr;
+  return cen + p + uShake;
+}
+float gband(float x, float c, float w){ float d = (x - c) / w; return exp(-d * d); }
+
+void main(){
+  vec2 fc = gl_FragCoord.xy;
+  vec2 d  = fc - uGlass;
+  float tA = length(uTilt);
+  vec2 tD = tA > 0.001 ? uTilt / tA : vec2(1.0, 0.0);
+  vec2 pD = vec2(-tD.y, tD.x);
+  float squash = 1.0 - 0.42 * tA;
+  vec2 ds = tD * (dot(d, tD) / squash) + pD * dot(d, pD);
+  float r = length(ds);
+  vec2 dir = r > 0.5 ? ds / r : vec2(1.0, 0.0);
+  vec2 tdir = vec2(-dir.y, dir.x);
+  float x = r / uR;
+
+  float innerX = 0.80;
+  float w    = smoothstep(innerX - 0.05, innerX + 0.03, x);
+  float wOut = smoothstep(1.0, 1.07, x);
+  float q = clamp(x / innerX, 0.0, 1.0);
+
+  float magA = mix(0.40, 0.34, uPress);
+  float q5 = q*q*q*q*q;
+  float rsG = uR * (magA * q + (1.06 - magA) * q5);
+  float asym = 1.0 + 0.38 * tA * dot(dir, tD);
+  vec2 refr = dir * mix(rsG, uR * 1.07, w) * asym + uTilt * uR * 0.55;
+
+  float q4 = q*q*q*q;
+  float radial = mix(mix(q4 * uR * 0.15, uR * 0.02, w), 0.0, wOut) + uBlur + 0.8;
+  float tang   = mix(mix(q*q*q * uR * 0.05, uR * 0.20, w), 0.0, wOut) + uBlur + 0.8;
+
+  vec2 srcBase = uGlass + mix(refr, d, wOut);
+  vec3 col = vec3(0.0);
+  #define TAP(rx, ty) col += scn(cam(srcBase + dir * ((rx) * radial) + tdir * ((ty) * tang)));
+  TAP( 0.00,  0.00) TAP( 0.62,  0.25) TAP(-0.58,  0.30) TAP( 0.21, -0.64)
+  TAP(-0.25, -0.61) TAP( 0.45,  0.68) TAP(-0.70, -0.15) TAP( 0.86, -0.18)
+  TAP(-0.41,  0.74) TAP( 0.05,  0.94) TAP(-0.88,  0.35) TAP( 0.33,  0.13)
+  TAP(-0.18,  0.20) TAP( 0.69, -0.55)
+  col /= 14.0;
+
+  float inG = (1.0 - wOut);
+  float inI = inG * (1.0 - w);
+
+  float caW = 0.5 * smoothstep(0.25, 1.0, x) * (1.0 + 1.4 * tA) * inG;
+  caW = min(caW, 0.85);
+  if (caW > 0.01) {
+    vec3 cR = scn(cam(uGlass + refr * 0.972));
+    vec3 cB = scn(cam(uGlass + refr * 1.028));
+    col.r = mix(col.r, cR.r, caW);
+    col.b = mix(col.b, cB.b, caW);
+  }
+
+  /* milky glass: desaturate slightly, lift blacks, cool white veil outward.
+     editor is dark, so keep the veil restrained to stay legible. */
+  float lum = dot(col, vec3(0.299, 0.587, 0.114));
+  col = mix(col, vec3(lum), 0.14 * inI);
+  col = mix(col, col * 0.92 + vec3(0.05, 0.055, 0.07), inG);
+  float veil = (0.04 + 0.13 * x * x + 0.06 * uPress) * inI;
+  col = mix(col, vec3(0.80, 0.84, 0.95), veil);
+  col += inI * 0.05 * (1.0 - x * x);          // soft center bloom
+
+  /* faint radial caustic streaks */
+  float th = atan(d.y, d.x);
+  float cau = 0.5 * sin(th * 13.0 + 2.0) + 0.5 * sin(th * 29.0 + 0.6) + 0.35 * sin(th * 7.0 - 1.2);
+  col += cau * 0.05 * q4 * inI;
+
+  /* rim: dark glass wall + concentric rings + specular arcs */
+  float rim = w * (1.0 - wOut);
+  col = mix(col, col * 0.30, rim);
+  float bands = gband(x, 0.835, 0.018) * 0.85
+              + gband(x, 0.920, 0.014) * 0.50
+              + gband(x, 0.985, 0.010) * 0.78;
+  float arc = pow(max(cos(th - 2.45), 0.0), 6.0)
+            + 0.7 * pow(max(cos(th + 0.55), 0.0), 10.0)
+            + 0.45 * pow(max(cos(th - 4.30), 0.0), 14.0);
+  col += rim * bands * (0.14 + 0.78 * arc);
+  col *= mix(1.0, 0.5, rim * gband(x, 1.0, 0.012));
+  col += inI * 0.16 * gband(x, 0.805, 0.012);
+
+  /* window-reflection highlight, upper-left, cool */
+  vec2 hp = uGlass + vec2(-0.30, 0.40) * uR + uTilt * uR * 0.5;
+  vec2 hd = fc - hp;
+  col += exp(-dot(hd, hd) / (uR * uR * 0.16)) * vec3(0.12,0.13,0.16) * (1.0 + 0.6*uPress) * inG;
+
+  /* contact shadow + faint outer caustic */
+  col *= 1.0 - (0.30 - 0.10 * uPress) * gband(x, 1.035, 0.045) * wOut;
+  col += vec3(0.05,0.06,0.08) * gband(x, 1.10, 0.022) * wOut;
+
+  /* ---- phone-camera post ---- */
+  col *= uExpo;
+  col *= vec3(0.985, 1.0, 1.04);
+  vec2 vc = (fc - uRes * 0.5) / (uRes * 0.5);
+  col *= 1.0 - 0.34 * pow(dot(vc, vc) * 0.55, 1.4);
+  col *= 1.0 + 0.012 * sin(fc.y * 0.07 - uTime * 9.0);
+  col *= 1.0 + 0.008 * sin(fc.x * 0.21 + fc.y * 0.13 + uTime);
+  float gn = hash(fc + fract(uTime * 7.0) * 113.0);
+  col += (gn - 0.5) * 0.05;
+  col.r += (hash(fc.yx + 7.7 + fract(uTime * 5.0) * 51.0) - 0.5) * 0.022;
+  col.b += (hash(fc + 3.1 + fract(uTime * 3.0) * 77.0) - 0.5) * 0.018;
+  col = clamp(col, 0.0, 1.0);
+  col = pow(col, vec3(0.97));
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
+let prog, U = {}, sceneTex, running = false;
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+function initGL() {
+  prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+  const aP = gl.getAttribLocation(prog, 'aP');
+  gl.enableVertexAttribArray(aP);
+  gl.vertexAttribPointer(aP, 2, gl.FLOAT, false, 0, 0);
+
+  for (const n of ['uScene','uRes','uGlass','uShake','uTilt','uR','uTime','uPress','uBlur','uExpo','uRot'])
+    U[n] = gl.getUniformLocation(prog, n);
+
+  sceneTex = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, sceneTex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.uniform1i(U.uScene, 0);
+  running = true;
+}
+function uploadScene() {
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, sceneTex);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, scene);
+}
+
+/* ------------------------------------------------------------ state */
+const mouse = { x: 0, y: 0 };
+const glass = { x: 0, y: 0 };
+const tilt = { x: 0, y: 0 };
+const tiltManual = { x: 0, y: 0 };
+const tiltVel = { x: 0, y: 0 };
+let rightDrag = null;
+let pressTarget = 0, press = 0;
+let needScene = true;
+
+function resize() {
+  mobile = innerWidth < 620;
+  W = Math.round(innerWidth * DPR); H = Math.round(innerHeight * DPR);
+  glCanvas.width = W; glCanvas.height = H;
+  if (gl) gl.viewport(0, 0, W, H);
+  if (!mouse.x) { mouse.x = innerWidth * 0.5; mouse.y = innerHeight * 0.50; glass.x = W * 0.5; glass.y = H * 0.50; }
+  needScene = true;
+}
+addEventListener('resize', resize); resize();
+
+if (gl) {
+  addEventListener('contextmenu', e => e.preventDefault());
+  addEventListener('pointermove', e => {
+    mouse.x = e.clientX; mouse.y = e.clientY;
+    if (rightDrag) {
+      tiltManual.x = rightDrag.tx + (e.clientX - rightDrag.x) * 0.0035;
+      tiltManual.y = rightDrag.ty + (rightDrag.y - e.clientY) * 0.0035;
+      const m = Math.hypot(tiltManual.x, tiltManual.y);
+      if (m > 0.5) { tiltManual.x *= 0.5 / m; tiltManual.y *= 0.5 / m; }
+    }
+  });
+  addEventListener('pointerdown', e => {
+    if (e.button === 2) rightDrag = { x: e.clientX, y: e.clientY, tx: tiltManual.x, ty: tiltManual.y };
+    else { pressTarget = 1; mouse.x = e.clientX; mouse.y = e.clientY; }
+  });
+  addEventListener('pointerup', e => {
+    if (e.button === 2) rightDrag = null;
+    else pressTarget = 0;
+  });
+  addEventListener('wheel', e => {
+    scrollY = Math.max(0, Math.min(SCROLL_MAX, scrollY + e.deltaY * 0.8));
+    needScene = true;
+  }, { passive: true });
+  // touch scroll (two-finger-free: vertical drag with secondary intent? keep simple: pressing also scrolls via drag delta)
+  let lastTouchY = null;
+  addEventListener('touchstart', e => { if (e.touches[0]) lastTouchY = e.touches[0].clientY; }, {passive:true});
+  addEventListener('touchmove', e => {
+    if (e.touches[0] && lastTouchY != null) {
+      const dy = lastTouchY - e.touches[0].clientY;
+      // only scroll when finger is near right edge; otherwise it just moves the lens (handled by pointermove)
+      if (e.touches[0].clientX > innerWidth * 0.72) {
+        scrollY = Math.max(0, Math.min(SCROLL_MAX, scrollY + dy * 1.6));
+        needScene = true;
+      }
+      lastTouchY = e.touches[0].clientY;
+    }
+  }, {passive:true});
+  setTimeout(() => { const h = document.getElementById('hint'); if (h) h.style.opacity = '0'; }, 5200);
+}
+
+let huntT0 = 1800 + Math.random() * 3000;
+function focusHunt(now) {
+  const dt = now - huntT0;
+  if (dt > 900) { huntT0 = now + 2600 + Math.random() * 4800; return 0; }
+  if (dt < 0) return 0;
+  const ph = dt / 900;
+  return Math.sin(ph * Math.PI) * (3.4 + Math.random() * 0.6);
+}
+
+function frame(tms) {
+  const t = tms * 0.001;
+  if (needScene) { drawScene(); uploadScene(); needScene = false; }
+
+  const tx = mouse.x * DPR + Math.sin(t * 8.7) * 1.6 * DPR + Math.sin(t * 13.1 + 2.0) * 0.9 * DPR;
+  const ty = (innerHeight - mouse.y) * DPR + Math.cos(t * 9.4 + 1.0) * 1.5 * DPR;
+  const pgx = glass.x, pgy = glass.y;
+  glass.x += (tx - glass.x) * 0.16;
+  glass.y += (ty - glass.y) * 0.16;
+  press += (pressTarget - press) * 0.09;
+
+  const vk = -0.010 / DPR;
+  tiltVel.x += ((glass.x - pgx) * vk - tiltVel.x) * 0.18;
+  tiltVel.y += ((glass.y - pgy) * vk - tiltVel.y) * 0.18;
+  if (!rightDrag) { tiltManual.x *= 0.95; tiltManual.y *= 0.95; }
+  let ttx = tiltManual.x + tiltVel.x, tty = tiltManual.y + tiltVel.y;
+  const tm = Math.hypot(ttx, tty);
+  if (tm > 0.55) { ttx *= 0.55 / tm; tty *= 0.55 / tm; }
+  tilt.x += (ttx - tilt.x) * 0.12;
+  tilt.y += (tty - tilt.y) * 0.12;
+
+  const R = Math.min(W, H) * ((mobile ? 0.40 : 0.34) + press * 0.022);
+
+  const shx = (Math.sin(t * 1.3) * 3.0 + Math.sin(t * 0.7 + 1.7) * 4.2 + Math.sin(t * 3.1 + 0.5) * 1.3 + Math.sin(t * 7.3) * 0.5) * DPR;
+  const shy = (Math.cos(t * 1.1 + 0.4) * 3.4 + Math.sin(t * 0.5 + 2.6) * 4.6 + Math.cos(t * 2.7 + 1.2) * 1.4 + Math.cos(t * 8.1) * 0.5) * DPR;
+  const rot = 0.0045 * Math.sin(t * 0.45) + 0.002 * Math.sin(t * 1.7 + 1.0);
+
+  const blur = Math.max(0.0, 0.9 + 0.8 * Math.sin(t * 0.8) + 0.5 * Math.sin(t * 2.3 + 0.7)) * DPR + focusHunt(tms) * DPR;
+  const expo = 1.0 + 0.045 * Math.sin(t * 0.4) + 0.03 * Math.sin(t * 1.1 + 2.2) - press * 0.05;
+
+  gl.uniform2f(U.uRes, W, H);
+  gl.uniform2f(U.uGlass, glass.x, glass.y);
+  gl.uniform2f(U.uShake, shx, shy);
+  gl.uniform2f(U.uTilt, tilt.x, tilt.y);
+  gl.uniform1f(U.uR, R);
+  gl.uniform1f(U.uTime, t);
+  gl.uniform1f(U.uPress, press);
+  gl.uniform1f(U.uBlur, blur);
+  gl.uniform1f(U.uExpo, expo);
+  gl.uniform1f(U.uRot, rot);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(frame);
+}
+
+if (gl) {
+  try { initGL(); requestAnimationFrame(frame); }
+  catch (err) {
+    document.getElementById('fb').style.display = 'grid';
+    document.getElementById('fb').textContent = 'Shader error: ' + err.message;
+    document.body.style.cursor = 'auto';
+  }
+}
+</script>
+</body>
+</html>

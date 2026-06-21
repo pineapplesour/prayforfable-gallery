@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>NORTHERN — aurora</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; width: 100%;
+    background: #03040a; overflow: hidden;
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+  }
+  #stage { position: fixed; inset: 0; display: block; cursor: crosshair; }
+  /* fallback gradient shown only if WebGL fails entirely */
+  #stage { background: radial-gradient(120% 90% at 50% 110%, #0a3a3a 0%, #061427 40%, #03040a 80%); }
+
+  .hud {
+    position: fixed; left: 22px; bottom: 20px; z-index: 5;
+    pointer-events: none; user-select: none;
+    mix-blend-mode: screen;
+  }
+  .hud .title {
+    font-weight: 200; letter-spacing: 0.42em;
+    font-size: 13px; color: #bfeede; text-transform: uppercase;
+    text-shadow: 0 0 18px rgba(120,255,210,0.5);
+  }
+  .hud .sub {
+    margin-top: 6px; font-weight: 300; letter-spacing: 0.16em;
+    font-size: 10.5px; color: #6fb8c8; opacity: 0.85;
+  }
+  .hint {
+    position: fixed; right: 20px; bottom: 20px; z-index: 5;
+    text-align: right; pointer-events: none; user-select: none;
+    font-weight: 300; letter-spacing: 0.1em; font-size: 10px;
+    color: #7fd6c4; opacity: 0.0; mix-blend-mode: screen;
+    transition: opacity 1.6s ease;
+    line-height: 1.7;
+  }
+  .hint.show { opacity: 0.7; }
+  .kbd { color: #d7fff0; opacity: 0.95; }
+  .badge {
+    position: fixed; top: 16px; left: 22px; z-index: 5;
+    pointer-events: none; user-select: none; mix-blend-mode: screen;
+    font-weight: 300; letter-spacing: 0.2em; font-size: 10px;
+    color: #86e7d8; opacity: 0.6;
+  }
+  @media (max-width: 600px) {
+    .hud { left: 16px; bottom: 16px; }
+    .hud .title { font-size: 11px; letter-spacing: 0.34em; }
+    .hint { font-size: 9px; right: 14px; bottom: 14px; }
+    .badge { font-size: 9px; left: 16px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div class="badge">KP&nbsp;<span id="kp">5</span> · LAT&nbsp;69°N</div>
+<div class="hud">
+  <div class="title">Northern Lights</div>
+  <div class="sub">drag the sky · tap to pulse · scroll the storm</div>
+</div>
+<div class="hint" id="hint">
+  <div><span class="kbd">drag</span> bend the curtains</div>
+  <div><span class="kbd">click</span> solar burst</div>
+  <div><span class="kbd">scroll</span> storm intensity (Kp)</div>
+  <div><span class="kbd">1–4</span> palette</div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const canvas = document.getElementById("stage");
+  const gl = canvas.getContext("webgl", {
+    antialias: false, alpha: false, premultipliedAlpha: false,
+    powerPreference: "high-performance", preserveDrawingBuffer: true
+  }) || canvas.getContext("experimental-webgl");
+
+  if (!gl) {
+    // graceful: keep CSS gradient background; nothing else to do
+    document.querySelector(".hud .sub").textContent = "webgl unavailable";
+    return;
+  }
+
+  // ---------- shaders ----------
+  const VERT = `
+    attribute vec2 p;
+    void main(){ gl_Position = vec4(p, 0.0, 1.0); }
+  `;
+
+  // The whole scene lives in one fragment shader: sky gradient, stars,
+  // milky-way dust, layered aurora curtains (domain-warped FBM), mountains,
+  // and a mirrored lake reflection with ripples.
+  const FRAG = `
+  precision highp float;
+
+  uniform vec2  u_res;
+  uniform float u_time;
+  uniform vec2  u_mouse;      // 0..1, y up
+  uniform float u_down;       // pointer pressed amount (smoothed 0..1)
+  uniform vec2  u_wind;       // accumulated drag wind (x curtain shear, y lift)
+  uniform float u_kp;         // storm intensity 0..1
+  uniform vec3  u_colA;       // aurora low color
+  uniform vec3  u_colB;       // aurora high color
+  uniform vec3  u_colC;       // crown / rare color
+  uniform float u_pulse;      // decaying click pulse 0..1
+  uniform vec2  u_pulsePos;   // where the pulse originated
+  uniform float u_seed;
+
+  // ---- hash / noise ----
+  float hash21(vec2 p){
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+  }
+  float vnoise(vec2 p){
+    vec2 i = floor(p), f = fract(p);
+    vec2 u = f*f*(3.0-2.0*f);
+    float a = hash21(i + vec2(0.0,0.0));
+    float b = hash21(i + vec2(1.0,0.0));
+    float c = hash21(i + vec2(0.0,1.0));
+    float d = hash21(i + vec2(1.0,1.0));
+    return mix(mix(a,b,u.x), mix(c,d,u.x), u.y);
+  }
+  // 4-octave fbm (high octaves contribute little here; cheaper per pixel).
+  float fbm(vec2 p){
+    float s = 0.0, a = 0.5;
+    mat2 rot = mat2(0.8,-0.6,0.6,0.8);
+    for(int i=0;i<4;i++){
+      s += a * vnoise(p);
+      p = rot * p * 2.02 + 11.7;
+      a *= 0.5;
+    }
+    return s;
+  }
+
+  // smooth star field with twinkle
+  vec3 stars(vec2 uv, float t){
+    vec3 col = vec3(0.0);
+    // 3 layers of differing density/size
+    for(int L=0; L<3; L++){
+      float fl = float(L);
+      float scale = 90.0 + fl*120.0;
+      vec2 g = uv * scale;
+      vec2 cell = floor(g);
+      vec2 f = fract(g) - 0.5;
+      float h = hash21(cell + fl*37.0 + u_seed);
+      // only some cells host a star
+      float present = step(0.93 - fl*0.015, h);
+      vec2 jitter = (vec2(hash21(cell+1.7), hash21(cell+9.3)) - 0.5) * 0.7;
+      float d = length(f - jitter);
+      float size = mix(0.018, 0.05, hash21(cell+5.1)) * (1.0 - fl*0.25);
+      float tw = 0.5 + 0.5*sin(t*(1.5+3.0*hash21(cell+2.2)) + h*30.0);
+      float star = present * smoothstep(size, 0.0, d) * (0.35 + 0.65*tw);
+      // faint color temperature per star
+      vec3 sc = mix(vec3(0.7,0.8,1.0), vec3(1.0,0.92,0.78), hash21(cell+3.3));
+      col += star * sc * (0.9 - fl*0.18);
+    }
+    return col;
+  }
+
+  // signed mountain ridge silhouette; returns >0 inside mountain
+  float ridge(float x, float baseY, float seed, float amp, float freq){
+    float h = baseY;
+    h += amp * (fbm(vec2(x*freq + seed, seed*1.7)) - 0.5) * 2.0;
+    h += amp*0.35 * (fbm(vec2(x*freq*2.7 + seed*3.1, 5.0)) - 0.5) * 2.0;
+    return h;
+  }
+
+  // A single aurora ribbon: a LOCALIZED, snaking band of light.
+  // baseY = nominal height of this ribbon; the band undulates strongly around it
+  // and leaves dark sky above & below. Bright sharp lower edge, feathered rays up.
+  // p in sky-space (x aspect-corrected, y up). amp = ribbon vertical travel.
+  float ribbon(vec2 p, float t, float baseY, float bandPhase,
+               float amp, float lift, out float edgeHere){
+    // ---- snaking centerline (large + medium + small undulations) ----
+    float c  = sin(p.x*0.9 + t*0.22 + bandPhase) * 0.70;
+    c += sin(p.x*1.9 - t*0.16 + bandPhase*1.7) * 0.38;
+    c += (fbm(vec2(p.x*0.7 + bandPhase, t*0.07)) - 0.5) * 1.8;   // organic drift
+    c += (fbm(vec2(p.x*2.4 - t*0.05, bandPhase*3.0)) - 0.5) * 0.6;
+    float center = baseY + c * amp + lift;
+
+    float dy = p.y - center;
+
+    // brightness modulation ALONG the ribbon length -> the curtain breaks into
+    // luminous segments with dark gaps (not a solid wall).
+    float along = fbm(vec2(p.x*1.1 + t*0.05 + bandPhase, 3.1));
+    along = smoothstep(0.34, 0.78, along);                 // crisper gaps
+    along = mix(0.04, 1.0, along);
+
+    // ---- vertical profile: thin sharp bright lower edge, feather up ----
+    float thick = 0.013 + 0.005*sin(p.x*1.7 + bandPhase); // band core
+    float feather = 0.13 + 0.06*along;                    // ray height upward
+    float lower = exp(-pow(max(-dy,0.0)/thick, 1.7));     // crisp bottom edge
+    float upper = exp(-max(dy,0.0)/feather);              // rays rising up
+    upper = pow(upper, 1.25);                              // faster vertical decay
+    upper *= smoothstep(-thick*1.2, thick*0.6, dy);       // start at the edge
+    // tight soft halo so the curtain glows without washing the whole sky
+    float halo = exp(-pow(dy/(feather*0.95), 2.0)) * 0.16;
+    float prof = max(max(lower*1.3, upper*0.8), halo);
+
+    edgeHere = lower;   // for hot-edge coloring
+
+    // ---- striations (rays): derived from a FLOWING noise field, not static
+    // bars. Vertical streaks that drift sideways & shimmer; gated to the feather.
+    float sx = p.x*9.0 - center*2.0 + bandPhase*3.0;
+    float ns = fbm(vec2(sx, p.y*1.5 + t*0.15));           // slow vertical streaks
+    float streak = smoothstep(0.42, 0.74, ns);            // pick streak cores
+    streak += 0.5*smoothstep(0.55, 0.95, fbm(vec2(sx*2.3 + t*0.2, p.y*0.8)));
+    float rays = mix(0.55, 1.15, clamp(streak,0.0,1.0));
+    // only modulate the feathered upper region; keep the bright lower edge solid
+    float rayMix = smoothstep(thick*0.4, feather*0.5, dy);
+    rays = mix(1.0, rays, rayMix);
+
+    // ---- micro flicker / shimmer ----
+    float flick = 0.85 + 0.15*fbm(vec2(p.x*8.0 + t*1.2, t*0.6 + bandPhase));
+
+    return prof * along * rays * flick;
+  }
+
+  void main(){
+    vec2 frag = gl_FragCoord.xy;
+    vec2 uv = frag / u_res;            // 0..1, y up
+    float aspect = u_res.x / u_res.y;
+    // centered coords with aspect, y up
+    vec2 sp = vec2((uv.x - 0.5) * aspect, uv.y);
+
+    // aurora horizontal world-x is DECOUPLED from screen aspect so the curtain
+    // keeps the same scale/snaking on landscape AND portrait. On wide screens we
+    // show more of the curtain; on tall screens, a centered slice — never empty.
+    float auroraScaleX = mix(2.6, 1.3, clamp(aspect, 0.4, 1.6) / 1.6);
+    float ax = (uv.x - 0.5) * auroraScaleX;
+
+    float t = u_time;
+    float kp = u_kp;                   // 0..1 storm strength
+
+    // ---------------- sky base gradient (deep night) ----------------
+    float horizon = 0.30;
+    float skyT = clamp((uv.y - horizon) / (1.0 - horizon), 0.0, 1.0);
+    vec3 top    = vec3(0.006, 0.010, 0.030);
+    vec3 mid    = vec3(0.010, 0.025, 0.050);
+    vec3 lowsky = vec3(0.014, 0.045, 0.060);
+    vec3 sky = mix(lowsky, mix(mid, top, smoothstep(0.0,1.0,skyT)), smoothstep(0.0,0.9,skyT));
+
+    // milky-way dust band, diagonal
+    float mwa = dot(normalize(vec2(0.7,1.0)), (uv-0.5));
+    float mw = smoothstep(0.16, 0.0, abs(mwa)) * fbm(uv*vec2(3.0,6.0)+vec2(0.0,t*0.01));
+    sky += mw * vec3(0.07,0.08,0.12) * (0.4 + skyT);
+
+    // ---------------- compute aurora (aurora-space) ----------------
+    // apply drag wind: shear x by wind.x with height, lift by wind.y
+    vec2 ap = vec2(ax, uv.y);
+    ap.x += u_wind.x * (ap.y - horizon) * 1.4;
+    float lift = u_wind.y * 0.35;
+
+    // pointer glow: cursor ADDS brightness nearby (never deforms the band,
+    // so it can't punch a hole). Stronger while pressed.
+    vec2 m = vec2((u_mouse.x-0.5)*auroraScaleX, u_mouse.y);
+    float mdist = length(ap - m);
+    float cursorGlow = (0.10 + 0.45*u_down) * exp(-mdist*mdist*9.0);
+
+    // click pulse: a soft radial bloom + a gentle expanding ring, both additive.
+    vec2 pp = vec2((u_pulsePos.x-0.5)*auroraScaleX, u_pulsePos.y);
+    float pd = length(ap - pp);
+    float bloom = u_pulse * exp(-pd*pd*6.0) * 1.2;
+    float ringR = (1.0 - u_pulse) * 0.9;
+    float ring  = u_pulse * exp(-pow((pd - ringR)*6.0, 2.0)) * 0.8;
+    ring += bloom;
+
+    float aur = 0.0;
+    float edge = 0.0, e;
+    // HERO lower green curtain (dominant, snakes near horizon) + one secondary
+    // higher ribbon. Heights kept low so the upper sky stays deep & starry.
+    aur += 1.00 * ribbon(ap,                         t,      0.50, 0.0, 0.17, lift,        e); edge = max(edge,e);
+    aur += 0.62 * ribbon(ap*vec2(1.3,1.0)+vec2(3.0,0.0), t*1.12, 0.66, 2.4, 0.13, lift+0.02, e); edge = max(edge,e*0.62);
+    // a high faint crown ribbon that blooms only with high Kp
+    float crownE;
+    float crown = ribbon(ap*vec2(1.15,1.0)+vec2(1.0,0.0), t*0.55, 0.84, 8.0, 0.06, lift+0.03, crownE);
+    aur += smoothstep(0.55,1.0,kp) * 0.45 * crown;
+
+    aur += ring * 1.5;
+    aur += cursorGlow;                        // interactive light near pointer
+    aur *= (0.60 + 0.85*kp);                 // storm scales overall brightness
+    aur = max(aur, 0.0);
+
+    // ---------------- aurora coloring ----------------
+    // green body, hot magenta/pink ONLY along the sharp lower edge, teal up high.
+    // color follows ribbon height (ap.y) so the curtain reads green->teal, and
+    // the magenta never washes the open sky.
+    float vGrad = clamp((ap.y - 0.42)*1.6, 0.0, 1.0);
+    vec3 acol = mix(u_colA, u_colB, smoothstep(0.25, 1.0, vGrad));
+    // the famous pink/violet hem along the bottom edge of strong curtains
+    acol = mix(acol, u_colC, clamp(edge*0.7*(0.35+0.65*kp), 0.0, 1.0));
+    // rare crown tint up high when Kp high
+    acol = mix(acol, u_colC, clamp(crown*kp*0.3, 0.0, 1.0));
+    // slight hue shimmer
+    acol *= (0.85 + 0.25*fbm(ap*4.0 + t*0.3));
+
+    vec3 aurora = acol * aur;
+    // bloomy soft top
+    aurora += acol * pow(aur,2.2) * 0.4;
+
+    // fade aurora below horizon (it lives in the sky)
+    aurora *= smoothstep(horizon-0.02, horizon+0.05, uv.y);
+
+    vec3 col = sky;
+    // stars (brighter) dimmed only where aurora is genuinely strong
+    vec3 st = stars(uv, t) * 1.5 * (1.0 - clamp(aur*0.55,0.0,0.85));
+    st *= smoothstep(horizon-0.03, horizon+0.06, uv.y);
+    col += st;
+    col += aurora;
+
+    // sky air-glow near horizon
+    col += vec3(0.04,0.10,0.10) * smoothstep(horizon+0.15, horizon-0.05, uv.y) * 0.6;
+
+    // ---------------- mountains ----------------
+    float x = sp.x;
+    float mFar  = ridge(x, horizon+0.045, 13.0, 0.030, 1.4);
+    float mNear = ridge(x, horizon-0.005, 7.0, 0.055, 2.3);
+    // far range (lighter, slightly aurora-lit)
+    if(uv.y < mFar){
+      float depth = smoothstep(horizon-0.10, mFar, uv.y);
+      vec3 mc = vec3(0.020,0.045,0.060);
+      // rim light from aurora on the far ridge top
+      float rim = smoothstep(mFar-0.012, mFar, uv.y);
+      mc += acol * rim * (0.25+0.5*kp) * 0.5;
+      col = mix(col, mc, 0.92);
+    }
+    // near range (darkest, foreground)
+    if(uv.y < mNear){
+      vec3 mc = vec3(0.006,0.012,0.020);
+      float rim = smoothstep(mNear-0.010, mNear, uv.y);
+      mc += acol * rim * (0.2+0.4*kp) * 0.45;
+      col = mix(col, mc, 0.97);
+    }
+
+    // ---------------- lake reflection ----------------
+    // below horizon -> mirror the sky+aurora with ripples & damping
+    if(uv.y < horizon){
+      float depthBelow = (horizon - uv.y) / horizon; // 0 at shore -> 1 at bottom
+      // mirrored y
+      float ry = horizon + (horizon - uv.y);
+      vec2 ruv = vec2(uv.x, ry);
+      vec2 rsp = vec2((ruv.x-0.5)*auroraScaleX, ruv.y);
+
+      // ripple distortion increasing with depth + interaction
+      float rip = (fbm(vec2(uv.x*22.0, uv.y*40.0 - t*0.6)) - 0.5);
+      rip += 0.5*(fbm(vec2(uv.x*9.0 + t*0.2, uv.y*14.0))-0.5);
+      float ripAmp = (0.004 + depthBelow*0.020) * (1.0 + u_down*0.8 + u_pulse*2.0);
+      vec2 dsp = rsp + vec2(rip*ripAmp*4.0, 0.0);
+      dsp.x += u_wind.x * (dsp.y - horizon) * 1.4;
+
+      // recompute a cheaper aurora for reflection
+      float raur = 0.0, re;
+      raur += 1.0 * ribbon(dsp,                          t,      0.62, 0.0, 0.16, lift, re);
+      raur += 0.7 * ribbon(dsp*vec2(1.25,1.0)+vec2(3.0,0.0), t*1.15, 0.50, 2.4, 0.13, lift-0.04, re);
+      raur += (0.18+0.5*kp)*ribbon(dsp*vec2(1.1,1.0)+vec2(1.0,0.0), t*0.6, 0.86, 8.0, 0.08, lift+0.06, re);
+      raur *= (0.60+0.85*kp);
+      raur = max(raur,0.0);
+
+      float rvGrad = clamp((dsp.y-horizon)*1.0,0.0,1.0);
+      vec3 racol = mix(u_colA,u_colB, smoothstep(0.1,0.8,rvGrad));
+      vec3 refl = racol * raur;
+
+      // reflected stars (faint, broken by ripples)
+      vec3 rst = stars(ruv + vec2(rip*0.01,0.0), t) * 0.5;
+
+      // water base color (deep teal)
+      vec3 water = vec3(0.010,0.030,0.040) * (1.0 - depthBelow*0.6);
+      water += vec3(0.02,0.05,0.06)*0.4;
+
+      vec3 lake = water + refl*(0.55 - depthBelow*0.25) + rst*(0.6-depthBelow*0.5);
+      // fresnel-ish shimmer line at the shore
+      lake += acol * smoothstep(horizon, horizon-0.02, uv.y) * 0.0;
+      // darken with depth
+      lake *= (1.0 - depthBelow*0.35);
+
+      col = lake;
+
+      // shoreline glow
+      float shore = smoothstep(0.02, 0.0, abs(uv.y - horizon));
+      col += acol * shore * (0.3+0.5*kp) * 0.5;
+    }
+
+    // ---------------- post ----------------
+    // subtle vignette
+    vec2 q = uv - 0.5;
+    float vig = 1.0 - dot(q,q)*0.85;
+    col *= vig;
+
+    // breathing exposure tied to pulse + down
+    col *= 1.0 + u_pulse*0.25 + u_down*0.06;
+
+    // filmic-ish tone
+    col = col / (col + vec3(0.85));
+    col = pow(col, vec3(0.92));
+
+    // gentle film grain to kill banding
+    float grain = (hash21(frag + fract(t)*97.0) - 0.5) * 0.025;
+    col += grain;
+
+    gl_FragColor = vec4(col, 1.0);
+  }
+  `;
+
+  function compile(type, src){
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+      console.error(gl.getShaderInfoLog(s), src);
+      throw new Error("shader compile failed");
+    }
+    return s;
+  }
+  const prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
+  gl.linkProgram(prog);
+  if(!gl.getProgramParameter(prog, gl.LINK_STATUS)){
+    console.error(gl.getProgramInfoLog(prog));
+    throw new Error("link failed");
+  }
+  gl.useProgram(prog);
+
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+    -1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1
+  ]), gl.STATIC_DRAW);
+  const ploc = gl.getAttribLocation(prog, "p");
+  gl.enableVertexAttribArray(ploc);
+  gl.vertexAttribPointer(ploc, 2, gl.FLOAT, false, 0, 0);
+
+  const U = {};
+  ["u_res","u_time","u_mouse","u_down","u_wind","u_kp","u_colA","u_colB","u_colC","u_pulse","u_pulsePos","u_seed"]
+    .forEach(n => U[n] = gl.getUniformLocation(prog, n));
+
+  // ---------- palettes ----------
+  // each: [low(green), high(teal), crown(violet/red)]
+  const PALETTES = [
+    { name:"emerald",  a:[0.10,0.95,0.55], b:[0.20,0.85,0.95], c:[0.85,0.25,0.75] },
+    { name:"solar",    a:[0.55,0.95,0.35], b:[0.95,0.75,0.30], c:[0.95,0.20,0.35] },
+    { name:"violet",   a:[0.45,0.45,0.98], b:[0.30,0.85,0.95], c:[0.95,0.35,0.85] },
+    { name:"glacier",  a:[0.25,0.85,0.95], b:[0.55,0.75,1.00], c:[0.70,0.95,1.00] },
+  ];
+  let paletteIdx = 0;
+  let cur = { a:[...PALETTES[0].a], b:[...PALETTES[0].b], c:[...PALETTES[0].c] };
+
+  // ---------- state ----------
+  let DPR = 1, W = 0, H = 0;
+  const RENDER_CAP = 1.5; // cap device pixel ratio for perf
+
+  const state = {
+    mouse: [0.5, 0.62],
+    targetMouse: [0.5, 0.62],
+    down: 0, targetDown: 0,
+    wind: [0,0], targetWind: [0,0],
+    kp: 0.55,
+    pulse: 0,
+    pulsePos: [0.5, 0.7],
+    dragging: false,
+    lastPointer: null,
+    seed: Math.random()*100,
+  };
+
+  function resize(){
+    DPR = Math.min(window.devicePixelRatio || 1, RENDER_CAP);
+    W = Math.floor(window.innerWidth * DPR);
+    H = Math.floor(window.innerHeight * DPR);
+    canvas.width = W; canvas.height = H;
+    canvas.style.width = window.innerWidth + "px";
+    canvas.style.height = window.innerHeight + "px";
+    gl.viewport(0,0,W,H);
+  }
+  window.addEventListener("resize", resize, {passive:true});
+  resize();
+
+  // ---------- interaction ----------
+  function setKp(v){
+    state.kp = Math.max(0.05, Math.min(1.0, v));
+    document.getElementById("kp").textContent = (state.kp*9).toFixed(0);
+  }
+  setKp(state.kp);
+
+  function pointerXY(e){
+    const r = canvas.getBoundingClientRect();
+    const cx = (e.touches ? e.touches[0].clientX : e.clientX) - r.left;
+    const cy = (e.touches ? e.touches[0].clientY : e.clientY) - r.top;
+    return [cx / r.width, 1.0 - cy / r.height]; // y up
+  }
+
+  function onDown(e){
+    state.dragging = true;
+    state.targetDown = 1;
+    const xy = pointerXY(e);
+    state.targetMouse = xy;
+    state.lastPointer = xy;
+    // a click both pulses and sets pulse origin
+    state.pulse = 1.0;
+    state.pulsePos = xy;
+    e.preventDefault();
+  }
+  function onMove(e){
+    const xy = pointerXY(e);
+    state.targetMouse = xy;
+    if(state.dragging && state.lastPointer){
+      const dx = xy[0] - state.lastPointer[0];
+      const dy = xy[1] - state.lastPointer[1];
+      state.targetWind[0] += dx * 2.2;
+      state.targetWind[1] += dy * 1.6;
+      state.targetWind[0] = Math.max(-0.6, Math.min(0.6, state.targetWind[0]));
+      state.targetWind[1] = Math.max(-0.4, Math.min(0.4, state.targetWind[1]));
+    }
+    // hover (non-drag) still nudges curtains a bit
+    state.lastPointer = xy;
+    e.preventDefault();
+  }
+  function onUp(){
+    state.dragging = false;
+    state.targetDown = 0;
+    state.lastPointer = null;
+  }
+
+  canvas.addEventListener("mousedown", onDown);
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+  canvas.addEventListener("touchstart", onDown, {passive:false});
+  canvas.addEventListener("touchmove", onMove, {passive:false});
+  window.addEventListener("touchend", onUp);
+
+  // hover without button: track mouse for the gentle pull + glow
+  canvas.addEventListener("mousemove", (e)=>{
+    if(!state.dragging){
+      state.targetMouse = pointerXY(e);
+    }
+  });
+
+  // scroll => storm intensity (Kp)
+  window.addEventListener("wheel", (e)=>{
+    setKp(state.kp - Math.sign(e.deltaY) * 0.06);
+    e.preventDefault();
+  }, {passive:false});
+
+  // keyboard palettes + kp
+  window.addEventListener("keydown", (e)=>{
+    if(e.key >= "1" && e.key <= "4"){
+      paletteIdx = parseInt(e.key,10) - 1;
+    } else if(e.key === "ArrowUp"){ setKp(state.kp+0.05); }
+    else if(e.key === "ArrowDown"){ setKp(state.kp-0.05); }
+    else if(e.key === " "){ state.pulse = 1.0; state.pulsePos = state.mouse.slice(); }
+  });
+
+  // double tap on mobile cycles palette
+  let lastTap = 0;
+  canvas.addEventListener("touchend", ()=>{
+    const now = performance.now();
+    if(now - lastTap < 320){ paletteIdx = (paletteIdx+1) % PALETTES.length; }
+    lastTap = now;
+  });
+
+  // show hint briefly after load, then fade
+  const hint = document.getElementById("hint");
+  setTimeout(()=> hint.classList.add("show"), 700);
+  setTimeout(()=> hint.classList.remove("show"), 7000);
+
+  // ---------- helpers ----------
+  function lerp(a,b,t){ return a + (b-a)*t; }
+  function lerp3(a,b,t){ return [lerp(a[0],b[0],t),lerp(a[1],b[1],t),lerp(a[2],b[2],t)]; }
+
+  // ---------- loop ----------
+  let start = performance.now();
+  let lastT = start;
+  let fpsSmooth = 60;
+  let downscaleSteps = 0;          // how many times we've reduced resolution
+  let lastDownscale = 0;
+
+  function frame(now){
+    const dt = Math.min(0.05, (now - lastT)/1000);
+    lastT = now;
+    const t = (now - start) / 1000;
+
+    // FPS-adaptive resolution: drop DPR progressively (up to 3 steps, min ~0.5x)
+    // so weak/integrated GPUs stay smooth. Each step waits ~1.2s to settle.
+    const inst = 1000 / Math.max(1e-3, (now - (frame._prev || now)));
+    frame._prev = now;
+    fpsSmooth = lerp(fpsSmooth, inst, 0.06);
+    if(t > 2.0 && downscaleSteps < 3 && fpsSmooth < 45 &&
+       (t - lastDownscale) > 1.2 && DPR > 0.55){
+      downscaleSteps++;
+      lastDownscale = t;
+      DPR = Math.max(0.55, DPR * 0.78);
+      W = Math.floor(window.innerWidth * DPR);
+      H = Math.floor(window.innerHeight * DPR);
+      canvas.width = W; canvas.height = H;
+      gl.viewport(0,0,W,H);
+    }
+
+    // smooth state toward targets
+    state.mouse[0] = lerp(state.mouse[0], state.targetMouse[0], 0.12);
+    state.mouse[1] = lerp(state.mouse[1], state.targetMouse[1], 0.12);
+    state.down = lerp(state.down, state.targetDown, 0.10);
+
+    // wind eases toward target then both decay back to rest (sky settles)
+    state.wind[0] = lerp(state.wind[0], state.targetWind[0], 0.14);
+    state.wind[1] = lerp(state.wind[1], state.targetWind[1], 0.14);
+    state.targetWind[0] *= 0.965;
+    state.targetWind[1] *= 0.965;
+
+    // pulse decays
+    state.pulse *= 0.965;
+    if(state.pulse < 0.002) state.pulse = 0;
+
+    // palette ease
+    const P = PALETTES[paletteIdx];
+    cur.a = lerp3(cur.a, P.a, 0.06);
+    cur.b = lerp3(cur.b, P.b, 0.06);
+    cur.c = lerp3(cur.c, P.c, 0.06);
+
+    // ---- uniforms ----
+    gl.uniform2f(U.u_res, W, H);
+    gl.uniform1f(U.u_time, t);
+    gl.uniform2f(U.u_mouse, state.mouse[0], state.mouse[1]);
+    gl.uniform1f(U.u_down, state.down);
+    gl.uniform2f(U.u_wind, state.wind[0], state.wind[1]);
+    gl.uniform1f(U.u_kp, state.kp);
+    gl.uniform3fv(U.u_colA, cur.a);
+    gl.uniform3fv(U.u_colB, cur.b);
+    gl.uniform3fv(U.u_colC, cur.c);
+    gl.uniform1f(U.u_pulse, state.pulse);
+    gl.uniform2f(U.u_pulsePos, state.pulsePos[0], state.pulsePos[1]);
+    gl.uniform1f(U.u_seed, state.seed);
+
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    requestAnimationFrame(frame);
+  }
+
+  // expose a tiny debug hook for self-verification
+  window.__aurora = {
+    setKp: (v)=>setKp(v),
+    palette: (i)=>{ paletteIdx = i % PALETTES.length; },
+    pulse: (x,y)=>{ state.pulse=1.0; state.pulsePos=[x,y]; },
+    state
+  };
+
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

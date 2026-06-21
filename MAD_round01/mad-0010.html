@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>MERCURY — liquid chrome</title>
+<style>
+  :root{ color-scheme: dark; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#04050a; }
+  body{
+    font-family:"Helvetica Neue",Arial,"Apple SD Gothic Neo",sans-serif;
+    -webkit-tap-highlight-color:transparent;
+    touch-action:none;
+  }
+  #stage{ position:fixed; inset:0; display:block; cursor:crosshair; }
+
+  /* The frame IS part of the work — no loaders, first paint = the piece */
+  .ui{ position:fixed; inset:0; pointer-events:none; z-index:5; mix-blend-mode:difference; color:#fff; }
+  .ui .mark{
+    position:absolute; left:clamp(20px,4vw,56px); top:clamp(20px,4vw,52px);
+    font-weight:800; letter-spacing:.34em; font-size:clamp(13px,1.5vw,17px);
+    text-transform:uppercase;
+  }
+  .ui .mark small{ display:block; font-weight:400; letter-spacing:.42em; font-size:.62em; opacity:.7; margin-top:.7em; }
+  .ui .meta{
+    position:absolute; right:clamp(20px,4vw,56px); top:clamp(22px,4vw,54px);
+    text-align:right; font-weight:500; letter-spacing:.26em; font-size:clamp(9px,1vw,11px);
+    line-height:1.9; opacity:.78; text-transform:uppercase;
+  }
+  .ui .hint{
+    position:absolute; left:clamp(20px,4vw,56px); bottom:clamp(20px,4vw,46px);
+    font-weight:500; letter-spacing:.3em; font-size:clamp(9px,1vw,11px);
+    text-transform:uppercase; opacity:.72;
+    display:flex; gap:1.6em; flex-wrap:wrap;
+  }
+  .ui .idx{
+    position:absolute; right:clamp(20px,4vw,56px); bottom:clamp(20px,4vw,46px);
+    font-weight:800; letter-spacing:.18em; font-size:clamp(34px,7vw,84px); line-height:.8; opacity:.92;
+  }
+  .ui .idx span{ font-size:.34em; font-weight:500; letter-spacing:.3em; opacity:.6; vertical-align:super; }
+  .fallback{
+    position:fixed; inset:0; display:none; place-items:center; text-align:center;
+    color:#9fb0d0; font-size:14px; letter-spacing:.1em; padding:32px;
+  }
+  @media (max-width:520px){
+    .ui .meta{ display:none; }
+    .ui .mark{ letter-spacing:.26em; }
+  }
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <div class="ui" aria-hidden="true">
+    <div class="mark">Mercury<small>liquid chrome</small></div>
+    <div class="meta">refraction&nbsp;/&nbsp;dispersion<br/>realtime · 60fps<br/>fable·mad·0010</div>
+    <div class="hint"><span>drag — push the metal</span><span>scroll — surface tension</span></div>
+    <div class="idx">010<span>/ mad</span></div>
+  </div>
+  <div class="fallback" id="fallback">이 작품은 WebGL을 지원하는 브라우저에서 감상할 수 있습니다.</div>
+
+<script>
+(function(){
+  "use strict";
+  var canvas = document.getElementById("stage");
+  var gl = canvas.getContext("webgl", {antialias:false, alpha:false, premultipliedAlpha:false, powerPreference:"high-performance"})
+        || canvas.getContext("experimental-webgl");
+  if(!gl){ document.getElementById("fallback").style.display="grid"; return; }
+
+  /* ---------- shaders ---------- */
+  var VERT = [
+    "attribute vec2 a;",
+    "void main(){ gl_Position = vec4(a,0.0,1.0); }"
+  ].join("\n");
+
+  var FRAG = [
+    "precision highp float;",
+    "uniform vec2  u_res;",
+    "uniform float u_time;",
+    "uniform vec3  u_ptr;",   // xy = pointer px, z = press strength
+    "uniform float u_scroll;",
+
+    "float hash(vec2 p){",
+    "  p = fract(p*vec2(123.34,345.45));",
+    "  p += dot(p, p+34.345);",
+    "  return fract(p.x*p.y);",
+    "}",
+    "float noise(vec2 p){",
+    "  vec2 i=floor(p), f=fract(p);",
+    "  vec2 u=f*f*(3.0-2.0*f);",
+    "  float a=hash(i), b=hash(i+vec2(1.0,0.0)), c=hash(i+vec2(0.0,1.0)), d=hash(i+vec2(1.0,1.0));",
+    "  return mix(mix(a,b,u.x), mix(c,d,u.x), u.y);",
+    "}",
+    "float fbm(vec2 p){",
+    "  float v=0.0, a=0.5;",
+    "  mat2 m=mat2(1.6,1.2,-1.2,1.6);",
+    "  for(int i=0;i<4;i++){ v+=a*noise(p); p=m*p; a*=0.5; }",
+    "  return v;",
+    "}",
+
+    // liquid-metal height field
+    "float metal(vec2 p, float flow){",
+    "  vec2 q = p*1.25;",
+    "  vec2 w = vec2(fbm(q+vec2(0.0,flow)), fbm(q+vec2(5.2,1.3)-flow));",
+    "  float h = fbm(q*1.5 + w*1.35 + vec2(flow*0.4,0.0));",
+    "  for(int i=0;i<5;i++){",
+    "    float fi=float(i);",
+    "    vec2 c = vec2(sin(u_time*0.31+fi*1.7)*0.72, cos(u_time*0.24+fi*2.3)*0.5);",
+    "    vec2 dd = p-c; float d2 = dot(dd,dd);",
+    "    h += 0.55*exp(-d2*3.2);",
+    "  }",
+    "  vec2 pp = (u_ptr.xy - 0.5*u_res)/u_res.y;",
+    "  vec2 dpv = p-pp; float dp2 = dot(dpv,dpv);",
+    "  h += (0.35 + u_ptr.z*0.95)*exp(-dp2*7.0);",
+    "  return h;",
+    "}",
+
+    // studio environment reflected by the chrome
+    "vec3 env(vec3 rd, float hue){",
+    "  rd = normalize(rd);",
+    "  float v = rd.y*0.5+0.5;",
+    "  vec3 base = mix(vec3(0.012,0.018,0.034), vec3(0.16,0.21,0.33), v);",
+    "  base = mix(base, vec3(0.86,0.90,1.02), smoothstep(0.72,1.0,v));",
+    "  float strip = sin(rd.y*9.0 + rd.x*1.6 + 0.6);",
+    "  base += smoothstep(0.86,1.0,strip)*vec3(1.08,1.14,1.32)*0.85;",
+    "  float strip2 = sin(rd.y*22.0 - 1.2);",
+    "  base += smoothstep(0.93,1.0,strip2)*vec3(0.8,0.85,1.0)*0.35;",
+    "  vec3 gelR = 0.5+0.5*cos(6.2831*(hue+vec3(0.0,0.35,0.62)));",
+    "  vec3 gelL = 0.5+0.5*cos(6.2831*(hue+0.5+vec3(0.0,0.35,0.62)));",
+    "  base += smoothstep(0.25,1.0, rd.x)*gelR*0.34;",
+    "  base += smoothstep(0.25,1.0,-rd.x)*gelL*0.34;",
+    "  vec3 k1 = normalize(vec3(0.35,0.55,0.75));",
+    "  base += pow(max(dot(rd,k1),0.0),64.0)*vec3(1.5,1.28,0.95)*2.4;",
+    "  vec3 k2 = normalize(vec3(-0.55,0.18,0.6));",
+    "  base += pow(max(dot(rd,k2),0.0),26.0)*vec3(0.5,0.72,1.25)*0.9;",
+    "  return base;",
+    "}",
+
+    "void main(){",
+    "  vec2 uv = (gl_FragCoord.xy - 0.5*u_res)/u_res.y;",
+    "  float zoom = exp(-u_scroll*0.05);",
+    "  float flow = u_time*0.12*(1.0+abs(u_scroll)*0.06);",
+    "  float hue  = u_scroll*0.045 + u_time*0.015;",
+    "  vec2 p = uv*zoom;",
+
+    "  float e = 1.5*zoom/u_res.y;",
+    "  float h0 = metal(p, flow);",
+    "  float hX = metal(p+vec2(e,0.0), flow);",
+    "  float hY = metal(p+vec2(0.0,e), flow);",
+    "  vec2 g = vec2(hX-h0, hY-h0)/e;",
+    "  vec3 n = normalize(vec3(-g*0.17, 1.0));",
+
+    "  vec3 I = vec3(0.0,0.0,-1.0);",
+    "  vec3 T = normalize(vec3(n.y, -n.x, 0.0));",
+    "  float fr = pow(1.0 - clamp(n.z,0.0,1.0), 2.4);",
+    "  float ca = 0.014 + fr*0.07 + clamp(abs(u_scroll)*0.006,0.0,0.08);",
+
+    "  vec3 rd  = reflect(I, n);",
+    "  vec3 rdR = reflect(I, normalize(n + T*ca));",
+    "  vec3 rdB = reflect(I, normalize(n - T*ca));",
+    "  vec3 col = vec3(env(rdR,hue).r, env(rd,hue).g, env(rdB,hue).b);",
+
+    // iridescent oil-slick thin film at grazing edges
+    "  vec3 irid = 0.5+0.5*cos(6.2831*(h0*1.1 + fr*1.4 + hue + vec3(0.0,0.33,0.66)));",
+    "  col += irid*fr*0.30;",
+    "  col += fr*vec3(0.45,0.58,0.95)*0.22;",
+
+    // depth shading + soft occlusion in the troughs
+    "  col *= 0.82 + 0.20*smoothstep(-0.4,1.7,h0);",
+
+    // vignette
+    "  float vig = smoothstep(1.45,0.15,length(uv));",
+    "  col *= mix(0.55,1.0,vig);",
+
+    // ACES-ish tonemap + gamma
+    "  col = (col*(2.51*col+0.03))/(col*(2.43*col+0.59)+0.14);",
+    "  col = clamp(col,0.0,1.0);",
+    "  col = pow(col, vec3(0.4545));",
+
+    // fine grain to kill banding
+    "  col += (hash(gl_FragCoord.xy + u_time)-0.5)*0.022;",
+    "  gl_FragColor = vec4(col,1.0);",
+    "}"
+  ].join("\n");
+
+  function compile(type, src){
+    var s = gl.createShader(type);
+    gl.shaderSource(s, src); gl.compileShader(s);
+    if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+      console.error(gl.getShaderInfoLog(s), src); return null;
+    }
+    return s;
+  }
+  var vs = compile(gl.VERTEX_SHADER, VERT);
+  var fs = compile(gl.FRAGMENT_SHADER, FRAG);
+  var prog = gl.createProgram();
+  gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
+  if(!gl.getProgramParameter(prog, gl.LINK_STATUS)){
+    console.error(gl.getProgramInfoLog(prog));
+    document.getElementById("fallback").style.display="grid"; return;
+  }
+  gl.useProgram(prog);
+
+  var buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+  var loc = gl.getAttribLocation(prog, "a");
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+
+  var uRes    = gl.getUniformLocation(prog, "u_res");
+  var uTime   = gl.getUniformLocation(prog, "u_time");
+  var uPtr    = gl.getUniformLocation(prog, "u_ptr");
+  var uScroll = gl.getUniformLocation(prog, "u_scroll");
+
+  /* ---------- state ---------- */
+  var DPR = Math.min(window.devicePixelRatio||1, 2);
+  var W=0, H=0;
+  function resize(){
+    DPR = Math.min(window.devicePixelRatio||1, 2);
+    W = Math.floor(innerWidth*DPR);
+    H = Math.floor(innerHeight*DPR);
+    canvas.width=W; canvas.height=H;
+    canvas.style.width=innerWidth+"px"; canvas.style.height=innerHeight+"px";
+    gl.viewport(0,0,W,H);
+  }
+  window.addEventListener("resize", resize, {passive:true});
+  resize();
+
+  // pointer in device px (y flipped to match gl_FragCoord)
+  var ptr   = {x:W*0.5, y:H*0.55, z:0.0};
+  var ptrT  = {x:W*0.5, y:H*0.55, z:0.0};
+  var active = false, lastInput = -1e9;
+
+  function setTarget(cx, cy){
+    ptrT.x = cx*DPR;
+    ptrT.y = (innerHeight-cy)*DPR;
+    lastInput = perfNow();
+  }
+  function perfNow(){ return (performance.now?performance.now():Date.now())/1000; }
+
+  canvas.addEventListener("mousemove", function(e){ setTarget(e.clientX, e.clientY); });
+  canvas.addEventListener("mousedown", function(e){ active=true; ptrT.z=1.0; setTarget(e.clientX,e.clientY); });
+  window.addEventListener("mouseup",   function(){ active=false; ptrT.z=0.0; });
+  canvas.addEventListener("touchstart", function(e){ active=true; ptrT.z=1.0; var t=e.touches[0]; setTarget(t.clientX,t.clientY); e.preventDefault(); }, {passive:false});
+  canvas.addEventListener("touchmove",  function(e){ var t=e.touches[0]; setTarget(t.clientX,t.clientY); e.preventDefault(); }, {passive:false});
+  window.addEventListener("touchend",   function(){ active=false; ptrT.z=0.0; });
+
+  var scroll=0, scrollT=0;
+  function onWheel(e){
+    scrollT += e.deltaY*0.0016;
+    scrollT = Math.max(-7.0, Math.min(7.0, scrollT));
+    lastInput = perfNow();
+    e.preventDefault();
+  }
+  canvas.addEventListener("wheel", onWheel, {passive:false});
+  // touch two-finger / drag-vertical also nudges tension on mobile
+  var tY=null;
+  canvas.addEventListener("touchstart", function(e){ if(e.touches.length>1) tY=e.touches[0].clientY; });
+  canvas.addEventListener("touchmove", function(e){
+    if(e.touches.length>1 && tY!==null){ var y=e.touches[0].clientY; scrollT=Math.max(-7,Math.min(7,scrollT+(tY-y)*0.01)); tY=y; }
+  });
+
+  /* ---------- loop ---------- */
+  var t0 = perfNow();
+  function frame(){
+    var now = perfNow();
+    var time = now - t0;
+
+    // idle: gentle autonomous drift so the piece is always alive
+    if(now - lastInput > 2.2){
+      ptrT.x = (0.5 + 0.32*Math.sin(time*0.23) + 0.12*Math.sin(time*0.71))*W;
+      ptrT.y = (0.5 + 0.26*Math.cos(time*0.19) + 0.10*Math.cos(time*0.53))*H;
+      ptrT.z = 0.18 + 0.12*Math.sin(time*0.4);
+      scrollT += (0.0 - scrollT)*0.004;
+    }
+
+    // easing
+    ptr.x += (ptrT.x-ptr.x)*0.08;
+    ptr.y += (ptrT.y-ptr.y)*0.08;
+    ptr.z += (ptrT.z-ptr.z)*0.10;
+    scroll += (scrollT-scroll)*0.06;
+
+    gl.uniform2f(uRes, W, H);
+    gl.uniform1f(uTime, time);
+    gl.uniform3f(uPtr, ptr.x, ptr.y, ptr.z);
+    gl.uniform1f(uScroll, scroll);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>ASTRAEA — 살아있는 나선</title>
+<style>
+  :root{
+    --ink:#e9ecff;
+    --dim:#7e86b8;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{height:100%;width:100%;overflow:hidden;background:#02030a;}
+  body{
+    font-family:"Helvetica Neue",Helvetica,Arial,"Apple SD Gothic Neo","Noto Sans KR",sans-serif;
+    color:var(--ink);
+    -webkit-font-smoothing:antialiased;
+    cursor:crosshair;
+    touch-action:none;
+  }
+  #stage{position:fixed;inset:0;display:block;}
+  /* layered canvases: nebula (blurred) behind sharp star field */
+  #neb{position:fixed;inset:0;filter:blur(22px) brightness(1.15);opacity:.9;}
+  #stars{position:fixed;inset:0;}
+  #fx{position:fixed;inset:0;pointer-events:none;}
+
+  .vignette{
+    position:fixed;inset:0;pointer-events:none;
+    background:radial-gradient(ellipse 120% 90% at 50% 50%,
+      rgba(0,0,0,0) 38%, rgba(0,0,0,.35) 72%, rgba(2,2,8,.92) 100%);
+    mix-blend-mode:multiply;
+    z-index:5;
+  }
+  .grain{
+    position:fixed;inset:-50%;pointer-events:none;opacity:.05;z-index:6;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='0.6'/></svg>");
+    animation:grain 1.2s steps(4) infinite;
+  }
+  @keyframes grain{
+    0%{transform:translate(0,0)}25%{transform:translate(-3%,2%)}
+    50%{transform:translate(2%,-2%)}75%{transform:translate(-1%,1%)}100%{transform:translate(0,0)}
+  }
+
+  /* HUD */
+  .hud{position:fixed;z-index:10;pointer-events:none;user-select:none;}
+  .title{
+    top:30px;left:34px;
+    letter-spacing:.42em;font-size:13px;font-weight:600;
+    color:var(--ink);text-transform:uppercase;
+    text-shadow:0 0 18px rgba(120,150,255,.55);
+  }
+  .title small{display:block;letter-spacing:.28em;font-size:9.5px;font-weight:400;color:var(--dim);margin-top:7px;}
+  .sub{
+    bottom:30px;left:34px;max-width:340px;
+    font-size:11px;line-height:1.85;color:var(--dim);letter-spacing:.04em;
+  }
+  .sub b{color:#aeb6ff;font-weight:600;}
+  .seed{
+    top:32px;right:34px;text-align:right;
+    font-size:10px;letter-spacing:.18em;color:var(--dim);
+    pointer-events:auto;cursor:pointer;
+  }
+  .seed:hover{color:#cfd5ff;}
+  .seed span{color:#8e7bff;font-variant-numeric:tabular-nums;}
+  .seed .hint{display:block;margin-top:6px;font-size:8.5px;letter-spacing:.22em;opacity:.6;}
+
+  .legend{
+    bottom:30px;right:34px;text-align:right;
+    font-size:9.5px;letter-spacing:.16em;color:var(--dim);line-height:2.1;
+  }
+  .legend kbd{
+    display:inline-block;color:#c3c9ff;background:rgba(120,140,255,.10);
+    border:1px solid rgba(140,160,255,.18);border-radius:4px;
+    padding:1px 7px;font-size:9px;letter-spacing:.08em;margin-left:8px;
+    font-family:inherit;
+  }
+
+  @media (max-width:480px){
+    .title{top:20px;left:18px;font-size:11px;letter-spacing:.34em;}
+    .title small{font-size:8.5px;}
+    .seed{top:22px;right:18px;font-size:9px;}
+    .sub{bottom:84px;left:18px;font-size:10px;max-width:62vw;line-height:1.7;}
+    .legend{bottom:18px;right:18px;left:18px;text-align:center;font-size:9px;}
+    .legend kbd{margin:0 4px;padding:1px 6px;}
+    body{cursor:default;}
+  }
+</style>
+</head>
+<body>
+  <canvas id="neb"></canvas>
+  <canvas id="stars"></canvas>
+  <canvas id="fx"></canvas>
+  <div class="vignette"></div>
+  <div class="grain"></div>
+
+  <div class="hud title">ASTRAEA<small>procedural spiral galaxy · v08</small></div>
+  <div class="hud seed" id="seed">SEED <span id="seedval">—</span><span class="hint">탭하여 새 은하 생성</span></div>
+  <div class="hud sub">
+    별 <b id="starcount">—</b>개가 차등 회전으로 휘돌고 있습니다.
+    커서는 <b>중력 렌즈</b>처럼 시공간을 끕니다.
+  </div>
+  <div class="hud legend">
+    이동 <kbd>마우스 / 터치</kbd><br>
+    회전 <kbd>드래그</kbd> · 줌 <kbd>휠 / 핀치</kbd><br>
+    초신성 <kbd>클릭 / 탭</kbd>
+  </div>
+
+<script>
+(()=>{
+"use strict";
+
+/* ============================================================
+   ASTRAEA — a living procedural spiral galaxy.
+   Three layered canvases:
+     neb   : low-res additive nebula glow (CSS-blurred)
+     stars : the main differentially-rotating star field
+     fx    : supernova shockwaves & lens reticle
+   Pure 2D canvas, no libs. Pseudo-3D via tilt projection.
+   ============================================================ */
+
+const nebC = document.getElementById('neb');
+const starC = document.getElementById('stars');
+const fxC   = document.getElementById('fx');
+const nebX = nebC.getContext('2d');
+const sX   = starC.getContext('2d');
+const fX   = fxC.getContext('2d');
+
+let W=0,H=0,DPR=1, CX=0, CY=0, SCALE=1;
+const NEB_DOWN = 4; // nebula canvas downscale factor
+
+/* ---------- seeded PRNG (mulberry32) ---------- */
+function mulberry32(a){
+  return function(){
+    a|=0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a>>>15, 1 | a);
+    t = t + Math.imul(t ^ t>>>7, 61 | t) ^ t;
+    return ((t ^ t>>>14) >>> 0) / 4294967296;
+  };
+}
+let SEED = (Math.random()*1e9)|0;
+let rnd = mulberry32(SEED);
+const TAU = Math.PI*2;
+
+/* ---------- responsive sizing ---------- */
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  for(const c of [starC,fxC]){
+    c.width = W*DPR; c.height = H*DPR;
+    c.style.width=W+'px'; c.style.height=H+'px';
+  }
+  sX.setTransform(DPR,0,0,DPR,0,0);
+  fX.setTransform(DPR,0,0,DPR,0,0);
+  nebC.width = Math.ceil(W/NEB_DOWN);
+  nebC.height= Math.ceil(H/NEB_DOWN);
+  nebC.style.width=W+'px'; nebC.style.height=H+'px';
+  CX = W/2; CY = H/2;
+  // galaxy radius scales to the smaller viewport dimension
+  SCALE = Math.min(W,H) * 0.46;
+}
+window.addEventListener('resize', resize);
+
+/* ---------- color helpers ---------- */
+// blackbody-ish ramp from hot blue core to warm outer arms
+function starColor(t){ // t 0..1 (0=core/hot, 1=rim/cool)
+  // stops: white-blue -> blue -> teal -> warm white -> amber -> dim red
+  const stops = [
+    [0.00, 200,220,255],
+    [0.18, 150,185,255],
+    [0.38, 175,210,245],
+    [0.58, 255,250,235],
+    [0.78, 255,205,150],
+    [1.00, 255,150,120],
+  ];
+  for(let i=0;i<stops.length-1;i++){
+    const a=stops[i], b=stops[i+1];
+    if(t>=a[0]&&t<=b[0]){
+      const f=(t-a[0])/(b[0]-a[0]);
+      return [
+        (a[1]+(b[1]-a[1])*f)|0,
+        (a[2]+(b[2]-a[2])*f)|0,
+        (a[3]+(b[3]-a[3])*f)|0,
+      ];
+    }
+  }
+  return [255,255,255];
+}
+
+/* ============================================================
+   GALAXY GENERATION
+   Log-spiral arms with density waves + scattered halo + dust.
+   Each star stores polar coords; rotation is differential so
+   inner radii sweep faster (Keplerian-ish) and arms churn.
+   ============================================================ */
+let STARS, NSTAR, DUST, NDUST, ARMS, NEBULAE;
+let twist; // overall spiral tightness for this seed
+
+function buildGalaxy(){
+  rnd = mulberry32(SEED);
+  // device-aware star budget for smooth perf
+  const area = (W*H);
+  NSTAR = Math.round(Math.min(46000, Math.max(12000, area/55)));
+  ARMS = 2 + (rnd()*3|0);            // 2..4 spiral arms
+  twist = 2.4 + rnd()*2.6;           // spiral tightness
+  const armSpread = 0.22 + rnd()*0.18;
+
+  STARS = new Float32Array(NSTAR*7);
+  // layout: [r, theta0, size, cr, cg, cb, twk]
+  let p=0;
+  for(let i=0;i<NSTAR;i++){
+    // radial distribution: dense core (sqrt) + extended disk
+    let u = rnd();
+    let r = Math.pow(u, 0.62);        // 0..1, concentrated inward
+    // assign to an arm with gaussian scatter, plus a halo fraction
+    const halo = rnd() < 0.16;
+    let theta;
+    if(halo){
+      theta = rnd()*TAU;
+      r = Math.pow(rnd(), 0.4);       // halo spreads further out
+    }else{
+      const arm = (rnd()*ARMS|0);
+      const base = arm/ARMS*TAU;
+      // log spiral: theta increases with ln(r)
+      const spiral = twist * Math.log(r*8+1.0);
+      // gaussian scatter that widens with radius (arms fan out)
+      const g = (gauss())*armSpread*(0.4+r);
+      theta = base + spiral + g;
+    }
+    const cr = clamp(r + (rnd()-0.5)*0.14, 0, 1);
+    const col = starColor(cr);
+    // size: brighter big stars rarer; core slightly brighter
+    let size = 0.45 + Math.pow(rnd(),3)*2.3;
+    if(r<0.10) size *= 1.5;           // luminous core
+    const twk = 0.4+rnd()*0.6;        // twinkle phase speed
+    STARS[p++]=r;
+    STARS[p++]=theta;
+    STARS[p++]=size;
+    STARS[p++]=col[0];
+    STARS[p++]=col[1];
+    STARS[p++]=col[2];
+    STARS[p++]=twk + rnd()*TAU;       // pack phase into same slot range
+  }
+
+  // dust lanes — dark particles tracing inside the arms
+  NDUST = Math.round(NSTAR*0.18);
+  DUST = new Float32Array(NDUST*3); // r, theta, size
+  let d=0;
+  for(let i=0;i<NDUST;i++){
+    let r = Math.pow(rnd(),0.7)*0.9+0.05;
+    const arm=(rnd()*ARMS|0); const base=arm/ARMS*TAU;
+    const spiral=twist*Math.log(r*8+1.0);
+    const theta=base+spiral+gauss()*0.08 + 0.10; // offset = trailing edge
+    DUST[d++]=r; DUST[d++]=theta; DUST[d++]=2+rnd()*4;
+  }
+
+  // nebula blobs: a handful of large colored gas clouds inside arms
+  NEBULAE=[];
+  const nN = 7 + (rnd()*5|0);
+  for(let i=0;i<nN;i++){
+    let r = 0.12+rnd()*0.7;
+    const arm=(rnd()*ARMS|0); const base=arm/ARMS*TAU;
+    const spiral=twist*Math.log(r*8+1.0);
+    const theta=base+spiral+gauss()*0.18;
+    const hueSel = rnd();
+    let col;
+    if(hueSel<0.5)      col=[90,120,255];   // blue HII-ish
+    else if(hueSel<0.8) col=[200,90,210];   // magenta
+    else                col=[60,200,180];   // teal
+    NEBULAE.push({r,theta,col,rad:(0.10+rnd()*0.22), seed:rnd()*TAU});
+  }
+
+  document.getElementById('seedval').textContent = SEED.toString(16).toUpperCase().padStart(7,'0');
+  document.getElementById('starcount').textContent = NSTAR.toLocaleString('ko-KR');
+}
+function gauss(){ // approx normal
+  return (rnd()+rnd()+rnd()+rnd()-2)*0.7;
+}
+function clamp(v,a,b){return v<a?a:v>b?b:v;}
+
+/* ============================================================
+   VIEW STATE — tilt (pseudo-3D), zoom, rotation, mouse lens
+   ============================================================ */
+const view = {
+  tiltX: 0.62,   // how flat the disk lies (0 = face-on, ->1 edge-on)
+  rot:   0,      // drag-controlled azimuth
+  tiltTarget:0.62, rotTarget:0,
+  zoom:  1, zoomTarget:1,
+  coreTime:0,
+};
+const mouse = { x:CX, y:CY, tx:CX, ty:CY, active:false, str:0 };
+let supernovae=[]; // {x,y,r,max,life,col}
+
+let dragging=false, lastX=0,lastY=0;
+
+function pointerDown(x,y){
+  dragging=true; lastX=x; lastY=y; view._moved=0;
+}
+function pointerMove(x,y){
+  mouse.tx=x; mouse.ty=y; mouse.active=true;
+  if(dragging){
+    const dx=x-lastX, dy=y-lastY;
+    view.rotTarget += dx*0.005;
+    view.tiltTarget = clamp(view.tiltTarget + dy*0.0035, 0.06, 0.97);
+    lastX=x; lastY=y;
+    view._moved += Math.abs(dx)+Math.abs(dy);
+  }
+}
+function pointerUp(x,y){
+  if(dragging && view._moved < 6){
+    spawnSupernova(x,y);
+  }
+  dragging=false;
+}
+function spawnSupernova(x,y){
+  const col = starColor(rnd()*0.5);
+  supernovae.push({x,y,r:0,max:Math.max(W,H)*0.85,life:0, col, ring:[]});
+  if(supernovae.length>6) supernovae.shift();
+}
+
+starC.addEventListener('mousedown',e=>pointerDown(e.clientX,e.clientY));
+window.addEventListener('mousemove',e=>pointerMove(e.clientX,e.clientY));
+window.addEventListener('mouseup',e=>pointerUp(e.clientX,e.clientY));
+window.addEventListener('mouseleave',()=>{mouse.active=false;dragging=false;});
+
+starC.addEventListener('touchstart',e=>{
+  if(e.touches.length===1){pointerDown(e.touches[0].clientX,e.touches[0].clientY);}
+  else if(e.touches.length===2){pinchStart(e);}
+  e.preventDefault();
+},{passive:false});
+window.addEventListener('touchmove',e=>{
+  if(e.touches.length===1){pointerMove(e.touches[0].clientX,e.touches[0].clientY);}
+  else if(e.touches.length===2){pinchMove(e);}
+  e.preventDefault();
+},{passive:false});
+window.addEventListener('touchend',e=>{
+  if(e.touches.length===0 && lastTouchX!=null){pointerUp(lastTouchX,lastTouchY);}
+  pinchLast=null;
+},{passive:false});
+
+let lastTouchX=null,lastTouchY=null;
+window.addEventListener('touchstart',e=>{if(e.touches[0]){lastTouchX=e.touches[0].clientX;lastTouchY=e.touches[0].clientY;}},{passive:true});
+window.addEventListener('touchmove',e=>{if(e.touches[0]){lastTouchX=e.touches[0].clientX;lastTouchY=e.touches[0].clientY;}},{passive:true});
+
+let pinchLast=null;
+function pinchStart(e){
+  const dx=e.touches[0].clientX-e.touches[1].clientX;
+  const dy=e.touches[0].clientY-e.touches[1].clientY;
+  pinchLast=Math.hypot(dx,dy);
+}
+function pinchMove(e){
+  const dx=e.touches[0].clientX-e.touches[1].clientX;
+  const dy=e.touches[0].clientY-e.touches[1].clientY;
+  const d=Math.hypot(dx,dy);
+  if(pinchLast){ view.zoomTarget = clamp(view.zoomTarget * (d/pinchLast), 0.55, 4.5); }
+  pinchLast=d;
+}
+
+window.addEventListener('wheel',e=>{
+  view.zoomTarget = clamp(view.zoomTarget * (e.deltaY<0?1.12:0.89), 0.55, 4.5);
+  e.preventDefault();
+},{passive:false});
+
+document.getElementById('seed').addEventListener('click',()=>{
+  SEED=(Math.random()*1e9)|0;
+  buildGalaxy();
+  // little flash
+  spawnSupernova(CX,CY);
+});
+
+/* ============================================================
+   PROJECTION
+   Polar (r,theta) on a flat disk -> screen via tilt + rotation.
+   y compressed by tiltX gives the foreshortened ellipse look.
+   ============================================================ */
+
+/* ============================================================
+   RENDER LOOP
+   ============================================================ */
+let t=0, lastTS=0, fps=60, frame=0;
+
+function drawNebula(){
+  const nw=nebC.width, nh=nebC.height;
+  nebX.globalCompositeOperation='source-over';
+  // slow fade gives soft trailing glow
+  nebX.fillStyle='rgba(2,3,12,0.34)';
+  nebX.fillRect(0,0,nw,nh);
+  nebX.globalCompositeOperation='lighter';
+
+  const cx=nw/2, cy=nh/2;
+  const sc = SCALE/NEB_DOWN * view.zoom;
+  const tiltY = view.tiltX;
+  const cosR=Math.cos(view.rot), sinR=Math.sin(view.rot);
+
+  // core glow
+  const coreR = sc*0.5;
+  let g=nebX.createRadialGradient(cx,cy,0,cx,cy,coreR);
+  const pulse = 0.5+0.5*Math.sin(view.coreTime*1.3);
+  g.addColorStop(0,`rgba(255,250,235,${0.5+pulse*0.18})`);
+  g.addColorStop(0.25,`rgba(255,225,180,0.30)`);
+  g.addColorStop(0.6,`rgba(150,160,255,0.12)`);
+  g.addColorStop(1,'rgba(40,50,120,0)');
+  nebX.fillStyle=g;
+  nebX.beginPath(); nebX.arc(cx,cy,coreR,0,TAU); nebX.fill();
+
+  // nebula clouds, rotating with the disk (use mean rotation)
+  const meanRot = t*0.04;
+  for(const n of NEBULAE){
+    const th = n.theta + meanRot/(0.4+n.r); // differential drift
+    let x = Math.cos(th)*n.r, y=Math.sin(th)*n.r;
+    // apply view rotation
+    let xr = x*cosR - y*sinR, yr = x*sinR + y*cosR;
+    const sx = cx + xr*sc;
+    const sy = cy + yr*sc*tiltY;
+    const rad = n.rad*sc*(0.8+0.3*Math.sin(view.coreTime+n.seed));
+    const [r,gg,b]=n.col;
+    const grad=nebX.createRadialGradient(sx,sy,0,sx,sy,rad);
+    grad.addColorStop(0,`rgba(${r},${gg},${b},0.22)`);
+    grad.addColorStop(0.5,`rgba(${r},${gg},${b},0.07)`);
+    grad.addColorStop(1,`rgba(${r},${gg},${b},0)`);
+    nebX.fillStyle=grad;
+    nebX.beginPath(); nebX.arc(sx,sy,rad,0,TAU); nebX.fill();
+  }
+}
+
+function draw(ts){
+  frame++;
+  const dt = Math.min(0.05,(ts-lastTS)/1000)||0.016;
+  lastTS=ts;
+  t += dt;
+  view.coreTime += dt;
+
+  // smooth view easing
+  view.rot   += (view.rotTarget - view.rot)*0.08;
+  view.tiltX += (view.tiltTarget - view.tiltX)*0.08;
+  view.zoom  += (view.zoomTarget - view.zoom)*0.10;
+
+  // mouse lens follow
+  mouse.x += (mouse.tx-mouse.x)*0.18;
+  mouse.y += (mouse.ty-mouse.y)*0.18;
+  mouse.str += ((mouse.active?1:0)-mouse.str)*0.08;
+
+  drawNebula();
+
+  // star field — trail fade for motion smear (very subtle)
+  sX.globalCompositeOperation='source-over';
+  sX.fillStyle='rgba(2,3,10,0.30)';
+  sX.fillRect(0,0,W,H);
+  sX.globalCompositeOperation='lighter';
+
+  const sc = SCALE*view.zoom;
+  const tiltY = view.tiltX;
+  const cosR=Math.cos(view.rot), sinR=Math.sin(view.rot);
+  const lensR = Math.min(W,H)*0.18;
+  const lensR2 = lensR*lensR;
+
+  // DUST (dark lanes) drawn as subtractive-ish dim
+  sX.globalCompositeOperation='source-over';
+  for(let i=0;i<NDUST;i++){
+    const o=i*3;
+    let r=DUST[o];
+    const omega = 0.9/(0.18+r);
+    const th=DUST[o+1] + t*omega*0.16;
+    let x=Math.cos(th)*r, y=Math.sin(th)*r;
+    let xr=x*cosR-y*sinR, yr=x*sinR+y*cosR;
+    const sx=CX+xr*sc, sy=CY+yr*sc*tiltY;
+    if(sx< -20||sx>W+20||sy< -20||sy>H+20) continue;
+    sX.fillStyle='rgba(3,2,10,0.55)';
+    const ds=DUST[o+2]*Math.min(1.6,view.zoom);
+    sX.beginPath(); sX.arc(sx,sy,ds,0,TAU); sX.fill();
+  }
+  sX.globalCompositeOperation='lighter';
+
+  // STARS
+  for(let i=0;i<NSTAR;i++){
+    const o=i*7;
+    const r=STARS[o];
+    // differential rotation: inner faster. omega ~ 1/(c+r)
+    const omega = 0.9/(0.16+r);
+    let th = STARS[o+1] + t*omega*0.16;
+    let x=Math.cos(th)*r, y=Math.sin(th)*r;
+    // view rotation
+    let xr=x*cosR-y*sinR, yr=x*sinR+y*cosR;
+    let sx=CX+xr*sc;
+    let sy=CY+yr*sc*tiltY;
+
+    // mouse gravitational lens warp
+    if(mouse.str>0.02){
+      const ddx=sx-mouse.x, ddy=sy-mouse.y;
+      const d2=ddx*ddx+ddy*ddy;
+      if(d2<lensR2 && d2>1){
+        const d=Math.sqrt(d2);
+        const pull = (1 - d/lensR);
+        const force = pull*pull * lensR*0.55 * mouse.str;
+        sx -= (ddx/d)*force;
+        sy -= (ddy/d)*force;
+      }
+    }
+    if(sx< -8||sx>W+8||sy< -8||sy>H+8) continue;
+
+    // depth shading: stars on far side of tilted disk dimmer
+    const depth = (yr*0.5+0.5); // 0 far .. 1 near (rough)
+    let bright = 0.55 + depth*0.45;
+    // twinkle
+    const ph = STARS[o+6];
+    const tw = 0.78 + 0.22*Math.sin(t*2.2*(0.5+ (ph%1)) + ph);
+    bright *= tw;
+
+    let size = STARS[o+2]*Math.min(2.2,(0.7+view.zoom*0.5));
+    const r8=STARS[o+3], g8=STARS[o+4], b8=STARS[o+5];
+
+    sX.globalAlpha = clamp(bright,0,1);
+    if(size>1.7){
+      // glow halo for bright stars
+      const grad=sX.createRadialGradient(sx,sy,0,sx,sy,size*2.6);
+      grad.addColorStop(0,`rgba(${r8},${g8},${b8},0.9)`);
+      grad.addColorStop(0.4,`rgba(${r8},${g8},${b8},0.35)`);
+      grad.addColorStop(1,`rgba(${r8},${g8},${b8},0)`);
+      sX.fillStyle=grad;
+      sX.beginPath(); sX.arc(sx,sy,size*2.6,0,TAU); sX.fill();
+    }
+    sX.fillStyle=`rgb(${r8},${g8},${b8})`;
+    sX.beginPath(); sX.arc(sx,sy,size,0,TAU); sX.fill();
+  }
+  sX.globalAlpha=1;
+
+  // bright pulsing core point
+  {
+    const pulse=0.7+0.3*Math.sin(view.coreTime*1.6);
+    const cr=CX, cy2=CY;
+    const grad=sX.createRadialGradient(cr,cy2,0,cr,cy2,18*view.zoom);
+    grad.addColorStop(0,`rgba(255,255,250,${0.95*pulse})`);
+    grad.addColorStop(0.5,`rgba(255,235,205,0.4)`);
+    grad.addColorStop(1,'rgba(255,220,180,0)');
+    sX.fillStyle=grad;
+    sX.beginPath(); sX.arc(cr,cy2,18*view.zoom,0,TAU); sX.fill();
+  }
+
+  drawFX(dt);
+
+  requestAnimationFrame(draw);
+}
+
+/* ---------- FX layer: supernova shockwaves + lens reticle ---------- */
+function drawFX(dt){
+  fX.clearRect(0,0,W,H);
+
+  // supernovae
+  for(let i=supernovae.length-1;i>=0;i--){
+    const s=supernovae[i];
+    s.life += dt;
+    s.r += (s.max - s.r)*0.045;
+    const a = Math.max(0, 1 - s.life/2.4);
+    if(a<=0.01){ supernovae.splice(i,1); continue; }
+    const [r,g,b]=s.col;
+    // bright core flash early
+    if(s.life<0.5){
+      const fa=(1-s.life/0.5);
+      const cg=fX.createRadialGradient(s.x,s.y,0,s.x,s.y,90);
+      cg.addColorStop(0,`rgba(255,255,255,${0.9*fa})`);
+      cg.addColorStop(0.4,`rgba(${r},${g},${b},${0.5*fa})`);
+      cg.addColorStop(1,`rgba(${r},${g},${b},0)`);
+      fX.fillStyle=cg; fX.globalCompositeOperation='lighter';
+      fX.beginPath(); fX.arc(s.x,s.y,90,0,TAU); fX.fill();
+    }
+    // shock ring
+    fX.globalCompositeOperation='lighter';
+    fX.lineWidth = 2 + 6*a;
+    fX.strokeStyle=`rgba(${r},${g},${b},${a*0.7})`;
+    fX.beginPath(); fX.arc(s.x,s.y,s.r,0,TAU); fX.stroke();
+    fX.lineWidth = 1;
+    fX.strokeStyle=`rgba(255,255,255,${a*0.5})`;
+    fX.beginPath(); fX.arc(s.x,s.y,s.r*0.94,0,TAU); fX.stroke();
+  }
+
+  // mouse lens reticle
+  if(mouse.str>0.05 && !('ontouchstart' in window)){
+    const lensR = Math.min(W,H)*0.18;
+    fX.globalCompositeOperation='lighter';
+    const grd=fX.createRadialGradient(mouse.x,mouse.y,lensR*0.2,mouse.x,mouse.y,lensR);
+    grd.addColorStop(0,'rgba(140,170,255,0)');
+    grd.addColorStop(0.85,`rgba(150,180,255,${0.06*mouse.str})`);
+    grd.addColorStop(1,'rgba(150,180,255,0)');
+    fX.fillStyle=grd;
+    fX.beginPath(); fX.arc(mouse.x,mouse.y,lensR,0,TAU); fX.fill();
+    fX.strokeStyle=`rgba(170,190,255,${0.18*mouse.str})`;
+    fX.lineWidth=1;
+    fX.beginPath(); fX.arc(mouse.x,mouse.y,lensR,0,TAU); fX.stroke();
+  }
+  fX.globalCompositeOperation='source-over';
+}
+
+/* ---------- subtle idle drift so it feels alive when untouched ---------- */
+let idle=0;
+setInterval(()=>{
+  idle+=1;
+  if(!dragging && !mouse.active){
+    view.rotTarget += 0.0006*Math.sin(idle*0.13);
+    view.tiltTarget = 0.55 + 0.10*Math.sin(idle*0.05);
+  }
+}, 100);
+
+/* ---------- boot ---------- */
+resize();
+buildGalaxy();
+mouse.x=mouse.tx=CX; mouse.y=mouse.ty=CY;
+// intro: start zoomed-in then pull back for a cinematic reveal
+view.zoom=3.2; view.zoomTarget=1;
+view.tiltX=0.04; view.tiltTarget=0.62;
+requestAnimationFrame(draw);
+
+// rebuild star budget on resize (debounced)
+let rzT=null;
+window.addEventListener('resize',()=>{clearTimeout(rzT);rzT=setTimeout(buildGalaxy,260);});
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>STRINGFIELD — parametric string art</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; width: 100%; overflow: hidden; background: #04050a; }
+  body {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+    cursor: crosshair;
+  }
+  #stage { position: fixed; inset: 0; display: block; }
+  /* HUD */
+  #hud {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    display: flex; gap: 14px; align-items: flex-end;
+    padding: 16px 18px;
+    pointer-events: none;
+    z-index: 5;
+    font-size: 11px; letter-spacing: 0.12em;
+    color: rgba(214, 226, 255, 0.55);
+    text-transform: uppercase;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  #title {
+    position: fixed; top: 18px; left: 20px; z-index: 5;
+    pointer-events: none; user-select: none;
+  }
+  #title h1 {
+    font-size: 13px; font-weight: 600; letter-spacing: 0.42em;
+    color: rgba(232, 240, 255, 0.92);
+    text-shadow: 0 0 18px rgba(120,170,255,0.45);
+  }
+  #title p {
+    margin-top: 7px; font-size: 10px; letter-spacing: 0.2em;
+    color: rgba(170, 190, 230, 0.45);
+  }
+  .tag {
+    background: rgba(20, 26, 46, 0.55);
+    border: 1px solid rgba(120, 150, 220, 0.16);
+    border-radius: 999px;
+    padding: 6px 11px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+  }
+  .tag b { color: rgba(150, 200, 255, 0.95); font-weight: 600; }
+  #hint {
+    margin-left: auto;
+    text-align: right;
+    line-height: 1.6;
+    color: rgba(190, 205, 240, 0.4);
+  }
+  #hint span { color: rgba(150, 200, 255, 0.85); }
+  @media (max-width: 560px) {
+    #hud { font-size: 9px; gap: 8px; padding: 12px; }
+    .tag { padding: 5px 8px; }
+    #title h1 { font-size: 11px; letter-spacing: 0.3em; }
+    #hint { display: none; }
+  }
+  .fade { opacity: 0; transition: opacity 0.9s ease 0.3s; }
+  .fade.in { opacity: 1; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div id="title" class="fade">
+  <h1>STRINGFIELD</h1>
+  <p>parametric string art · woven light</p>
+</div>
+
+<div id="hud" class="fade">
+  <div class="tag">MODE <b id="modeName">LISSAJOUS</b></div>
+  <div class="tag">NODES <b id="nodeCount">—</b></div>
+  <div class="tag">FPS <b id="fps">—</b></div>
+  <div id="hint">
+    drag to <span>warp the field</span> · click to <span>pulse</span><br>
+    space / tap two fingers to <span>shift form</span> · scroll to <span>zoom</span>
+  </div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const cv = document.getElementById("stage");
+  const ctx = cv.getContext("2d", { alpha: false });
+
+  // ---------- viewport / DPR ----------
+  let W = 0, H = 0, DPR = 1, CX = 0, CY = 0, R = 0;
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = Math.floor(W * DPR);
+    cv.height = Math.floor(H * DPR);
+    cv.style.width = W + "px";
+    cv.style.height = H + "px";
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    CX = W * 0.5; CY = H * 0.5;
+    R = Math.min(W, H) * 0.34;
+  }
+  window.addEventListener("resize", resize, { passive: true });
+  resize();
+
+  // ---------- adaptive node budget (perf cap) ----------
+  const area = () => W * H;
+  function targetNodes() {
+    // resolution-aware cap; phones get fewer strings
+    const big = Math.max(W, H);
+    let n = big < 560 ? 150 : big < 1000 ? 220 : 300;
+    return n;
+  }
+
+  // ---------- pointer / field ----------
+  const ptr = {
+    x: CX, y: CY, tx: CX, ty: CY,
+    active: false, down: false,
+    vx: 0, vy: 0,
+    strength: 0, tStrength: 0
+  };
+  function setPtr(x, y) { ptr.tx = x; ptr.ty = y; ptr.active = true; }
+  cv.addEventListener("pointermove", e => setPtr(e.clientX, e.clientY), { passive: true });
+  cv.addEventListener("pointerdown", e => {
+    ptr.down = true; setPtr(e.clientX, e.clientY);
+    ptr.tStrength = 1; addPulse(e.clientX, e.clientY);
+    cv.setPointerCapture?.(e.pointerId);
+  });
+  window.addEventListener("pointerup", () => { ptr.down = false; ptr.tStrength = 0; });
+  cv.addEventListener("pointerleave", () => { ptr.active = false; ptr.tStrength = 0; });
+
+  // touch: two fingers -> cycle mode
+  let lastTouchN = 0;
+  cv.addEventListener("touchstart", e => {
+    if (e.touches.length >= 2) cycleMode();
+    lastTouchN = e.touches.length;
+  }, { passive: true });
+
+  // wheel -> zoom
+  let zoom = 1, zoomT = 1;
+  cv.addEventListener("wheel", e => {
+    e.preventDefault();
+    zoomT *= e.deltaY > 0 ? 0.93 : 1.075;
+    zoomT = Math.max(0.45, Math.min(2.4, zoomT));
+  }, { passive: false });
+
+  // keyboard
+  window.addEventListener("keydown", e => {
+    if (e.code === "Space") { e.preventDefault(); cycleMode(); }
+    if (e.key === "r" || e.key === "R") { zoomT = 1; }
+  });
+
+  // ---------- pulses (click ripples through the weave) ----------
+  const pulses = [];
+  function addPulse(x, y) {
+    pulses.push({ x, y, r: 0, life: 1 });
+    if (pulses.length > 6) pulses.shift();
+  }
+
+  // ---------- curve modes (parametric anchor generators) ----------
+  // Each returns a unit-ish point (x,y) in roughly [-1.4,1.4] given t in [0,1) and time.
+  const MODES = [
+    {
+      name: "LISSAJOUS",
+      fn: (t, tm) => {
+        const a = 3, b = 2;
+        const ph = tm * 0.18;
+        const u = t * Math.PI * 2;
+        return [
+          Math.sin(a * u + ph) * 1.18,
+          Math.sin(b * u + Math.sin(tm * 0.11) * 0.9) * 1.18
+        ];
+      }
+    },
+    {
+      name: "ROSE",
+      fn: (t, tm) => {
+        const k = 5 / 2;        // rhodonea
+        const u = t * Math.PI * 8;
+        const rr = Math.cos(k * u + tm * 0.12) * 1.25;
+        return [rr * Math.cos(u), rr * Math.sin(u)];
+      }
+    },
+    {
+      name: "HYPOTROCHOID",
+      fn: (t, tm) => {
+        const R0 = 5, r0 = 3, d = 5;
+        const u = t * Math.PI * 2 * 3;
+        const k = (R0 - r0) / r0;
+        const s = 0.16;
+        const wob = 1 + 0.05 * Math.sin(tm * 0.3);
+        return [
+          ((R0 - r0) * Math.cos(u) + d * Math.cos(k * u + tm * 0.1)) * s * wob,
+          ((R0 - r0) * Math.sin(u) - d * Math.sin(k * u + tm * 0.1)) * s * wob
+        ];
+      }
+    },
+    {
+      name: "BUTTERFLY",
+      fn: (t, tm) => {
+        const u = t * Math.PI * 2 * 6;
+        const e = Math.exp(Math.cos(u)) - 2 * Math.cos(4 * u) - Math.pow(Math.sin(u / 12 + tm * 0.02), 5);
+        const s = 0.42;
+        return [Math.sin(u) * e * s, Math.cos(u) * e * s];
+      }
+    },
+    {
+      name: "PHASE RING",
+      fn: (t, tm) => {
+        const u = t * Math.PI * 2;
+        const petals = 7;
+        const rr = 1.05 + 0.32 * Math.sin(petals * u + tm * 0.25);
+        return [Math.cos(u) * rr, Math.sin(u) * rr];
+      }
+    }
+  ];
+  let modeIdx = 0;
+  let morph = 0;            // 0..1 transition between prevMode and modeIdx
+  let prevModeIdx = 0;
+  let morphV = 0;
+  function cycleMode() {
+    prevModeIdx = modeIdx;
+    modeIdx = (modeIdx + 1) % MODES.length;
+    morph = 0; morphV = 0;
+    document.getElementById("modeName").textContent = MODES[modeIdx].name;
+  }
+
+  // ---------- node buffers ----------
+  let N = targetNodes();
+  let px = new Float32Array(N);   // displayed positions (warped, smoothed)
+  let py = new Float32Array(N);
+  let bx = new Float32Array(N);   // base (parametric) positions
+  let by = new Float32Array(N);
+
+  function ensureBuffers() {
+    const want = targetNodes();
+    if (want !== N) {
+      N = want;
+      px = new Float32Array(N); py = new Float32Array(N);
+      bx = new Float32Array(N); by = new Float32Array(N);
+      initialized = false;
+    }
+    document.getElementById("nodeCount").textContent = N;
+  }
+  let initialized = false;
+
+  // ---------- color ----------
+  // luminous gradient hue rotating slowly; string color depends on chord index.
+  // Wide band so teal / azure / violet / rose all read distinctly through the weave.
+  function hueFor(i, tm) {
+    const t = i / N;
+    // ease so more strings sit in the cool teal/azure zone, fewer in saturated pink
+    const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    return 165 + e * 195 + tm * 6;   // 165(teal) -> 360(rose), gentle drift
+  }
+
+  // ---------- main animation ----------
+  let tm = 0;                 // smooth time
+  let last = performance.now();
+  let fpsAcc = 0, fpsN = 0, fpsShown = 0, fpsTimer = 0;
+  let frame = 0;
+
+  function lerp(a, b, t) { return a + (b - a) * t; }
+
+  function step(now) {
+    const dtRaw = (now - last) / 1000;
+    last = now;
+    const dt = Math.min(dtRaw, 0.05);   // clamp big gaps
+    tm += dt;
+    frame++;
+
+    // fps
+    fpsAcc += 1 / Math.max(dtRaw, 1e-4); fpsN++;
+    fpsTimer += dtRaw;
+    if (fpsTimer >= 0.5) {
+      fpsShown = Math.round(fpsAcc / fpsN);
+      document.getElementById("fps").textContent = fpsShown;
+      fpsAcc = 0; fpsN = 0; fpsTimer = 0;
+    }
+
+    ensureBuffers();
+
+    // smooth pointer
+    ptr.x = lerp(ptr.x, ptr.tx, 0.16);
+    ptr.y = lerp(ptr.y, ptr.ty, 0.16);
+    ptr.strength = lerp(ptr.strength, ptr.tStrength, 0.08);
+    zoom = lerp(zoom, zoomT, 0.09);
+
+    // auto-cycle if idle (keeps first paint alive without interaction)
+    if (!ptr.active && tm > 9 && frame % 1 === 0 && (tm % 11) < dt) cycleMode();
+
+    // morph toward 1
+    morphV += (1 - morph) * 0.045;
+    morph = Math.min(1, morph + morphV * 0.5);
+
+    // recompute base parametric positions (with morph blend)
+    const mA = MODES[prevModeIdx].fn;
+    const mB = MODES[modeIdx].fn;
+    const sc = R * zoom;
+    // breathing pulse from pointer hold
+    const hold = ptr.down ? ptr.strength : 0;
+
+    for (let i = 0; i < N; i++) {
+      const t = i / N;
+      const a = mA(t, tm);
+      const b = mB(t, tm);
+      const k = morph;
+      let x = lerp(a[0], b[0], k);
+      let y = lerp(a[1], b[1], k);
+      bx[i] = CX + x * sc;
+      by[i] = CY + y * sc;
+    }
+
+    // warp toward base + pointer field (gravity well / swirl)
+    const px0 = ptr.x, py0 = ptr.y;
+    const fieldR = Math.min(W, H) * 0.42;
+    const fieldR2 = fieldR * fieldR;
+    const pull = ptr.active ? (0.55 + hold * 0.9) : 0;
+
+    if (!initialized) {
+      for (let i = 0; i < N; i++) { px[i] = bx[i]; py[i] = by[i]; }
+      initialized = true;
+    }
+
+    for (let i = 0; i < N; i++) {
+      let tx = bx[i], ty = by[i];
+      if (pull > 0) {
+        const dx = px0 - tx, dy = py0 - ty;
+        const d2 = dx * dx + dy * dy + 1;
+        if (d2 < fieldR2 * 2.2) {
+          const inv = 1 / Math.sqrt(d2);
+          const falloff = Math.max(0, 1 - Math.sqrt(d2) / (fieldR * 1.5));
+          const f = falloff * falloff * 90 * pull;
+          // swirl: perpendicular component for a vortex feel
+          tx += dx * inv * f - dy * inv * f * 0.55;
+          ty += dy * inv * f + dx * inv * f * 0.55;
+        }
+      }
+      // pulses push nodes outward as ring passes
+      for (let p = 0; p < pulses.length; p++) {
+        const P = pulses[p];
+        const dx = tx - P.x, dy = ty - P.y;
+        const d = Math.sqrt(dx * dx + dy * dy) + 1;
+        const band = Math.exp(-Math.pow((d - P.r) / 36, 2)) * P.life;
+        if (band > 0.01) {
+          tx += (dx / d) * band * 34;
+          ty += (dy / d) * band * 34;
+        }
+      }
+      // critically-damped follow for silky motion
+      px[i] = lerp(px[i], tx, 0.22);
+      py[i] = lerp(py[i], ty, 0.22);
+    }
+
+    // advance pulses
+    for (let p = pulses.length - 1; p >= 0; p--) {
+      const P = pulses[p];
+      P.r += dt * 520;
+      P.life -= dt * 0.55;
+      if (P.life <= 0) pulses.splice(p, 1);
+    }
+
+    render();
+    requestAnimationFrame(step);
+  }
+
+  // ---------- render: the string art chords ----------
+  function render() {
+    // velvet fade trail instead of hard clear -> motion blur glow
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = "rgba(4, 5, 11, 0.20)";
+    ctx.fillRect(0, 0, W, H);
+
+    // subtle radial vignette base (drawn once per frame, cheap)
+    // (skipped per-frame gradient for perf; CSS bg handles deep base)
+
+    ctx.globalCompositeOperation = "lighter";   // additive glow
+
+    // chord skip: connect node i to node i+skip. Animated skip = the "string winding".
+    // multiple harmonic layers of chords give the woven look.
+    const layers = [
+      { skip: Math.round(N * 0.5),  w: 0.7, sat: 68, lig: 56, alpha: 0.10, hueShift: -18 },
+      { skip: Math.round(N * 0.33), w: 0.6, sat: 78, lig: 60, alpha: 0.085, hueShift: 14 },
+      { skip: Math.round(N * 0.17), w: 0.5, sat: 88, lig: 64, alpha: 0.07, hueShift: 44 }
+    ];
+
+    // pointer proximity boosts brightness of nearby strings
+    const px0 = ptr.x, py0 = ptr.y;
+    const glowR = Math.min(W, H) * 0.36;
+
+    for (let L = 0; L < layers.length; L++) {
+      const ly = layers[L];
+      // animate winding offset slowly so the weave "spins"
+      const wind = Math.floor((tm * (8 + L * 6)) % N);
+      ctx.lineWidth = ly.w;
+      for (let i = 0; i < N; i++) {
+        const j = (i + ly.skip + wind) % N;
+        const x1 = px[i], y1 = py[i], x2 = px[j], y2 = py[j];
+
+        // proximity glow
+        const mx = (x1 + x2) * 0.5, my = (y1 + y2) * 0.5;
+        let boost = 0;
+        if (ptr.active) {
+          const dx = mx - px0, dy = my - py0;
+          const d = Math.sqrt(dx * dx + dy * dy);
+          boost = Math.max(0, 1 - d / glowR) * (0.6 + ptr.strength * 0.8);
+        }
+
+        const hue = (hueFor(i, tm) + ly.hueShift) % 360;
+        const a = ly.alpha * (1 + boost * 2.4);
+        const lig = Math.min(86, ly.lig + boost * 26);
+        ctx.strokeStyle = `hsla(${hue},${ly.sat}%,${lig}%,${a})`;
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+      }
+    }
+
+    // bright node sparks (thin)
+    ctx.lineWidth = 1;
+    for (let i = 0; i < N; i += 3) {
+      const x = px[i], y = py[i];
+      const hue = hueFor(i, tm) % 360;
+      let boost = 0;
+      if (ptr.active) {
+        const dx = x - px0, dy = y - py0;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        boost = Math.max(0, 1 - d / glowR);
+      }
+      const r = 0.8 + boost * 2.6;
+      ctx.fillStyle = `hsla(${hue},95%,${72 + boost * 18}%,${0.18 + boost * 0.5})`;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // pointer core glow
+    if (ptr.active && ptr.strength > 0.01) {
+      const g = ctx.createRadialGradient(ptr.x, ptr.y, 0, ptr.x, ptr.y, 90);
+      g.addColorStop(0, `hsla(${(tm*8+210)%360},90%,72%,${0.22*ptr.strength})`);
+      g.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(ptr.x, ptr.y, 90, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  // ---------- boot ----------
+  // first paint = artwork immediately (paint one frame on a clean field)
+  ctx.fillStyle = "#04050a";
+  ctx.fillRect(0, 0, W, H);
+  document.getElementById("modeName").textContent = MODES[modeIdx].name;
+  document.getElementById("nodeCount").textContent = N;
+
+  // gentle fade-in of HUD text only (not the art)
+  requestAnimationFrame(() => {
+    document.querySelectorAll(".fade").forEach(el => el.classList.add("in"));
+  });
+
+  requestAnimationFrame(t => { last = t; step(t); });
+})();
+</script>
+</body>
+</html>

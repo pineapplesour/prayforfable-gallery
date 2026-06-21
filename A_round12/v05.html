@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>CHRONOS — 시간의 강</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#04040a; }
+  body { font-family: -apple-system, "Segoe UI", system-ui, sans-serif; touch-action:none; cursor:crosshair; }
+  #stage { position:fixed; inset:0; display:block; }
+  /* HUD */
+  #hud { position:fixed; left:0; top:0; padding:18px 22px; pointer-events:none; mix-blend-mode:screen; user-select:none; z-index:5; }
+  #hud .title { font-size:13px; letter-spacing:.55em; font-weight:600; color:#cfe7ff; text-transform:uppercase; opacity:.92; }
+  #hud .sub   { font-size:10.5px; letter-spacing:.34em; color:#7fb6ff; margin-top:7px; opacity:.62; text-transform:uppercase; }
+  #meta { position:fixed; right:0; bottom:0; padding:16px 22px; text-align:right; pointer-events:none; mix-blend-mode:screen; user-select:none; z-index:5; }
+  #meta .ln { font-size:10px; letter-spacing:.26em; color:#6fa8e0; opacity:.55; line-height:1.9; font-variant-numeric:tabular-nums; }
+  #meta b { color:#a9d4ff; font-weight:600; }
+  #hint { position:fixed; left:50%; bottom:20px; transform:translateX(-50%); font-size:10px; letter-spacing:.3em;
+          color:#8fc0ff; opacity:.5; pointer-events:none; user-select:none; z-index:5; mix-blend-mode:screen;
+          text-transform:uppercase; transition:opacity 1.2s ease; white-space:nowrap; }
+  @media (max-width:520px){
+    #hud .title{ font-size:11px; letter-spacing:.4em; }
+    #hud .sub{ font-size:9px; letter-spacing:.24em; }
+    #meta .ln{ font-size:8.5px; letter-spacing:.18em; }
+    #hint{ font-size:8.5px; letter-spacing:.2em; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="hud">
+  <div class="title">CHRONOS</div>
+  <div class="sub">시간의 강 · slit&#8209;scan chronograph</div>
+</div>
+<div id="meta">
+  <div class="ln">SKEW <b id="mSkew">0.00</b></div>
+  <div class="ln">FLOW <b id="mFlow">—</b></div>
+  <div class="ln"><b id="mFps">60</b> FPS · <b id="mSpan">—</b>S SPAN</div>
+</div>
+<div id="hint" id="hint">드래그 = 시간 휘기 · 클릭 = 시간충격 · 스크롤 = 시간폭 · 더블클릭 = 결</div>
+
+<script>
+"use strict";
+(() => {
+  // ---------------------------------------------------------------------------
+  //  CHRONOS — a real slit-scan time engine.
+  //  Each column of the output shows a DIFFERENT moment of a living source field.
+  //  We keep a ring of recent source frames; output column x reads from the
+  //  frame at a time-offset determined by a user-warpable skew curve.
+  // ---------------------------------------------------------------------------
+
+  const stage = document.getElementById('stage');
+  const ctx = stage.getContext('2d', { alpha:false });
+
+  // -- adaptive resolution (perf cap) ----------------------------------------
+  let DPR = Math.min(window.devicePixelRatio || 1, 1.75);
+  let W=0, H=0;                 // device pixels of output
+  let SW=0, SH=0;              // SOURCE resolution (downscaled for speed)
+  let SRC_TARGET = 300;       // longest source edge ~ this many px (then upscaled)
+  const SRC_FLOOR = 180;      // governor will not shrink below this
+  let SCALE = 1;              // SW -> W blit scale
+
+  // ring buffer of source frames (ImageData-like Float not needed; use canvases)
+  let RING = 0;              // number of stored frames (== max time span in frames)
+  let ringCanvas = [];      // array of offscreen canvases
+  let ringCtx = [];
+  let ringHead = 0;         // index of newest frame
+  let ringFilled = 0;
+
+  // slit-scan column read buffers
+  let outImg = null;        // ImageData for the assembled output at source res
+  let colImg = [];          // we read getImageData per source frame lazily-cached
+
+  // ---------------------------------------------------------------------------
+  //  Pointer / interaction state
+  // ---------------------------------------------------------------------------
+  const P = {
+    x:0.5, y:0.5,            // normalized pointer
+    px:0.5, py:0.5,
+    down:false,
+    skew:0,                  // current time-skew amount (signed), eased
+    skewTarget:0,
+    span:0.62,              // fraction of ring used as max time span, eased
+    spanTarget:0.62,
+    grain:0,               // "결" texture toggle 0..1 eased
+    grainTarget:0,
+    shocks:[],            // time-shock ripples {x,y,t}
+    energy:0,            // motion energy for color drive
+  };
+
+  // ---------------------------------------------------------------------------
+  //  Resize
+  // ---------------------------------------------------------------------------
+  function resize(){
+    DPR = Math.min(window.devicePixelRatio || 1, 1.75);
+    const cw = window.innerWidth, ch = window.innerHeight;
+    W = Math.round(cw * DPR);
+    H = Math.round(ch * DPR);
+    stage.width = W; stage.height = H;
+    stage.style.width = cw+'px'; stage.style.height = ch+'px';
+
+    // source res: keep aspect, longest edge ~ SRC_TARGET
+    const aspect = cw/ch;
+    if (aspect >= 1){ SW = SRC_TARGET; SH = Math.round(SRC_TARGET/aspect); }
+    else { SH = SRC_TARGET; SW = Math.round(SRC_TARGET*aspect); }
+    SW = Math.max(120, SW); SH = Math.max(120, SH);
+
+    // ring depth scales with width (more columns benefit from more time samples)
+    RING = Math.max(70, Math.min(150, Math.round(SW * 0.55)));
+
+    buildRing();
+    primeRing();                 // fill with a staggered time-span -> no blank flash
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+  }
+
+  // pre-fill the ring with a short span of frames at staggered virtual times so
+  // the very first composited frame already shows a real time-gradient.
+  function primeRing(){
+    const baseT = (performance.now() - t0)/1000 || 0;
+    const n = Math.min(RING, 48);
+    for (let i=0;i<n;i++){
+      ringHead = (ringHead+1)%RING;
+      if (ringFilled<RING) ringFilled++;
+      renderSource(baseT + i*0.06, ringCtx[ringHead]);
+    }
+  }
+
+  function buildRing(){
+    ringCanvas = []; ringCtx = []; colImg = [];
+    for (let i=0;i<RING;i++){
+      const c = document.createElement('canvas');
+      c.width = SW; c.height = SH;
+      const cc = c.getContext('2d');   // GPU-backed; we blit (no pixel reads)
+      ringCanvas.push(c); ringCtx.push(cc); colImg.push(null);
+    }
+    ringHead = 0; ringFilled = 0;
+    outImg = ctx.createImageData ? null : null; // assembled at source res below
+    // assembled output ImageData lives on a small offscreen we upscale from
+    assembleCanvas = document.createElement('canvas');
+    assembleCanvas.width = SW; assembleCanvas.height = SH;
+    assembleCtx = assembleCanvas.getContext('2d');
+    assembleImg = assembleCtx.createImageData(SW, SH);
+  }
+  let assembleCanvas, assembleCtx, assembleImg;
+
+  // ---------------------------------------------------------------------------
+  //  SOURCE FIELD — a living aurora-plasma: layered curl-ish flow with
+  //  jeweled palette. Rendered cheaply into the ring's newest frame each tick.
+  //  We render it as horizontal scanlines using a fast pseudo-noise so columns
+  //  carry rich vertical structure that slit-scan can smear beautifully.
+  // ---------------------------------------------------------------------------
+
+  // cheap hash-noise (deterministic, smooth-ish)
+  function hash(n){ const s = Math.sin(n)*43758.5453; return s - Math.floor(s); }
+  function vnoise(x,y){
+    const xi=Math.floor(x), yi=Math.floor(y);
+    const xf=x-xi, yf=y-yi;
+    const u=xf*xf*(3-2*xf), v=yf*yf*(3-2*yf);
+    const a=hash(xi*157.1+yi*311.7);
+    const b=hash((xi+1)*157.1+yi*311.7);
+    const c=hash(xi*157.1+(yi+1)*311.7);
+    const d=hash((xi+1)*157.1+(yi+1)*311.7);
+    return a*(1-u)*(1-v)+b*u*(1-v)+c*(1-u)*v+d*u*v;
+  }
+  function fbm(x,y){
+    let v=0, amp=0.5, f=1;
+    for(let o=0;o<3;o++){ v+=amp*vnoise(x*f,y*f); f*=2.03; amp*=0.5; }
+    return v;
+  }
+
+  // palette: deep teal -> violet -> magenta -> hot gold, jeweled.
+  // writes into shared scratch _pal to avoid per-pixel allocation.
+  const _pal = [0,0,0];
+  const TAU = 6.2831853;
+  function palette(t, lum){
+    t = t - (t|0);                 // frac (t assumed >= 0 here)
+    if (t<0) t+=1;
+    const r = 0.55 + 0.45*Math.cos(TAU*(t+0.00));
+    const g = 0.45 + 0.42*Math.cos(TAU*(t+0.33));
+    const b = 0.60 + 0.40*Math.cos(TAU*(t+0.62));
+    const L = 0.25 + 1.05*lum;
+    let R=r*255*L, G=g*255*L, B=b*255*L;
+    _pal[0] = R>255?255:(R<0?0:R);
+    _pal[1] = G>255?255:(G<0?0:G);
+    _pal[2] = B>255?255:(B<0?0:B);
+    return _pal;
+  }
+
+  let srcImgCache = null;
+  function renderSource(timeSec, frameCanvasCtx){
+    // build into a reusable ImageData then put.
+    if (!srcImgCache || srcImgCache.width!==SW || srcImgCache.height!==SH){
+      srcImgCache = frameCanvasCtx.createImageData(SW, SH);
+    }
+    const d = srcImgCache.data;
+    const t = timeSec;
+    const ax = P.x, ay = P.y;          // pointer attracts the flow
+    const energy = P.energy;
+    const swMul = 0.5 + energy*1.3;
+    const hueBase = t*0.035 + ax*0.25;
+    let p=0;
+    const invW = 1/SW, invH = 1/SH;
+    const PI = Math.PI;
+    for (let y=0;y<SH;y++){
+      const ny = y*invH;
+      // row-invariant precompute
+      const wy = ny*3.4 - t*0.42;
+      const rowPhase = ny*5.0 + t*0.5;
+      const wxBias = 0.6*Math.sin(t*0.27 + ny*4.0);
+      const dyc = ny-ay; const dy2 = dyc*dyc;
+      const hueRow = hueBase + ny*0.12;
+      for (let x=0;x<SW;x++){
+        const nx = x*invW;
+        const wx = nx*3.1 + wxBias;
+        // single-warp flowing field (cheaper than nested fbm, still organic)
+        const warp = vnoise(wx*0.55 + t*0.1, wy*0.55) * 1.3;
+        const n = fbm(wx + warp, wy + t*0.18);
+        // ribbon folds: sharp aurora bands
+        let ribbon = Math.abs(Math.sin((n*3.0 + rowPhase)*PI));
+        ribbon = ribbon*ribbon*ribbon;     // ~pow 3, no Math.pow
+        // pointer-driven luminous swell ("a light you carry")
+        const dxc = nx-ax;
+        const dist2 = dxc*dxc + dy2;
+        const swell = Math.exp(-dist2*7.0) * swMul;
+        let lum = (0.30 + 0.85*n) * ribbon + swell;
+        if (lum>1.4) lum=1.4;
+        const hue = n*0.55 + hueRow;
+        const c = palette(hue, lum);
+        d[p]=c[0]; d[p+1]=c[1]; d[p+2]=c[2]; d[p+3]=255;
+        p+=4;
+      }
+    }
+    frameCanvasCtx.putImageData(srcImgCache, 0, 0);
+    return srcImgCache;
+  }
+
+  // ---------------------------------------------------------------------------
+  //  SLIT-SCAN ASSEMBLY
+  //  For output column x (0..SW-1) pick a time offset along the ring:
+  //    base sweep across columns + user skew warp + radial time-shocks.
+  //  Then copy that source column into the assembled frame.
+  //  We read each needed source frame's ImageData once (cached this tick).
+  // ---------------------------------------------------------------------------
+  // Per-column time offset (frames back). Smooth, warpable, shock-driven.
+  const _offCol = []; // reused array, length SW
+  function columnOffset(u, timeSec, maxSpan, filled){
+    let off = u * 0.85;                              // base diagonal rake
+    off += P.skew * (u - P.x) * 1.6;                 // user time-warp
+    off += 0.10 * Math.sin(u*6.2831 + timeSec*0.6) * Math.abs(P.skew);
+    const sh = P.shocks;
+    for (let s=0;s<sh.length;s++){
+      const o=sh[s], age=timeSec-o.t, r=age*0.85, dxs=u-o.x, dd=Math.abs(dxs);
+      const w=Math.exp(-((dd-r)*(dd-r))*40.0);
+      off += w*0.9*(dxs<0?-1:1)*Math.exp(-age*0.9);
+    }
+    if (off<0) off=0; else if (off>1) off=1;
+    let fb = (off*maxSpan)|0;
+    if (fb>filled-1) fb=filled-1; if (fb<0) fb=0;
+    return fb;
+  }
+
+  // Fast slit-scan assembly via GPU drawImage band-blits (no per-pixel JS).
+  // Group consecutive output columns that map to the SAME ring frame, then
+  // blit that contiguous source band in one call. ~RING calls worst case.
+  function assemble(timeSec){
+    const maxSpan = (RING-2) * P.span;
+    const filled = Math.max(1, ringFilled);
+    const newest = ringHead;
+    const a = assembleCtx;
+    a.imageSmoothingEnabled = true;   // +1px band overlap interpolates time-frames
+    a.globalCompositeOperation = 'source-over';
+    a.clearRect(0,0,SW,SH);
+
+    const denom = (SW-1)||1;
+    // precompute ring index per column
+    let xStart = 0;
+    let prevIdx = -999;
+    const yAmp = 4.0 * Math.abs(P.skew);   // vertical time-shear amplitude (px)
+
+    for (let x=0; x<=SW; x++){
+      let idx = -1;
+      if (x<SW){
+        const u = x/denom;
+        const fb = columnOffset(u, timeSec, maxSpan, filled);
+        idx = ((newest - fb)%RING + RING)%RING;
+      }
+      if (idx !== prevIdx){
+        if (prevIdx>=0 && x>xStart){
+          // blit columns [xStart, x) from ring frame prevIdx.
+          // overlap dst by +1px on the right so adjacent time-bands seam-blend
+          // (kills the hard vertical step between frames).
+          const bw = x - xStart;
+          const dw = (x<SW) ? bw+1 : bw;
+          // smooth global vertical drift (NOT per-band integer => no step seams)
+          const ySh = Math.sin(timeSec*0.7) * yAmp;
+          a.drawImage(ringCanvas[prevIdx],
+                      xStart, 0, bw, SH,        // src rect
+                      xStart, ySh, dw, SH);     // dst rect (overlapped + drifted)
+        }
+        xStart = x;
+        prevIdx = idx;
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  //  COMPOSITE to screen with bloom + chromatic time-fringe + vignette + grain
+  // ---------------------------------------------------------------------------
+  let bloomCanvas, bloomCtx;
+  function ensureBloom(){
+    if (!bloomCanvas){ bloomCanvas=document.createElement('canvas'); bloomCtx=bloomCanvas.getContext('2d'); }
+    const bw=Math.max(2,Math.round(SW*0.5)), bh=Math.max(2,Math.round(SH*0.5));
+    if (bloomCanvas.width!==bw||bloomCanvas.height!==bh){ bloomCanvas.width=bw; bloomCanvas.height=bh; }
+  }
+
+  function composite(timeSec){
+    ensureBloom();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.imageSmoothingEnabled = true;
+
+    // base upscale of the slit-scanned frame
+    ctx.drawImage(assembleCanvas, 0,0,SW,SH, 0,0,W,H);
+
+    // chromatic time-fringe: redraw assembled with tiny color offsets in screen
+    const fr = (1.2 + Math.abs(P.skew)*7.0) * DPR;     // fringe strength
+    ctx.globalCompositeOperation = 'screen';
+    ctx.globalAlpha = 0.30;
+    ctx.drawImage(assembleCanvas, 0,0,SW,SH, -fr,0,W,H);   // bias toward red side
+    if (Math.abs(P.skew) > 0.04){                          // 2nd tap only when warping
+      ctx.globalAlpha = 0.22;
+      ctx.drawImage(assembleCanvas, 0,0,SW,SH,  fr,0,W,H);
+    }
+    ctx.globalAlpha = 1;
+
+    // bloom: downscale bright, blur via cheap upscale, add back (single soft tap)
+    bloomCtx.clearRect(0,0,bloomCanvas.width,bloomCanvas.height);
+    bloomCtx.globalCompositeOperation='source-over';
+    bloomCtx.drawImage(assembleCanvas,0,0,bloomCanvas.width,bloomCanvas.height);
+    ctx.globalCompositeOperation='lighter';
+    ctx.globalAlpha=0.46;
+    ctx.imageSmoothingEnabled=true;
+    ctx.drawImage(bloomCanvas, -2*DPR,-2*DPR, W+4*DPR, H+4*DPR);
+    ctx.globalAlpha=1;
+    ctx.globalCompositeOperation='source-over';
+
+    // "결" / grain weave overlay (toggle): fine moiré of time
+    if (P.grain>0.01){
+      ctx.globalCompositeOperation='overlay';
+      ctx.globalAlpha=0.10*P.grain;
+      const g = grainPattern(timeSec);
+      ctx.drawImage(g,0,0,W,H);
+      ctx.globalAlpha=1;
+      ctx.globalCompositeOperation='source-over';
+    }
+
+    // vignette + scanline cathode glow
+    const vg = ctx.createRadialGradient(W*0.5,H*0.46, Math.min(W,H)*0.18, W*0.5,H*0.5, Math.max(W,H)*0.72);
+    vg.addColorStop(0,'rgba(0,0,0,0)');
+    vg.addColorStop(1,'rgba(2,2,8,0.62)');
+    ctx.fillStyle=vg; ctx.fillRect(0,0,W,H);
+  }
+
+  // grain pattern canvas (regenerated occasionally)
+  let grainC, grainCtx2, grainLast=-99;
+  function grainPattern(t){
+    if (!grainC){ grainC=document.createElement('canvas'); grainC.width=180; grainC.height=180; grainCtx2=grainC.getContext('2d'); }
+    if (t-grainLast>0.05){
+      grainLast=t;
+      const im=grainCtx2.createImageData(180,180); const d=im.data;
+      for(let i=0;i<d.length;i+=4){ const v=(Math.random()*255)|0; d[i]=d[i+1]=d[i+2]=v; d[i+3]=255; }
+      grainCtx2.putImageData(im,0,0);
+    }
+    return grainC;
+  }
+
+  // ---------------------------------------------------------------------------
+  //  MAIN LOOP
+  // ---------------------------------------------------------------------------
+  // adaptive resolution governor -------------------------------------------
+  let govLast = 0, govStep = 0;
+  function govern(now){
+    if (govStep >= 2) return;                    // max two downshifts
+    if (now - govLast < 2200) return;            // evaluate every ~2.2s
+    govLast = now;
+    if (fpsSmooth < 42 && SRC_TARGET > SRC_FLOOR){
+      SRC_TARGET = Math.max(SRC_FLOOR, Math.round(SRC_TARGET*0.8));
+      govStep++;
+      resize();                                  // rebuild source/ring at new res
+    }
+  }
+
+  let t0 = performance.now();
+  let lastFrame = t0;
+  let fpsSmooth = 60;
+  let acc = 0;
+  const mSkew=document.getElementById('mSkew'), mFlow=document.getElementById('mFlow'),
+        mFps=document.getElementById('mFps'), mSpan=document.getElementById('mSpan');
+  let hudClock=0;
+
+  function tick(now){
+    const dt = Math.min(0.05, (now-lastFrame)/1000);
+    lastFrame = now;
+    const tSec = (now-t0)/1000;
+
+    // ease interaction state
+    P.skew += (P.skewTarget - P.skew)*Math.min(1, dt*6);
+    P.span += (P.spanTarget - P.span)*Math.min(1, dt*4);
+    P.grain += (P.grainTarget - P.grain)*Math.min(1, dt*5);
+    // pointer velocity -> energy
+    const vx=P.x-P.px, vy=P.y-P.py;
+    const sp=Math.sqrt(vx*vx+vy*vy);
+    P.energy += (Math.min(1, sp*22) - P.energy)*Math.min(1,dt*5);
+    P.px=P.x; P.py=P.y;
+    // prune old shocks
+    if (P.shocks.length) P.shocks = P.shocks.filter(s=> tSec-s.t < 3.2);
+
+    // 1) advance ring: render a NEW source frame into the next slot
+    ringHead = (ringHead+1)%RING;
+    if (ringFilled<RING) ringFilled++;
+    renderSource(tSec, ringCtx[ringHead]);
+
+    // 2) slit-scan assemble
+    assemble(tSec);
+
+    // 3) composite to screen
+    composite(tSec);
+
+    // hud (throttled)
+    hudClock+=dt;
+    fpsSmooth += (1/Math.max(0.001,dt) - fpsSmooth)*0.08;
+
+    // adaptive resolution governor: if sustained-low fps, shrink source res once.
+    govern(now);
+
+    if (hudClock>0.18){
+      hudClock=0;
+      mSkew.textContent = (P.skew>=0?'+':'') + P.skew.toFixed(2);
+      mFlow.textContent = (P.energy*100).toFixed(0).padStart(2,'0') + '%';
+      mFps.textContent = Math.round(fpsSmooth);
+      const spanSec = (RING*P.span/60).toFixed(1);
+      mSpan.textContent = spanSec;
+    }
+
+    requestAnimationFrame(tick);
+  }
+
+  // ---------------------------------------------------------------------------
+  //  EVENTS
+  // ---------------------------------------------------------------------------
+  function setPointer(clientX, clientY){
+    P.x = clientX/window.innerWidth;
+    P.y = clientY/window.innerHeight;
+  }
+  let hideHintTimer=null;
+  const hintEl=document.getElementById('hint');
+  function nudgeHint(){
+    if (hintEl.style.opacity!=='0'){ /* keep till first real interaction */ }
+  }
+  function killHint(){
+    hintEl.style.opacity='0';
+  }
+
+  stage.addEventListener('pointerdown', e=>{
+    e.preventDefault();
+    P.down=true;
+    setPointer(e.clientX,e.clientY);
+    P.px=P.x; P.py=P.y;
+    killHint();
+    try{ stage.setPointerCapture(e.pointerId); }catch(_){}
+  });
+  stage.addEventListener('pointermove', e=>{
+    setPointer(e.clientX,e.clientY);
+    if (P.down){
+      // dragging horizontally sets the time-skew; vertical adds wobble energy
+      const skew = (P.x-0.5)*2.4;
+      P.skewTarget = Math.max(-2.0, Math.min(2.0, skew));
+    }
+  });
+  function releaseDrag(){
+    P.down=false;
+    P.skewTarget *= 0.12;     // relax most of the skew, keep a hint of warp
+  }
+  stage.addEventListener('pointerup', releaseDrag);
+  stage.addEventListener('pointercancel', releaseDrag);
+  stage.addEventListener('pointerleave', ()=>{ if(P.down) releaseDrag(); });
+
+  // click = time-shock (only if not a drag)
+  let downAt=0, downPos={x:0,y:0};
+  stage.addEventListener('pointerdown', e=>{ downAt=performance.now(); downPos={x:e.clientX,y:e.clientY}; });
+  stage.addEventListener('pointerup', e=>{
+    const dt=performance.now()-downAt;
+    const moved=Math.hypot(e.clientX-downPos.x, e.clientY-downPos.y);
+    if (dt<260 && moved<10){
+      const tSec=(performance.now()-t0)/1000;
+      P.shocks.push({ x:e.clientX/window.innerWidth, y:e.clientY/window.innerHeight, t:tSec });
+      if (P.shocks.length>6) P.shocks.shift();
+    }
+  });
+
+  // double-click toggles the "결" grain weave
+  stage.addEventListener('dblclick', ()=>{ P.grainTarget = P.grainTarget>0.5?0:1; });
+
+  // wheel = time span (how far back the slit-scan reaches)
+  window.addEventListener('wheel', e=>{
+    e.preventDefault();
+    P.spanTarget = Math.max(0.14, Math.min(1.0, P.spanTarget - e.deltaY*0.0008));
+    killHint();
+  }, { passive:false });
+
+  // keyboard niceties
+  window.addEventListener('keydown', e=>{
+    if (e.key===' '){ P.skewTarget = (Math.random()*2-1)*1.6; }
+    if (e.key.toLowerCase()==='g'){ P.grainTarget = P.grainTarget>0.5?0:1; }
+  });
+
+  // touch: pinch -> span
+  let pinch0=null;
+  stage.addEventListener('touchmove', e=>{
+    if (e.touches.length===2){
+      const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
+      if (pinch0==null) pinch0=d;
+      const r=d/pinch0;
+      P.spanTarget=Math.max(0.14,Math.min(1.0, 0.62*r));
+    }
+  }, { passive:true });
+  stage.addEventListener('touchend', ()=>{ pinch0=null; });
+
+  window.addEventListener('resize', resize);
+
+  // ---------------------------------------------------------------------------
+  //  BOOT — prime the ring so first paint is already a full slit-scan image.
+  // ---------------------------------------------------------------------------
+  resize();                 // builds + primes the ring (full time-gradient ready)
+  assemble(2.5);            // assemble + composite once => first paint IS the art
+  composite(2.5);
+  requestAnimationFrame(tick);
+
+  // auto-hide hint after a while even without interaction
+  setTimeout(killHint, 9000);
+})();
+</script>
+</body>
+</html>

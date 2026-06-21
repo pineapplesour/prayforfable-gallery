@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>紙花 · paper bloom</title>
+<style>
+  :root{ color-scheme: dark; }
+  html,body{ margin:0; height:100%; background:#0b0a12; overflow:hidden;
+    font-family:"Hiragino Mincho ProN","Noto Serif KR",Georgia,serif; }
+  #stage{ position:fixed; inset:0; display:block; touch-action:none; cursor:crosshair; }
+  .ui{ position:fixed; z-index:5; color:#f4ecdf; pointer-events:none;
+       text-shadow:0 1px 14px rgba(0,0,0,.55); }
+  #title{ top:clamp(16px,3.4vh,30px); left:clamp(18px,3vw,40px); }
+  #title .jp{ font-size:clamp(30px,5.6vw,58px); letter-spacing:.18em; line-height:1;
+       background:linear-gradient(110deg,#ffe9c7,#ff9fb6 45%,#c9a4ff 78%,#9fd6ff);
+       -webkit-background-clip:text; background-clip:text; color:transparent;
+       filter:drop-shadow(0 2px 10px rgba(255,150,180,.20)); }
+  #title .en{ font-size:clamp(10px,1.5vw,14px); letter-spacing:.62em; opacity:.66;
+       margin-top:.55em; text-transform:uppercase; font-family:Georgia,serif; }
+  #hint{ bottom:clamp(14px,3vh,26px); left:50%; transform:translateX(-50%);
+       font-size:clamp(10px,1.5vw,13px); letter-spacing:.28em; opacity:.0;
+       text-align:center; white-space:nowrap; font-family:Georgia,serif;
+       animation:rise 1.4s ease 1.1s forwards; }
+  @keyframes rise{ from{opacity:0;transform:translate(-50%,10px)} to{opacity:.52;transform:translate(-50%,0)} }
+  #seed{ position:fixed; z-index:5; right:clamp(16px,3vw,34px); top:clamp(18px,3.4vh,32px);
+       font-size:clamp(9px,1.3vw,12px); letter-spacing:.34em; opacity:.6; text-align:right;
+       font-family:Georgia,serif; }
+  #seed b{ display:block; font-size:clamp(15px,2.4vw,22px); letter-spacing:.18em; opacity:.95;
+       font-family:"Hiragino Mincho ProN",serif; color:#ffd9b0; margin-top:.25em; }
+  @media (max-width:520px){ #hint{ letter-spacing:.16em; font-size:11px; } }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="title" class="ui"><div class="jp">紙花</div><div class="en">paper&nbsp;bloom</div></div>
+<div id="seed" class="ui">SEASON<b id="season">立春</b></div>
+<div id="hint" class="ui">DRAG&nbsp;TO&nbsp;UNFOLD&nbsp;·&nbsp;CLICK&nbsp;TO&nbsp;SOW&nbsp;·&nbsp;SCROLL&nbsp;THE&nbsp;SEASONS</div>
+
+<script>
+"use strict";
+(function(){
+  const cv = document.getElementById('stage');
+  const ctx = cv.getContext('2d', { alpha:false });
+  let W=0,H=0,DPR=1, CX=0, CY=0, MIN=0;
+
+  // ---- pointer / interaction state -----------------------------------
+  const P = { x:-1e4, y:-1e4, px:-1e4, py:-1e4, down:false, vx:0, vy:0, has:false };
+  let dragBloom = 0;          // extra bloom from horizontal drag (radians-ish)
+  let pull = 0;               // breeze pull from pointer velocity
+  let season = 0;             // 0..1 scrolls through the seasonal palette
+  let seasonTarget = 0;
+  let twist = 0;              // global slow rotation
+  let lastT = performance.now();
+
+  function resize(){
+    DPR = Math.min(2, window.devicePixelRatio||1);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = Math.round(W*DPR); cv.height = Math.round(H*DPR);
+    cv.style.width=W+'px'; cv.style.height=H+'px';
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    CX=W*0.5; CY=H*0.52; MIN=Math.min(W,H);
+  }
+  window.addEventListener('resize', resize, {passive:true});
+  resize();
+
+  // ---- seasonal palettes (paper hues) --------------------------------
+  // each: [outer petal warm, mid, inner glow, throat, leaf, sky-top, sky-bottom, accent]
+  const SEASONS = [
+    { name:'立春', // spring — peach & blush
+      petal:[[255,214,196],[255,166,177],[255,120,150]], throat:[255,236,176],
+      leaf:[120,170,120], sky:[[24,18,34],[12,10,22]], dust:[255,210,180] },
+    { name:'初夏', // early summer — coral / gold
+      petal:[[255,196,150],[255,140,110],[236,90,120]], throat:[255,228,150],
+      leaf:[96,166,108], sky:[[28,16,30],[10,12,24]], dust:[255,190,140] },
+    { name:'晩夏', // late summer — magenta / violet
+      petal:[[244,170,212],[214,118,200],[150,90,210]], throat:[255,200,225],
+      leaf:[110,150,128], sky:[[24,14,36],[10,8,26]], dust:[235,170,230] },
+    { name:'秋分', // autumn — amber / rust
+      petal:[[247,196,128],[230,140,86],[196,84,72]], throat:[255,224,150],
+      leaf:[150,140,84], sky:[[28,18,24],[12,9,18]], dust:[255,196,130] },
+    { name:'初冬', // winter — frost lilac / ice
+      petal:[[214,224,255],[178,196,244],[150,170,236]], throat:[226,236,255],
+      leaf:[120,150,160], sky:[[14,16,34],[8,10,24]], dust:[210,224,255] }
+  ];
+  function lerp(a,b,t){ return a+(b-a)*t; }
+  function mix(c1,c2,t){ return [lerp(c1[0],c2[0],t),lerp(c1[1],c2[1],t),lerp(c1[2],c2[2],t)]; }
+  function rgb(c,a){ return 'rgba('+(c[0]|0)+','+(c[1]|0)+','+(c[2]|0)+','+(a==null?1:a)+')'; }
+  // continuous interpolation across seasons
+  function paletteAt(s){
+    const n=SEASONS.length; const f=((s%1)+1)%1 * n;
+    const i=Math.floor(f), t=f-i, A=SEASONS[i], B=SEASONS[(i+1)%n];
+    return {
+      petal:[mix(A.petal[0],B.petal[0],t),mix(A.petal[1],B.petal[1],t),mix(A.petal[2],B.petal[2],t)],
+      throat:mix(A.throat,B.throat,t),
+      leaf:mix(A.leaf,B.leaf,t),
+      sky:[mix(A.sky[0],B.sky[0],t),mix(A.sky[1],B.sky[1],t)],
+      dust:mix(A.dust,B.dust,t),
+      name:(t<0.5?A.name:B.name)
+    };
+  }
+
+  // ---- the flower model ----------------------------------------------
+  // A flower = several concentric rings of folded paper petals.
+  // Each petal is a quadratic "fold" with a center crease -> two shaded facets.
+  function makeFlower(x,y,scale,seedPhase){
+    return {
+      x,y,scale,
+      bloom:0, bloomTarget:1,     // 0 = bud, 1 = open
+      spin: (Math.random()*2-1)*0.0006 + 0.00018,
+      phase: seedPhase!=null?seedPhase:Math.random()*6.283,
+      rot: Math.random()*6.283,
+      born: performance.now(),
+      sway: Math.random()*6.283,
+      // ring layout: [count, petalLen, petalWidth, openAngle, hueIdx]
+      rings:[
+        {n:13, len:1.00, w:0.40, open:1.50, depth:0, hue:0, curl:0.55},
+        {n:11, len:0.78, w:0.42, open:1.18, depth:1, hue:1, curl:0.72},
+        {n: 8, len:0.56, w:0.46, open:0.86, depth:2, hue:1, curl:0.92},
+        {n: 6, len:0.36, w:0.50, open:0.50, depth:3, hue:2, curl:1.20}
+      ]
+    };
+  }
+  const flowers = [];
+
+  // central hero flower
+  function layoutHero(){
+    const s = MIN*0.0016;
+    if(flowers.length===0){ flowers.push(makeFlower(CX,CY,s,0)); flowers[0].hero=true; }
+    else { flowers[0].x=CX; flowers[0].y=CY; flowers[0].scale=s; }
+  }
+  layoutHero();
+
+  // ---- pollen / paper-dust particles ----------------------------------
+  const DUST = [];
+  const DUST_MAX = (W*H>1.1e6)?150:96;
+  function spawnDust(n){
+    for(let i=0;i<n && DUST.length<DUST_MAX;i++){
+      DUST.push({ x:Math.random()*W, y:Math.random()*H,
+        r:Math.random()*2.2+0.6, vx:(Math.random()*2-1)*0.12,
+        vy:-(Math.random()*0.18+0.04), a:Math.random()*0.5+0.2,
+        ph:Math.random()*6.283, spin:(Math.random()*2-1)*0.01 });
+    }
+  }
+  spawnDust(DUST_MAX);
+
+  // ---- gently falling background petals (parallax depth) --------------
+  const FALL=[];
+  const FALL_MAX=(W*H>1.1e6)?26:16;
+  function spawnFall(n){
+    for(let i=0;i<n && FALL.length<FALL_MAX;i++){
+      const depth=Math.random();           // 0 far .. 1 near
+      FALL.push({ x:Math.random()*W, y:Math.random()*H,
+        r:(4+depth*12), depth,
+        vy:0.2+depth*0.7, sway:Math.random()*6.283, swaySp:0.4+Math.random()*0.8,
+        rot:Math.random()*6.283, vr:(Math.random()*2-1)*0.01,
+        col:(Math.random()*3)|0, a:0.10+depth*0.22 });
+    }
+  }
+  spawnFall(FALL_MAX);
+
+  // ---- paper-fiber grain texture (offscreen, generated once) ----------
+  let grain=null;
+  function buildGrain(){
+    const gw=200, gh=200;
+    const oc=document.createElement('canvas'); oc.width=gw; oc.height=gh;
+    const og=oc.getContext('2d'); const id=og.createImageData(gw,gh);
+    const dat=id.data;
+    for(let i=0;i<dat.length;i+=4){
+      const v=(Math.random()*255)|0;
+      dat[i]=dat[i+1]=dat[i+2]=v; dat[i+3]=10;   // very faint
+    }
+    og.putImageData(id,0,0);
+    // soft fibrous streaks
+    og.globalAlpha=0.06;
+    for(let s=0;s<60;s++){
+      og.strokeStyle='rgba(255,255,255,0.5)'; og.lineWidth=Math.random()*1.2;
+      og.beginPath(); const y=Math.random()*gh; og.moveTo(0,y);
+      og.bezierCurveTo(gw*0.33,y+(Math.random()*8-4),gw*0.66,y+(Math.random()*8-4),gw,y);
+      og.stroke();
+    }
+    grain=oc;
+  }
+  buildGrain();
+
+  // burst of petal confetti when a new flower is sown
+  const CONF=[];
+  function burst(x,y,pal){
+    const N=18;
+    for(let i=0;i<N;i++){
+      const a=Math.random()*6.283, sp=Math.random()*3+1.2;
+      CONF.push({ x,y, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp-1.0,
+        r:Math.random()*6+3, rot:Math.random()*6.28, vr:(Math.random()*2-1)*0.25,
+        life:1, col: i%3 , pal });
+    }
+  }
+
+  // =====================================================================
+  //  RENDER
+  // =====================================================================
+
+  // draw one folded petal at origin pointing up (+y is outward).
+  // The petal is mirrored around a central crease producing two facets
+  // lit differently -> the "origami" read.
+  function petal(len, wid, open, curl, fcol, ecol, lightDir, glow){
+    // outline points (right half), then mirror.
+    const segs = 9;
+    const right=[], left=[];
+    for(let i=0;i<=segs;i++){
+      const t=i/segs;                      // 0 base -> 1 tip
+      // width profile: narrow base, swell, taper to point
+      const swell = Math.sin(t*Math.PI)*0.9 + (1-t)*0.18;
+      const wx = wid * swell;
+      // outward distance with a curl-back near the tip
+      const oy = t*len;
+      const cz = Math.sin(t*Math.PI)*curl*0.5;          // virtual fold depth
+      // fold opening tilts the half-petal outward
+      const sx = Math.sin(open*(0.35+0.65*t));
+      right.push([ wx*sx, oy - cz*0.0, cz, wx ]);
+      left .push([ -wx*sx, oy - cz*0.0, cz, wx ]);
+    }
+    // facet shading: dot of facet normal with light
+    // right facet faces +x-ish, left faces -x-ish. Stronger split -> crisp fold read.
+    const lx=lightDir[0], ly=lightDir[1];
+    const litR = 0.5 + 0.5*Math.max(-1,Math.min(1, ( 0.92*lx + 0.18*ly)));
+    const litL = 0.5 + 0.5*Math.max(-1,Math.min(1, (-0.92*lx + 0.18*ly)));
+
+    // RIGHT facet
+    ctx.beginPath();
+    ctx.moveTo(0,0);
+    for(let i=0;i<=segs;i++) ctx.lineTo(right[i][0], right[i][1]);
+    ctx.lineTo(0,len*0.985);
+    ctx.closePath();
+    // diagonal gradient (base->tip AND across the fold) gives a folded-paper sheen
+    let g=ctx.createLinearGradient(wid*0.5,0, -wid*0.15,len);
+    const shadeR = litR;
+    const baseR = mix(ecol,fcol,0.15), tipR = mix(fcol,[255,255,255],0.10);
+    g.addColorStop(0, rgb(mix(baseR,[0,0,0],0.30*(1-shadeR)), 1));
+    g.addColorStop(0.5, rgb(mix(mix(fcol,[255,255,255],0.10*shadeR),[0,0,0],0.16*(1-shadeR)), 1));
+    g.addColorStop(1, rgb(mix(tipR,[255,255,255],0.26*shadeR), 1));
+    ctx.fillStyle=g; ctx.fill();
+    // facet brightness overlay — deeper shadow on unlit facet for crisp fold
+    ctx.fillStyle='rgba(8,4,12,'+(0.34*(1-shadeR))+')'; ctx.fill();
+
+    // LEFT facet
+    ctx.beginPath();
+    ctx.moveTo(0,0);
+    for(let i=0;i<=segs;i++) ctx.lineTo(left[i][0], left[i][1]);
+    ctx.lineTo(0,len*0.985);
+    ctx.closePath();
+    g=ctx.createLinearGradient(-wid*0.5,0, wid*0.15,len);
+    const shadeL = litL;
+    const baseL = mix(ecol,fcol,0.15), tipL = mix(fcol,[255,255,255],0.10);
+    g.addColorStop(0, rgb(mix(baseL,[0,0,0],0.30*(1-shadeL)), 1));
+    g.addColorStop(0.5, rgb(mix(mix(fcol,[255,255,255],0.10*shadeL),[0,0,0],0.16*(1-shadeL)), 1));
+    g.addColorStop(1, rgb(mix(tipL,[255,255,255],0.26*shadeL), 1));
+    ctx.fillStyle=g; ctx.fill();
+    ctx.fillStyle='rgba(8,4,12,'+(0.34*(1-shadeL))+')'; ctx.fill();
+
+    // central crease: a bright specular ridge (the spine of the fold)
+    ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(0,len*0.96);
+    ctx.lineWidth=Math.max(0.8,wid*0.07);
+    const cg=ctx.createLinearGradient(0,0,0,len);
+    cg.addColorStop(0,'rgba(255,255,255,0)');
+    cg.addColorStop(0.45,'rgba(255,252,244,'+(0.34+0.26*glow)+')');
+    cg.addColorStop(1,'rgba(255,255,255,0)');
+    ctx.strokeStyle=cg; ctx.stroke();
+    // thin dark valley just beside the ridge for relief
+    ctx.beginPath(); ctx.moveTo(wid*0.04,len*0.06); ctx.lineTo(wid*0.04,len*0.9);
+    ctx.lineWidth=Math.max(0.5,wid*0.025);
+    ctx.strokeStyle='rgba(0,0,0,0.12)'; ctx.stroke();
+
+    // secondary fold lines on each facet (paper creases)
+    ctx.lineWidth=Math.max(0.4,wid*0.02);
+    ctx.strokeStyle='rgba(0,0,0,0.10)';
+    for(const sgn of [1,-1]){
+      ctx.beginPath();
+      for(let i=2;i<=segs;i++){ const p= sgn>0?right[i]:left[i];
+        const fx=p[0]*0.5, fy=p[1];
+        if(i===2) ctx.moveTo(fx,fy); else ctx.lineTo(fx,fy); }
+      ctx.stroke();
+    }
+
+    // rim highlight along outer edge
+    ctx.beginPath();
+    ctx.moveTo(right[1][0],right[1][1]);
+    for(let i=2;i<=segs;i++) ctx.lineTo(right[i][0],right[i][1]);
+    for(let i=segs;i>=1;i--) ctx.lineTo(left[i][0],left[i][1]);
+    ctx.lineWidth=Math.max(0.5,wid*0.03);
+    ctx.strokeStyle='rgba(255,255,255,'+(0.10+0.16*glow)+')';
+    ctx.stroke();
+  }
+
+  function drawFlower(fl, pal, time){
+    const open = fl.bloom;
+    const sx=fl.x, sy=fl.y;
+    const breathe = 1 + Math.sin(time*0.0011 + fl.phase)*0.012;
+    const swayA = Math.sin(time*0.0007 + fl.sway)*0.05;
+    const sc = fl.scale * breathe * (0.5 + 0.5*Math.max(0.001,open));
+
+    ctx.save();
+    ctx.translate(sx,sy);
+    ctx.rotate(fl.rot + swayA + (fl.hero?twist:0));
+
+    // soft ground shadow / glow disc
+    const gw = 240*sc*MIN*0.006;
+    const gr=ctx.createRadialGradient(0,0,2, 0,0,Math.max(8,gw));
+    gr.addColorStop(0, rgb(pal.throat, 0.22*open));
+    gr.addColorStop(0.5, rgb(pal.petal[2], 0.10*open));
+    gr.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle=gr; ctx.beginPath(); ctx.arc(0,0,Math.max(8,gw),0,6.283); ctx.fill();
+
+    // light direction (from pointer if present, else upper-left)
+    let lx=-0.5, ly=-0.7;
+    if(P.has){ const dx=P.x-sx, dy=P.y-sy; const m=Math.hypot(dx,dy)||1; lx=dx/m; ly=dy/m; }
+
+    const ringScale = MIN*0.0016*sc/ (MIN*0.0016) ; // normalized; use sc directly below
+    const baseLen = MIN*0.16;
+
+    // back-to-front rings
+    for(let ri=fl.rings.length-1; ri>=0; ri--){
+      const R=fl.rings[ri];
+      const ringOpen = Math.min(1, Math.max(0, open*1.25 - ri*0.12));
+      if(ringOpen<=0.001) continue;
+      const len = baseLen * R.len * sc;
+      const wid = len * R.w;
+      const openAng = R.open * ringOpen + dragBloom*(0.4+0.2*ri);
+      const curl = R.curl * (1.1 - 0.5*ringOpen);  // tighter curl when closed
+      const fcol = pal.petal[R.hue];
+      const ecol = mix(pal.petal[Math.min(2,R.hue+1)], pal.throat, 0.10);
+      const glow = (P.has? Math.max(0,1-Math.hypot(P.x-sx,P.y-sy)/(MIN*0.45)) : 0)*0.8;
+
+      const off = (ri%2)*(Math.PI/R.n);   // stagger rings
+      for(let i=0;i<R.n;i++){
+        const a = fl.rot*0 + (i/R.n)*6.283 + off + fl.phase*0.0 + time*0.00003*(ri+1);
+        // per-petal flutter when pointer drags / breeze
+        const flutter = Math.sin(time*0.002 + i*1.3 + ri)* (0.04 + pull*0.12);
+        ctx.save();
+        ctx.rotate(a + flutter);
+        // lift petals up off the plane as they open (slight scale toward center base)
+        ctx.translate(0, -len*0.02);
+        petal(len, wid, openAng, curl, fcol, ecol, [lx,ly], glow*ringOpen);
+        ctx.restore();
+      }
+    }
+
+    // ----- the throat / stamen cluster -----
+    const tn = 22;
+    const trad = baseLen*0.10*sc*(0.4+0.6*open);
+    // soft throat disc
+    const tg=ctx.createRadialGradient(0,0,1,0,0,Math.max(2,trad*2.4));
+    tg.addColorStop(0, rgb(mix(pal.throat,[255,255,255],0.3),1));
+    tg.addColorStop(0.6, rgb(pal.throat,0.95));
+    tg.addColorStop(1, rgb(mix(pal.throat,pal.petal[2],0.5),0));
+    ctx.fillStyle=tg; ctx.beginPath(); ctx.arc(0,0,Math.max(2,trad*2.4),0,6.283); ctx.fill();
+    // stamens
+    for(let i=0;i<tn;i++){
+      const a=(i/tn)*6.283 + time*0.0004;
+      const rr=trad*(0.7+0.5*((i*97)%10)/10) * (0.5+0.5*open);
+      const ex=Math.cos(a)*rr, ey=Math.sin(a)*rr;
+      const wob=Math.sin(time*0.003 + i)*trad*0.12;
+      ctx.beginPath(); ctx.moveTo(0,0);
+      ctx.quadraticCurveTo(ex*0.5+wob, ey*0.5, ex, ey);
+      ctx.lineWidth=Math.max(0.5,trad*0.06);
+      ctx.strokeStyle=rgb(mix(pal.throat,pal.petal[0],0.3), 0.8*open);
+      ctx.stroke();
+      // anther dot
+      ctx.beginPath(); ctx.arc(ex,ey,Math.max(0.8,trad*0.10),0,6.283);
+      ctx.fillStyle=rgb(mix(pal.throat,[255,255,255],0.5), open);
+      ctx.fill();
+    }
+
+    ctx.restore();
+  }
+
+  // =====================================================================
+  //  FRAME LOOP
+  // =====================================================================
+  function frame(now){
+    const dt = Math.min(40, now-lastT); lastT=now;
+
+    // ease season scroll
+    season += (seasonTarget - season)*0.06;
+    const pal = paletteAt(season);
+    document.getElementById('season').textContent = pal.name;
+
+    // ease drag bloom + pull back to rest
+    dragBloom += (0 - dragBloom)*0.04;
+    pull *= 0.92;
+    twist += 0.00012*dt;
+
+    // pointer velocity decay
+    P.vx*=0.85; P.vy*=0.85;
+
+    // ----- background sky -----
+    const sg=ctx.createLinearGradient(0,0,0,H);
+    sg.addColorStop(0, rgb(pal.sky[0],1));
+    sg.addColorStop(1, rgb(pal.sky[1],1));
+    ctx.fillStyle=sg; ctx.fillRect(0,0,W,H);
+    // vignette glow toward center
+    const vg=ctx.createRadialGradient(CX,CY,MIN*0.04, CX,CY,MIN*0.75);
+    vg.addColorStop(0, rgb(pal.petal[2], 0.10));
+    vg.addColorStop(0.5,'rgba(0,0,0,0)');
+    vg.addColorStop(1,'rgba(0,0,0,0.55)');
+    ctx.fillStyle=vg; ctx.fillRect(0,0,W,H);
+
+    // ----- pollen dust (behind, additive) -----
+    ctx.globalCompositeOperation='lighter';
+    for(const d of DUST){
+      d.ph += 0.01;
+      // breeze toward pointer drag
+      d.x += d.vx + Math.sin(d.ph)*0.2 + P.vx*0.03;
+      d.y += d.vy + P.vy*0.02;
+      if(d.y< -10){ d.y=H+10; d.x=Math.random()*W; }
+      if(d.x< -10) d.x=W+10; if(d.x>W+10) d.x=-10;
+      const fl=0.6+0.4*Math.sin(d.ph*2);
+      ctx.beginPath(); ctx.arc(d.x,d.y,d.r,0,6.283);
+      ctx.fillStyle=rgb(pal.dust, d.a*fl*0.5);
+      ctx.fill();
+    }
+    ctx.globalCompositeOperation='source-over';
+
+    // ----- falling background petals (parallax depth, behind flowers) -----
+    for(const f of FALL){
+      f.sway += 0.01*f.swaySp;
+      f.x += Math.sin(f.sway)*0.6*f.depth + P.vx*0.02*f.depth;
+      f.y += f.vy + P.vy*0.01*f.depth;
+      f.rot += f.vr + Math.sin(f.sway)*0.01;
+      if(f.y>H+20){ f.y=-20; f.x=Math.random()*W; }
+      ctx.save(); ctx.translate(f.x,f.y); ctx.rotate(f.rot);
+      ctx.globalAlpha=f.a;
+      const col=pal.petal[f.col];
+      // folded single petal silhouette
+      const r=f.r;
+      const pg=ctx.createLinearGradient(-r*0.4,-r, r*0.4,r);
+      pg.addColorStop(0, rgb(mix(col,[0,0,0],0.3),1));
+      pg.addColorStop(1, rgb(mix(col,[255,255,255],0.2),1));
+      ctx.fillStyle=pg;
+      ctx.beginPath();
+      ctx.moveTo(0,-r); ctx.quadraticCurveTo(r*0.7,-r*0.1, 0,r);
+      ctx.quadraticCurveTo(-r*0.7,-r*0.1, 0,-r); ctx.fill();
+      ctx.strokeStyle='rgba(255,255,255,0.18)'; ctx.lineWidth=0.5;
+      ctx.beginPath(); ctx.moveTo(0,-r); ctx.lineTo(0,r); ctx.stroke();
+      ctx.restore();
+    }
+    ctx.globalAlpha=1;
+
+    // ----- flowers -----
+    for(const fl of flowers){
+      // bud->bloom easing; sown flowers grow in
+      fl.bloom += (fl.bloomTarget - fl.bloom)*0.035;
+      fl.rot += fl.spin*dt;
+    }
+    // draw smaller (farther) flowers first
+    const order = flowers.slice().sort((a,b)=>a.scale-b.scale);
+    for(const fl of order){
+      ctx.globalCompositeOperation='lighter';   // petals glow-blend over dark sky
+      // we actually want normal fill but with a subtle additive bloom: do normal then a faint add pass
+      ctx.globalCompositeOperation='source-over';
+      drawFlower(fl, pal, now);
+    }
+
+    // ----- confetti petals -----
+    ctx.globalCompositeOperation='source-over';
+    for(let i=CONF.length-1;i>=0;i--){
+      const c=CONF[i];
+      c.vy+=0.06; c.vx*=0.99; c.x+=c.vx; c.y+=c.vy; c.rot+=c.vr; c.life-=0.012;
+      if(c.life<=0){ CONF.splice(i,1); continue; }
+      ctx.save(); ctx.translate(c.x,c.y); ctx.rotate(c.rot);
+      ctx.globalAlpha=Math.max(0,c.life);
+      const col=c.pal.petal[c.col];
+      ctx.fillStyle=rgb(col,1);
+      ctx.beginPath();
+      ctx.moveTo(0,-c.r); ctx.quadraticCurveTo(c.r*0.8,0, 0,c.r);
+      ctx.quadraticCurveTo(-c.r*0.8,0, 0,-c.r); ctx.fill();
+      ctx.strokeStyle='rgba(255,255,255,0.4)'; ctx.lineWidth=0.6; ctx.stroke();
+      ctx.restore();
+    }
+    ctx.globalAlpha=1;
+
+    // pointer ripple ring on hover
+    if(P.has){
+      const rr = MIN*0.06 + Math.sin(now*0.004)*MIN*0.01;
+      ctx.beginPath(); ctx.arc(P.x,P.y,rr,0,6.283);
+      ctx.strokeStyle=rgb(pal.dust, 0.10); ctx.lineWidth=1; ctx.stroke();
+    }
+
+    // ----- paper grain overlay (whole frame reads as one sheet) -----
+    if(grain){
+      ctx.globalCompositeOperation='overlay';
+      ctx.globalAlpha=0.5;
+      const gp=ctx.createPattern(grain,'repeat');
+      ctx.fillStyle=gp; ctx.fillRect(0,0,W,H);
+      ctx.globalAlpha=1; ctx.globalCompositeOperation='source-over';
+    }
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  // =====================================================================
+  //  INTERACTION
+  // =====================================================================
+  function setPointer(x,y){
+    P.px=P.x; P.py=P.y; P.x=x; P.y=y; P.has=true;
+    if(P.px>-1e3){ P.vx=P.x-P.px; P.vy=P.y-P.py; }
+    pull = Math.min(1, pull + (Math.hypot(P.vx,P.vy))*0.01);
+  }
+  cv.addEventListener('pointermove', e=>{
+    setPointer(e.clientX, e.clientY);
+    if(P.down){ dragBloom += (e.movementX||P.vx)*0.0016; }
+  }, {passive:true});
+  cv.addEventListener('pointerdown', e=>{ P.down=true; P.dx0=e.clientX; P.dy0=e.clientY; P.moved=0;
+    setPointer(e.clientX,e.clientY); try{cv.setPointerCapture(e.pointerId);}catch(_){} }, {passive:true});
+  cv.addEventListener('pointerup', e=>{
+    P.down=false;
+    const md=Math.hypot(e.clientX-P.dx0, e.clientY-P.dy0);
+    if(md<8){ // a tap -> sow a flower
+      sow(e.clientX, e.clientY);
+    }
+  }, {passive:true});
+  cv.addEventListener('pointerleave', ()=>{ P.has=false; P.down=false; }, {passive:true});
+
+  // scroll / wheel -> seasons
+  window.addEventListener('wheel', e=>{
+    seasonTarget += e.deltaY*0.00045;
+    pull = Math.min(1, pull+0.15);
+  }, {passive:true});
+
+  // touch swipe vertical -> seasons (in addition to drag)
+  let tY=null;
+  cv.addEventListener('touchstart', e=>{ if(e.touches[0]) tY=e.touches[0].clientY; }, {passive:true});
+  cv.addEventListener('touchmove', e=>{
+    if(tY!=null && e.touches[0]){ const dy=e.touches[0].clientY-tY; seasonTarget += dy*0.00035; tY=e.touches[0].clientY; }
+  }, {passive:true});
+
+  function sow(x,y){
+    if(flowers.length>9){ // recycle oldest non-hero
+      let idx=-1, oldest=Infinity;
+      for(let i=0;i<flowers.length;i++){ if(!flowers[i].hero && flowers[i].born<oldest){oldest=flowers[i].born;idx=i;} }
+      if(idx>=0) flowers.splice(idx,1);
+    }
+    const s = (MIN*0.0016) * (0.32 + Math.random()*0.4);
+    const f = makeFlower(x,y,s, Math.random()*6.283);
+    f.bloom=0.001; f.bloomTarget=1;
+    flowers.push(f);
+    burst(x,y, paletteAt(season));
+  }
+
+  // re-layout hero on resize
+  const _resize = resize;
+  window.addEventListener('resize', ()=>{ layoutHero(); }, {passive:true});
+  layoutHero();
+
+  // expose for verification
+  window.__bloom = {
+    state(){ return { flowers:flowers.length, season:season, heroBloom:flowers[0]?flowers[0].bloom:0,
+                      dragBloom:dragBloom, dust:DUST.length, conf:CONF.length }; },
+    sow, setSeasonTarget(v){ seasonTarget=v; },
+    nudgeDrag(v){ dragBloom+=v; }, palName(){ return paletteAt(season).name; }
+  };
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>MURMUR — 입자 군무</title>
+<style>
+  :root{ --ink:#e9f0ff; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ height:100%; width:100%; overflow:hidden; background:#05060c; }
+  body{
+    font-family:"Helvetica Neue",Arial,system-ui,sans-serif;
+    color:var(--ink); cursor:crosshair; -webkit-tap-highlight-color:transparent;
+    touch-action:none;
+  }
+  #stage{ position:fixed; inset:0; display:block; }
+  /* overlay UI — part of the first paint, no loader/gate */
+  .ui{ position:fixed; pointer-events:none; z-index:5; user-select:none; }
+  #title{
+    top:clamp(18px,3.4vh,40px); left:clamp(18px,2.6vw,46px);
+    mix-blend-mode:screen;
+  }
+  #title h1{
+    font-size:clamp(20px,3.0vw,40px); font-weight:800; letter-spacing:.42em;
+    margin-left:.42em; line-height:1;
+    background:linear-gradient(90deg,#9ad7ff,#cdb6ff 55%,#ff9ecb);
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+    filter:drop-shadow(0 0 16px rgba(140,170,255,.35));
+  }
+  #title p{
+    margin-top:.7em; font-size:clamp(9px,1.0vw,12px); letter-spacing:.30em;
+    text-transform:uppercase; color:rgba(180,200,255,.55); font-weight:600;
+  }
+  #shapeName{
+    bottom:clamp(18px,3.4vh,40px); left:clamp(18px,2.6vw,46px);
+    font-size:clamp(13px,1.5vw,18px); letter-spacing:.30em; font-weight:700;
+    color:rgba(220,230,255,.85); mix-blend-mode:screen;
+  }
+  #shapeName b{
+    display:inline-block; min-width:1ch;
+    background:linear-gradient(90deg,#7fe9ff,#b69bff);
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+  }
+  #hud{
+    bottom:clamp(18px,3.4vh,40px); right:clamp(18px,2.6vw,46px);
+    text-align:right; font-size:clamp(9px,.95vw,11px); letter-spacing:.18em;
+    color:rgba(160,180,225,.5); line-height:1.8; text-transform:uppercase;
+  }
+  #hud .k{ color:rgba(150,210,255,.9); font-weight:700; }
+  #hint{
+    top:clamp(18px,3.4vh,40px); right:clamp(18px,2.6vw,46px);
+    text-align:right; font-size:clamp(9px,.95vw,11px); letter-spacing:.16em;
+    color:rgba(150,170,220,.45); line-height:1.9; text-transform:uppercase;
+    transition:opacity 1.2s ease; max-width:46vw;
+  }
+  #hint.gone{ opacity:0; }
+  .dot{ color:#79e6ff; }
+  @media (max-width:640px){
+    #hint{ font-size:9px; max-width:60vw; }
+    #title h1{ letter-spacing:.30em; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div class="ui" id="title">
+  <h1>MURMUR</h1>
+  <p>a living swarm · 입자 군무</p>
+</div>
+<div class="ui" id="shapeName">NOW &nbsp;·&nbsp; <b id="nameTxt">새</b></div>
+<div class="ui" id="hint">
+  <span class="dot">●</span> 마우스로 끌고 / 밀어내기<br>
+  스크롤 또는 클릭 → 형상 전환<br>
+  꾹 누르면 흩어지고 다시 모인다
+</div>
+<div class="ui" id="hud">
+  particles <span class="k" id="pcount">0</span><br>
+  <span id="fpslab">— fps</span>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const cv = document.getElementById('stage');
+  const ctx = cv.getContext('2d', { alpha:false });
+
+  // ---------- responsive sizing & particle budget ----------
+  let W=0,H=0,DPR=1, CAP=1;
+  function resize(){
+    DPR = Math.min(window.devicePixelRatio||1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = Math.round(W*DPR); cv.height = Math.round(H*DPR);
+    cv.style.width=W+'px'; cv.style.height=H+'px';
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    CAP = Math.min(W,H); // smallest side, used to scale shapes
+  }
+  resize();
+
+  // ---------- particle count capped for smooth perf ----------
+  const area = W*H;
+  let N = Math.round(area/950);
+  N = Math.max(1400, Math.min(N, 4200));
+  // mobile-friendly trim
+  if (Math.min(W,H) < 520) N = Math.min(N, 2200);
+
+  // ---------- shape sampling: rasterize text/glyphs to point clouds ----------
+  // We draw a shape into an offscreen canvas, read pixels, sample points.
+  const off = document.createElement('canvas');
+  const octx = off.getContext('2d', { willReadFrequently:true });
+
+  function sampleDraw(drawFn, count){
+    const S = 520; // sampling resolution (square)
+    off.width=S; off.height=S;
+    octx.clearRect(0,0,S,S);
+    octx.fillStyle='#fff';
+    octx.save();
+    drawFn(octx, S);
+    octx.restore();
+    const data = octx.getImageData(0,0,S,S).data;
+    const hits=[];
+    // collect lit pixels (stride for speed)
+    for(let y=0;y<S;y+=2){
+      for(let x=0;x<S;x+=2){
+        const a = data[(y*S+x)*4+3];
+        if(a>40){ hits.push(x, y); }
+      }
+    }
+    const pts = new Float32Array(count*2);
+    if(hits.length===0){ // fallback ring
+      for(let i=0;i<count;i++){
+        const t=i/count*Math.PI*2;
+        pts[i*2]=Math.cos(t)*0.5+0.5; pts[i*2+1]=Math.sin(t)*0.5+0.5;
+      }
+      return pts;
+    }
+    const m = hits.length/2;
+    for(let i=0;i<count;i++){
+      const k = (Math.random()*m)|0;
+      // normalize to 0..1, center, slight jitter
+      const jx=(Math.random()-0.5)*1.6, jy=(Math.random()-0.5)*1.6;
+      pts[i*2]   = (hits[k*2]+jx)/S;
+      pts[i*2+1] = (hits[k*2+1]+jy)/S;
+    }
+    return pts;
+  }
+
+  // glyph drawer (centered, fits box)
+  function glyph(str, fontPx, weight){
+    return (c,S)=>{
+      c.fillStyle='#fff';
+      c.textAlign='center'; c.textBaseline='middle';
+      c.font=`${weight||900} ${fontPx}px "Helvetica Neue",Arial,sans-serif`;
+      c.fillText(str, S/2, S/2);
+    };
+  }
+
+  // bird in flight (stylized, filled)
+  function birdDraw(c,S){
+    c.translate(S/2,S/2); c.scale(S/100,S/100); c.translate(-50,-50);
+    c.fillStyle='#fff';
+    c.beginPath();
+    c.moveTo(50,42);
+    c.bezierCurveTo(44,30, 28,18, 8,26);   // left wing top
+    c.bezierCurveTo(26,30, 36,40, 47,48);  // left wing under
+    c.bezierCurveTo(40,52, 36,60, 40,70);  // body left/tail
+    c.bezierCurveTo(48,62, 52,62, 60,70);  // tail
+    c.bezierCurveTo(64,60, 60,52, 53,48);  // body right
+    c.bezierCurveTo(64,40, 74,30, 92,26);  // right wing under
+    c.bezierCurveTo(72,18, 56,30, 50,42);  // right wing top
+    c.closePath(); c.fill();
+    // head
+    c.beginPath(); c.arc(50,40,5,0,7); c.fill();
+  }
+  // heart
+  function heartDraw(c,S){
+    c.translate(S/2,S/2); c.scale(S/100,S/100); c.translate(-50,-52);
+    c.fillStyle='#fff'; c.beginPath();
+    c.moveTo(50,30);
+    c.bezierCurveTo(50,18,34,12,24,22);
+    c.bezierCurveTo(12,34,18,52,50,76);
+    c.bezierCurveTo(82,52,88,34,76,22);
+    c.bezierCurveTo(66,12,50,18,50,30);
+    c.closePath(); c.fill();
+  }
+  // spiral galaxy-ish swirl (stroked thick)
+  function swirlDraw(c,S){
+    c.translate(S/2,S/2);
+    c.strokeStyle='#fff'; c.lineCap='round';
+    for(let arm=0; arm<3; arm++){
+      c.lineWidth=10;
+      c.beginPath();
+      for(let t=0;t<=1;t+=0.01){
+        const ang = t*Math.PI*2.4 + arm*Math.PI*2/3;
+        const r = t*S*0.42;
+        const x=Math.cos(ang)*r, y=Math.sin(ang)*r;
+        if(t===0)c.moveTo(x,y); else c.lineTo(x,y);
+      }
+      c.stroke();
+    }
+    c.beginPath(); c.arc(0,0,14,0,7); c.fill();
+  }
+
+  // Build all target point clouds, one per shape (reuse N)
+  function buildShape(fn){ return sampleDraw(fn, N); }
+
+  const shapes = [
+    { name:'새',      pts: buildShape(birdDraw) },
+    { name:'심장',    pts: buildShape(heartDraw) },
+    { name:'은하',    pts: buildShape(swirlDraw) },
+    { name:'L O V E', pts: buildShape(glyph('♥', 360)) },
+    { name:'FABLE',   pts: buildShape((c,S)=>{ // two-line word
+        c.fillStyle='#fff'; c.textAlign='center'; c.textBaseline='middle';
+        c.font='900 150px "Helvetica Neue",Arial,sans-serif';
+        c.fillText('FA', S/2, S/2-78);
+        c.fillText('BLE', S/2, S/2+78);
+      }) },
+    { name:'∞',       pts: buildShape(glyph('∞', 300)) },
+  ];
+
+  // ---------- map normalized (0..1) target into screen space ----------
+  // Centered, scaled to ~62% of smallest side.
+  let scaleS=1, offX=0, offY=0, baseY=0;
+  function computeFit(){
+    // fit to ~78% of the limiting dimension; allow it to grow on tall/portrait
+    const portrait = H > W*1.15;
+    scaleS = (portrait ? Math.min(W*0.92, H*0.62) : CAP*0.72);
+    offX = W/2 - scaleS/2;
+    offY = H/2 - scaleS/2;
+    baseY = H/2;
+  }
+  computeFit();
+
+  // ---------- particles ----------
+  const px=new Float32Array(N), py=new Float32Array(N);
+  const vx=new Float32Array(N), vy=new Float32Array(N);
+  const hue=new Float32Array(N);     // per-particle hue offset
+  const phase=new Float32Array(N);   // shimmer phase
+  const spd=new Float32Array(N);     // speed personality
+  for(let i=0;i<N;i++){
+    px[i]=Math.random()*W; py[i]=Math.random()*H;
+    const a=Math.random()*Math.PI*2, s=Math.random()*1.2+0.3;
+    vx[i]=Math.cos(a)*s; vy[i]=Math.sin(a)*s;
+    hue[i]=Math.random();
+    phase[i]=Math.random()*Math.PI*2;
+    spd[i]=0.85+Math.random()*0.5;
+  }
+
+  // ---------- interaction state ----------
+  let curShape=0;
+  const pointer={ x:W/2, y:H/2, active:false, down:false, holdT:0 };
+  let scatter=0;        // 0..1 burst factor (hold to scatter)
+  let morphT=1;         // 0 just changed -> 1 settled
+  let swirlSpin=0;      // global rotation impulse
+  let lastSwitch=0;
+
+  function setShape(idx, dir){
+    curShape = ((idx%shapes.length)+shapes.length)%shapes.length;
+    morphT = 0;
+    swirlSpin = (dir||0)*0.9;
+    document.getElementById('nameTxt').textContent = shapes[curShape].name;
+  }
+
+  // pointer (mouse + touch)
+  function setPtr(x,y){ pointer.x=x; pointer.y=y; pointer.active=true; }
+  cv.addEventListener('mousemove', e=>setPtr(e.clientX,e.clientY));
+  cv.addEventListener('mouseleave', ()=>pointer.active=false);
+  cv.addEventListener('mousedown', e=>{ pointer.down=true; pointer.holdT=0; setPtr(e.clientX,e.clientY); });
+  window.addEventListener('mouseup', ()=>{ pointer.down=false; });
+  cv.addEventListener('click', ()=>{ if(pointer.holdT<260) setShape(curShape+1,1); });
+
+  cv.addEventListener('touchstart', e=>{
+    const t=e.touches[0]; setPtr(t.clientX,t.clientY);
+    pointer.down=true; pointer.holdT=0; e.preventDefault();
+  }, {passive:false});
+  cv.addEventListener('touchmove', e=>{
+    const t=e.touches[0]; setPtr(t.clientX,t.clientY); e.preventDefault();
+  }, {passive:false});
+  cv.addEventListener('touchend', e=>{
+    pointer.down=false; pointer.active=false;
+    if(pointer.holdT<260) setShape(curShape+1,1);
+    e.preventDefault();
+  }, {passive:false});
+
+  // scroll / wheel -> cycle shapes (debounced)
+  window.addEventListener('wheel', e=>{
+    const now=performance.now();
+    if(now-lastSwitch>240){
+      lastSwitch=now;
+      setShape(curShape + (e.deltaY>0?1:-1), e.deltaY>0?1:-1);
+    }
+    e.preventDefault();
+  }, {passive:false});
+  // keyboard convenience
+  window.addEventListener('keydown', e=>{
+    if(e.key==='ArrowRight'||e.key===' ') setShape(curShape+1,1);
+    if(e.key==='ArrowLeft') setShape(curShape-1,-1);
+  });
+
+  // expose for self-verification
+  window.__murmur = {
+    state:()=>({N, shape:curShape, name:shapes[curShape].name, morphT,
+                px:px[0], py:py[0], scatter, fit:{scaleS,offX,offY}}),
+    next:()=>setShape(curShape+1,1),
+    setShape:(i)=>setShape(i,1),
+    hold:(on)=>{ pointer.down=!!on; if(on)pointer.holdT=999; },
+    move:(x,y)=>setPtr(x,y),
+    sumvel:()=>{ let s=0; for(let i=0;i<N;i++)s+=Math.abs(vx[i])+Math.abs(vy[i]); return s; }
+  };
+
+  window.addEventListener('resize', ()=>{ resize(); computeFit(); });
+
+  // ---------- hide hint after a while ----------
+  setTimeout(()=>document.getElementById('hint').classList.add('gone'), 7000);
+  document.getElementById('pcount').textContent = N.toLocaleString();
+
+  // ---------- helpers ----------
+  function targetXY(i){
+    const t = shapes[curShape].pts;
+    let tx = offX + t[i*2]*scaleS;
+    let ty = offY + t[i*2+1]*scaleS;
+    // global swirl while morphing (galaxy feel)
+    if(Math.abs(swirlSpin)>0.001){
+      const cx=W/2, cy=H/2, dx=tx-cx, dy=ty-cy;
+      const ang=swirlSpin*(1-morphT)*1.6;
+      const ca=Math.cos(ang), sa=Math.sin(ang);
+      tx = cx + dx*ca - dy*sa;
+      ty = cy + dx*sa + dy*ca;
+    }
+    return [tx,ty];
+  }
+
+  // ---------- render loop ----------
+  let t=0, last=performance.now(), fpsAcc=0, fpsN=0, fpsShown=0;
+  const fpsLab=document.getElementById('fpslab');
+
+  function frame(now){
+    const dt = Math.min((now-last)/16.67, 2.2); last=now;
+    t += 0.016*dt;
+
+    // fps meter
+    fpsAcc += 1000/Math.max(now-(frame._p||now),1); frame._p=now;
+    if(++fpsN>=24){ fpsShown=Math.round(fpsAcc/fpsN); fpsAcc=0; fpsN=0;
+      fpsLab.textContent = fpsShown+' fps'; }
+
+    // hold-to-scatter dynamics
+    if(pointer.down){ pointer.holdT += (now-(pointer._lp||now)); }
+    pointer._lp=now;
+    const wantScatter = (pointer.down && pointer.holdT>260) ? 1 : 0;
+    scatter += (wantScatter - scatter)*0.06;
+
+    morphT = Math.min(1, morphT + 0.014*dt);
+    swirlSpin *= Math.pow(0.96, dt);
+
+    // trailing fade (motion blur) — gives the silky swarm trails
+    ctx.globalCompositeOperation='source-over';
+    ctx.fillStyle='rgba(5,6,12,0.16)';
+    ctx.fillRect(0,0,W,H);
+
+    // additive glow for particles
+    ctx.globalCompositeOperation='lighter';
+
+    const px0=pointer.x, py0=pointer.y;
+    const repel = scatter;            // when scattering, push hard
+    const pull  = pointer.active && scatter<0.05 ? 1 : 0; // hover -> show bloom
+    const morphForce = 0.012 + (1-morphT)*0.05; // stronger while forming
+
+    for(let i=0;i<N;i++){
+      const [tx,ty]=targetXY(i);
+
+      // base attraction to target
+      let ax = (tx-px[i])*morphForce*spd[i];
+      let ay = (ty-py[i])*morphForce*spd[i];
+
+      // gentle perpendicular flow → murmuration shimmer (boids-ish wander)
+      const fl = Math.sin(t*1.3 + phase[i] + px[i]*0.004);
+      ax += -((ty-py[i]))*0.0009*fl;
+      ay +=  ((tx-px[i]))*0.0009*fl;
+
+      // pointer interaction
+      const dx=px[i]-px0, dy=py[i]-py0;
+      const d2=dx*dx+dy*dy+40;
+      const d=Math.sqrt(d2);
+      if(repel>0.01){
+        // hold-to-scatter: blast everything outward
+        const f = repel * 16000 / d2;
+        ax += dx/d*f; ay += dy/d*f;
+      } else if(pointer.active && d<200){
+        // hover: a tactile comb — push the swarm aside + swirl tangentially,
+        // strong only very near the cursor so the silhouette stays legible.
+        const falloff = (1 - d/200);
+        const push = 4200 * falloff / d;     // radial deflection
+        const curl = 2.2  * falloff;         // tangential swirl
+        ax += (dx/d)*push + (-dy/d)*curl;
+        ay += (dy/d)*push + ( dx/d)*curl;
+      }
+
+      vx[i]=(vx[i]+ax)*0.90;
+      vy[i]=(vy[i]+ay)*0.90;
+
+      // soft speed clamp
+      const sp=Math.hypot(vx[i],vy[i]), mx=6.5;
+      if(sp>mx){ vx[i]*=mx/sp; vy[i]*=mx/sp; }
+
+      px[i]+=vx[i]*dt; py[i]+=vy[i]*dt;
+
+      // color: hue by position + per-particle offset + velocity speed
+      const shim = 0.5+0.5*Math.sin(t*2 + phase[i]);
+      const baseHue = (200 + hue[i]*120 + (py[i]/H)*60 + sp*6) % 360;
+      const lum = 50 + shim*22 + Math.min(sp*5,26);
+      const sat = 90;
+      // size: faster/forming = a touch bigger
+      const r = 0.9 + shim*0.7 + Math.min(sp*0.18,1.2);
+
+      ctx.fillStyle = `hsl(${baseHue},${sat}%,${lum}%)`;
+      ctx.beginPath();
+      ctx.arc(px[i],py[i], r, 0, 6.2832);
+      ctx.fill();
+    }
+
+    // subtle central bloom on the cursor when attracting
+    if(pull){
+      const g=ctx.createRadialGradient(px0,py0,0,px0,py0,160);
+      g.addColorStop(0,'rgba(120,180,255,0.10)');
+      g.addColorStop(1,'rgba(120,180,255,0)');
+      ctx.fillStyle=g; ctx.beginPath(); ctx.arc(px0,py0,160,0,7); ctx.fill();
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  // first paint: clear to bg immediately so frame 1 already shows the swarm
+  ctx.globalCompositeOperation='source-over';
+  ctx.fillStyle='#05060c'; ctx.fillRect(0,0,W,H);
+  document.getElementById('nameTxt').textContent = shapes[0].name;
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

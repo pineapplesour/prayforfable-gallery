@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>MURMUR — 보이드 군집</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: #05060a;
+    font-family: "Helvetica Neue", Arial, "Apple SD Gothic Neo", sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+    cursor: crosshair;
+  }
+  #stage { position: fixed; inset: 0; display: block; }
+  #fx    { position: fixed; inset: 0; display: block; pointer-events: none; }
+
+  .hud {
+    position: fixed; z-index: 5; pointer-events: none;
+    color: rgba(255,255,255,0.82);
+    text-shadow: 0 1px 12px rgba(0,0,0,0.8);
+    user-select: none;
+  }
+  #title {
+    left: 28px; top: 22px;
+    font-weight: 800; letter-spacing: 0.42em;
+    font-size: clamp(16px, 2.4vw, 26px);
+  }
+  #title small {
+    display: block; margin-top: 6px;
+    font-weight: 300; letter-spacing: 0.30em;
+    font-size: clamp(9px, 1.1vw, 12px);
+    color: rgba(255,255,255,0.45);
+  }
+  #season {
+    right: 28px; top: 24px; text-align: right;
+    font-weight: 300; letter-spacing: 0.22em;
+    font-size: clamp(10px, 1.3vw, 13px);
+    color: rgba(255,255,255,0.55);
+  }
+  #season b {
+    display: block; font-weight: 700; letter-spacing: 0.18em;
+    font-size: clamp(15px, 2vw, 22px);
+    margin-top: 4px;
+    transition: color .6s ease;
+  }
+  #hint {
+    left: 0; right: 0; bottom: 20px; text-align: center;
+    font-weight: 300; letter-spacing: 0.34em;
+    font-size: clamp(9px, 1.1vw, 12px);
+    color: rgba(255,255,255,0.38);
+    transition: opacity 1.2s ease;
+  }
+  #hint.gone { opacity: 0; }
+  .pulse { animation: pul 3.6s ease-in-out infinite; }
+  @keyframes pul { 0%,100%{opacity:.38} 50%{opacity:.7} }
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <canvas id="fx"></canvas>
+
+  <div id="title" class="hud">MURMUR<small>군집 · 살아 움직이는 무리</small></div>
+  <div id="season" class="hud">시즌<b id="seasonName">여명</b></div>
+  <div id="hint" class="hud pulse">움직여서 흩어놓기 · 누르면 모여듦 · 스크롤로 계절 전환</div>
+
+<script>
+(() => {
+  "use strict";
+
+  // ---------- canvases ----------
+  const stage = document.getElementById('stage');   // trail buffer (boids)
+  const fx    = document.getElementById('fx');       // crisp overlay (predator, glints)
+  const sctx  = stage.getContext('2d', { alpha: false });
+  const fctx  = fx.getContext('2d');
+
+  let W = 0, H = 0, DPR = 1;
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    for (const c of [stage, fx]) {
+      c.width  = Math.floor(W * DPR);
+      c.height = Math.floor(H * DPR);
+      c.style.width = W + 'px';
+      c.style.height = H + 'px';
+    }
+    sctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    fctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    // hard clear on resize
+    sctx.fillStyle = '#05060a';
+    sctx.fillRect(0, 0, W, H);
+    rebuildGrid();
+  }
+
+  // ---------- seasons (palette + behaviour) ----------
+  // each: name, two-stop bg wash, boid hue range, accent, behaviour deltas
+  const SEASONS = [
+    { name:'여명', bg:['#070912','#0c0f1c'], hueA:200, hueB:265, accent:'#7fd7ff',
+      coh:0.018, ali:0.045, sep:0.95, fade:0.060, speed:1.00, predFear:1.0 },
+    { name:'산호', bg:['#160810','#1c0a12'], hueA:330, hueB:24,  accent:'#ff8db0',
+      coh:0.024, ali:0.050, sep:1.05, fade:0.052, speed:1.06, predFear:1.25 },
+    { name:'심해', bg:['#04090e','#06121a'], hueA:160, hueB:200, accent:'#5cf0d0',
+      coh:0.014, ali:0.038, sep:1.20, fade:0.045, speed:0.92, predFear:0.85 },
+    { name:'잔광', bg:['#0e0a06','#160d08'], hueA:30,  hueB:62,  accent:'#ffc66b',
+      coh:0.020, ali:0.055, sep:0.90, fade:0.058, speed:1.12, predFear:1.1 },
+    { name:'설야', bg:['#0a0c12','#10131c'], hueA:215, hueB:248, accent:'#cfe0ff',
+      coh:0.016, ali:0.042, sep:1.10, fade:0.050, speed:0.96, predFear:1.0 }
+  ];
+
+  // current (animated) parameter state, lerped toward target season
+  const P = Object.assign({}, SEASONS[0]);
+  P.bg0 = hexToRgb(SEASONS[0].bg[0]);
+  P.bg1 = hexToRgb(SEASONS[0].bg[1]);
+  let seasonIdx = 0;
+  let seasonF = 0;            // continuous season float driven by scroll
+  const seasonNameEl = document.getElementById('seasonName');
+
+  function lerp(a, b, t) { return a + (b - a) * t; }
+  function hexToRgb(h) {
+    const n = parseInt(h.slice(1), 16);
+    return [ (n>>16)&255, (n>>8)&255, n&255 ];
+  }
+  function mixHex(h1, h2, t) {
+    const a = hexToRgb(h1), b = hexToRgb(h2);
+    return [Math.round(lerp(a[0],b[0],t)), Math.round(lerp(a[1],b[1],t)), Math.round(lerp(a[2],b[2],t))];
+  }
+
+  // ---------- pointer / interaction ----------
+  const pointer = { x: -9999, y: -9999, px: -9999, py: -9999, active: false, down: false, vx: 0, vy: 0 };
+  function setPointer(x, y) {
+    pointer.px = pointer.x; pointer.py = pointer.y;
+    pointer.x = x; pointer.y = y;
+    pointer.vx = pointer.x - pointer.px;
+    pointer.vy = pointer.y - pointer.py;
+    pointer.active = true;
+    hideHint();
+  }
+  window.addEventListener('mousemove', e => setPointer(e.clientX, e.clientY));
+  window.addEventListener('mousedown', () => { pointer.down = true; });
+  window.addEventListener('mouseup',   () => { pointer.down = false; });
+  window.addEventListener('mouseleave',() => { pointer.active = false; });
+  window.addEventListener('touchstart', e => {
+    pointer.down = true;
+    if (e.touches[0]) setPointer(e.touches[0].clientX, e.touches[0].clientY);
+  }, {passive:true});
+  window.addEventListener('touchmove', e => {
+    if (e.touches[0]) setPointer(e.touches[0].clientX, e.touches[0].clientY);
+  }, {passive:true});
+  window.addEventListener('touchend', () => { pointer.down = false; pointer.active = false; });
+
+  // scroll / wheel -> season float (no actual page scroll exists)
+  let hintGone = false;
+  function hideHint(){ if(!hintGone){ hintGone = true; document.getElementById('hint').classList.add('gone'); } }
+  window.addEventListener('wheel', e => {
+    seasonF += e.deltaY * 0.0016;
+    const n = SEASONS.length;
+    seasonF = ((seasonF % n) + n) % n;
+    hideHint();
+    e.preventDefault();
+  }, { passive:false });
+  // touch vertical drag with two fingers OR keyboard arrows also shift season
+  window.addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { seasonF = (seasonF + 1) % SEASONS.length; hideHint(); }
+    if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')   { seasonF = (seasonF - 1 + SEASONS.length) % SEASONS.length; hideHint(); }
+  });
+
+  // ---------- boids ----------
+  // count scales with area but is capped for performance
+  let N = 0;
+  let bx, by, bvx, bvy, bhue, bspd; // typed arrays
+  function makeBoids() {
+    const area = W * H;
+    N = Math.round(Math.min(1100, Math.max(360, area / 1500)));
+    bx = new Float32Array(N); by = new Float32Array(N);
+    bvx = new Float32Array(N); bvy = new Float32Array(N);
+    bhue = new Float32Array(N); bspd = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      bx[i] = Math.random() * W;
+      by[i] = Math.random() * H;
+      const a = Math.random() * Math.PI * 2;
+      const s = 1.2 + Math.random() * 1.4;
+      bvx[i] = Math.cos(a) * s; bvy[i] = Math.sin(a) * s;
+      bhue[i] = Math.random();
+    }
+  }
+
+  // ---------- spatial hash grid ----------
+  let cell = 48, cols = 0, rows = 0, grid = null, gridHead = null, gridNext = null;
+  function rebuildGrid() {
+    cell = 52;
+    cols = Math.max(1, Math.ceil(W / cell));
+    rows = Math.max(1, Math.ceil(H / cell));
+    gridHead = new Int32Array(cols * rows);
+    if (!gridNext || gridNext.length < N) gridNext = new Int32Array(Math.max(N, 1));
+  }
+  function cellIndex(x, y) {
+    let cx = (x / cell) | 0, cy = (y / cell) | 0;
+    if (cx < 0) cx = 0; else if (cx >= cols) cx = cols - 1;
+    if (cy < 0) cy = 0; else if (cy >= rows) cy = rows - 1;
+    return cy * cols + cx;
+  }
+  function fillGrid() {
+    gridHead.fill(-1);
+    for (let i = 0; i < N; i++) {
+      const idx = cellIndex(bx[i], by[i]);
+      gridNext[i] = gridHead[idx];
+      gridHead[idx] = i;
+    }
+  }
+
+  // ---------- simulation ----------
+  const NB_R = 44;          // neighbour radius
+  const NB_R2 = NB_R * NB_R;
+  const SEP_R = 20;
+  const SEP_R2 = SEP_R * SEP_R;
+  const MAXSPD = 3.6, MINSPD = 1.4;
+  let frame = 0;
+
+  function step(dt) {
+    // animate season params toward target
+    const n = SEASONS.length;
+    const i0 = Math.floor(seasonF) % n;
+    const i1 = (i0 + 1) % n;
+    const tt = seasonF - Math.floor(seasonF);
+    const A = SEASONS[i0], B = SEASONS[i1];
+    for (const k of ['coh','ali','sep','fade','speed','predFear']) {
+      P[k] = lerp(P[k], lerp(A[k], B[k], tt), 0.06);
+    }
+    P.hueA = lerp(A.hueA, B.hueA, tt);
+    P.hueB = lerp(A.hueB, B.hueB, tt);
+    P.accent = (tt < 0.5) ? A.accent : B.accent;
+    P.name = (tt < 0.5) ? A.name : B.name;
+    P.bg0 = mixHex(A.bg[0], B.bg[0], tt);
+    P.bg1 = mixHex(A.bg[1], B.bg[1], tt);
+    if (seasonNameEl.textContent !== P.name) {
+      seasonNameEl.textContent = P.name;
+    }
+    seasonNameEl.style.color = P.accent;
+
+    fillGrid();
+
+    const cohF = P.coh, aliF = P.ali, sepF = 0.9 * P.sep;
+    const spLimitMax = MAXSPD * P.speed;
+    const px = pointer.x, py = pointer.y;
+    const pointerOn = pointer.active;
+    const attract = pointer.down;           // press = gather, hover = scatter
+    const fear = P.predFear;
+
+    for (let i = 0; i < N; i++) {
+      const x = bx[i], y = by[i];
+      let cx = 0, cy = 0;     // cohesion accum (center)
+      let ax = 0, ay = 0;     // alignment accum (avg velocity)
+      let sx = 0, sy = 0;     // separation accum
+      let count = 0;
+
+      const gcx = (x / cell) | 0, gcy = (y / cell) | 0;
+      for (let oy = -1; oy <= 1; oy++) {
+        const ry = gcy + oy;
+        if (ry < 0 || ry >= rows) continue;
+        for (let ox = -1; ox <= 1; ox++) {
+          const rx = gcx + ox;
+          if (rx < 0 || rx >= cols) continue;
+          let j = gridHead[ry * cols + rx];
+          while (j !== -1) {
+            if (j !== i) {
+              const dx = bx[j] - x, dy = by[j] - y;
+              const d2 = dx*dx + dy*dy;
+              if (d2 < NB_R2) {
+                cx += bx[j]; cy += by[j];
+                ax += bvx[j]; ay += bvy[j];
+                count++;
+                if (d2 < SEP_R2 && d2 > 0.0001) {
+                  const inv = 1 / d2;
+                  sx -= dx * inv; sy -= dy * inv;
+                }
+              }
+            }
+            j = gridNext[j];
+          }
+        }
+      }
+
+      let fxacc = 0, fyacc = 0;
+      if (count > 0) {
+        cx = cx / count - x; cy = cy / count - y;
+        ax = ax / count;     ay = ay / count;
+        fxacc += cx * cohF + ax * aliF + sx * sepF * 60;
+        fyacc += cy * cohF + ay * aliF + sy * sepF * 60;
+      }
+
+      // pointer interaction
+      if (pointerOn) {
+        const dx = px - x, dy = py - y;
+        const d2 = dx*dx + dy*dy;
+        const R = attract ? 320 : 150;
+        if (d2 < R*R && d2 > 1) {
+          const d = Math.sqrt(d2);
+          const ux = dx / d, uy = dy / d;
+          if (attract) {
+            // gather toward cursor, swirl tangentially -> vortex
+            const pull = (1 - d / R) * 0.9;
+            fxacc += ux * pull * 1.4 + (-uy) * pull * 1.7;
+            fyacc += uy * pull * 1.4 + ( ux) * pull * 1.7;
+          } else {
+            // flee from cursor (predator)
+            const push = (1 - d / R);
+            const f = push * push * 6.0 * fear;
+            fxacc -= ux * f; fyacc -= uy * f;
+          }
+        }
+        // also react to cursor speed (a fast swipe ripples)
+      }
+
+      // integrate
+      let vx = bvx[i] + fxacc, vy = bvy[i] + fyacc;
+      // speed clamp
+      let sp = Math.hypot(vx, vy);
+      if (sp > spLimitMax) { vx = vx / sp * spLimitMax; vy = vy / sp * spLimitMax; sp = spLimitMax; }
+      else if (sp < MINSPD) { if (sp < 0.001){vx=Math.random()-0.5;vy=Math.random()-0.5;sp=1;} vx = vx / sp * MINSPD; vy = vy / sp * MINSPD; sp = MINSPD; }
+
+      let nx = x + vx, ny = y + vy;
+      // toroidal wrap with margin
+      if (nx < -8) nx += W + 16; else if (nx > W + 8) nx -= W + 16;
+      if (ny < -8) ny += H + 16; else if (ny > H + 8) ny -= H + 16;
+
+      bx[i] = nx; by[i] = ny; bvx[i] = vx; bvy[i] = vy; bspd[i] = sp;
+      // hue drifts with heading + per-boid offset, mapped into season band
+      const heading = (Math.atan2(vy, vx) / (Math.PI * 2) + 0.5);
+      bhue[i] += (heading - bhue[i]) * 0.04;
+    }
+  }
+
+  // ---------- render ----------
+  function draw() {
+    // fade trail buffer toward season bg (motion blur trails)
+    const f = P.fade;
+    sctx.globalCompositeOperation = 'source-over';
+    sctx.fillStyle = `rgba(${P.bg0[0]},${P.bg0[1]},${P.bg0[2]},${f})`;
+    sctx.fillRect(0, 0, W, H);
+
+    // subtle vertical wash gradient overlaid occasionally for depth
+    sctx.globalCompositeOperation = 'lighter';
+
+    const hueA = P.hueA, hueB = P.hueB;
+    for (let i = 0; i < N; i++) {
+      const sp = bspd[i];
+      const t = bhue[i];
+      const hue = hueA + (hueB - hueA) * t;
+      const light = 48 + Math.min(40, sp * 9);
+      const alpha = 0.42 + Math.min(0.5, sp * 0.10);
+      // draw a short streak along velocity = sense of speed
+      const vx = bvx[i], vy = bvy[i];
+      const inv = 1 / (Math.hypot(vx, vy) || 1);
+      const len = 2.5 + sp * 2.4;
+      const x = bx[i], y = by[i];
+      const tx = x - vx * inv * len, ty = y - vy * inv * len;
+      sctx.strokeStyle = `hsla(${hue|0},90%,${light|0}%,${alpha})`;
+      sctx.lineWidth = 1.15 + sp * 0.18;
+      sctx.beginPath();
+      sctx.moveTo(tx, ty);
+      sctx.lineTo(x, y);
+      sctx.stroke();
+    }
+    sctx.globalCompositeOperation = 'source-over';
+
+    // ---- overlay layer (predator halo / ripple) ----
+    fctx.clearRect(0, 0, W, H);
+    if (pointer.active) {
+      const px = pointer.x, py = pointer.y;
+      const acc = P.accent;
+      const [r,g,b] = hexToRgb(acc);
+      const R = pointer.down ? 300 : 130;
+      const grad = fctx.createRadialGradient(px, py, 0, px, py, R);
+      if (pointer.down) {
+        grad.addColorStop(0, `rgba(${r},${g},${b},0.20)`);
+        grad.addColorStop(0.5, `rgba(${r},${g},${b},0.06)`);
+        grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
+      } else {
+        grad.addColorStop(0, `rgba(${r},${g},${b},0.10)`);
+        grad.addColorStop(0.7, `rgba(${r},${g},${b},0.03)`);
+        grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
+      }
+      fctx.fillStyle = grad;
+      fctx.beginPath();
+      fctx.arc(px, py, R, 0, Math.PI*2);
+      fctx.fill();
+      // crisp ring
+      fctx.strokeStyle = `rgba(${r},${g},${b},${pointer.down?0.5:0.28})`;
+      fctx.lineWidth = pointer.down ? 1.6 : 1.0;
+      fctx.beginPath();
+      fctx.arc(px, py, pointer.down ? 16 : 9, 0, Math.PI*2);
+      fctx.stroke();
+    }
+  }
+
+  // ---------- loop ----------
+  let last = performance.now();
+  let acc = 0;
+  const FIXED = 1000 / 60;
+  function tick(now) {
+    let dt = now - last; last = now;
+    if (dt > 60) dt = 60; // avoid spiral after tab switch
+    acc += dt;
+    let steps = 0;
+    while (acc >= FIXED && steps < 3) { step(FIXED); acc -= FIXED; steps++; }
+    draw();
+    frame++;
+    requestAnimationFrame(tick);
+  }
+
+  // ---------- boot ----------
+  function boot() {
+    resize();
+    makeBoids();
+    rebuildGrid();
+    requestAnimationFrame(tick);
+  }
+  window.addEventListener('resize', () => { resize(); makeBoids(); });
+  boot();
+
+  // auto-hide hint after a while regardless
+  setTimeout(hideHint, 9000);
+})();
+</script>
+</body>
+</html>

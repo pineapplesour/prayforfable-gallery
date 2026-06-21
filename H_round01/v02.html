@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>glass orb on a map</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#06080d;cursor:none}
+  #gl{position:fixed;inset:0;width:100vw;height:100vh;display:block;touch-action:none}
+  #hint{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);
+    font:11px/1.4 "SF Mono",Menlo,monospace;letter-spacing:.18em;color:rgba(220,235,255,.6);
+    text-shadow:0 0 8px rgba(0,0,0,.9);pointer-events:none;transition:opacity 1.2s;text-transform:uppercase;white-space:nowrap}
+  @media (max-width:520px){ #hint{font-size:9px;letter-spacing:.12em} }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="hint">move mouse · hold to press · right-drag to tilt · scroll the map</div>
+<script>
+'use strict';
+/* ============================================================
+   "glass orb on a map" — a heavy crystal lens resting on a
+   dark navigation map, filmed handheld. The lens refracts &
+   magnifies the streets/labels/route under it.
+   scene = canvas2d (the map), optics = webgl shader.
+   ============================================================ */
+
+const DPR = Math.min(window.devicePixelRatio || 1, 1.75);
+let W = 0, H = 0;
+
+const glCanvas = document.getElementById('gl');
+const gl = glCanvas.getContext('webgl', { antialias:false, preserveDrawingBuffer:false });
+if (!gl) document.body.innerHTML = '<p style="color:#889;font:14px sans-serif;padding:2em">WebGL unavailable.</p>';
+
+/* ------------------------------------------------------------
+   SCENE — the map. Logical space 1600x1000, cover-scaled and
+   tilted like a filmed monitor. Dark "midnight" cartography:
+   water mass, parks, a procedural road network with casings,
+   labels, POI pins, a glowing route, and a corner search panel.
+   ------------------------------------------------------------ */
+const scene = document.createElement('canvas');
+const sx = scene.getContext('2d');
+const LW = 1600, LH = 1000;
+let scrollY = 0;                 // pan the map up/down
+const SCROLL_MAX = 620;
+
+function tw(c, text, x, y, size, color, weight, align){
+  c.fillStyle = color;
+  c.font = (weight||400) + ' ' + size + 'px -apple-system,"Helvetica Neue","Segoe UI",sans-serif';
+  c.textAlign = align || 'left';
+  c.fillText(text, x, y);
+  c.textAlign = 'left';
+}
+function rr(c, x, y, w, h, r){
+  c.beginPath();
+  c.moveTo(x+r, y); c.arcTo(x+w, y, x+w, y+h, r); c.arcTo(x+w, y+h, x, y+h, r);
+  c.arcTo(x, y+h, x, y, r); c.arcTo(x, y, x+w, y, r); c.closePath();
+}
+
+/* deterministic PRNG so the map is stable frame to frame */
+function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+
+/* ---- build a road network ONCE in logical map coords (large, so panning reveals more) ---- */
+const MAPH = LH + SCROLL_MAX + 120;     // total map height in logical px
+const rng = mulberry32(20260620);
+
+// water bodies (rounded blobs) — a river + a lake
+const water = [];
+(function(){
+  // diagonal river band
+  water.push({type:'river', pts:[
+    {x:-50,y:120},{x:260,y:240},{x:520,y:300},{x:760,y:470},
+    {x:980,y:560},{x:1240,y:760},{x:1480,y:980},{x:1700,y:1180}
+  ], w:120});
+  // a lake blob lower-left
+  water.push({type:'lake', cx:300, cy:MAPH-360, rx:300, ry:210});
+})();
+
+// parks (green-ish dark patches)
+const parks = [
+  {x:1080,y:160,w:360,h:230},
+  {x:120,y:560,w:300,h:240},
+  {x:880,y:MAPH-520,w:420,h:300},
+];
+
+// road network: classes 0=motorway,1=major,2=minor
+const roads = [];
+(function buildRoads(){
+  // a few long arterials
+  const arterials = [
+    [{x:-60,y:300},{x:420,y:330},{x:820,y:300},{x:1240,y:360},{x:1680,y:320}],
+    [{x:-60,y:680},{x:380,y:700},{x:900,y:660},{x:1300,y:720},{x:1680,y:690}],
+    [{x:-60,y:MAPH-260},{x:520,y:MAPH-300},{x:1080,y:MAPH-240},{x:1680,y:MAPH-300}],
+    [{x:240,y:-60},{x:300,y:360},{x:360,y:780},{x:420,y:MAPH+60}],
+    [{x:900,y:-60},{x:880,y:380},{x:940,y:780},{x:980,y:MAPH+60}],
+    [{x:1360,y:-60},{x:1320,y:420},{x:1380,y:820},{x:1340,y:MAPH+60}],
+  ];
+  for (const a of arterials) roads.push({cls:0, pts:a});
+  // major grid jitter
+  for (let gy = 60; gy < MAPH; gy += 150){
+    const pts = [];
+    for (let gx = -60; gx <= LW+80; gx += 120){
+      pts.push({x:gx + (rng()-0.5)*46, y:gy + (rng()-0.5)*70});
+    }
+    roads.push({cls:1, pts});
+  }
+  for (let gx = 60; gx < LW; gx += 165){
+    const pts = [];
+    for (let gy = -60; gy <= MAPH+80; gy += 130){
+      pts.push({x:gx + (rng()-0.5)*60, y:gy + (rng()-0.5)*44});
+    }
+    roads.push({cls:1, pts});
+  }
+  // minor connectors
+  for (let i=0;i<70;i++){
+    const x0 = rng()*LW, y0 = rng()*MAPH;
+    const len = 70 + rng()*150, ang = rng()*Math.PI*2;
+    roads.push({cls:2, pts:[
+      {x:x0,y:y0},
+      {x:x0+Math.cos(ang)*len, y:y0+Math.sin(ang)*len}
+    ]});
+  }
+})();
+
+// labels (place names)
+const places = [
+  {x:560, y:250, t:'NORTHGATE', s:22},
+  {x:1180,y:300, t:'Harbor District', s:18},
+  {x:300, y:720, t:'OLD TOWN', s:22},
+  {x:1040,y:640, t:'Riverside', s:18},
+  {x:760, y:MAPH-380, t:'SOUTH MARKET', s:20},
+  {x:1340,y:MAPH-460,t:'Eastfield', s:18},
+];
+
+// POI pins
+const pins = [
+  {x:720, y:430, c:'#ff5a4d', label:'Central Sta.'},
+  {x:980, y:520, c:'#ffb02e', label:'Museum'},
+  {x:520, y:560, c:'#37c2ff', label:'Pier 7'},
+  {x:1180,y:700, c:'#8b5cf6', label:'Tower'},
+  {x:420, y:MAPH-420,c:'#34d27a', label:'Gardens'},
+];
+
+// the glowing route (origin -> destination, polyline)
+const routePts = [
+  {x:520,y:560},{x:610,y:520},{x:690,y:470},{x:720,y:430},
+  {x:780,y:400},{x:880,y:430},{x:960,y:490},{x:980,y:520},
+  {x:1060,y:580},{x:1140,y:650},{x:1180,y:700}
+];
+
+function strokePoly(c, pts, dy){
+  c.beginPath();
+  c.moveTo(pts[0].x, pts[0].y - dy);
+  for (let i=1;i<pts.length;i++){
+    const p0 = pts[i-1], p1 = pts[i];
+    const mx = (p0.x+p1.x)/2, my = (p0.y+p1.y)/2 - dy;
+    c.quadraticCurveTo(p0.x, p0.y - dy, mx, my);
+  }
+  const last = pts[pts.length-1];
+  c.lineTo(last.x, last.y - dy);
+}
+
+function drawMap(){
+  scene.width = W; scene.height = H;
+  const c = sx;
+
+  // room / desk ambience behind the screen edges
+  const rg = c.createRadialGradient(W*0.5, H*0.42, H*0.15, W*0.5, H*0.5, H*0.95);
+  rg.addColorStop(0, '#0c0f15'); rg.addColorStop(1, '#020305');
+  c.fillStyle = rg; c.fillRect(0,0,W,H);
+
+  // cover-scale logical map, slight monitor tilt (matches ref handheld feel)
+  const sc = Math.max(W/LW, H/LH) * 1.045;
+  c.save();
+  c.translate(W/2, H/2); c.rotate(-0.015); c.scale(sc, sc); c.translate(-LW/2, -LH/2);
+
+  // bezel
+  rr(c, 4, 2, LW-8, LH-4, 22); c.fillStyle = '#0a0c10'; c.fill();
+  c.strokeStyle = '#22262e'; c.lineWidth = 2; c.stroke();
+  // power LED
+  c.fillStyle = '#36e0a0'; c.shadowColor = '#36e0a0'; c.shadowBlur = 9;
+  c.beginPath(); c.arc(14, 520, 3.2, 0, 7); c.fill(); c.shadowBlur = 0;
+
+  // screen clip
+  const SXX = 22, SY = 16, SW = LW - 44, SH = LH - 34;
+  rr(c, SXX, SY, SW, SH, 8); c.save(); c.clip();
+
+  const dy = scrollY;  // pan amount in logical px
+
+  // --- base land ---
+  const land = c.createLinearGradient(0, 0, 0, SY+SH);
+  land.addColorStop(0, '#11161f'); land.addColorStop(1, '#0c1119');
+  c.fillStyle = land; c.fillRect(SXX, SY, SW, SH);
+
+  // subtle terrain mottling (low-cost): a few big radial washes
+  const mott = [[460,260,'#16202b'],[1180,520,'#141b25'],[820,MAPH-420,'#13202a']];
+  for (const [mx,my,col] of mott){
+    const g = c.createRadialGradient(mx, my-dy, 0, mx, my-dy, 420);
+    g.addColorStop(0, col); g.addColorStop(1, 'rgba(0,0,0,0)');
+    c.fillStyle = g; c.fillRect(SXX, SY, SW, SH);
+  }
+
+  // --- parks ---
+  for (const p of parks){
+    const g = c.createLinearGradient(p.x, p.y-dy, p.x, p.y+p.h-dy);
+    g.addColorStop(0, '#16291f'); g.addColorStop(1, '#11211a');
+    c.fillStyle = g; rr(c, p.x, p.y-dy, p.w, p.h, 60); c.fill();
+  }
+
+  // --- water ---
+  for (const wd of water){
+    c.fillStyle = '#0e2740';
+    if (wd.type === 'lake'){
+      c.beginPath(); c.ellipse(wd.cx, wd.cy-dy, wd.rx, wd.ry, 0.2, 0, 7); c.fill();
+      // shoreline glow
+      c.strokeStyle = 'rgba(60,150,220,.35)'; c.lineWidth = 2;
+      c.beginPath(); c.ellipse(wd.cx, wd.cy-dy, wd.rx, wd.ry, 0.2, 0, 7); c.stroke();
+    } else {
+      c.lineCap = 'round'; c.lineJoin = 'round';
+      c.strokeStyle = '#0e2740'; c.lineWidth = wd.w;
+      strokePoly(c, wd.pts, dy); c.stroke();
+      c.strokeStyle = 'rgba(55,150,225,.22)'; c.lineWidth = wd.w;
+      // inner subtle highlight
+      c.strokeStyle = 'rgba(70,160,230,.10)'; c.lineWidth = wd.w*0.5;
+      strokePoly(c, wd.pts, dy); c.stroke();
+    }
+  }
+
+  // --- roads: draw casing then fill, per class, painters order minor->major->motorway ---
+  const order = [
+    {cls:2, casing:0,  fill:2.4,  col:'#222b36'},
+    {cls:1, casing:8.5,fill:5.0,  cc:'#0a0e14', col:'#39434f'},
+    {cls:0, casing:14, fill:9.0,  cc:'#0a0e14', col:'#5b6675', glow:'#cdd6e2'},
+  ];
+  c.lineCap = 'round'; c.lineJoin = 'round';
+  for (const o of order){
+    // casing
+    if (o.casing){
+      c.strokeStyle = o.cc; c.lineWidth = o.casing;
+      for (const r of roads){ if (r.cls!==o.cls) continue; strokePoly(c, r.pts, dy); c.stroke(); }
+    }
+    // fill
+    c.strokeStyle = o.col; c.lineWidth = o.fill;
+    for (const r of roads){ if (r.cls!==o.cls) continue; strokePoly(c, r.pts, dy); c.stroke(); }
+  }
+  // motorway centre glints
+  c.strokeStyle = 'rgba(220,228,240,.18)'; c.lineWidth = 1.4;
+  for (const r of roads){ if (r.cls!==0) continue; strokePoly(c, r.pts, dy); c.stroke(); }
+
+  // --- the route (glowing teal, on top of roads) ---
+  c.save();
+  c.shadowColor = 'rgba(60,210,255,.9)'; c.shadowBlur = 22;
+  c.strokeStyle = 'rgba(40,150,200,.65)'; c.lineWidth = 14;
+  strokePoly(c, routePts, dy); c.stroke();
+  c.shadowBlur = 14;
+  c.strokeStyle = '#46d6ff'; c.lineWidth = 7;
+  strokePoly(c, routePts, dy); c.stroke();
+  c.shadowBlur = 0;
+  c.strokeStyle = '#dffaff'; c.lineWidth = 2.4;
+  strokePoly(c, routePts, dy); c.stroke();
+  c.restore();
+  // origin dot + dest pin handled below; route endpoints markers:
+  const rp0 = routePts[0], rpN = routePts[routePts.length-1];
+  c.fillStyle = '#0a0e14'; c.strokeStyle = '#46d6ff'; c.lineWidth = 4;
+  c.beginPath(); c.arc(rp0.x, rp0.y-dy, 11, 0, 7); c.fill(); c.stroke();
+  c.fillStyle = '#46d6ff'; c.beginPath(); c.arc(rp0.x, rp0.y-dy, 5, 0, 7); c.fill();
+
+  // --- parks labels (subtle green text) ---
+  c.globalAlpha = 0.9;
+  tw(c, 'Hyde Common', parks[0].x+40, parks[0].y-dy+60, 16, '#4f9c6e', 600);
+  tw(c, 'Marsh Park',  parks[1].x+34, parks[1].y-dy+54, 15, '#4f9c6e', 600);
+  c.globalAlpha = 1;
+
+  // --- place labels ---
+  for (const p of places){
+    const upper = p.t === p.t.toUpperCase();
+    c.save();
+    c.shadowColor = 'rgba(0,0,0,.85)'; c.shadowBlur = 6;
+    tw(c, p.t, p.x, p.y-dy, p.s, upper ? 'rgba(195,210,228,.92)' : 'rgba(150,170,196,.9)',
+       upper ? 700 : 500, 'center');
+    c.restore();
+  }
+  // water label
+  c.save(); c.translate(900, 560-dy); c.rotate(0.5);
+  tw(c, 'River Aln', 0, 0, 17, 'rgba(110,170,220,.85)', 500, 'center'); c.restore();
+
+  // --- POI pins (teardrop + dot) ---
+  function pin(px, py, col){
+    py -= dy;
+    c.save();
+    c.shadowColor = 'rgba(0,0,0,.6)'; c.shadowBlur = 8; c.shadowOffsetY = 3;
+    c.fillStyle = col;
+    c.beginPath();
+    c.moveTo(px, py+2);
+    c.bezierCurveTo(px-13, py-12, px-10, py-30, px, py-30);
+    c.bezierCurveTo(px+10, py-30, px+13, py-12, px, py+2);
+    c.closePath(); c.fill();
+    c.restore();
+    c.fillStyle = '#0a0e14'; c.beginPath(); c.arc(px, py-19, 6, 0, 7); c.fill();
+  }
+  for (const p of pins) pin(p.x, p.y, p.c);
+  // pin labels
+  for (const p of pins){
+    tw(c, p.label, p.x+16, p.y-dy-18, 13, 'rgba(210,222,236,.95)', 600);
+  }
+
+  // --- north grid graticule, very faint ---
+  c.strokeStyle = 'rgba(120,150,190,.05)'; c.lineWidth = 1;
+  for (let gx=0; gx<LW; gx+=200){ c.beginPath(); c.moveTo(gx, SY); c.lineTo(gx, SY+SH); c.stroke(); }
+  for (let gy=SY; gy<SY+SH; gy+=200){ c.beginPath(); c.moveTo(SXX, gy); c.lineTo(SXX+SW, gy); c.stroke(); }
+
+  c.restore(); // unclip screen
+
+  // ============== UI OVERLAYS (chrome, not panned) ==============
+  c.save(); c.beginPath(); rr(c, SXX, SY, SW, SH, 8); c.clip();
+
+  // top search bar
+  const barW = 560, barH = 56, barX = SXX+36, barY = SY+30;
+  c.save();
+  c.shadowColor = 'rgba(0,0,0,.5)'; c.shadowBlur = 24; c.shadowOffsetY = 6;
+  c.fillStyle = 'rgba(20,26,34,.94)'; rr(c, barX, barY, barW, barH, 28); c.fill();
+  c.restore();
+  c.strokeStyle = 'rgba(70,90,116,.5)'; c.lineWidth = 1; rr(c, barX, barY, barW, barH, 28); c.stroke();
+  // magnifier
+  c.strokeStyle = '#9fb0c4'; c.lineWidth = 2.4; c.lineCap='round';
+  c.beginPath(); c.arc(barX+34, barY+27, 9, 0, 7); c.stroke();
+  c.beginPath(); c.moveTo(barX+41, barY+34); c.lineTo(barX+48, barY+41); c.stroke();
+  tw(c, 'Search Maps', barX+66, barY+35, 18, '#aebccd', 500);
+  // profile avatar at bar right
+  const ag = c.createLinearGradient(barX+barW-46, barY+10, barX+barW-14, barY+46);
+  ag.addColorStop(0,'#3c6e8f'); ag.addColorStop(1,'#1d3d52');
+  c.fillStyle = ag; c.beginPath(); c.arc(barX+barW-28, barY+28, 18, 0, 7); c.fill();
+  tw(c, 'JM', barX+barW-28, barY+33, 14, '#dceaf5', 700, 'center');
+
+  // bottom-left route card
+  const cardW = 360, cardH = 132, cardX = SXX+36, cardY = SY+SH-cardH-34;
+  c.save();
+  c.shadowColor = 'rgba(0,0,0,.55)'; c.shadowBlur = 30; c.shadowOffsetY = 8;
+  c.fillStyle = 'rgba(18,24,32,.95)'; rr(c, cardX, cardY, cardW, cardH, 18); c.fill();
+  c.restore();
+  c.strokeStyle = 'rgba(70,90,116,.4)'; c.lineWidth=1; rr(c, cardX, cardY, cardW, cardH, 18); c.stroke();
+  // route header
+  tw(c, '14 min', cardX+24, cardY+44, 30, '#ffffff', 800);
+  tw(c, '4.2 km', cardX+150, cardY+44, 18, '#8fa1b5', 500);
+  // teal route chip
+  c.fillStyle = '#46d6ff'; c.beginPath(); c.arc(cardX+30, cardY+74, 5, 0, 7); c.fill();
+  tw(c, 'Fastest route, light traffic', cardX+48, cardY+79, 14, '#9fb6cc', 500);
+  // GO button
+  c.fillStyle = '#1d9bf0'; rr(c, cardX+24, cardY+96, 130, 26, 13); c.fill();
+  tw(c, 'START', cardX+89, cardY+114, 13, '#fff', 700, 'center');
+  // alt time
+  tw(c, '18 min · via A1', cardX+170, cardY+114, 13, '#7c8aa0', 500);
+
+  // right-side vertical control stack (zoom +/- , compass, layers)
+  const ctlX = SXX+SW-40-26, ctlY = SY+120;
+  function ctlBtn(cy, draw){
+    c.save();
+    c.shadowColor='rgba(0,0,0,.4)'; c.shadowBlur=14; c.shadowOffsetY=4;
+    c.fillStyle='rgba(22,28,36,.95)'; rr(c, ctlX, cy, 52, 52, 14); c.fill();
+    c.restore();
+    c.strokeStyle='rgba(70,90,116,.35)'; c.lineWidth=1; rr(c, ctlX, cy, 52, 52, 14); c.stroke();
+    draw(ctlX+26, cy+26);
+  }
+  ctlBtn(ctlY, (x,y)=>{ c.strokeStyle='#cdd6e2'; c.lineWidth=2.6; c.lineCap='round';
+    c.beginPath(); c.moveTo(x-9,y); c.lineTo(x+9,y); c.moveTo(x,y-9); c.lineTo(x,y+9); c.stroke(); });
+  ctlBtn(ctlY+60, (x,y)=>{ c.strokeStyle='#cdd6e2'; c.lineWidth=2.6; c.lineCap='round';
+    c.beginPath(); c.moveTo(x-9,y); c.lineTo(x+9,y); c.stroke(); });
+  ctlBtn(ctlY+140, (x,y)=>{ // compass
+    c.fillStyle='#ff5a4d'; c.beginPath(); c.moveTo(x,y-11); c.lineTo(x-6,y+1); c.lineTo(x+6,y+1); c.closePath(); c.fill();
+    c.fillStyle='#9fb0c4'; c.beginPath(); c.moveTo(x,y+11); c.lineTo(x-6,y-1); c.lineTo(x+6,y-1); c.closePath(); c.fill();
+    tw(c,'N', x, y-13, 9, '#ff8a80', 700, 'center'); });
+  // recenter / locate (bottom right)
+  ctlBtn(SY+SH-34-52-34, (x,y)=>{ c.strokeStyle='#46d6ff'; c.lineWidth=2.4;
+    c.beginPath(); c.arc(x,y,7,0,7); c.stroke();
+    c.beginPath(); c.moveTo(x,y-12); c.lineTo(x,y-9); c.moveTo(x,y+9); c.lineTo(x,y+12);
+    c.moveTo(x-12,y); c.lineTo(x-9,y); c.moveTo(x+9,y); c.lineTo(x+12,y); c.stroke();
+    c.fillStyle='#46d6ff'; c.beginPath(); c.arc(x,y,2.4,0,7); c.fill(); });
+
+  // scale bar bottom-right above locate
+  const scbX = SXX+SW-180, scbY = SY+SH-50;
+  c.strokeStyle='rgba(210,222,236,.7)'; c.lineWidth=2;
+  c.beginPath(); c.moveTo(scbX,scbY); c.lineTo(scbX,scbY+8); c.lineTo(scbX+90,scbY+8); c.lineTo(scbX+90,scbY); c.stroke();
+  tw(c,'500 m', scbX+45, scbY+4, 11, 'rgba(210,222,236,.85)', 500, 'center');
+
+  c.restore(); // unclip chrome
+
+  // screen backlight falloff toward edges
+  const sg = c.createRadialGradient(W/2, H/2, H*0.18, W/2, H/2, H*0.9);
+  sg.addColorStop(0, 'rgba(255,255,255,0.03)'); sg.addColorStop(1, 'rgba(0,4,16,0.18)');
+  c.save();
+  c.translate(W/2, H/2); c.rotate(-0.015); c.scale(sc, sc); c.translate(-LW/2, -LH/2);
+  rr(c, SXX, SY, SW, SH, 8); c.clip();
+  c.fillStyle = sg; c.fillRect(0,0,LW,LH);
+  c.restore();
+}
+
+/* ------------------------------------------------------------
+   WEBGL — the optics. (Same proven pipeline as the reference:
+   elliptical tilt, magnified centre + compressed edge, multi-tap
+   anisotropic blur, chromatic aberration, milky veil, caustics,
+   rim wall + rings + specular arcs, window highlight, contact
+   shadow, then handheld phone-camera post.)
+   ------------------------------------------------------------ */
+const VS = `
+attribute vec2 aP;
+void main(){ gl_Position = vec4(aP, 0.0, 1.0); }`;
+
+const FS = `
+precision highp float;
+uniform sampler2D uScene;
+uniform vec2  uRes, uGlass, uShake, uTilt;
+uniform float uR, uTime, uPress, uBlur, uExpo, uRot;
+
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+
+vec3 scn(vec2 uv){
+  return texture2D(uScene, clamp(uv / uRes, vec2(0.002), vec2(0.998))).rgb;
+}
+vec2 cam(vec2 v){
+  vec2 cen = uRes * 0.5;
+  vec2 p = v - cen;
+  float ca = cos(uRot), sa = sin(uRot);
+  p = vec2(ca*p.x - sa*p.y, sa*p.x + ca*p.y);
+  float rr = dot(p, p) / dot(cen, cen);
+  p *= 1.0 + 0.045 * rr;
+  return cen + p + uShake;
+}
+float gband(float x, float c, float w){ float d = (x - c) / w; return exp(-d * d); }
+
+void main(){
+  vec2 fc = gl_FragCoord.xy;
+  vec2 d  = fc - uGlass;
+  float tA = length(uTilt);
+  vec2 tD = tA > 0.001 ? uTilt / tA : vec2(1.0, 0.0);
+  vec2 pD = vec2(-tD.y, tD.x);
+  float squash = 1.0 - 0.42 * tA;
+  vec2 ds = tD * (dot(d, tD) / squash) + pD * dot(d, pD);
+  float r = length(ds);
+  vec2 dir = r > 0.5 ? ds / r : vec2(1.0, 0.0);
+  vec2 tdir = vec2(-dir.y, dir.x);
+  float x = r / uR;
+
+  float innerX = 0.80;
+  float w    = smoothstep(innerX - 0.05, innerX + 0.03, x);
+  float wOut = smoothstep(1.0, 1.07, x);
+  float q = clamp(x / innerX, 0.0, 1.0);
+
+  float magA = mix(0.40, 0.34, uPress);
+  float q5 = q*q*q*q*q;
+  float rsG = uR * (magA * q + (1.06 - magA) * q5);
+  float asym = 1.0 + 0.38 * tA * dot(dir, tD);
+  vec2 refr = dir * mix(rsG, uR * 1.07, w) * asym + uTilt * uR * 0.55;
+
+  float q4 = q*q*q*q;
+  float radial = mix(mix(q4 * uR * 0.15, uR * 0.02, w), 0.0, wOut) + uBlur + 0.8;
+  float tang   = mix(mix(q*q*q * uR * 0.05, uR * 0.20, w), 0.0, wOut) + uBlur + 0.8;
+
+  vec2 srcBase = uGlass + mix(refr, d, wOut);
+  vec3 col = vec3(0.0);
+  #define TAP(rx, ty) col += scn(cam(srcBase + dir * ((rx) * radial) + tdir * ((ty) * tang)));
+  TAP( 0.00,  0.00) TAP( 0.62,  0.25) TAP(-0.58,  0.30) TAP( 0.21, -0.64)
+  TAP(-0.25, -0.61) TAP( 0.45,  0.68) TAP(-0.70, -0.15) TAP( 0.86, -0.18)
+  TAP(-0.41,  0.74) TAP( 0.05,  0.94) TAP(-0.88,  0.35) TAP( 0.33,  0.13)
+  TAP(-0.18,  0.20) TAP( 0.69, -0.55)
+  col /= 14.0;
+
+  float inG = (1.0 - wOut);
+  float inI = inG * (1.0 - w);
+
+  float caW = 0.5 * smoothstep(0.25, 1.0, x) * (1.0 + 1.4 * tA) * inG;
+  caW = min(caW, 0.85);
+  if (caW > 0.01) {
+    vec3 cR = scn(cam(uGlass + refr * 0.972));
+    vec3 cB = scn(cam(uGlass + refr * 1.028));
+    col.r = mix(col.r, cR.r, caW);
+    col.b = mix(col.b, cB.b, caW);
+  }
+
+  /* crystal glass: keep it cleaner & cooler than a milky tumbler */
+  float lum = dot(col, vec3(0.299, 0.587, 0.114));
+  col = mix(col, vec3(lum), 0.10 * inI);
+  col = mix(col, col * 0.96 + vec3(0.015, 0.02, 0.03), inG);
+  float veil = (0.03 + 0.10 * x * x + 0.05 * uPress) * inI;
+  col = mix(col, vec3(0.86, 0.92, 1.0), veil);
+  col += inI * 0.05 * (1.0 - x * x) * vec3(0.7,0.85,1.0);   // cool centre bloom
+
+  float th = atan(d.y, d.x);
+  float cau = 0.5 * sin(th * 13.0 + 2.0) + 0.5 * sin(th * 29.0 + 0.6) + 0.35 * sin(th * 7.0 - 1.2);
+  col += cau * 0.05 * q4 * inI * vec3(0.8,0.95,1.0);
+
+  float rim = w * (1.0 - wOut);
+  col = mix(col, col * 0.30, rim);
+  float bands = gband(x, 0.835, 0.018) * 0.85
+              + gband(x, 0.920, 0.014) * 0.50
+              + gband(x, 0.985, 0.010) * 0.75;
+  float arc = pow(max(cos(th - 2.45), 0.0), 6.0)
+            + 0.7 * pow(max(cos(th + 0.55), 0.0), 10.0)
+            + 0.45 * pow(max(cos(th - 4.30), 0.0), 14.0);
+  col += rim * bands * (0.14 + 0.70 * arc) * vec3(0.92,0.97,1.0);
+  col *= mix(1.0, 0.5, rim * gband(x, 1.0, 0.012));
+  col += inI * 0.16 * gband(x, 0.805, 0.012) * vec3(0.85,0.95,1.0);
+
+  vec2 hp = uGlass + vec2(-0.30, 0.40) * uR + uTilt * uR * 0.5;
+  vec2 hd = fc - hp;
+  col += exp(-dot(hd, hd) / (uR * uR * 0.16)) * (0.14 + 0.07 * uPress) * inG * vec3(0.95,0.98,1.0);
+  // small second sparkle highlight, lower-right of the dome
+  vec2 hp2 = uGlass + vec2(0.34, -0.22) * uR;
+  vec2 hd2 = fc - hp2;
+  col += exp(-dot(hd2, hd2) / (uR * uR * 0.010)) * 0.55 * inG;
+
+  col *= 1.0 - (0.30 - 0.10 * uPress) * gband(x, 1.035, 0.045) * wOut;
+  col += 0.06 * gband(x, 1.10, 0.022) * wOut * vec3(0.8,0.9,1.0);
+
+  /* ---- phone-camera post ---- */
+  col *= uExpo;
+  col *= vec3(0.985, 1.0, 1.04);
+  vec2 vc = (fc - uRes * 0.5) / (uRes * 0.5);
+  col *= 1.0 - 0.34 * pow(dot(vc, vc) * 0.55, 1.4);
+  col *= 1.0 + 0.012 * sin(fc.y * 0.07 - uTime * 9.0);
+  col *= 1.0 + 0.008 * sin(fc.x * 0.21 + fc.y * 0.13 + uTime);
+  float gn = hash(fc + fract(uTime * 7.0) * 113.0);
+  col += (gn - 0.5) * 0.045;
+  col.r += (hash(fc.yx + 7.7 + fract(uTime * 5.0) * 51.0) - 0.5) * 0.020;
+  col.b += (hash(fc + 3.1 + fract(uTime * 3.0) * 77.0) - 0.5) * 0.018;
+  col = clamp(col, 0.0, 1.0);
+  col = pow(col, vec3(0.97));
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
+function compile(type, src){
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+const aP = gl.getAttribLocation(prog, 'aP');
+gl.enableVertexAttribArray(aP);
+gl.vertexAttribPointer(aP, 2, gl.FLOAT, false, 0, 0);
+
+const U = {};
+for (const n of ['uScene','uRes','uGlass','uShake','uTilt','uR','uTime','uPress','uBlur','uExpo','uRot'])
+  U[n] = gl.getUniformLocation(prog, n);
+
+function makeTex(unit){
+  const t = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0 + unit);
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  return t;
+}
+const sceneTex = makeTex(0);
+gl.uniform1i(U.uScene, 0);
+
+function uploadScene(){
+  gl.activeTexture(gl.TEXTURE0);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, scene);
+}
+
+/* ------------------------------------------------------------ state */
+const mouse = { x: 0, y: 0 };
+const glass = { x: 0, y: 0 };
+const tilt  = { x: 0, y: 0 };
+const tiltManual = { x: 0, y: 0 };
+const tiltVel = { x: 0, y: 0 };
+let rightDrag = null;
+let pressTarget = 0, press = 0;
+let needScene = true;
+
+function resize(){
+  W = Math.round(innerWidth * DPR); H = Math.round(innerHeight * DPR);
+  glCanvas.width = W; glCanvas.height = H;
+  gl.viewport(0, 0, W, H);
+  if (!mouse.x){ mouse.x = innerWidth * 0.5; mouse.y = innerHeight * 0.5; glass.x = W*0.5; glass.y = H*0.5; }
+  needScene = true;
+}
+addEventListener('resize', resize); resize();
+
+addEventListener('contextmenu', e => e.preventDefault());
+addEventListener('pointermove', e => {
+  mouse.x = e.clientX; mouse.y = e.clientY;
+  if (rightDrag){
+    tiltManual.x = rightDrag.tx + (e.clientX - rightDrag.x) * 0.0035;
+    tiltManual.y = rightDrag.ty + (rightDrag.y - e.clientY) * 0.0035;
+    const m = Math.hypot(tiltManual.x, tiltManual.y);
+    if (m > 0.5){ tiltManual.x *= 0.5 / m; tiltManual.y *= 0.5 / m; }
+  }
+});
+addEventListener('pointerdown', e => {
+  if (e.button === 2) rightDrag = { x: e.clientX, y: e.clientY, tx: tiltManual.x, ty: tiltManual.y };
+  else pressTarget = 1;
+});
+addEventListener('pointerup', e => {
+  if (e.button === 2) rightDrag = null;
+  else pressTarget = 0;
+});
+addEventListener('wheel', e => {
+  scrollY = Math.max(0, Math.min(SCROLL_MAX, scrollY + e.deltaY * 0.7));
+  needScene = true;
+}, { passive: true });
+setTimeout(() => { const h=document.getElementById('hint'); if(h) h.style.opacity='0'; }, 5200);
+
+/* autofocus hunts */
+let huntT0 = 1800 + Math.random() * 3000;
+function focusHunt(now){
+  const dt = now - huntT0;
+  if (dt > 900){ huntT0 = now + 2600 + Math.random() * 4800; return 0; }
+  if (dt < 0) return 0;
+  const ph = dt / 900;
+  return Math.sin(ph * Math.PI) * (3.4 + Math.random() * 0.6);
+}
+
+function frame(tms){
+  const t = tms * 0.001;
+  if (needScene){ drawMap(); uploadScene(); needScene = false; }
+
+  const tx = mouse.x * DPR + Math.sin(t * 8.7) * 1.5 * DPR + Math.sin(t * 13.1 + 2.0) * 0.8 * DPR;
+  const ty = (innerHeight - mouse.y) * DPR + Math.cos(t * 9.4 + 1.0) * 1.4 * DPR;
+  const pgx = glass.x, pgy = glass.y;
+  glass.x += (tx - glass.x) * 0.16;
+  glass.y += (ty - glass.y) * 0.16;
+  press += (pressTarget - press) * 0.09;
+
+  const vk = -0.010 / DPR;
+  tiltVel.x += ((glass.x - pgx) * vk - tiltVel.x) * 0.18;
+  tiltVel.y += ((glass.y - pgy) * vk - tiltVel.y) * 0.18;
+  if (!rightDrag){ tiltManual.x *= 0.95; tiltManual.y *= 0.95; }
+  let ttx = tiltManual.x + tiltVel.x, tty = tiltManual.y + tiltVel.y;
+  const tm = Math.hypot(ttx, tty);
+  if (tm > 0.55){ ttx *= 0.55 / tm; tty *= 0.55 / tm; }
+  tilt.x += (ttx - tilt.x) * 0.12;
+  tilt.y += (tty - tilt.y) * 0.12;
+
+  const R = Math.min(W, H) * (0.32 + press * 0.022);
+
+  const shx = (Math.sin(t * 1.3) * 2.6 + Math.sin(t * 0.7 + 1.7) * 3.8 + Math.sin(t * 3.1 + 0.5) * 1.1 + Math.sin(t * 7.3) * 0.5) * DPR;
+  const shy = (Math.cos(t * 1.1 + 0.4) * 3.0 + Math.sin(t * 0.5 + 2.6) * 4.2 + Math.cos(t * 2.7 + 1.2) * 1.2 + Math.cos(t * 8.1) * 0.5) * DPR;
+  const rot = 0.004 * Math.sin(t * 0.45) + 0.0018 * Math.sin(t * 1.7 + 1.0);
+
+  const blur = Math.max(0.0, 0.9 + 0.8 * Math.sin(t * 0.8) + 0.5 * Math.sin(t * 2.3 + 0.7)) * DPR + focusHunt(tms) * DPR;
+  const expo = 1.0 + 0.045 * Math.sin(t * 0.4) + 0.03 * Math.sin(t * 1.1 + 2.2) - press * 0.05;
+
+  gl.uniform2f(U.uRes, W, H);
+  gl.uniform2f(U.uGlass, glass.x, glass.y);
+  gl.uniform2f(U.uShake, shx, shy);
+  gl.uniform2f(U.uTilt, tilt.x, tilt.y);
+  gl.uniform1f(U.uR, R);
+  gl.uniform1f(U.uTime, t);
+  gl.uniform1f(U.uPress, press);
+  gl.uniform1f(U.uBlur, blur);
+  gl.uniform1f(U.uExpo, expo);
+  gl.uniform1f(U.uRot, rot);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

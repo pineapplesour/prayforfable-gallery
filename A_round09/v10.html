@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>INTERFERENCE — 간섭의 바다</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; background: #03040a; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    cursor: crosshair;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #gl { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+
+  .hud {
+    position: fixed; z-index: 5; pointer-events: none;
+    color: #cfe0ff; text-shadow: 0 1px 24px rgba(0,0,0,.7);
+    user-select: none;
+  }
+  #title {
+    top: 26px; left: 30px;
+    font-weight: 700; letter-spacing: .42em;
+    font-size: 13px; text-transform: uppercase;
+    opacity: .92;
+  }
+  #title b { display:block; font-size: 27px; letter-spacing: .14em; margin-top: 7px; font-weight: 800;
+    background: linear-gradient(95deg,#7ef0ff,#a6a0ff 45%,#ff9ad8);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  #sub { top: 26px; right: 30px; text-align: right; font-size: 11px; line-height: 1.9;
+    letter-spacing: .12em; opacity: .58; font-weight: 500; }
+  #sub kbd {
+    font-family: inherit; background: rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.14);
+    border-radius: 5px; padding: 1px 7px; font-size: 10px; letter-spacing:.08em;
+  }
+  #foot { bottom: 22px; left: 30px; font-size: 10.5px; letter-spacing: .26em;
+    opacity: .4; text-transform: uppercase; }
+  #fps { bottom: 22px; right: 30px; font-size: 10.5px; letter-spacing:.14em;
+    opacity: .42; font-variant-numeric: tabular-nums; }
+
+  @media (max-width: 560px) {
+    #title { top: 18px; left: 18px; font-size: 10px; letter-spacing:.3em; }
+    #title b { font-size: 21px; }
+    #sub { top: 16px; right: 16px; font-size: 9px; line-height: 1.7; }
+    #foot { bottom: 16px; left: 18px; font-size: 8.5px; letter-spacing:.18em; }
+    #fps { bottom: 16px; right: 18px; font-size: 9px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div class="hud" id="title">Wave Interference<b>간섭의 바다</b></div>
+<div class="hud" id="sub">
+  <kbd>드래그</kbd> 시점 회전<br>
+  <kbd>클릭/탭</kbd> 파동 투하<br>
+  <kbd>스크롤</kbd> 줌 · <kbd>스페이스</kbd> 정지
+</div>
+<div class="hud" id="foot">generative · heightfield · realtime</div>
+<div class="hud" id="fps">—</div>
+
+<script>
+"use strict";
+(function () {
+  const canvas = document.getElementById("gl");
+  const gl = canvas.getContext("webgl2", { antialias: true, alpha: false, powerPreference: "high-performance" })
+          || canvas.getContext("webgl",  { antialias: true, alpha: false, powerPreference: "high-performance" });
+  const isGL2 = !!(window.WebGL2RenderingContext && gl instanceof WebGL2RenderingContext);
+
+  if (!gl) {
+    document.body.innerHTML = '<div style="color:#cfe0ff;font:600 16px sans-serif;position:fixed;inset:0;display:grid;place-items:center;letter-spacing:.1em">WebGL을 사용할 수 없습니다.</div>';
+    return;
+  }
+
+  // ---------- shader plumbing ----------
+  function sh(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      console.error(gl.getShaderInfoLog(s), src);
+      throw new Error("shader compile failed");
+    }
+    return s;
+  }
+  function prog(vsSrc, fsSrc) {
+    const p = gl.createProgram();
+    gl.attachShader(p, sh(gl.VERTEX_SHADER, vsSrc));
+    gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fsSrc));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+      console.error(gl.getProgramInfoLog(p));
+      throw new Error("program link failed");
+    }
+    return p;
+  }
+
+  const VERT = (isGL2 ? "#version 300 es\n" : "") + `
+  precision highp float;
+  ${isGL2 ? "in vec2 aGrid;" : "attribute vec2 aGrid;"}
+  ${isGL2 ? "out vec3 vWorld; out float vH; out vec3 vN; out float vEdge;" :
+            "varying vec3 vWorld; varying float vH; varying vec3 vN; varying float vEdge;"}
+
+  uniform mat4 uVP;
+  uniform float uTime;
+  uniform float uScale;        // grid half-extent
+  // up to 8 ripple sources: xy=pos, z=birth time, w=strength
+  uniform vec4 uSrc[8];
+  uniform int  uSrcN;
+  uniform vec2 uWind;          // steered traveling-wave direction
+  uniform float uWindAmp;
+
+  const float PI = 3.14159265;
+
+  // height contribution of one expanding circular ripple
+  float ripple(vec2 p, vec4 s, float t) {
+    float age = t - s.z;
+    if (age < 0.0) return 0.0;
+    float d = distance(p, s.xy);
+    float speed = 1.85;
+    float front = age * speed;
+    float ring = d - front;                 // signed distance to wavefront
+    float wl = 0.62;                          // wavelength
+    float phase = ring / wl * 2.0 * PI;
+    // gaussian envelope around the moving front + temporal decay
+    float env = exp(-ring * ring * 1.9) * exp(-age * 0.42);
+    // mild radial falloff so center isn't infinite
+    float rad = 1.0 / (1.0 + d * 0.35);
+    return sin(phase) * env * rad * s.w;
+  }
+
+  float heightAt(vec2 p, float t) {
+    float h = 0.0;
+    for (int i = 0; i < 8; i++) {
+      if (i >= uSrcN) break;
+      h += ripple(p, uSrc[i], t);
+    }
+    // ambient traveling plane waves (the "wind") — two crossed sets
+    float w1 = sin(dot(p, uWind) * 1.4 + t * 1.7);
+    float w2 = sin(dot(p, vec2(-uWind.y, uWind.x)) * 1.05 - t * 1.15);
+    h += (w1 * 0.6 + w2 * 0.4) * uWindAmp;
+    // fine capillary detail
+    h += sin(p.x * 3.3 + t * 2.1) * sin(p.y * 3.7 - t * 1.6) * 0.05;
+    return h;
+  }
+
+  void main() {
+    vec2 p = aGrid * uScale;
+    float t = uTime;
+    float h = heightAt(p, t);
+
+    // analytic-ish normal via finite differences
+    float e = 0.045 * uScale;
+    float hx = heightAt(p + vec2(e, 0.0), t) - heightAt(p - vec2(e, 0.0), t);
+    float hy = heightAt(p + vec2(0.0, e), t) - heightAt(p - vec2(0.0, e), t);
+    vec3 n = normalize(vec3(-hx, 2.0 * e, -hy));
+
+    vec3 world = vec3(p.x, h, p.y);
+    vWorld = world;
+    vH = h;
+    vN = n;
+    // radial fade for the disc edge
+    float r = length(aGrid);
+    vEdge = smoothstep(1.0, 0.74, r);
+
+    gl_Position = uVP * vec4(world, 1.0);
+  }`;
+
+  const FRAG = (isGL2 ? "#version 300 es\n" : "") + `
+  precision highp float;
+  ${isGL2 ? "in vec3 vWorld; in float vH; in vec3 vN; in float vEdge;" :
+            "varying vec3 vWorld; varying float vH; varying vec3 vN; varying float vEdge;"}
+  ${isGL2 ? "out vec4 frag;" : ""}
+
+  uniform vec3 uEye;
+  uniform float uTime;
+
+  // cosine-gradient palette (Inigo Quilez)
+  vec3 pal(float t, vec3 a, vec3 b, vec3 c, vec3 d) {
+    return a + b * cos(6.28318 * (c * t + d));
+  }
+
+  void main() {
+    vec3 N = normalize(vN);
+    vec3 V = normalize(uEye - vWorld);
+    vec3 L = normalize(vec3(0.4, 1.0, 0.25));
+
+    float diff = clamp(dot(N, L), 0.0, 1.0);
+    vec3 H = normalize(L + V);
+    float spec = pow(clamp(dot(N, H), 0.0, 1.0), 90.0);
+    float fres = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 3.2);
+
+    // color driven by height + slope -> iridescent deep-sea palette
+    float key = vH * 0.5 + 0.5 + N.x * 0.12 - N.z * 0.12;
+    vec3 deep  = pal(key * 0.9 + uTime * 0.012,
+                     vec3(0.16, 0.20, 0.42),
+                     vec3(0.32, 0.36, 0.52),
+                     vec3(1.0, 1.0, 1.0),
+                     vec3(0.0, 0.10, 0.32));
+    // crest highlight: warm/pink toward the top of waves
+    float crest = smoothstep(0.18, 0.85, vH);
+    vec3 crestC = mix(vec3(0.0), vec3(1.0, 0.55, 0.78), crest);
+
+    vec3 col = deep * (0.30 + 0.85 * diff);
+    col += crestC * crest * 0.55;
+    col += vec3(0.7, 0.85, 1.0) * spec * 1.4;          // crisp sun glints
+    col += vec3(0.30, 0.55, 1.0) * fres * 0.65;        // rim sheen
+    // subsurface glow in the troughs
+    col += vec3(0.05, 0.13, 0.28) * (1.0 - diff) * 0.6;
+
+    // depth/edge fades into the void
+    float fog = clamp(length(vWorld - uEye) * 0.018, 0.0, 1.0);
+    col = mix(col, vec3(0.012, 0.016, 0.045), fog * 0.78);
+
+    // discard the bounding-quad corners so only the circular disc shows over the void
+    if (vEdge <= 0.001) discard;
+    col *= vEdge;
+
+    // grade: lift midtones, gentle saturation push for a premium read
+    float lum = dot(col, vec3(0.299, 0.587, 0.114));
+    col = mix(vec3(lum), col, 1.18);          // +saturation
+    col *= 1.12;                               // overall gain
+
+    // filmic tonemap + gamma
+    col = col / (col + vec3(0.52));
+    col = pow(col, vec3(0.4545));
+
+    vec4 outc = vec4(col, 1.0);
+    ${isGL2 ? "frag = outc;" : "gl_FragColor = outc;"}
+  }`;
+
+  const program = prog(VERT, FRAG);
+
+  // ---------- grid geometry (triangle strip via indices) ----------
+  let N = 0;                 // resolution per side (set in resize)
+  let vbo = gl.createBuffer();
+  let ibo = gl.createBuffer();
+  let indexCount = 0;
+  let indexType = gl.UNSIGNED_SHORT;
+  const u32ext = !isGL2 ? gl.getExtension("OES_element_index_uint") : true;
+
+  function buildGrid(res) {
+    N = res;
+    const verts = new Float32Array(N * N * 2);
+    let k = 0;
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        verts[k++] = (x / (N - 1)) * 2 - 1;   // -1..1
+        verts[k++] = (y / (N - 1)) * 2 - 1;
+      }
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+
+    const quads = (N - 1) * (N - 1);
+    const useU32 = (N * N) > 65535;
+    indexType = useU32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
+    const Arr = useU32 ? Uint32Array : Uint16Array;
+    const idx = new Arr(quads * 6);
+    let j = 0;
+    for (let y = 0; y < N - 1; y++) {
+      for (let x = 0; x < N - 1; x++) {
+        const a = y * N + x, b = a + 1, c = a + N, d = c + 1;
+        idx[j++] = a; idx[j++] = c; idx[j++] = b;
+        idx[j++] = b; idx[j++] = c; idx[j++] = d;
+      }
+    }
+    indexCount = idx.length;
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
+  }
+
+  // ---------- uniforms ----------
+  const U = {
+    VP:      gl.getUniformLocation(program, "uVP"),
+    time:    gl.getUniformLocation(program, "uTime"),
+    scale:   gl.getUniformLocation(program, "uScale"),
+    src:     gl.getUniformLocation(program, "uSrc"),
+    srcN:    gl.getUniformLocation(program, "uSrcN"),
+    wind:    gl.getUniformLocation(program, "uWind"),
+    windAmp: gl.getUniformLocation(program, "uWindAmp"),
+    eye:     gl.getUniformLocation(program, "uEye"),
+  };
+  const aGrid = gl.getAttribLocation(program, "aGrid");
+
+  const SCALE = 7.0;
+
+  // ---------- mat4 helpers ----------
+  function mul(a, b) {
+    const o = new Float32Array(16);
+    for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
+      o[i * 4 + j] = a[j] * b[i * 4] + a[4 + j] * b[i * 4 + 1] + a[8 + j] * b[i * 4 + 2] + a[12 + j] * b[i * 4 + 3];
+    }
+    return o;
+  }
+  function perspective(fovy, aspect, near, far) {
+    const f = 1 / Math.tan(fovy / 2), nf = 1 / (near - far);
+    return new Float32Array([
+      f / aspect, 0, 0, 0,
+      0, f, 0, 0,
+      0, 0, (far + near) * nf, -1,
+      0, 0, 2 * far * near * nf, 0
+    ]);
+  }
+  function lookAt(eye, center, up) {
+    const zx = eye[0]-center[0], zy = eye[1]-center[1], zz = eye[2]-center[2];
+    let zl = Math.hypot(zx, zy, zz) || 1;
+    const z = [zx/zl, zy/zl, zz/zl];
+    let x = [up[1]*z[2]-up[2]*z[1], up[2]*z[0]-up[0]*z[2], up[0]*z[1]-up[1]*z[0]];
+    let xl = Math.hypot(x[0],x[1],x[2]) || 1; x = [x[0]/xl,x[1]/xl,x[2]/xl];
+    const y = [z[1]*x[2]-z[2]*x[1], z[2]*x[0]-z[0]*x[2], z[0]*x[1]-z[1]*x[0]];
+    return new Float32Array([
+      x[0], y[0], z[0], 0,
+      x[1], y[1], z[1], 0,
+      x[2], y[2], z[2], 0,
+      -(x[0]*eye[0]+x[1]*eye[1]+x[2]*eye[2]),
+      -(y[0]*eye[0]+y[1]*eye[1]+y[2]*eye[2]),
+      -(z[0]*eye[0]+z[1]*eye[1]+z[2]*eye[2]),
+      1
+    ]);
+  }
+
+  // ---------- ripple source ring buffer ----------
+  const MAX_SRC = 8;
+  const srcData = new Float32Array(MAX_SRC * 4);
+  let srcCount = 0, srcHead = 0;
+  function addRipple(wx, wz, strength, now) {
+    const i = srcHead % MAX_SRC;
+    srcData[i*4+0] = wx;
+    srcData[i*4+1] = wz;
+    srcData[i*4+2] = now;       // birth
+    srcData[i*4+3] = strength;
+    srcHead++;
+    srcCount = Math.min(srcCount + 1, MAX_SRC);
+  }
+
+  // ---------- camera / interaction state ----------
+  let yaw = 0.7, pitch = 0.62, dist = 15.5;
+  let targetYaw = yaw, targetPitch = pitch, targetDist = dist;
+  let dragging = false, lastX = 0, lastY = 0;
+  let pointerNDC = [0, 0];
+  let wind = [0.8, 0.5];
+  let paused = false;
+
+  function screenToGround(px, py) {
+    // build current VP, unproject a ray, intersect plane y=0
+    const ndcX = (px / canvas.clientWidth) * 2 - 1;
+    const ndcY = 1 - (py / canvas.clientHeight) * 2;
+    const inv = invert(curVP);
+    if (!inv) return null;
+    const near = applyMat(inv, [ndcX, ndcY, -1, 1]);
+    const far  = applyMat(inv, [ndcX, ndcY,  1, 1]);
+    const o = [near[0]/near[3], near[1]/near[3], near[2]/near[3]];
+    const f = [far[0]/far[3],  far[1]/far[3],  far[2]/far[3]];
+    const dir = [f[0]-o[0], f[1]-o[1], f[2]-o[2]];
+    if (Math.abs(dir[1]) < 1e-5) return null;
+    const t = -o[1] / dir[1];
+    if (t < 0) return null;
+    return [o[0] + dir[0]*t, o[2] + dir[2]*t];
+  }
+  function applyMat(m, v) {
+    return [
+      m[0]*v[0]+m[4]*v[1]+m[8]*v[2]+m[12]*v[3],
+      m[1]*v[0]+m[5]*v[1]+m[9]*v[2]+m[13]*v[3],
+      m[2]*v[0]+m[6]*v[1]+m[10]*v[2]+m[14]*v[3],
+      m[3]*v[0]+m[7]*v[1]+m[11]*v[2]+m[15]*v[3],
+    ];
+  }
+  function invert(m) {
+    const inv = new Float32Array(16);
+    inv[0]=m[5]*m[10]*m[15]-m[5]*m[11]*m[14]-m[9]*m[6]*m[15]+m[9]*m[7]*m[14]+m[13]*m[6]*m[11]-m[13]*m[7]*m[10];
+    inv[4]=-m[4]*m[10]*m[15]+m[4]*m[11]*m[14]+m[8]*m[6]*m[15]-m[8]*m[7]*m[14]-m[12]*m[6]*m[11]+m[12]*m[7]*m[10];
+    inv[8]=m[4]*m[9]*m[15]-m[4]*m[11]*m[13]-m[8]*m[5]*m[15]+m[8]*m[7]*m[13]+m[12]*m[5]*m[11]-m[12]*m[7]*m[9];
+    inv[12]=-m[4]*m[9]*m[14]+m[4]*m[10]*m[13]+m[8]*m[5]*m[14]-m[8]*m[6]*m[13]-m[12]*m[5]*m[10]+m[12]*m[6]*m[9];
+    inv[1]=-m[1]*m[10]*m[15]+m[1]*m[11]*m[14]+m[9]*m[2]*m[15]-m[9]*m[3]*m[14]-m[13]*m[2]*m[11]+m[13]*m[3]*m[10];
+    inv[5]=m[0]*m[10]*m[15]-m[0]*m[11]*m[14]-m[8]*m[2]*m[15]+m[8]*m[3]*m[14]+m[12]*m[2]*m[11]-m[12]*m[3]*m[10];
+    inv[9]=-m[0]*m[9]*m[15]+m[0]*m[11]*m[13]+m[8]*m[1]*m[15]-m[8]*m[3]*m[13]-m[12]*m[1]*m[11]+m[12]*m[3]*m[9];
+    inv[13]=m[0]*m[9]*m[14]-m[0]*m[10]*m[13]-m[8]*m[1]*m[14]+m[8]*m[2]*m[13]+m[12]*m[1]*m[10]-m[12]*m[2]*m[9];
+    inv[2]=m[1]*m[6]*m[15]-m[1]*m[7]*m[14]-m[5]*m[2]*m[15]+m[5]*m[3]*m[14]+m[13]*m[2]*m[7]-m[13]*m[3]*m[6];
+    inv[6]=-m[0]*m[6]*m[15]+m[0]*m[7]*m[14]+m[4]*m[2]*m[15]-m[4]*m[3]*m[14]-m[12]*m[2]*m[7]+m[12]*m[3]*m[6];
+    inv[10]=m[0]*m[5]*m[15]-m[0]*m[7]*m[13]-m[4]*m[1]*m[15]+m[4]*m[3]*m[13]+m[12]*m[1]*m[7]-m[12]*m[3]*m[5];
+    inv[14]=-m[0]*m[5]*m[14]+m[0]*m[6]*m[13]+m[4]*m[1]*m[14]-m[4]*m[2]*m[13]-m[12]*m[1]*m[6]+m[12]*m[2]*m[5];
+    inv[3]=-m[1]*m[6]*m[11]+m[1]*m[7]*m[10]+m[5]*m[2]*m[11]-m[5]*m[3]*m[10]-m[9]*m[2]*m[7]+m[9]*m[3]*m[6];
+    inv[7]=m[0]*m[6]*m[11]-m[0]*m[7]*m[10]-m[4]*m[2]*m[11]+m[4]*m[3]*m[10]+m[8]*m[2]*m[7]-m[8]*m[3]*m[6];
+    inv[11]=-m[0]*m[5]*m[11]+m[0]*m[7]*m[9]+m[4]*m[1]*m[11]-m[4]*m[3]*m[9]-m[8]*m[1]*m[7]+m[8]*m[3]*m[5];
+    inv[15]=m[0]*m[5]*m[10]-m[0]*m[6]*m[9]-m[4]*m[1]*m[10]+m[4]*m[2]*m[9]+m[8]*m[1]*m[6]-m[8]*m[2]*m[5];
+    let det = m[0]*inv[0]+m[1]*inv[4]+m[2]*inv[8]+m[3]*inv[12];
+    if (!det) return null;
+    det = 1/det;
+    for (let i=0;i<16;i++) inv[i]*=det;
+    return inv;
+  }
+
+  // ---------- events ----------
+  function pos(e){ const r=canvas.getBoundingClientRect(); const t=e.touches?e.touches[0]:e; return [t.clientX-r.left, t.clientY-r.top]; }
+
+  canvas.addEventListener("pointerdown", (e) => {
+    dragging = true; const p = pos(e); lastX = p[0]; lastY = p[1];
+    canvas.setPointerCapture && canvas.setPointerCapture(e.pointerId);
+    // also drop a ripple where pressed (tap = ripple, drag = orbit; we detect on up)
+    pressMoved = false; pressP = p; pressT = performance.now();
+  });
+  let pressMoved = false, pressP = [0,0], pressT = 0;
+  window.addEventListener("pointermove", (e) => {
+    const p = pos(e);
+    pointerNDC = [(p[0]/canvas.clientWidth)*2-1, 1-(p[1]/canvas.clientHeight)*2];
+    if (dragging) {
+      const dx = p[0]-lastX, dy = p[1]-lastY;
+      if (Math.abs(dx)+Math.abs(dy) > 3) pressMoved = true;
+      targetYaw   -= dx * 0.006;
+      targetPitch -= dy * 0.006;
+      targetPitch = Math.max(0.12, Math.min(1.45, targetPitch));
+      lastX = p[0]; lastY = p[1];
+    }
+  });
+  window.addEventListener("pointerup", (e) => {
+    if (dragging && !pressMoved) {
+      const g = screenToGround(pressP[0], pressP[1]);
+      if (g) addRipple(g[0], g[1], 1.5 + Math.random()*0.6, clock);
+    }
+    dragging = false;
+  });
+  // steer wind toward pointer continuously (subtle)
+  canvas.addEventListener("contextmenu", e => e.preventDefault());
+  canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    targetDist *= (1 + Math.sign(e.deltaY) * 0.08);
+    targetDist = Math.max(8.5, Math.min(30, targetDist));
+  }, { passive: false });
+  window.addEventListener("keydown", (e) => {
+    if (e.code === "Space") { paused = !paused; e.preventDefault(); }
+  });
+
+  // ---------- resize / DPR / adaptive resolution ----------
+  let DPR = 1, baseRes = 220;
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    const w = window.innerWidth, h = window.innerHeight;
+    canvas.width  = Math.floor(w * DPR);
+    canvas.height = Math.floor(h * DPR);
+    canvas.style.width = w + "px";
+    canvas.style.height = h + "px";
+    // resolution cap: fewer verts on small/mobile screens
+    const area = w * h;
+    let res = area > 1100*700 ? 240 : (area > 600*500 ? 190 : 150);
+    if (res !== N) buildGrid(res);
+  }
+  window.addEventListener("resize", resize);
+
+  // ---------- init ----------
+  buildGrid(220);
+  resize();
+  gl.clearColor(0.012, 0.016, 0.045, 1.0);
+  gl.enable(gl.DEPTH_TEST);
+  // seed a calm field with a few ripples so first paint is alive
+  addRipple(-2.0, 1.5, 1.3, -0.2);
+  addRipple( 2.6, -1.0, 1.2, -0.6);
+  addRipple( 0.0, 0.0, 1.0, -1.0);
+  addRipple(-3.2, -2.4, 1.0, -1.4);
+
+  let curVP = perspective(1.0, 1, 0.1, 100);
+  let clock = 0, last = performance.now(), autoTimer = 0, autoNext = 2.4;
+  // fps meter
+  let fpsAcc = 0, fpsFrames = 0, fpsT = 0;
+  const fpsEl = document.getElementById("fps");
+
+  function render(now) {
+    const dt = Math.min((now - last) / 1000, 0.05);
+    last = now;
+    if (!paused) clock += dt;
+
+    // smooth camera
+    // idle drift on yaw so it always feels alive
+    if (!dragging) targetYaw += dt * 0.045;
+    yaw   += (targetYaw - yaw) * 0.08;
+    pitch += (targetPitch - pitch) * 0.08;
+    dist  += (targetDist - dist) * 0.08;
+
+    // pointer nudges camera slightly + steers wind
+    const px = pointerNDC[0], py = pointerNDC[1];
+    const ey = Math.cos(pitch) * dist;
+    const horiz = Math.sin(pitch) * dist;
+    const eye = [
+      Math.cos(yaw) * horiz + px * 0.9,
+      Math.max(2.5, ey) + py * 0.5 + 4.5,
+      Math.sin(yaw) * horiz + py * 0.9,
+    ];
+    const target = [0, 0.2, 0];
+    const aspect = canvas.width / canvas.height;
+    const P = perspective(0.95, aspect, 0.1, 120);
+    const Vm = lookAt(eye, target, [0, 1, 0]);
+    curVP = mul(P, Vm);
+
+    // wind slowly steers toward pointer direction
+    const wantX = px, wantZ = -py;
+    const wl = Math.hypot(wantX, wantZ) || 1;
+    wind[0] += ((wantX/wl) - wind[0]) * 0.02 + 0.0;
+    wind[1] += ((wantZ/wl) - wind[1]) * 0.02;
+    // keep it normalized-ish & gently rotating
+    const a = clock * 0.05;
+    const wnx = wind[0]*Math.cos(0.002) - wind[1]*Math.sin(0.002);
+    const wnz = wind[0]*Math.sin(0.002) + wind[1]*Math.cos(0.002);
+    wind[0]=wnx; wind[1]=wnz;
+
+    // auto-drop ambient ripples so an idle viewer still sees life
+    autoTimer += dt;
+    if (autoTimer > autoNext) {
+      autoTimer = 0; autoNext = 2.0 + Math.random()*2.8;
+      const ang = Math.random()*6.283, rr = Math.random()*4.5;
+      addRipple(Math.cos(ang)*rr, Math.sin(ang)*rr, 0.9 + Math.random()*0.7, clock);
+    }
+
+    // draw
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(program);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    gl.enableVertexAttribArray(aGrid);
+    gl.vertexAttribPointer(aGrid, 2, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+
+    gl.uniformMatrix4fv(U.VP, false, curVP);
+    gl.uniform1f(U.time, clock);
+    gl.uniform1f(U.scale, SCALE);
+    gl.uniform4fv(U.src, srcData);
+    gl.uniform1i(U.srcN, srcCount);
+    gl.uniform2f(U.wind, wind[0], wind[1]);
+    gl.uniform1f(U.windAmp, 0.42);
+    gl.uniform3f(U.eye, eye[0], eye[1], eye[2]);
+
+    gl.drawElements(gl.TRIANGLES, indexCount, indexType, 0);
+
+    // fps
+    fpsAcc += dt; fpsFrames++;
+    if (fpsAcc >= 0.5) {
+      const f = Math.round(fpsFrames / fpsAcc);
+      fpsEl.textContent = f + " FPS · " + (N*N).toLocaleString() + " pts";
+      fpsAcc = 0; fpsFrames = 0;
+    }
+
+    requestAnimationFrame(render);
+  }
+  requestAnimationFrame(render);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>야간 미술관 — 3D 아스키 탐험</title>
+<style>
+  :root{
+    --paper:#e9e2cf; --ink:#241f17; --moon:#cfe0ef;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; overflow:hidden; background:#06070b; }
+  body{ font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; }
+
+  /* ---- 3D 뷰 ---- */
+  #view{
+    margin:0; position:fixed; inset:0 0 38px 0;
+    font:13px/13px ui-monospace,Menlo,Consolas,monospace;
+    white-space:pre; overflow:hidden; letter-spacing:0;
+    color:#a9b8cb; background:#06070b;
+    user-select:none; cursor:crosshair;
+    text-shadow:0 0 2px rgba(120,150,190,.15);
+  }
+  #vignette{
+    position:fixed; inset:0 0 38px 0; pointer-events:none; z-index:2;
+    background:radial-gradient(120% 100% at 50% 46%, rgba(0,0,0,0) 38%, rgba(2,3,6,.55) 78%, rgba(1,1,3,.92) 100%);
+  }
+  #crosshair{
+    position:fixed; left:50%; top:calc((100% - 38px)/2); transform:translate(-50%,-50%);
+    color:#dfe9f4; opacity:.5; z-index:3; pointer-events:none; font-size:14px;
+    text-shadow:0 0 4px rgba(160,190,230,.5);
+  }
+
+  /* ---- 상태바 ---- */
+  #status{
+    position:fixed; left:0; right:0; bottom:0; height:38px; z-index:4;
+    background:#100d09; color:#cdbf9a;
+    font:12px/38px ui-monospace,Menlo,monospace;
+    padding:0 14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    border-top:1px solid #2a241a; display:flex; gap:14px; align-items:center;
+  }
+  #status b{ color:#e8dcb6; font-weight:600; }
+  #status .sep{ color:#4a4232; }
+  #prompt{ color:#9ad7a0; }
+  #prompt.dim{ color:#5c5340; }
+
+  /* ---- 인트로(가벼운 페이퍼 톤) ---- */
+  #intro{
+    position:fixed; inset:0; z-index:20; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; text-align:center; padding:26px;
+    background:var(--paper); color:var(--ink);
+    transition:opacity 1.4s ease, background 1.4s ease;
+    font-family:"Noto Serif KR",ui-serif,Georgia,serif;
+  }
+  #intro .frame{
+    border:1px solid rgba(36,31,23,.35); padding:38px 46px; max-width:560px;
+    background:rgba(255,255,255,.18);
+  }
+  #intro h1{ font-size:38px; font-weight:600; letter-spacing:12px; margin:0 0 6px; text-indent:12px; }
+  #intro .sub{ font-size:13px; letter-spacing:6px; color:#7a6f57; margin-bottom:20px; }
+  #intro p{ font-size:14.5px; line-height:2.0; margin:8px 0; color:#3a3327; }
+  #intro .keys{
+    font-family:ui-monospace,Menlo,monospace; font-size:12.5px; color:#6f6450;
+    margin-top:22px; line-height:1.9;
+  }
+  #intro .go{
+    margin-top:24px; font-family:ui-monospace,Menlo,monospace; font-size:13px;
+    color:#241f17; border:1px solid #241f17; padding:9px 22px; cursor:pointer;
+    background:transparent; letter-spacing:3px; transition:.2s;
+  }
+  #intro .go:hover{ background:#241f17; color:var(--paper); }
+  .hidden{ opacity:0 !important; pointer-events:none !important; }
+
+  /* ---- 도슨트(전시품 설명 모달) ---- */
+  #placard{
+    position:fixed; inset:0; z-index:18; display:flex; align-items:center; justify-content:center;
+    background:rgba(4,5,9,.72); opacity:0; pointer-events:none; transition:opacity .45s ease; padding:18px;
+  }
+  #placard.show{ opacity:1; pointer-events:auto; }
+  #placard .card{
+    background:#0e1118; border:1px solid #36405a; max-width:640px; width:100%;
+    padding:24px 26px 20px; color:#cdd8e6; box-shadow:0 0 60px rgba(70,110,160,.25);
+  }
+  #placard .tag{ font-size:11px; letter-spacing:4px; color:#6f86a8; }
+  #placard h3{ margin:6px 0 12px; font-size:20px; color:#eaf1fa; letter-spacing:2px; }
+  #placard .art{ white-space:pre; font:12px/12px ui-monospace,Menlo,monospace; color:#bcd2ea;
+    background:#070a10; border:1px solid #232c3e; padding:12px; overflow:auto; margin-bottom:12px; }
+  #placard p{ font-size:13.5px; line-height:1.85; color:#aebccd; margin:6px 0; }
+  #placard .foot{ margin-top:14px; font:11.5px/1.6 ui-monospace,Menlo,monospace; color:#6c7a8c; display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+  #placard .x{ color:#9fb2c8; cursor:pointer; border:1px solid #34405a; padding:4px 12px; }
+  #placard .x:hover{ background:#1a2230; }
+
+  /* ---- 모바일 조작 ---- */
+  #pad{ position:fixed; z-index:6; inset:auto 0 38px 0; pointer-events:none; }
+  .tb{
+    position:fixed; z-index:6; width:60px; height:60px; border-radius:50%;
+    background:rgba(20,24,34,.55); border:1px solid #3a465e; color:#cdd8e6;
+    font:18px/60px ui-monospace,Menlo,monospace; text-align:center;
+    pointer-events:auto; user-select:none; -webkit-user-select:none; touch-action:none;
+    backdrop-filter:blur(2px);
+  }
+  .tb:active{ background:rgba(50,70,100,.7); }
+  #t-up{ left:78px; bottom:150px; } #t-dn{ left:78px; bottom:84px; }
+  #t-l{ left:18px; bottom:117px; } #t-r{ left:138px; bottom:117px; }
+  #t-tl{ right:96px; bottom:117px; } #t-tr{ right:18px; bottom:117px; }
+  #t-e{ right:18px; bottom:188px; width:74px; height:74px; line-height:74px; font-size:13px; color:#9ad7a0; border-color:#3a5e44; }
+  @media (hover:hover) and (pointer:fine){ .tb{ display:none; } }
+  @media (max-width:520px){
+    #intro h1{ font-size:30px; letter-spacing:8px; }
+    #intro .frame{ padding:26px 22px; }
+  }
+</style>
+</head>
+<body>
+<pre id="view"></pre>
+<div id="vignette"></div>
+<div id="crosshair">+</div>
+<div id="status">
+  <span id="st-loc"><b>야간 미술관</b></span>
+  <span class="sep">·</span>
+  <span id="st-info">달빛이 전시실을 가로지른다.</span>
+  <span class="sep">·</span>
+  <span id="prompt" class="dim">[E] 살펴보기</span>
+  <span class="sep">·</span>
+  <span id="st-inv">소지품: 없음</span>
+</div>
+
+<!-- 모바일 컨트롤 -->
+<div id="t-l"  class="tb">↺</div>
+<div id="t-up" class="tb">▲</div>
+<div id="t-dn" class="tb">▼</div>
+<div id="t-r"  class="tb">↻</div>
+<div id="t-tl" class="tb">◄</div>
+<div id="t-tr" class="tb">►</div>
+<div id="t-e"  class="tb">살펴<br>보기</div>
+
+<!-- 인트로 -->
+<div id="intro">
+  <div class="frame">
+    <h1>야간 미술관</h1>
+    <div class="sub">N I G H T &nbsp; M U S E U M</div>
+    <p>폐관 시각. 경비도, 관람객도 떠난 전시실에<br>달빛만이 비스듬히 들어온다.</p>
+    <p>일곱 개의 전시실이 복도로 이어져 있다.<br>유물들은 어둠 속에서 제 모습을 세운다.</p>
+    <p>가까이 다가가 <b>살펴보면</b> 그것들이 입을 연다.</p>
+    <div class="keys">
+      W A S D · ←→ 이동/회전 &nbsp;|&nbsp; E 상호작용 &nbsp;|&nbsp; M 도면<br>
+      (모바일: 화면 버튼으로 이동·회전·살펴보기)
+    </div>
+    <button class="go" id="goBtn">전시실로 들어간다 →</button>
+  </div>
+</div>
+
+<!-- 도슨트 -->
+<div id="placard">
+  <div class="card">
+    <div class="tag" id="pl-tag">소장품</div>
+    <h3 id="pl-title">제목</h3>
+    <div class="art" id="pl-art"></div>
+    <p id="pl-body"></p>
+    <div class="foot">
+      <span id="pl-act">[E] 작동 / 줍기</span>
+      <span class="x" id="pl-close">[E / ESC] 닫기</span>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+(() => {
+/* =========================================================================
+   야간 미술관 — 3D 아스키 탐험
+   레이캐스트 1인칭 + 빌보드 아스키 스프라이트(전시품) + 상호작용
+   참고: 2_내부.html 의 raycaster 골격을 흡수해 다실(多室) 미술관으로 재구성
+   ========================================================================= */
+
+  /* ---------- 0. 맵: 손으로 설계한 미술관 평면도 ----------
+     글자: '#' 벽, ' ' 바닥(방), 'D' 문(통과 가능), 점 '.' 복도 바닥
+     좌상단 원점. 각 방은 테마를 가진다. */
+  const RAW = [
+    "##############################################",
+    "#............#........D........#.............#",   // 1 아트리움(중앙 상단)
+    "#.ATRIUM.....#..SCULPT.........#..PAINTING...#",
+    "#............#.................#.............#",
+    "#............D.................D.............#",
+    "#............#.................#.............#",
+    "######D#######........D........#######D#######",
+    "#............#........#........#.............#",
+    "#.FOSSIL.....#.CLOCK..#..STAR..#..VAULT......#",
+    "#............#........#........#.............#",
+    "#............D........D........D.............#",
+    "#............#........#........#.............#",
+    "#............#........#........#.............#",
+    "##############################################",
+  ];
+  // 위 ASCII는 가독용 라벨이 섞여 있으니, 통과판정용 격자로 정규화한다.
+  // 규칙: '#' = 벽(1), 'D' = 문(0, 통과가능), 그 외 모든 글자 = 바닥(0)
+  const H_MAP = RAW.length, W_MAP = RAW[0].length;
+  const grid = [];
+  for (let y = 0; y < H_MAP; y++) {
+    const row = [];
+    for (let x = 0; x < W_MAP; x++) {
+      const c = (RAW[y] || "")[x] || "#";
+      row.push(c === "#" ? 1 : 0);
+    }
+    grid.push(row);
+  }
+  const solid = (x, y) => (x < 0 || y < 0 || x >= W_MAP || y >= H_MAP) ? true : grid[y][x] === 1;
+
+  /* ---------- 1. 방 정의(영역 + 테마 색/이름) ---------- */
+  // 각 방: 사각 영역(격자좌표) + 이름 + 분위기 색조(천장/바닥 농도용 hue)
+  const ROOMS = [
+    { name:"아트리움",       sub:"ATRIUM",   x0:1,  y0:1,  x1:11, y1:5,  hue:[150,160,180] },
+    { name:"조각 전시실",     sub:"SCULPTURE",x0:13, y0:1,  x1:29, y1:5,  hue:[170,168,162] },
+    { name:"회화 전시실",     sub:"PAINTING", x0:31, y0:1,  x1:43, y1:5,  hue:[180,165,150] },
+    { name:"자연사 전시실",   sub:"FOSSILS",  x0:1,  y0:7,  x1:11, y1:12, hue:[150,170,160] },
+    { name:"태엽 갤러리",     sub:"CLOCKWORK",x0:13, y0:7,  x1:20, y1:12, hue:[185,160,130] },
+    { name:"천문 전시실",     sub:"COSMOS",   x0:22, y0:7,  x1:29, y1:12, hue:[140,160,200] },
+    { name:"수장고",         sub:"THE VAULT",x0:31, y0:7,  x1:43, y1:12, hue:[200,180,150] },
+  ];
+  function roomAt(px, py){
+    for (const r of ROOMS)
+      if (px >= r.x0 && px <= r.x1 && py >= r.y0 && py <= r.y1) return r;
+    return { name:"복도", sub:"CORRIDOR", hue:[120,128,140] };
+  }
+
+  /* ---------- 2. 전시품(빌보드 스프라이트 + 상호작용) ----------
+     world 좌표(격자 중심), 아스키 스프라이트(행배열), 색, placard 데이터.
+     interact: 'examine'(설명) | 'operate'(상태 토글) | 'pickup'(소지품) */
+
+  // 작은 빌보드 텍스처(원경에서도 식별되게 굵직한 실루엣)
+  const ART = {
+    fountain: [
+      "   ___   ",
+      "  /. .\\  ",
+      " ( ~~~ ) ",
+      "  \\_._/  ",
+      " __|||__ ",
+      "[=======]",
+      " ||||||| ",
+      "[=======]",
+    ],
+    statue: [
+      "  .-\"\"-.  ",
+      " / o  o \\ ",
+      " |  __  | ",
+      "  \\ -- /  ",
+      "  /|  |\\  ",
+      " / |  | \\ ",
+      "   |  |   ",
+      "  _|  |_  ",
+      " [______] ",
+    ],
+    bust: [
+      "  .--.  ",
+      " (o  o) ",
+      "  |  |  ",
+      "  '--'  ",
+      " /||||\\ ",
+      "[======]",
+    ],
+    skeleton: [
+      "       __         ",
+      "  ____/o \\___     ",
+      " /  | || |   \\__  ",
+      "(   |_||_|      ) ",
+      " \\__/\\__/\\__/\\_/  ",
+      "  || || || ||     ",
+      " _||_||_||_||_     ",
+    ],
+    clock: [
+      "   _______   ",
+      "  /  12   \\  ",
+      " | 9  +  3 | ",
+      " |    |    | ",
+      "  \\_  6  _/  ",
+      "   |=====|   ",
+      "   | o o |   ",
+      "   |_____|   ",
+    ],
+    clockTick: [
+      "   _______   ",
+      "  /  12   \\  ",
+      " | 9 \\|/ 3 | ",
+      " |   -+-   | ",
+      "  \\_ /|\\ _/  ",
+      "   |=====|   ",
+      "   |(o o)|   ",
+      "   |_____|   ",
+    ],
+    orrery: [
+      "    . o .    ",
+      "  o  \\|/  o  ",
+      " . --(*)-- . ",
+      "  o  /|\\  o  ",
+      "    ' o '    ",
+      "   __|_|__   ",
+      "  [=======]  ",
+    ],
+    orreryOn: [
+      "  * .o*. *   ",
+      " o*. \\|/ .*o ",
+      " *--==(@)==--*",
+      " o*. /|\\ .*o ",
+      "  * 'o*.' *  ",
+      "   __|_|__   ",
+      "  [#######]  ",
+    ],
+    painting: [
+      ".----------.",
+      "|  /\\  /\\  |",
+      "| /  \\/  \\ |",
+      "|/        \\|",
+      "|  ~~~~~~  |",
+      "'----------'",
+    ],
+    painting2: [
+      ".----------.",
+      "|   .--.   |",
+      "|  ( ** )  |",
+      "|   '--'   |",
+      "|  |    |  |",
+      "'----------'",
+    ],
+    case_dark: [
+      " ________ ",
+      "/_/_/_/_/|",
+      "|       ||",
+      "|   ?   ||",
+      "|       |/",
+      "[=======] ",
+    ],
+    case_lit: [
+      " ________ ",
+      "/_/_/_/_/|",
+      "| \\ | / ||",
+      "|  (H)  ||",
+      "| / | \\ |/",
+      "[=======] ",
+    ],
+    bench: [
+      "          ",
+      "          ",
+      "  ______  ",
+      " /______\\ ",
+      " |_|  |_| ",
+    ],
+    column: [
+      " _____ ",
+      "[=====]",
+      " |   | ",
+      " |   | ",
+      " |   | ",
+      " |   | ",
+      "[=====]",
+    ],
+  };
+
+  // 전시품 인스턴스 — wx,wy는 격자좌표(+0.5 중심), scale은 높이 배율
+  const EX = [
+    { id:"fountain", wx:6, wy:3, art:"fountain", col:"#bcd6ef", scale:1.05,
+      tag:"중앙 분수", title:"달의 분수 (Lune Fountain)",
+      body:["폐관 후에도 물은 멈추지 않는다. 달빛이 수면에 부딪혀 천장으로 잔물결을 던진다.",
+            "분수 가장자리에는 관람객들이 던진 동전이 별자리처럼 가라앉아 있다."],
+      action:null },
+
+    { id:"statue", wx:18, wy:3, art:"statue", col:"#e3ddcf", scale:1.15,
+      tag:"조각 · 대리석", title:"걸어 나오려는 사람",
+      body:["받침대 위 인물은 한쪽 발을 앞으로 내밀고 있다. 조각가는 '영원히 떠나기 직전'을 새겼다고 한다.",
+            "밤이 되면 그 발이 조금 더 나와 있는 것 같다는 소문이 있다."],
+      action:null },
+    { id:"bust1", wx:24, wy:2, art:"bust", col:"#d8d2c2", scale:0.85,
+      tag:"조각 · 흉상", title:"이름이 지워진 흉상",
+      body:["명판이 떨어져 누구인지 알 수 없다. 그래서 모두가 자기 얼굴을 거기서 본다."],
+      action:null },
+    { id:"bust2", wx:27, wy:4, art:"bust", col:"#cfc8b6", scale:0.85,
+      tag:"조각 · 흉상", title:"웃는 흉상",
+      body:["입꼬리만 미세하게 올라가 있다. 조명을 끄면 더 또렷이 웃는다."],
+      action:null },
+
+    { id:"paint1", wx:35, wy:2, art:"painting", col:"#e9cf9f", scale:0.95,
+      tag:"회화 · 유화", title:"〈한밤의 항구〉",
+      body:["검은 물 위로 두 개의 달이 떠 있다. 하나는 진짜, 하나는 반사. 어느 쪽이 진짜인지 화가도 적어두지 않았다."],
+      action:null },
+    { id:"paint2", wx:40, wy:4, art:"painting2", col:"#e7c79a", scale:0.95,
+      tag:"회화 · 초상", title:"〈관람객〉",
+      body:["그림 속 인물은 늘 정면을 본다. 어느 위치에서 보든 당신과 눈이 마주친다.",
+            "지금도, 그렇다."],
+      action:null },
+
+    { id:"skeleton", wx:6, wy:10, art:"skeleton", col:"#dfe6e0", scale:1.25,
+      tag:"자연사 · 골격", title:"심해 고래의 골격",
+      body:["천장에 매달린 거대한 갈비뼈가 복도까지 그림자를 드리운다.",
+            "안내문: '이 동물은 30년을 혼자 노래하다 발견되었다. 아무도 같은 음을 내지 못했다.'"],
+      action:null },
+
+    { id:"clock", wx:16, wy:10, art:"clock", col:"#e6c98a", scale:1.2,
+      tag:"태엽 · 기계", title:"멈춘 대시계",
+      operate:true, on:false, artOn:"clockTick",
+      body:["100년 전 멈춘 대시계. 태엽 손잡이가 아직 달려 있다.",
+            "옆 명판: '딱 한 번만 감으시오. 시간은 빌리는 것입니다.'"],
+      bodyOn:["딸깍— 톱니가 맞물리며 시계가 살아난다. 똑, 딱, 똑, 딱.",
+              "전시실 전체가 그 박자에 맞춰 숨 쉬는 듯하다."],
+      action:"[E] 태엽을 감는다 / 멈춘다" },
+
+    { id:"orrery", wx:25, wy:10, art:"orrery", col:"#bcd0f0", scale:1.15,
+      tag:"천문 · 태양계의(儀)", title:"청동 오레리",
+      operate:true, on:false, artOn:"orreryOn",
+      body:["행성들이 가느다란 팔에 매달린 태양계 모형. 손으로 돌리면 별이 도는 소리가 난다.",
+            "받침: '여기서 1바퀴는 바깥세상의 한 해입니다.'"],
+      bodyOn:["행성들이 일제히 돌기 시작한다. 천장의 작은 구멍들로 별빛이 새어 든다.",
+              "잠시, 이 방이 진짜 밤하늘 아래 놓인 것 같다."],
+      action:"[E] 오레리를 돌린다 / 멈춘다" },
+
+    { id:"vaultcase", wx:37, wy:9, art:"case_dark", col:"#e9d6a6", scale:1.1,
+      tag:"수장고 · 비전시", title:"유리 진열장 — ‘미술관의 심장’",
+      pickup:true, taken:false, artLit:"case_lit",
+      body:["두꺼운 유리 안, 작은 황동 열쇠 하나가 벨벳 위에 놓여 있다.",
+            "라벨: '관(館)의 첫 문을 연 열쇠. 매일 밤, 이 열쇠가 미술관을 다시 잠그고 다시 연다.'"],
+      bodyOn:["당신은 진열장을 열고 황동 열쇠를 손에 쥐었다.",
+              "쥐는 순간, 모든 전시실의 달빛이 한 번 깜빡인다 — 미술관이 당신을 관장으로 인정한 듯이."],
+      action:"[E] 열쇠를 집는다" },
+
+    // 분위기용(상호작용 없음) 가구/기둥
+    { id:"col1", wx:14, wy:4, art:"column", col:"#9aa7b8", scale:1.3, ambient:true },
+    { id:"col2", wx:28, wy:4, art:"column", col:"#9aa7b8", scale:1.3, ambient:true },
+    { id:"col3", wx:32, wy:8, art:"column", col:"#9aa7b8", scale:1.3, ambient:true },
+    { id:"col4", wx:42, wy:11,art:"column", col:"#9aa7b8", scale:1.3, ambient:true },
+    { id:"bench1", wx:9, wy:4, art:"bench", col:"#8c98a8", scale:0.7, ambient:true },
+    { id:"bench2", wx:38,wy:3, art:"bench", col:"#8c98a8", scale:0.7, ambient:true },
+  ];
+
+  /* ---------- 3. 플레이어/카메라 ---------- */
+  let px = 6.5, py = 3.5;     // 아트리움 분수 근처 시작
+  let dir = Math.PI / 2;      // 아래(남)쪽을 바라보고 시작
+  const keys = {};
+  let inventory = [];
+  let entered = false;
+
+  /* ---------- 4. 렌더 버퍼 ---------- */
+  const view = document.getElementById("view");
+  let W = 110, H = 42, CW = 7.8;
+  function fit() {
+    const probe = document.createElement("span");
+    probe.style.cssText = "position:absolute;visibility:hidden;font:13px/13px ui-monospace,Menlo,monospace;white-space:pre";
+    probe.textContent = "M".repeat(120);
+    document.body.appendChild(probe);
+    CW = probe.getBoundingClientRect().width / 120 || 7.8;
+    probe.remove();
+    W = Math.max(48, Math.min(260, Math.floor(innerWidth / CW)));
+    H = Math.max(20, Math.floor((innerHeight - 38) / 13));
+  }
+  fit();
+  addEventListener("resize", fit);
+
+  // 벽 텍스처(밝기 → 글자). 미술관 벽은 매끈한 석재 느낌의 옅은 음영.
+  const SHADE = " .:-=+*#%@";                 // 어두움→밝음(가까울수록 밝게)
+  const WALLTX = "│┃║▏▕ ░▒";                   // 미세 수직 결
+  function wallChar(dist, side, tx, ty) {
+    // 가까울수록 진하게(밝게), 멀수록 흐리게
+    let lum = 1 - Math.min(1, dist / 11);
+    if (side === 1) lum *= 0.62;               // 측면 벽은 더 어�둑
+    // 수직 줄눈/이음새
+    const seam = ((tx * 30) | 0) % 6 === 0;
+    const band = (((ty * 40) | 0) % 8 === 0);
+    let idx = Math.max(0, Math.min(SHADE.length - 1, (lum * (SHADE.length - 1)) | 0));
+    let ch = SHADE[idx];
+    if (seam && lum > 0.18) ch = "│";
+    else if (band && lum > 0.3) ch = "─";
+    return ch;
+  }
+
+  /* ---------- 5. 레이캐스트 + 벽 깊이버퍼 ---------- */
+  // zbuf[x] = 그 열의 벽 거리(스프라이트 가림판정용)
+  const zbuf = new Float32Array(512);
+  let cols = [];
+  function castWalls() {
+    cols = [];
+    const horizon = (H >> 1) + 1;
+    for (let x = 0; x < W; x++) {
+      const cam = (2 * x) / W - 1;
+      const rdx = Math.cos(dir) + Math.cos(dir + Math.PI / 2) * 0.66 * cam;
+      const rdy = Math.sin(dir) + Math.sin(dir + Math.PI / 2) * 0.66 * cam;
+      let mx = px | 0, my = py | 0;
+      const ddx = Math.abs(1 / (rdx || 1e-9)), ddy = Math.abs(1 / (rdy || 1e-9));
+      let sx, sy, sdx, sdy, side = 0;
+      if (rdx < 0) { sx = -1; sdx = (px - mx) * ddx; } else { sx = 1; sdx = (mx + 1 - px) * ddx; }
+      if (rdy < 0) { sy = -1; sdy = (py - my) * ddy; } else { sy = 1; sdy = (my + 1 - py) * ddy; }
+      let hit = 0, guard = 0;
+      while (!hit && guard++ < 96) {
+        if (sdx < sdy) { sdx += ddx; mx += sx; side = 0; }
+        else { sdy += ddy; my += sy; side = 1; }
+        if (solid(mx, my)) hit = 1;
+      }
+      const dist = Math.max(0.08, side === 0 ? sdx - ddx : sdy - ddy);
+      const lh = Math.min(H * 4, (H / dist) | 0);
+      const ds = Math.max(0, horizon - (lh >> 1));
+      const de = Math.min(H - 1, horizon + (lh >> 1));
+      let wallX = side === 0 ? py + dist * rdy : px + dist * rdx;
+      wallX -= wallX | 0;
+      cols.push({ ds, de, dist, wallX, lh, side });
+      zbuf[x] = dist;
+    }
+    return horizon;
+  }
+
+  // 바닥/천장 글자 — 방마다 hue로 살짝 다른 농담
+  const FLOOR = " ··..,'`";
+  function floorChar(y, horizon) {
+    const fd = (y - horizon) / Math.max(1, H - horizon);    // 0(지평선)→1(가까이)
+    const i = Math.min(FLOOR.length - 1, ((fd) * FLOOR.length) | 0);
+    return FLOOR[i] || " ";
+  }
+  const CEIL = "       .   .       ";   // 별처럼 드문 천장 점
+  function ceilChar(x, y) {
+    // 드물게 별/달빛 점
+    const s = (((x * 131) ^ (y * 977)) >>> 0) % 53;
+    if (s === 0) return "·";
+    if (s === 7) return "˙";
+    return " ";
+  }
+
+  /* ---------- 6. 스프라이트(전시품) 렌더 ---------- */
+  // 화면 글자 버퍼에 직접 그린다. buf[y][x] = char, cbuf[y][x] = color
+  let buf, cbuf;
+  function ensureBuf() {
+    if (!buf || buf.length !== H || buf[0].length !== W) {
+      buf = Array.from({ length: H }, () => new Array(W).fill(" "));
+      cbuf = Array.from({ length: H }, () => new Array(W).fill(""));
+    }
+  }
+
+  function spriteArt(e) {
+    if (e.operate) return ART[e.on ? e.artOn : e.art];
+    if (e.pickup)  return ART[e.taken ? e.artLit : e.art];
+    return ART[e.art];
+  }
+
+  let nearest = null;        // 조준선 근처 + 사정거리 내 상호작용 가능 전시품
+  function drawSprites(horizon) {
+    nearest = null;
+    let nearestScore = 1e9;
+    // 거리순(먼 것 먼저)으로 정렬해 가림 처리
+    const list = EX.map(e => {
+      const dx = (e.wx + 0.5) - px, dy = (e.wy + 0.5) - py;
+      return { e, dist: Math.hypot(dx, dy), dx, dy };
+    }).sort((a, b) => b.dist - a.dist);
+
+    const cosD = Math.cos(dir), sinD = Math.sin(dir);
+    for (const it of list) {
+      const { e, dx, dy } = it;
+      // 카메라 공간으로 회전: invDet 변환(0.66 plane과 동일 기하)
+      const planeX = Math.cos(dir + Math.PI / 2) * 0.66;
+      const planeY = Math.sin(dir + Math.PI / 2) * 0.66;
+      const invDet = 1 / (planeX * sinD - cosD * planeY);
+      const tX = invDet * (sinD * dx - cosD * dy);
+      const tY = invDet * (-planeY * dx + planeX * dy);   // 깊이(>0 = 앞)
+      if (tY <= 0.18) continue;                            // 뒤/너무 가까움
+
+      const screenX = ((W / 2) * (1 + tX / tY)) | 0;
+      const art = spriteArt(e);
+      const rows = art.length;
+      // 스프라이트 크기: 거리 반비례 + scale
+      const sh = Math.min(H * 3.2, (H / tY) * (e.scale || 1)) | 0;
+      const aspect = 0.62;                                  // 글자 폭/높이 보정
+      const cw = Math.max(art[0].length, ...art.map(r => r.length));
+      const sw = Math.max(1, (sh * aspect * (cw / rows)) | 0);
+      const drawStartY = (horizon + sh * 0.18 - sh / 2) | 0; // 바닥에 약간 앉힘
+      const startX = (screenX - sw / 2) | 0;
+
+      let visiblePix = 0;
+      for (let sxp = 0; sxp < sw; sxp++) {
+        const scrX = startX + sxp;
+        if (scrX < 0 || scrX >= W) continue;
+        if (tY >= zbuf[scrX]) continue;                    // 벽 뒤 가림
+        const ax = (sxp * cw / sw) | 0;
+        for (let syp = 0; syp < sh; syp++) {
+          const scrY = drawStartY + syp;
+          if (scrY < 0 || scrY >= H) continue;
+          const ay = (syp * rows / sh) | 0;
+          const line = art[ay] || "";
+          const ch = line[ax] || " ";
+          if (ch === " ") continue;
+          buf[scrY][scrX] = ch;
+          cbuf[scrY][scrX] = e.col;
+          visiblePix++;
+        }
+      }
+      // 조준 후보: 화면 중앙에 가깝고, 사정거리 내, 상호작용 가능
+      const interactive = e.operate || e.pickup || (!e.ambient);
+      if (interactive && tY < 3.2 && visiblePix > 0) {
+        const screenCenterDist = Math.abs(screenX - W / 2);
+        const score = screenCenterDist + tY * 6;
+        if (screenCenterDist < Math.max(8, sw * 0.6) && score < nearestScore) {
+          nearestScore = score; nearest = e;
+        }
+      }
+    }
+  }
+
+  /* ---------- 7. 전체 프레임 합성 ---------- */
+  function render() {
+    ensureBuf();
+    const horizon = castWalls();
+    // 벽/천장/바닥
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const c = cols[x];
+        if (!c) { buf[y][x] = " "; cbuf[y][x] = ""; continue; }
+        if (y < c.ds) {                                  // 천장(별)
+          buf[y][x] = ceilChar(x, y);
+          cbuf[y][x] = "#3a4a64";
+        } else if (y > c.de) {                            // 바닥
+          buf[y][x] = floorChar(y, horizon);
+          cbuf[y][x] = "#3d4658";
+        } else {                                          // 벽
+          const ty = c.lh > 0 ? (y - (horizon - c.lh / 2)) / c.lh : 0;
+          buf[y][x] = wallChar(c.dist, c.side, c.wallX, ((ty % 1) + 1) % 1);
+          // 벽 색: 거리 따라 푸르스름한 달빛
+          const lum = 1 - Math.min(1, c.dist / 11);
+          const v = (90 + lum * 120) | 0;
+          cbuf[y][x] = `rgb(${(v*0.8)|0},${(v*0.92)|0},${v})`;
+        }
+      }
+    }
+    drawSprites(horizon);
+    // 글자/색 → DOM. 색 변화 구간만 span으로 묶어 효율화.
+    let html = "";
+    for (let y = 0; y < H; y++) {
+      let curCol = null, run = "";
+      for (let x = 0; x < W; x++) {
+        let ch = buf[y][x];
+        const col = cbuf[y][x] || "#aebccd";
+        // HTML 이스케이프
+        if (ch === "&") ch = "&amp;"; else if (ch === "<") ch = "&lt;"; else if (ch === ">") ch = "&gt;";
+        if (col !== curCol) {
+          if (run) html += `<span style="color:${curCol}">${run}</span>`;
+          curCol = col; run = ch;
+        } else run += ch;
+      }
+      if (run) html += `<span style="color:${curCol}">${run}</span>`;
+      html += "\n";
+    }
+    view.innerHTML = html;
+    updateStatus();
+  }
+
+  /* ---------- 8. 상태바/도면 ---------- */
+  const stLoc = document.getElementById("st-loc");
+  const stInfo = document.getElementById("st-info");
+  const stInv = document.getElementById("st-inv");
+  const promptEl = document.getElementById("prompt");
+  let mapOpen = false;
+
+  function updateStatus() {
+    const r = roomAt(px | 0, py | 0);
+    stLoc.innerHTML = `<b>${r.name}</b> <span style="color:#5c5340">${r.sub || ""}</span>`;
+    if (nearest && !placardEl.classList.contains("show")) {
+      promptEl.classList.remove("dim");
+      const lbl = nearest.operate ? (nearest.on ? "멈추기" : "작동")
+                : nearest.pickup ? (nearest.taken ? "다시 보기" : "집기")
+                : "살펴보기";
+      promptEl.textContent = `[E] ${nearest.title.split(" ")[0]} ${lbl}`;
+    } else {
+      promptEl.classList.add("dim");
+      promptEl.textContent = "[E] 살펴보기";
+    }
+    stInv.textContent = "소지품: " + (inventory.length ? inventory.join(", ") : "없음");
+  }
+
+  // 미니맵(M): view 위에 평면도를 그린다
+  function drawMiniMap() {
+    let s = "  ── 미술관 도면 ──   (M: 닫기)\n\n";
+    for (let y = 0; y < H_MAP; y++) {
+      let line = "  ";
+      for (let x = 0; x < W_MAP; x++) {
+        if ((px | 0) === x && (py | 0) === y) { line += "@"; continue; }
+        line += grid[y][x] ? "█" : (RAW[y][x] === "D" ? "+" : "·");
+      }
+      s += line + "\n";
+    }
+    s += "\n  @ 당신   █ 벽   + 문   · 바닥\n";
+    s += "  방: 아트리움·조각·회화 / 자연사·태엽·천문·수장고\n";
+    view.innerHTML = `<span style="color:#cdd8e6">${s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}</span>`;
+  }
+
+  /* ---------- 9. 도슨트(placard) ---------- */
+  const placardEl = document.getElementById("placard");
+  const plTag = document.getElementById("pl-tag");
+  const plTitle = document.getElementById("pl-title");
+  const plArt = document.getElementById("pl-art");
+  const plBody = document.getElementById("pl-body");
+  const plAct = document.getElementById("pl-act");
+  let placardTarget = null;
+
+  function openPlacard(e) {
+    placardTarget = e;
+    plTag.textContent = e.tag || "소장품";
+    plTitle.textContent = e.title || "무제";
+    const art = spriteArt(e);
+    plArt.textContent = art.join("\n");
+    const on = (e.operate && e.on) || (e.pickup && e.taken);
+    const body = (on && e.bodyOn) ? e.bodyOn : e.body;
+    plBody.innerHTML = (body || [""]).join("<br><br>");
+    if (e.operate) { plAct.style.display = ""; plAct.textContent = e.on ? "[E] 멈춘다" : "[E] 작동시킨다"; }
+    else if (e.pickup && !e.taken) { plAct.style.display = ""; plAct.textContent = "[E] 집는다"; }
+    else { plAct.style.display = "none"; }
+    placardEl.classList.add("show");
+  }
+  function closePlacard() {
+    placardEl.classList.remove("show");
+    placardTarget = null;
+  }
+  // placard 안에서 E: operate/pickup 실행, 한 번 더 또는 ESC: 닫기
+  function placardAction() {
+    const e = placardTarget;
+    if (!e) return;
+    if (e.operate) {
+      e.on = !e.on;
+      stInfo.textContent = e.on ? `${e.title} — 작동을 시작했다.` : `${e.title} — 다시 잠잠해졌다.`;
+      openPlacard(e);            // 갱신된 상태로 다시 그림
+    } else if (e.pickup && !e.taken) {
+      e.taken = true;
+      if (!inventory.includes("황동 열쇠")) inventory.push("황동 열쇠");
+      stInfo.textContent = "황동 열쇠를 손에 넣었다 — 미술관이 당신을 알아본다.";
+      openPlacard(e);
+    } else {
+      closePlacard();
+    }
+  }
+
+  /* ---------- 10. 이동/충돌 ---------- */
+  function tryMove(nx, ny) {
+    const r = 0.22;
+    const stepX = nx + Math.sign(nx - px) * r;
+    const stepY = ny + Math.sign(ny - py) * r;
+    if (!solid(stepX | 0, py | 0)) px = nx;
+    if (!solid(px | 0, stepY | 0)) py = ny;
+    // 전시품 받침대와의 부드러운 충돌(가까이 가되 통과는 막음)
+    for (const e of EX) {
+      if (e.bench) continue;
+      const dx = px - (e.wx + 0.5), dy = py - (e.wy + 0.5);
+      const d = Math.hypot(dx, dy);
+      const rad = e.ambient ? 0.34 : 0.46;
+      if (d < rad && d > 0.0001) {
+        px = (e.wx + 0.5) + dx / d * rad;
+        py = (e.wy + 0.5) + dy / d * rad;
+      }
+    }
+  }
+
+  /* ---------- 11. 입력 ---------- */
+  const intro = document.getElementById("intro");
+  function enter() {
+    if (entered) return;
+    entered = true;
+    intro.classList.add("hidden");
+    stInfo.textContent = "전시실에 들어섰다. 유물에 다가가 [E]로 살펴보라.";
+    setTimeout(() => { intro.style.display = "none"; }, 1500);
+  }
+  document.getElementById("goBtn").addEventListener("click", enter);
+
+  function doInteract() {
+    if (placardEl.classList.contains("show")) { placardAction(); return; }
+    if (nearest) openPlacard(nearest);
+  }
+
+  addEventListener("keydown", e => {
+    const k = e.key.toLowerCase();
+    if (!entered) {
+      // 인트로에서 아무 키나 입장(버튼도 가능)
+      if (k === "enter" || k === " " || k === "w" || k === "a" || k === "s" || k === "d" ||
+          k.startsWith("arrow") || k === "e" || k === "m") { enter(); e.preventDefault(); }
+      return;
+    }
+    if (k === "e") { doInteract(); e.preventDefault(); return; }
+    if (k === "escape") { if (placardEl.classList.contains("show")) closePlacard(); return; }
+    if (k === "m") {
+      mapOpen = !mapOpen;
+      if (mapOpen) drawMiniMap();
+      e.preventDefault(); return;
+    }
+    keys[k] = true;
+    if (["arrowup","arrowdown","arrowleft","arrowright"," "].includes(k)) e.preventDefault();
+  });
+  addEventListener("keyup", e => { keys[e.key.toLowerCase()] = false; });
+
+  document.getElementById("pl-close").addEventListener("click", closePlacard);
+  document.getElementById("pl-act").addEventListener("click", placardAction);
+  placardEl.addEventListener("click", ev => { if (ev.target === placardEl) closePlacard(); });
+
+  // ---- 모바일 버튼 ----
+  function bindHold(id, key) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const on = ev => { ev.preventDefault(); enter(); keys[key] = true; };
+    const off = ev => { ev && ev.preventDefault(); keys[key] = false; };
+    el.addEventListener("touchstart", on, { passive:false });
+    el.addEventListener("touchend", off, { passive:false });
+    el.addEventListener("touchcancel", off, { passive:false });
+    el.addEventListener("mousedown", on);
+    el.addEventListener("mouseup", off);
+    el.addEventListener("mouseleave", off);
+  }
+  bindHold("t-up","w"); bindHold("t-dn","s");
+  bindHold("t-l","arrowleft"); bindHold("t-r","arrowright");
+  bindHold("t-tl","a"); bindHold("t-tr","d");
+  const eBtn = document.getElementById("t-e");
+  if (eBtn) {
+    const tap = ev => { ev.preventDefault(); enter(); doInteract(); };
+    eBtn.addEventListener("touchstart", tap, { passive:false });
+    eBtn.addEventListener("click", tap);
+  }
+
+  /* ---------- 12. 메인 루프 ---------- */
+  let lastT = performance.now(), acc = 0;
+  function loop(t) {
+    const dt = Math.min(0.05, (t - lastT) / 1000); lastT = t;
+    const frozen = placardEl.classList.contains("show") || mapOpen;
+    if (entered && !frozen) {
+      const rs = 2.3 * dt, ms = 2.4 * dt;
+      if (keys["arrowleft"]  || keys["q"]) dir -= rs;
+      if (keys["arrowright"] || keys["r"]) dir += rs;
+      const fx = Math.cos(dir), fy = Math.sin(dir);
+      if (keys["w"] || keys["arrowup"])   tryMove(px + fx * ms, py + fy * ms);
+      if (keys["s"] || keys["arrowdown"]) tryMove(px - fx * ms, py - fy * ms);
+      if (keys["a"]) tryMove(px + fy * ms, py - fx * ms);   // 좌측 스트레이프
+      if (keys["d"]) tryMove(px - fy * ms, py + fx * ms);   // 우측 스트레이프
+    }
+    acc += dt;
+    if (acc > 1 / 30) {
+      acc = 0;
+      if (!mapOpen) render();
+    }
+    requestAnimationFrame(loop);
+  }
+  // 첫 페인트(인트로 뒤에서도 렌더 돌려둠 → 입장 즉시 보이게)
+  render();
+  requestAnimationFrame(loop);
+
+  // 디버그 훅(자가검증용)
+  window.__museum = { get px(){return px}, get py(){return py}, EX, ROOMS, get nearest(){return nearest},
+    enter, doInteract, setPos(x,y,d){ px=x; py=y; if(d!=null) dir=d; render(); } };
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>KALEIDO ∞ — 만화경 무한 대칭</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #05030a; }
+  body {
+    font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    -webkit-user-select: none; user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+    cursor: crosshair;
+  }
+  #stage { position: fixed; inset: 0; display: block; }
+  /* the kaleidoscope canvas */
+  #kaleido { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+
+  /* HUD */
+  .hud {
+    position: fixed; z-index: 10; pointer-events: none;
+    font-size: 11px; letter-spacing: .14em; text-transform: uppercase;
+    color: rgba(255,255,255,.62); text-shadow: 0 0 12px rgba(0,0,0,.8);
+    mix-blend-mode: screen;
+  }
+  #title {
+    top: 22px; left: 26px; font-weight: 600; font-size: 13px; letter-spacing: .42em;
+    color: rgba(255,255,255,.9);
+  }
+  #title small { display:block; margin-top:6px; font-size:9px; letter-spacing:.3em; color: rgba(255,255,255,.4); font-weight:400; }
+  #stats {
+    top: 24px; right: 26px; text-align: right; line-height: 1.7; font-size: 10px;
+  }
+  #stats b { color: #ffd9f6; font-weight: 600; }
+  #hint {
+    bottom: 22px; left: 50%; transform: translateX(-50%);
+    text-align: center; font-size: 10px; line-height: 1.8; opacity: .55;
+    transition: opacity 1.4s ease;
+  }
+  #hint.fade { opacity: 0; }
+  .key { color: #b9f; border: 1px solid rgba(180,150,255,.35); border-radius: 4px; padding: 1px 6px; margin: 0 2px; }
+
+  /* subtle vignette overlay on top */
+  #vig { position: fixed; inset: 0; z-index: 5; pointer-events: none;
+    background: radial-gradient(ellipse at center, rgba(0,0,0,0) 42%, rgba(2,1,8,.55) 100%);
+    mix-blend-mode: multiply;
+  }
+
+  @media (max-width: 520px) {
+    #title { font-size: 11px; letter-spacing: .3em; top: 16px; left: 16px; }
+    #stats { top: 16px; right: 16px; }
+    #hint { font-size: 9px; bottom: 16px; }
+  }
+</style>
+</head>
+<body>
+  <canvas id="kaleido"></canvas>
+  <div id="vig"></div>
+
+  <div class="hud" id="title">KALEIDO&nbsp;∞<small>infinite symmetry engine</small></div>
+  <div class="hud" id="stats">
+    <div>symmetry · <b id="sSeg">12</b></div>
+    <div>palette · <b id="sPal">aurora</b></div>
+    <div>fps · <b id="sFps">60</b></div>
+  </div>
+  <div class="hud" id="hint">
+    <span class="key">move</span> 패턴 왜곡 &nbsp;·&nbsp;
+    <span class="key">scroll</span> 대칭 차수 &nbsp;·&nbsp;
+    <span class="key">click</span> 색 폭발 &nbsp;·&nbsp;
+    <span class="key">space</span> 팔레트 &nbsp;·&nbsp;
+    <span class="key">F</span> 동결
+  </div>
+
+<script>
+(() => {
+  "use strict";
+
+  // ---------- canvas setup ----------
+  const view = document.getElementById('kaleido');
+  const vctx = view.getContext('2d', { alpha: false });
+
+  // offscreen "seed" buffer — the living pattern that gets mirrored.
+  const seed = document.createElement('canvas');
+  const sctx = seed.getContext('2d', { alpha: false });
+
+  // wedge buffer for one slice render (used to build the mirror tile)
+  const wedge = document.createElement('canvas');
+  const wctx = wedge.getContext('2d');
+
+  let W = 0, H = 0, DPR = 1, CX = 0, CY = 0, R = 0;
+  // seed buffer is square, capped — keeps fill-rate bounded for 60fps.
+  let SEEDSZ = 0;
+
+  function resize() {
+    const w = window.innerWidth, h = window.innerHeight;
+    DPR = Math.min(window.devicePixelRatio || 1, 2); // DPR cap
+    W = Math.round(w * DPR); H = Math.round(h * DPR);
+    view.width = W; view.height = H;
+    view.style.width = w + 'px'; view.style.height = h + 'px';
+    CX = W / 2; CY = H / 2;
+    R = Math.hypot(W, H) / 2 + 4; // cover corners
+
+    // seed buffer: square sized to the on-screen radius, capped at 900px device px.
+    SEEDSZ = Math.min(Math.max(Math.round(R), 360), 900);
+    seed.width = SEEDSZ; seed.height = SEEDSZ;
+    wedge.width = SEEDSZ; wedge.height = SEEDSZ;
+    // prime seed with deep background so first frame is opaque.
+    sctx.fillStyle = '#06030f';
+    sctx.fillRect(0, 0, SEEDSZ, SEEDSZ);
+    vctx.fillStyle = '#06030f';
+    vctx.fillRect(0, 0, W, H);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---------- palettes ----------
+  // each palette: array of [r,g,b]; we lerp around the ring.
+  const PALETTES = {
+    aurora:  [[12,8,40],[40,120,220],[60,220,200],[180,255,160],[255,120,200],[120,40,160]],
+    ember:   [[18,4,8],[120,20,30],[240,80,30],[255,180,40],[255,240,160],[180,30,90]],
+    neon:    [[6,2,18],[255,30,120],[40,220,255],[180,40,255],[60,255,140],[255,230,40]],
+    abyss:   [[2,6,14],[20,60,120],[10,140,160],[120,40,200],[200,80,255],[40,200,255]],
+    bloom:   [[20,6,16],[255,90,160],[255,170,90],[255,240,180],[140,255,200],[120,150,255]],
+  };
+  const PAL_NAMES = Object.keys(PALETTES);
+  let palIdx = 0;
+  let pal = PALETTES[PAL_NAMES[palIdx]];
+
+  function lerpRGB(a, b, t) {
+    return [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t];
+  }
+  // sample palette as a smooth ring, p in [0,1)
+  function paletteAt(p) {
+    p = p - Math.floor(p);
+    const n = pal.length;
+    const f = p * n;
+    const i = Math.floor(f) % n;
+    const t = f - Math.floor(f);
+    return lerpRGB(pal[i], pal[(i+1) % n], t);
+  }
+
+  // ---------- value noise (cheap, smooth) ----------
+  const PERM = new Uint8Array(512);
+  (() => {
+    const p = new Uint8Array(256);
+    for (let i = 0; i < 256; i++) p[i] = i;
+    let s = 1337;
+    for (let i = 255; i > 0; i--) {
+      s = (s * 1664525 + 1013904223) >>> 0;
+      const j = s % (i + 1);
+      const tmp = p[i]; p[i] = p[j]; p[j] = tmp;
+    }
+    for (let i = 0; i < 512; i++) PERM[i] = p[i & 255];
+  })();
+  const fade = t => t*t*t*(t*(t*6-15)+10);
+  function grad(hash, x, y) {
+    switch (hash & 3) {
+      case 0: return  x + y;
+      case 1: return -x + y;
+      case 2: return  x - y;
+      default: return -x - y;
+    }
+  }
+  function noise2(x, y) {
+    const X = Math.floor(x) & 255, Y = Math.floor(y) & 255;
+    x -= Math.floor(x); y -= Math.floor(y);
+    const u = fade(x), v = fade(y);
+    const aa = PERM[PERM[X] + Y], ab = PERM[PERM[X] + Y + 1];
+    const ba = PERM[PERM[X + 1] + Y], bb = PERM[PERM[X + 1] + Y + 1];
+    const x1 = grad(aa, x, y) + u * (grad(ba, x - 1, y) - grad(aa, x, y));
+    const x2 = grad(ab, x, y - 1) + u * (grad(bb, x - 1, y - 1) - grad(ab, x, y - 1));
+    return (x1 + v * (x2 - x1)) * 0.5 + 0.5; // ~0..1
+  }
+
+  // ---------- the living seed pattern ----------
+  // A swarm of flow particles painting trails + breathing nebula orbs,
+  // all advected by a curl-ish noise field. This is what gets mirrored.
+
+  const PARTN = 170; // capped particle count (density without killing fps)
+  const parts = [];
+  function initParts() {
+    parts.length = 0;
+    for (let i = 0; i < PARTN; i++) {
+      parts.push({
+        x: Math.random() * SEEDSZ,
+        y: Math.random() * SEEDSZ,
+        life: Math.random(),
+        hue: Math.random(),
+        sp: 0.6 + Math.random() * 1.4,
+      });
+    }
+  }
+  initParts();
+
+  // pointer state (in seed-space, normalized 0..1)
+  let pmx = 0.5, pmy = 0.5;     // target
+  let mx = 0.5, my = 0.5;       // smoothed
+  let mvel = 0;                  // pointer speed -> turbulence
+  let lastPX = 0.5, lastPY = 0.5;
+  let idleDrift = 0;             // time since last real pointer input
+
+  let bursts = []; // color explosions {x,y,r,max,hue}
+
+  let segments = 12;            // symmetry order (mirror pairs)
+  let frozen = false;
+  let zoom = 1.0;               // gentle auto + scroll-less default
+  let t = 0;
+
+  function field(x, y, time) {
+    // curl-like direction from two offset noise samples (full-buffer turbulent flow)
+    const s = 0.0042;
+    const warp = 2.6 + mvel * 8.0;
+    const n1 = noise2(x * s + time * 0.06, y * s - time * 0.05);
+    const n2 = noise2((x + 100) * s - time * 0.04, (y - 40) * s + time * 0.06);
+    let ang = (n1 * 12.566) + (n2 - 0.5) * warp;
+    // pointer adds a swirl that bends nearby flow -> responsive turbulence
+    const cx = mx * SEEDSZ, cy = my * SEEDSZ;
+    const dx = x - cx, dy = y - cy;
+    const d = Math.hypot(dx, dy) + 0.001;
+    const swirl = (0.6 + mvel * 6.0) / (1 + d * 0.010);
+    ang += swirl * (n1 - 0.5) * 3.0 + Math.atan2(dy, dx) * swirl * 0.3;
+    return ang;
+  }
+
+  function stepSeed(dt) {
+    // light fade -> luminous trails, never full clear so the field stays alive & dense
+    sctx.globalCompositeOperation = 'source-over';
+    sctx.fillStyle = 'rgba(7,3,16,0.060)';
+    sctx.fillRect(0, 0, SEEDSZ, SEEDSZ);
+
+    sctx.globalCompositeOperation = 'lighter';
+
+    const time = t;
+    const half = SEEDSZ / 2;
+
+    // breathing nebula orbs spread across the WHOLE buffer -> fills the radius w/ color
+    const orbN = 7;
+    for (let i = 0; i < orbN; i++) {
+      const ph = i / orbN * 6.2831853;
+      const ox = SEEDSZ * (0.5 + 0.40 * Math.sin(time * 0.21 + ph * 1.3));
+      const oy = SEEDSZ * (0.5 + 0.40 * Math.cos(time * 0.17 + ph * 1.7));
+      const rr = SEEDSZ * (0.16 + 0.07 * (0.5 + 0.5 * Math.sin(time * 0.5 + ph)));
+      const c = paletteAt(time * 0.04 + i / orbN * 1.7);
+      const g = sctx.createRadialGradient(ox, oy, 0, ox, oy, rr);
+      g.addColorStop(0, `rgba(${c[0]|0},${c[1]|0},${c[2]|0},0.30)`);
+      g.addColorStop(0.5, `rgba(${c[0]|0},${c[1]|0},${c[2]|0},0.10)`);
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      sctx.fillStyle = g;
+      sctx.beginPath(); sctx.arc(ox, oy, rr, 0, 6.2831853); sctx.fill();
+    }
+
+    // flow particles — hue tied to RADIUS+angle so every wedge spans the full palette
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i];
+      const ang = field(p.x, p.y, time);
+      const step = (1.6 + mvel * 6.0) * p.sp;
+      const nx = p.x + Math.cos(ang) * step;
+      const ny = p.y + Math.sin(ang) * step;
+
+      // polychromatic mapping: distance from center + own hue + time
+      const rad = Math.hypot(p.x - half, p.y - half) / half; // 0..~1.4
+      const c = paletteAt(time * 0.05 + rad * 0.9 + p.hue * 0.5);
+      const a = 0.16 + 0.26 * Math.sin(p.life * 3.14159);
+      sctx.strokeStyle = `rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a})`;
+      sctx.lineWidth = 1.2 + 2.6 * Math.sin(p.life * 3.14159);
+      sctx.beginPath();
+      sctx.moveTo(p.x, p.y);
+      sctx.lineTo(nx, ny);
+      sctx.stroke();
+      // glowing head -> sparkle/jewel facets in the mirror
+      sctx.fillStyle = `rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a*0.9})`;
+      sctx.beginPath(); sctx.arc(nx, ny, sctx.lineWidth * 0.7, 0, 6.2831853); sctx.fill();
+
+      p.x = nx; p.y = ny;
+      p.life += dt * 0.22;
+      // respawn keeps density steady & spread across the full buffer
+      if (p.life > 1 || nx < -10 || nx > SEEDSZ + 10 || ny < -10 || ny > SEEDSZ + 10) {
+        if (Math.random() < 0.45) {
+          // some near pointer for responsiveness
+          p.x = mx * SEEDSZ + (Math.random() - 0.5) * SEEDSZ * 0.4;
+          p.y = my * SEEDSZ + (Math.random() - 0.5) * SEEDSZ * 0.4;
+        } else {
+          p.x = Math.random() * SEEDSZ;
+          p.y = Math.random() * SEEDSZ;
+        }
+        p.life = 0; p.hue = Math.random();
+      }
+    }
+
+    // color bursts (clicks) — expanding luminous rings
+    for (let i = bursts.length - 1; i >= 0; i--) {
+      const b = bursts[i];
+      b.r += (b.max - b.r) * 0.12 + 2;
+      const prog = b.r / b.max;
+      const a = (1 - prog) * 0.5;
+      if (a <= 0.01 || prog >= 1) { bursts.splice(i, 1); continue; }
+      const c = paletteAt(b.hue);
+      sctx.strokeStyle = `rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a})`;
+      sctx.lineWidth = 2 + 6 * (1 - prog);
+      sctx.beginPath(); sctx.arc(b.x, b.y, b.r, 0, 6.2831853); sctx.stroke();
+      // inner glow dot
+      const g = sctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.r * 0.5);
+      g.addColorStop(0, `rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a*0.7})`);
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      sctx.fillStyle = g;
+      sctx.beginPath(); sctx.arc(b.x, b.y, b.r * 0.5, 0, 6.2831853); sctx.fill();
+    }
+
+    // gentle center darken so the convergence point in the mirror doesn't blow out,
+    // and a tiny bright jewel core for a focal sparkle.
+    sctx.globalCompositeOperation = 'source-over';
+    const vg = sctx.createRadialGradient(half, half, 0, half, half, half * 0.34);
+    vg.addColorStop(0, 'rgba(7,3,16,0.55)');
+    vg.addColorStop(1, 'rgba(7,3,16,0)');
+    sctx.fillStyle = vg;
+    sctx.beginPath(); sctx.arc(half, half, half * 0.34, 0, 6.2831853); sctx.fill();
+
+    sctx.globalCompositeOperation = 'lighter';
+    const core = paletteAt(time * 0.07 + 0.5);
+    const cr = half * (0.05 + 0.02 * (0.5 + 0.5 * Math.sin(time * 1.3)));
+    const cg2 = sctx.createRadialGradient(half, half, 0, half, half, cr);
+    cg2.addColorStop(0, `rgba(${core[0]|0},${core[1]|0},${core[2]|0},0.5)`);
+    cg2.addColorStop(1, 'rgba(0,0,0,0)');
+    sctx.fillStyle = cg2;
+    sctx.beginPath(); sctx.arc(half, half, cr, 0, 6.2831853); sctx.fill();
+
+    sctx.globalCompositeOperation = 'source-over';
+  }
+
+  // ---------- kaleidoscope composite ----------
+  // Build one mirrored wedge tile, then stamp it 'segments' times around center.
+  function renderKaleido() {
+    const seg = segments;
+    const wedgeAngle = Math.PI / seg; // half-segment; mirror gives full segment
+
+    // 1) draw the seed into the wedge buffer as a triangular slice (clipped),
+    //    sampling from a moving region of the seed so it drifts/zooms.
+    wctx.setTransform(1, 0, 0, 1, 0, 0);
+    wctx.clearRect(0, 0, SEEDSZ, SEEDSZ);
+
+    // source sampling transform: a slow rotation + breathing zoom + pointer offset
+    const z = zoom * (1.0 + 0.06 * Math.sin(t * 0.4));
+    const srcRot = t * 0.05;
+    const half = SEEDSZ / 2;
+
+    wctx.save();
+    // clip to a thin pie wedge originating at center
+    wctx.beginPath();
+    wctx.moveTo(half, half);
+    const big = SEEDSZ * 1.6;
+    wctx.arc(half, half, big, -wedgeAngle, wedgeAngle);
+    wctx.closePath();
+    wctx.clip();
+
+    // draw seed centered, rotated, zoomed, nudged by pointer
+    wctx.translate(half, half);
+    wctx.rotate(srcRot);
+    wctx.scale(z, z);
+    const off = (mx - 0.5) * SEEDSZ * 0.4;
+    const off2 = (my - 0.5) * SEEDSZ * 0.4;
+    wctx.translate(-half + off, -half + off2);
+    wctx.drawImage(seed, 0, 0);
+    wctx.restore();
+
+    // 2) composite wedges around the destination center on the view canvas.
+    vctx.setTransform(1, 0, 0, 1, 0, 0);
+    // scale factor: fit wedge buffer's center to the screen center, sized to cover R
+    const scale = (R / half) * DPR * 0.0 + (R / half); // = R/half (cover screen radius)
+
+    // We rotate the whole composite slowly for hypnotic drift.
+    const baseRot = t * 0.08;
+
+    for (let i = 0; i < seg; i++) {
+      const rot = baseRot + (i * 2 * wedgeAngle);
+      // normal wedge
+      vctx.setTransform(scale, 0, 0, scale, CX, CY);
+      vctx.rotate(rot);
+      vctx.translate(-half, -half);
+      vctx.drawImage(wedge, 0, 0);
+      // mirrored wedge (reflection) -> seamless kaleidoscope symmetry
+      vctx.setTransform(scale, 0, 0, scale, CX, CY);
+      vctx.rotate(rot);
+      vctx.scale(1, -1);
+      vctx.translate(-half, -half);
+      vctx.drawImage(wedge, 0, 0);
+    }
+    vctx.setTransform(1, 0, 0, 1, 0, 0);
+
+    // soft outer color halo (screen) -> ties the rim together, fills inter-wedge gaps
+    vctx.globalCompositeOperation = 'screen';
+    const cc = paletteAt(t * 0.05 + 0.3);
+    const cg = vctx.createRadialGradient(CX, CY, R * 0.15, CX, CY, R * 0.95);
+    cg.addColorStop(0, 'rgba(0,0,0,0)');
+    cg.addColorStop(0.6, `rgba(${cc[0]|0},${cc[1]|0},${cc[2]|0},0.06)`);
+    cg.addColorStop(1, 'rgba(0,0,0,0)');
+    vctx.fillStyle = cg;
+    vctx.fillRect(0, 0, W, H);
+    vctx.globalCompositeOperation = 'source-over';
+  }
+
+  // ---------- main loop ----------
+  let last = performance.now();
+  let fpsSmooth = 60, fpsAccum = 0, fpsCount = 0, fpsTimer = 0;
+  const sSeg = document.getElementById('sSeg');
+  const sPal = document.getElementById('sPal');
+  const sFps = document.getElementById('sFps');
+
+  function frame(now) {
+    let dt = (now - last) / 1000;
+    last = now;
+    if (dt > 0.05) dt = 0.05; // clamp big gaps
+
+    // smooth pointer + compute velocity-driven turbulence
+    mx += (pmx - mx) * 0.10;
+    my += (pmy - my) * 0.10;
+    const dvx = pmx - lastPX, dvy = pmy - lastPY;
+    const inst = Math.min(Math.hypot(dvx, dvy) * 6, 1.2);
+    // idle baseline so the field always breathes even with no input; motion adds on top
+    const idle = 0.16 + 0.10 * Math.sin(t * 0.6) + 0.06 * Math.sin(t * 1.7 + 1.3);
+    mvel += (Math.max(inst, idle) - mvel) * 0.12;
+    lastPX = pmx; lastPY = pmy;
+    // slow auto-drift of swirl center when the user isn't actively steering
+    idleDrift += dt;
+    if (idleDrift > 0.4) {
+      pmx += (0.5 + 0.34 * Math.sin(t * 0.23) - pmx) * 0.015;
+      pmy += (0.5 + 0.34 * Math.cos(t * 0.19) - pmy) * 0.015;
+    }
+
+    if (!frozen) {
+      t += dt;
+      stepSeed(dt);
+    }
+    renderKaleido();
+
+    // fps meter
+    fpsAccum += 1 / Math.max(dt, 0.0001); fpsCount++; fpsTimer += dt;
+    if (fpsTimer >= 0.5) {
+      fpsSmooth = Math.round(fpsAccum / fpsCount);
+      sFps.textContent = fpsSmooth;
+      fpsAccum = 0; fpsCount = 0; fpsTimer = 0;
+    }
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  // ---------- interaction ----------
+  function setPointer(clientX, clientY) {
+    // map screen coords to seed-space 0..1, relative to center -> drives swirl
+    const nx = clientX / window.innerWidth;
+    const ny = clientY / window.innerHeight;
+    pmx = nx; pmy = ny;
+    idleDrift = 0; // user is steering -> suspend auto-drift
+    fadeHint();
+  }
+  window.addEventListener('mousemove', e => setPointer(e.clientX, e.clientY));
+  window.addEventListener('touchmove', e => {
+    if (e.touches[0]) setPointer(e.touches[0].clientX, e.touches[0].clientY);
+  }, { passive: true });
+
+  function addBurst(clientX, clientY) {
+    // place burst in seed-space mapped roughly to pointer offset from center
+    const half = SEEDSZ / 2;
+    const ox = half + (clientX / window.innerWidth - 0.5) * SEEDSZ * 0.4;
+    const oy = half + (clientY / window.innerHeight - 0.5) * SEEDSZ * 0.4;
+    bursts.push({ x: ox, y: oy, r: 2, max: SEEDSZ * (0.4 + Math.random() * 0.4), hue: Math.random() });
+    // also one at mirror center for symmetry pop
+    bursts.push({ x: half, y: half, r: 2, max: SEEDSZ * 0.6, hue: (t * 0.05) % 1 });
+    fadeHint();
+  }
+  window.addEventListener('mousedown', e => addBurst(e.clientX, e.clientY));
+  window.addEventListener('touchstart', e => {
+    if (e.touches[0]) addBurst(e.touches[0].clientX, e.touches[0].clientY);
+  }, { passive: true });
+
+  // scroll -> symmetry order
+  function changeSeg(delta) {
+    segments = Math.max(3, Math.min(24, segments + delta));
+    sSeg.textContent = segments;
+    fadeHint();
+  }
+  window.addEventListener('wheel', e => {
+    e.preventDefault();
+    changeSeg(e.deltaY > 0 ? -1 : 1);
+  }, { passive: false });
+
+  // pinch -> symmetry (basic)
+  let pinchStart = 0;
+  window.addEventListener('touchmove', e => {
+    if (e.touches.length === 2) {
+      const d = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY);
+      if (pinchStart === 0) pinchStart = d;
+      else if (Math.abs(d - pinchStart) > 40) {
+        changeSeg(d > pinchStart ? 1 : -1);
+        pinchStart = d;
+      }
+    }
+  }, { passive: true });
+  window.addEventListener('touchend', () => { pinchStart = 0; });
+
+  // keyboard
+  function cyclePalette() {
+    palIdx = (palIdx + 1) % PAL_NAMES.length;
+    pal = PALETTES[PAL_NAMES[palIdx]];
+    sPal.textContent = PAL_NAMES[palIdx];
+    fadeHint();
+  }
+  window.addEventListener('keydown', e => {
+    if (e.code === 'Space') { e.preventDefault(); cyclePalette(); }
+    else if (e.key === 'f' || e.key === 'F') { frozen = !frozen; }
+    else if (e.key === 'ArrowUp') changeSeg(1);
+    else if (e.key === 'ArrowDown') changeSeg(-1);
+  });
+
+  // hint fade
+  let hintTimer = null;
+  const hintEl = document.getElementById('hint');
+  function fadeHint() {
+    if (hintTimer) return;
+    hintTimer = setTimeout(() => hintEl.classList.add('fade'), 4200);
+  }
+  fadeHint();
+
+  // re-init particles on resize so density matches new buffer
+  let rzT = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(rzT);
+    rzT = setTimeout(initParts, 120);
+  });
+
+  // expose a tiny bit for self-check
+  window.__kaleido = {
+    get fps(){ return fpsSmooth; },
+    get seg(){ return segments; },
+    burst(){ addBurst(window.innerWidth*0.7, window.innerHeight*0.4); },
+    pal(){ cyclePalette(); },
+  };
+})();
+</script>
+</body>
+</html>

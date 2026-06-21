@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<title>MURMUR — 입자 군집</title>
+<style>
+  :root{
+    --ink:#04060d;
+  }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:var(--ink); }
+  body{
+    position:fixed; inset:0;
+    font-family:"Helvetica Neue",-apple-system,"Segoe UI",Inter,system-ui,sans-serif;
+    color:#eaf0ff;
+    -webkit-font-smoothing:antialiased;
+    cursor:crosshair;
+    touch-action:none;
+    overscroll-behavior:none;
+  }
+  #stage{ position:absolute; inset:0; display:block; }
+
+  /* 비네팅 + 미세한 발광 코어 (트레일을 가리지 않게 CSS 오버레이로) */
+  .vignette{
+    position:absolute; inset:0; pointer-events:none; z-index:2;
+    background:
+      radial-gradient(120% 100% at 50% 42%, transparent 38%, rgba(2,4,10,.55) 78%, rgba(1,2,6,.92) 100%);
+    mix-blend-mode:normal;
+  }
+  /* 필름 그레인 */
+  .grain{
+    position:absolute; inset:-50%; pointer-events:none; z-index:3; opacity:.05;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    animation:grain 1.1s steps(3) infinite;
+  }
+  @keyframes grain{
+    0%{transform:translate(0,0)} 33%{transform:translate(-3%,2%)} 66%{transform:translate(2%,-2%)} 100%{transform:translate(0,0)}
+  }
+
+  /* 캡션 */
+  .hud{ position:absolute; z-index:4; pointer-events:none; user-select:none; }
+  .title{
+    left:clamp(20px,4vw,54px); top:clamp(20px,4vh,46px);
+    font-weight:700; letter-spacing:.34em; font-size:clamp(13px,1.5vw,16px);
+    text-transform:uppercase;
+    text-shadow:0 0 22px rgba(120,170,255,.35);
+  }
+  .title small{
+    display:block; margin-top:9px; font-weight:400; letter-spacing:.22em;
+    font-size:clamp(9px,1vw,11px); color:rgba(200,214,245,.55);
+  }
+  .meta{
+    right:clamp(20px,4vw,54px); top:clamp(22px,4vh,48px); text-align:right;
+    font-variant-numeric:tabular-nums; font-size:11px; letter-spacing:.14em;
+    color:rgba(170,190,225,.5);
+  }
+  .meta b{ color:rgba(225,236,255,.9); font-weight:600; }
+  .hint{
+    left:50%; bottom:clamp(20px,4vh,40px); transform:translateX(-50%);
+    font-size:11px; letter-spacing:.28em; text-transform:uppercase;
+    color:rgba(190,206,240,.62); white-space:nowrap;
+    transition:opacity 1.1s ease; text-align:center;
+  }
+  .hint i{ font-style:normal; color:rgba(140,200,255,.9); }
+  .hint.gone{ opacity:0; }
+  @media (max-width:520px){
+    .meta{ display:none; }
+    .hint{ font-size:9.5px; letter-spacing:.18em; }
+  }
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <div class="vignette"></div>
+  <div class="grain"></div>
+
+  <div class="hud title">MURMUR<small>입자 군집 / boids field 002</small></div>
+  <div class="hud meta">
+    <div><b id="m-count">0</b> agents</div>
+    <div><b id="m-fps">60</b> fps</div>
+    <div>order <b id="m-order">0.00</b></div>
+  </div>
+  <div class="hud hint" id="hint">
+    <i>이동</i> 끌어당김 &nbsp;·&nbsp; <i>누르기</i> 소용돌이 &nbsp;·&nbsp; <i>스크롤</i> 색·기류
+  </div>
+
+<script>
+(() => {
+  "use strict";
+
+  const cv  = document.getElementById('stage');
+  const ctx = cv.getContext('2d', { alpha:false });
+
+  // ---------- 환경 ----------
+  let W=0, H=0, DPR=1;
+  const isTouch = matchMedia('(pointer:coarse)').matches;
+
+  // ---------- 상태 (typed arrays) ----------
+  let N = 0;
+  let px, py, vx, vy, ppx, ppy; // 위치, 속도, 이전위치
+
+  // 공간 해시 그리드
+  let cell = 58, cols=0, rows=0, head=null, nxt=null;
+
+  // 파라미터
+  const P = {
+    sepR: 26, neiR: 58,
+    maxSpeed: 3.25, maxForce: 0.075,
+    wSep: 1.85, wAli: 1.0, wCoh: 0.92, wFlow: 0.62,
+    margin: 90, turn: 0.16
+  };
+
+  // 무드(스크롤로 제어): 색상 베이스 + 난류 + 에너지
+  let mood = 0.0;          // 0..1
+  let baseHue = 212;       // 도
+  let turbScale = 1.0;
+  let energy = 1.0;
+
+  // 포인터
+  const ptr = { x:-9999, y:-9999, active:false, down:false, vx:0, vy:0, lx:0, ly:0 };
+
+  // ---------- 초기화 / 리사이즈 ----------
+  function resize(){
+    DPR = Math.min(window.devicePixelRatio || 1, isTouch ? 1.75 : 2);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width  = Math.floor(W*DPR);
+    cv.height = Math.floor(H*DPR);
+    cv.style.width = W+'px'; cv.style.height = H+'px';
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+
+    cols = Math.max(1, Math.ceil(W/cell)+1);
+    rows = Math.max(1, Math.ceil(H/cell)+1);
+    head = new Int32Array(cols*rows);
+    nxt  = null; // N 결정 후 할당
+
+    // 화면 면적 기반 개체 수
+    const area = W*H;
+    let target = Math.round(area / (isTouch ? 1500 : 720));
+    target = Math.max(420, Math.min(target, isTouch ? 1300 : 3000));
+    if(target !== N){ allocate(target); }
+    else if(!nxt){ nxt = new Int32Array(N); }
+
+    // 배경 1회 클리어 — 첫 페인트가 곧 작품
+    ctx.fillStyle = '#04060d';
+    ctx.fillRect(0,0,W,H);
+    document.getElementById('m-count').textContent = N;
+  }
+
+  function allocate(n){
+    N = n;
+    px=new Float32Array(N); py=new Float32Array(N);
+    vx=new Float32Array(N); vy=new Float32Array(N);
+    ppx=new Float32Array(N); ppy=new Float32Array(N);
+    nxt=new Int32Array(N);
+    for(let i=0;i<N;i++){
+      const x = Math.random()*W, y = Math.random()*H;
+      px[i]=x; py[i]=y; ppx[i]=x; ppy[i]=y;
+      const a = Math.random()*Math.PI*2, s = 0.6+Math.random()*1.4;
+      vx[i]=Math.cos(a)*s; vy[i]=Math.sin(a)*s;
+    }
+  }
+
+  // ---------- 흐름장 (가벼운 의사 컬-노이즈) ----------
+  function flowAngle(x,y,t){
+    const sx=0.00150*turbScale, sy=0.00150*turbScale;
+    let a = Math.sin(x*sx + t*0.20) + Math.cos(y*sy - t*0.14);
+    let b = Math.sin((x+y)*0.00095*turbScale + t*0.085);
+    let c = Math.cos((x-y)*0.00120*turbScale - t*0.11);
+    return (a+b+c) * 1.9;
+  }
+
+  // ---------- 시뮬레이션 ----------
+  function step(t){
+    // 그리드 적재
+    head.fill(-1);
+    const invCell = 1/cell;
+    for(let i=0;i<N;i++){
+      let cx = px[i]*invCell|0, cy = py[i]*invCell|0;
+      if(cx<0)cx=0; else if(cx>=cols)cx=cols-1;
+      if(cy<0)cy=0; else if(cy>=rows)cy=rows-1;
+      const ci = cx + cy*cols;
+      nxt[i]=head[ci]; head[ci]=i;
+    }
+
+    const neiR2 = P.neiR*P.neiR, sepR2 = P.sepR*P.sepR;
+    const maxSpeed = P.maxSpeed*energy, maxForce = P.maxForce;
+    let orderSum = 0;
+
+    for(let i=0;i<N;i++){
+      const x=px[i], y=py[i], ix=vx[i], iy=vy[i];
+
+      let aX=0,aY=0, cX=0,cY=0, sX=0,sY=0, cnt=0;
+
+      let gx = x*invCell|0, gy = y*invCell|0;
+      if(gx<0)gx=0; else if(gx>=cols)gx=cols-1;
+      if(gy<0)gy=0; else if(gy>=rows)gy=rows-1;
+
+      for(let oy=-1;oy<=1;oy++){
+        const ry=gy+oy; if(ry<0||ry>=rows) continue;
+        for(let ox=-1;ox<=1;ox++){
+          const rx=gx+ox; if(rx<0||rx>=cols) continue;
+          let j=head[rx+ry*cols];
+          while(j!==-1){
+            if(j!==i){
+              const dx=px[j]-x, dy=py[j]-y;
+              const d2=dx*dx+dy*dy;
+              if(d2<neiR2 && d2>0.0001){
+                aX+=vx[j]; aY+=vy[j];
+                cX+=px[j]; cY+=py[j];
+                if(d2<sepR2){
+                  const inv=1/d2;          // 가까울수록 강하게
+                  sX-=dx*inv; sY-=dy*inv;
+                }
+                cnt++;
+              }
+            }
+            j=nxt[j];
+          }
+        }
+      }
+
+      let fx=0, fy=0;
+
+      if(cnt>0){
+        // 정렬
+        let alx=aX/cnt, aly=aY/cnt;
+        let al=Math.hypot(alx,aly)||1;
+        alx=alx/al*maxSpeed-ix; aly=aly/al*maxSpeed-iy;
+        // 응집
+        let cox=cX/cnt-x, coy=cY/cnt-y;
+        let co=Math.hypot(cox,coy)||1;
+        cox=cox/co*maxSpeed-ix; coy=coy/co*maxSpeed-iy;
+        // 분리
+        let se=Math.hypot(sX,sY);
+        if(se>0){ sX=sX/se*maxSpeed-ix; sY=sY/se*maxSpeed-iy; }
+
+        fx += alx*P.wAli + cox*P.wCoh + sX*P.wSep;
+        fy += aly*P.wAli + coy*P.wCoh + sY*P.wSep;
+
+        // order parameter (정렬도)
+        orderSum += Math.abs((ix*alx+iy*aly)) < 1e9 ? (Math.hypot(aX,aY)/(cnt)) : 0;
+      }
+
+      // 흐름장
+      const fa = flowAngle(x,y,t);
+      const fdx=Math.cos(fa)*maxSpeed-ix, fdy=Math.sin(fa)*maxSpeed-iy;
+      fx += fdx*P.wFlow; fy += fdy*P.wFlow;
+
+      // 포인터 힘
+      if(ptr.active){
+        const dx=ptr.x-x, dy=ptr.y-y;
+        const dist=Math.hypot(dx,dy);
+        if(dist<300 && dist>0.001){
+          const nx=dx/dist, ny=dy/dist;
+          const falloff=(1-dist/300);
+          if(ptr.down){
+            // 소용돌이 + 척력
+            const tx=-ny, ty=nx;
+            const swirl = 5.2*falloff;
+            const push  = 3.4*falloff;
+            fx += tx*swirl - nx*push;
+            fy += ty*swirl - ny*push;
+          }else{
+            // 부드러운 끌어당김 + 포인터 속도 끌림
+            const pull = 2.0*falloff;
+            fx += nx*pull + ptr.vx*0.10*falloff;
+            fy += ny*pull + ptr.vy*0.10*falloff;
+          }
+        }
+      }
+
+      // 힘 제한
+      const fm=Math.hypot(fx,fy);
+      if(fm>maxForce){ fx=fx/fm*maxForce; fy=fy/fm*maxForce; }
+
+      let nvx=ix+fx, nvy=iy+fy;
+
+      // 경계 — 부드럽게 안으로 조향(랩 대신 자연스러운 선회)
+      if(x<P.margin)      nvx+=P.turn*(1-x/P.margin);
+      else if(x>W-P.margin) nvx-=P.turn*(1-(W-x)/P.margin);
+      if(y<P.margin)      nvy+=P.turn*(1-y/P.margin);
+      else if(y>H-P.margin) nvy-=P.turn*(1-(H-y)/P.margin);
+
+      // 속도 제한
+      let sp=Math.hypot(nvx,nvy);
+      if(sp>maxSpeed){ nvx=nvx/sp*maxSpeed; nvy=nvy/sp*maxSpeed; }
+      else if(sp<0.35){ const s=0.35/(sp||1); nvx*=s; nvy*=s; }
+
+      vx[i]=nvx; vy[i]=nvy;
+      ppx[i]=x;  ppy[i]=y;
+      px[i]=x+nvx; py[i]=y+nvy;
+
+      // 완전 이탈 시 반대편으로 (안전망)
+      if(px[i]<-20){px[i]=W+19;ppx[i]=px[i];}
+      else if(px[i]>W+20){px[i]=-19;ppx[i]=px[i];}
+      if(py[i]<-20){py[i]=H+19;ppy[i]=py[i];}
+      else if(py[i]>H+20){py[i]=-19;ppy[i]=py[i];}
+    }
+
+    return orderSum / (N*P.maxSpeed); // 대략적 정렬 지표
+  }
+
+  // ---------- 렌더 ----------
+  const BUCKETS = 42;
+  const segX0=[], segY0=[], segX1=[], segY1=[];
+  for(let b=0;b<BUCKETS;b++){ segX0[b]=[];segY0[b]=[];segX1[b]=[];segY1[b]=[]; }
+
+  function render(orderApprox){
+    // 모션 블러 — 반투명 배경 도포 (잔상 유지)
+    ctx.globalCompositeOperation='source-over';
+    // 배경에 미세한 청록/남색 그라데이션 톤을 섞어 깊이감
+    ctx.fillStyle = 'rgba(4,6,13,0.115)';
+    ctx.fillRect(0,0,W,H);
+
+    // 버킷 비우기
+    for(let b=0;b<BUCKETS;b++){ segX0[b].length=0;segY0[b].length=0;segX1[b].length=0;segY1[b].length=0; }
+
+    // 색상: 진행 방향 → 색조 분산, 베이스는 무드/스크롤로 회전
+    const TAU=Math.PI*2;
+    for(let i=0;i<N;i++){
+      const ang=Math.atan2(vy[i],vx[i]);            // -PI..PI
+      let bb=((ang/TAU)+0.5)*BUCKETS|0;
+      if(bb<0)bb=0; else if(bb>=BUCKETS)bb=BUCKETS-1;
+      segX0[bb].push(ppx[i]); segY0[bb].push(ppy[i]);
+      segX1[bb].push(px[i]);  segY1[bb].push(py[i]);
+    }
+
+    // 가산 발광
+    ctx.globalCompositeOperation='lighter';
+    ctx.lineCap='round';
+    const sat = 62 + mood*26;            // 채도
+    const lig = 56 + mood*8;             // 밝기
+    const hueSpread = 96 + mood*70;      // 방향별 색 분산 폭
+    const alpha = 0.46;
+
+    for(let b=0;b<BUCKETS;b++){
+      const arrX0=segX0[b]; const n=arrX0.length; if(!n) continue;
+      const arrY0=segY0[b], arrX1=segX1[b], arrY1=segY1[b];
+      const frac=b/BUCKETS;
+      const hue=( baseHue + (frac-0.5)*hueSpread ) % 360;
+      ctx.strokeStyle = `hsla(${hue<0?hue+360:hue},${sat}%,${lig}%,${alpha})`;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for(let k=0;k<n;k++){
+        ctx.moveTo(arrX0[k],arrY0[k]);
+        ctx.lineTo(arrX1[k],arrY1[k]);
+      }
+      ctx.stroke();
+    }
+
+    // 포인터 코어 글로우
+    if(ptr.active){
+      const r = ptr.down ? 150 : 86;
+      const g = ctx.createRadialGradient(ptr.x,ptr.y,0,ptr.x,ptr.y,r);
+      const ph = (baseHue+ (ptr.down?40:-30) +360)%360;
+      g.addColorStop(0, `hsla(${ph},90%,68%,${ptr.down?0.30:0.18})`);
+      g.addColorStop(1, 'hsla(0,0%,0%,0)');
+      ctx.fillStyle=g;
+      ctx.beginPath(); ctx.arc(ptr.x,ptr.y,r,0,TAU); ctx.fill();
+    }
+
+    ctx.globalCompositeOperation='source-over';
+  }
+
+  // ---------- 루프 ----------
+  let last=performance.now(), tSim=0, fpsEMA=60, orderEMA=0, frame=0;
+  const mFps=document.getElementById('m-fps'), mOrder=document.getElementById('m-order');
+
+  function loop(now){
+    let dt=(now-last)/1000; last=now;
+    if(dt>0.05) dt=0.05;            // 탭 복귀 시 폭주 방지
+    tSim += dt;
+
+    // 포인터 속도 감쇠
+    ptr.vx*=0.82; ptr.vy*=0.82;
+
+    const o = step(tSim);
+    render(o);
+
+    // HUD
+    frame++;
+    if(frame%8===0){
+      fpsEMA = fpsEMA*0.8 + (1/Math.max(dt,1e-4))*0.2;
+      orderEMA = orderEMA*0.8 + o*0.2;
+      mFps.textContent = Math.round(Math.min(fpsEMA,60));
+      mOrder.textContent = Math.min(0.99, orderEMA*2.3).toFixed(2);
+    }
+    requestAnimationFrame(loop);
+  }
+
+  // ---------- 입력 ----------
+  function setPtr(x,y){
+    if(ptr.x>-9000){ ptr.vx=x-ptr.lx; ptr.vy=y-ptr.ly; }
+    ptr.lx=x; ptr.ly=y; ptr.x=x; ptr.y=y; ptr.active=true;
+    killHint();
+  }
+  cv.addEventListener('pointermove', e=>{ setPtr(e.clientX,e.clientY); });
+  cv.addEventListener('pointerdown', e=>{ cv.setPointerCapture?.(e.pointerId); ptr.down=true; setPtr(e.clientX,e.clientY); });
+  window.addEventListener('pointerup', ()=>{ ptr.down=false; });
+  cv.addEventListener('pointerleave', ()=>{ if(!ptr.down) ptr.active=false; });
+
+  // 스크롤/휠 → 무드(색·기류·에너지)
+  function applyScroll(dy){
+    mood += dy*0.00045;
+    if(mood<0)mood=0; else if(mood>1)mood=1;
+    baseHue = (200 + mood*200) % 360;            // 남색→자홍→청록 순환
+    turbScale = 0.7 + mood*1.6;
+    energy = 0.85 + mood*0.7;
+    killHint();
+  }
+  window.addEventListener('wheel', e=>{ applyScroll(e.deltaY); }, {passive:true});
+
+  // 모바일: 두 손가락 스와이프로 무드 (단일 터치는 보텍스/끌림으로 사용)
+  let lastTouchY=null;
+  window.addEventListener('touchmove', e=>{
+    if(e.touches.length>=2){
+      const y=e.touches[0].clientY;
+      if(lastTouchY!=null) applyScroll((lastTouchY-y)*2.2);
+      lastTouchY=y;
+    }
+  }, {passive:true});
+  window.addEventListener('touchend', ()=>{ lastTouchY=null; if(!ptr.down) ptr.active=false; });
+
+  // 힌트 자동 숨김
+  const hintEl=document.getElementById('hint');
+  let hintTimer=setTimeout(()=>hintEl.classList.add('gone'), 6000);
+  function killHint(){ if(hintTimer){ clearTimeout(hintTimer); hintTimer=null; } hintEl.classList.add('gone'); }
+
+  window.addEventListener('resize', resize, {passive:true});
+
+  // ---------- 부팅 ----------
+  resize();
+  // 자율 시작 모드: 화면 중앙 약한 어트랙터로 즉시 군무가 형성되게
+  ptr.x=W*0.5; ptr.y=H*0.42; ptr.active=true; ptr.down=false;
+  setTimeout(()=>{ if(ptr.lx===0){ ptr.active=false; } }, 2200);
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

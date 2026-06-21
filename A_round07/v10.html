@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>GRAVID — N-body 우주 충돌</title>
+<style>
+  :root{ color-scheme:dark; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#02030a; }
+  body{
+    font-family:"Helvetica Neue",Inter,system-ui,sans-serif;
+    cursor:crosshair;
+    -webkit-tap-highlight-color:transparent;
+    touch-action:none;
+  }
+  #stage{ position:fixed; inset:0; display:block; }
+  /* gauzy vignette + grain feel on top */
+  #vig{
+    position:fixed; inset:0; pointer-events:none; z-index:5;
+    background:
+      radial-gradient(120% 120% at 50% 50%, transparent 52%, rgba(2,3,10,.55) 88%, rgba(2,3,10,.92) 100%);
+    mix-blend-mode:multiply;
+  }
+  /* HUD */
+  #hud{
+    position:fixed; left:0; right:0; top:0; z-index:10;
+    display:flex; justify-content:space-between; align-items:flex-start;
+    padding:18px 22px; pointer-events:none;
+    font-feature-settings:"tnum" 1;
+  }
+  .brand{ pointer-events:none; }
+  .brand h1{
+    font-size:13px; letter-spacing:.62em; font-weight:600;
+    color:#eaf0ff; text-indent:.62em;
+    text-shadow:0 0 18px rgba(120,160,255,.55);
+  }
+  .brand p{
+    margin-top:7px; font-size:10px; letter-spacing:.28em; font-weight:400;
+    color:rgba(180,196,236,.62); text-indent:.28em; max-width:300px; line-height:1.7;
+  }
+  #meter{
+    text-align:right; pointer-events:none;
+    font-variant-numeric:tabular-nums;
+  }
+  #meter .big{
+    font-size:11px; letter-spacing:.22em; color:rgba(170,190,255,.85);
+  }
+  #meter .small{
+    margin-top:6px; font-size:9.5px; letter-spacing:.14em; color:rgba(150,170,220,.5);
+    line-height:1.85;
+  }
+  #meter b{ color:#bcd0ff; font-weight:500; }
+  /* bottom legend / controls */
+  #foot{
+    position:fixed; left:0; right:0; bottom:0; z-index:10;
+    display:flex; justify-content:center; gap:8px; flex-wrap:wrap;
+    padding:0 16px 18px; pointer-events:none;
+  }
+  .chip{
+    pointer-events:auto; cursor:pointer; user-select:none;
+    font-size:10px; letter-spacing:.16em; font-weight:500;
+    color:rgba(200,214,250,.78);
+    padding:8px 13px; border-radius:999px;
+    background:rgba(20,26,52,.42);
+    border:1px solid rgba(120,150,240,.18);
+    backdrop-filter:blur(9px); -webkit-backdrop-filter:blur(9px);
+    transition:.22s cubic-bezier(.2,.8,.2,1);
+    white-space:nowrap;
+  }
+  .chip:hover{ color:#fff; border-color:rgba(150,180,255,.55); background:rgba(40,52,100,.5); transform:translateY(-2px); }
+  .chip:active{ transform:translateY(0) scale(.96); }
+  .chip.on{ color:#0a0e1c; background:linear-gradient(180deg,#cfe0ff,#9fb8ff); border-color:#cfe0ff; box-shadow:0 0 22px rgba(140,170,255,.45); }
+  .chip .k{ opacity:.5; font-weight:400; margin-left:6px; }
+  /* hint that fades */
+  #hint{
+    position:fixed; left:50%; top:50%; transform:translate(-50%,-50%);
+    z-index:11; pointer-events:none; text-align:center;
+    color:rgba(220,228,255,.0); transition:opacity 1.1s ease;
+    font-size:12px; letter-spacing:.34em; text-indent:.34em; font-weight:300;
+  }
+  @media (max-width:560px){
+    #hud{ padding:12px 14px; }
+    .brand p{ display:none; }
+    .brand h1{ font-size:11px; letter-spacing:.42em; }
+    #meter .small{ font-size:8.5px; }
+    .chip{ font-size:9px; padding:7px 10px; letter-spacing:.1em; }
+    .chip .k{ display:none; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="vig"></div>
+
+<div id="hud">
+  <div class="brand">
+    <h1>G R A V I D</h1>
+    <p>두 은하의 충돌 — N-body 중력 시뮬레이션. 끌어당겨 새 질량을 던지고, 클릭으로 시공을 비틀어라.</p>
+  </div>
+  <div id="meter">
+    <div class="big">— N-BODY FIELD —</div>
+    <div class="small">
+      BODIES <b id="mN">0</b><br>
+      ENERGY <b id="mE">0</b><br>
+      FPS <b id="mF">0</b>
+    </div>
+  </div>
+</div>
+
+<div id="hint">D R A G &nbsp;·&nbsp; C L I C K &nbsp;·&nbsp; S C R O L L</div>
+
+<div id="foot">
+  <div class="chip on" data-act="collide">충돌 재점화<span class="k">SPACE</span></div>
+  <div class="chip" data-act="hole">블랙홀 소환<span class="k">CLICK</span></div>
+  <div class="chip" data-act="trails">잔광<span class="k">T</span></div>
+  <div class="chip" data-act="palette">색<span class="k">C</span></div>
+  <div class="chip" data-act="burst">초신성<span class="k">B</span></div>
+</div>
+
+<script>
+(()=>{
+"use strict";
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', { alpha:false });
+let W=0,H=0,DPR=1,CX=0,CY=0;
+const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints>0;
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = Math.floor(W*DPR); cv.height = Math.floor(H*DPR);
+  cv.style.width = W+'px'; cv.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  CX = W/2; CY = H/2;
+}
+window.addEventListener('resize', resize, {passive:true});
+resize();
+
+// ---- particle field --------------------------------------------------
+// density cap by screen area for stable 60fps
+function targetCount(){
+  const area = W*H;
+  let n = Math.round(area/620);              // ~ desktop 2600-3400, mobile ~900
+  n = Math.max(420, Math.min(n, isTouch?1200:3600));
+  return n;
+}
+let N = targetCount();
+
+// SoA for speed
+let px,py,vx,vy,mass,hue,seedGal;
+function alloc(n){
+  px=new Float32Array(n); py=new Float32Array(n);
+  vx=new Float32Array(n); vy=new Float32Array(n);
+  mass=new Float32Array(n); hue=new Float32Array(n); seedGal=new Uint8Array(n);
+}
+alloc(N);
+
+// Two massive cores (the galactic centers) + an optional black hole.
+const cores = []; // {x,y,vx,vy,m, fixed}
+let blackhole = null;
+
+const G = 46.0;            // gravitational constant (tuned)
+const SOFT = 60;           // softening^2 base, scaled below
+const SOFT_CORE = 900;
+
+// palettes: each is [galA hue base, galB hue base, speedShiftSign]
+const PALETTES = [
+  { name:'ember-ice',  a:[14,42],  b:[200,232] },   // orange galaxy vs cyan galaxy
+  { name:'violet-gold', a:[268,300], b:[40,58] },
+  { name:'aurora',     a:[150,180], b:[300,330] },
+  { name:'mono-plasma',a:[210,250], b:[210,250] },
+];
+let pal = 0;
+
+function rand(a,b){ return a + Math.random()*(b-a); }
+
+// build a rotating disk galaxy around (cx,cy) moving with bulk velocity
+function spawnGalaxy(cx,cy,bvx,bvy,radius,coreMass,spin,galIdx,from,to){
+  const n = to-from;
+  for(let i=from;i<to;i++){
+    // exponential-ish disk distribution
+    const r = radius * Math.pow(Math.random(), 0.62) + 6;
+    const a = Math.random()*Math.PI*2;
+    const x = cx + Math.cos(a)*r;
+    const y = cy + Math.sin(a)*r*0.96; // slight ellipticity
+    px[i]=x; py[i]=y;
+    // orbital velocity for ~circular orbit around core: v=sqrt(GM/r)
+    const vmag = Math.sqrt(G*coreMass/(r+SOFT)) * spin;
+    vx[i] = bvx + (-Math.sin(a))*vmag;
+    vy[i] = bvy + ( Math.cos(a))*vmag*0.96;
+    mass[i] = rand(0.6,1.6);
+    seedGal[i]=galIdx;
+    // permanent per-particle hue offset within the galaxy's band (radial gradient)
+    hue[i] = (r/radius); // 0 at core .. 1 at rim, used to fan the palette band
+  }
+}
+
+function buildScene(){
+  N = targetCount();
+  if(px.length<N) alloc(N);
+  cores.length=0;
+  blackhole=null;
+  const sep = Math.min(W,H)*0.255;          // half-separation of the two nuclei
+  const R = Math.min(W,H)*0.185;            // disk radius
+  const cm = 3000;                           // core mass
+  // Two nuclei placed on a tilted axis, given a TANGENTIAL velocity so they
+  // spiral around the common barycenter (a bound prograde merger) instead of
+  // flying apart. They slowly in-spiral -> a long, photogenic collision dance.
+  const ax = Math.cos(-0.32), ay = Math.sin(-0.32); // separation axis
+  // tangential direction (perpendicular to separation axis)
+  const tx = -ay, ty = ax;
+  // orbital speed for a near-bound pair: v ~ sqrt(G*cm/(4*sep)) * factor
+  const vorb = Math.sqrt(G*cm/(2*sep)) * 0.62;
+  cores.push({ x:CX-ax*sep, y:CY-ay*sep, vx: tx*vorb, vy: ty*vorb, m:cm });
+  cores.push({ x:CX+ax*sep, y:CY+ay*sep, vx:-tx*vorb, vy:-ty*vorb, m:cm });
+  const half = Math.floor(N/2);
+  // galaxies co-rotate prograde with their orbit for graceful tidal arms
+  spawnGalaxy(cores[0].x,cores[0].y, cores[0].vx,cores[0].vy, R, cm,  1.0, 0, 0, half);
+  spawnGalaxy(cores[1].x,cores[1].y, cores[1].vx,cores[1].vy, R, cm,  1.0, 1, half, N);
+  hudN.textContent = N.toLocaleString();
+}
+
+// ---- interaction state ----------------------------------------------
+let pointer = { x:CX, y:CY, down:false, px:CX, py:CY, vx:0, vy:0, active:false };
+let attractMode = 0; // 0 none, 1 drag attractor
+let trailFade = 0.085;   // smaller => longer trails
+let trailsLong = false;
+
+const hudN=document.getElementById('mN'), hudE=document.getElementById('mE'), hudF=document.getElementById('mF');
+
+// fps
+let fps=60, lastT=performance.now(), acc=0, frames=0;
+
+// expanding shockwave rings (from collisions/bursts) — declared early so
+// physics() can push to it during core coalescence
+const shock=[];
+
+// ---- physics step ----------------------------------------------------
+function physics(dt){
+  // dt normalized; clamp for stability when tab refocuses
+  dt = Math.min(dt, 2.2);
+
+  // move cores (they attract each other -> the actual collision)
+  for(let c=0;c<cores.length;c++){
+    const A=cores[c];
+    for(let d=0;d<cores.length;d++){
+      if(d===c) continue;
+      const B=cores[d];
+      let dx=B.x-A.x, dy=B.y-A.y;
+      const r2=dx*dx+dy*dy+SOFT_CORE;
+      const inv=1/Math.sqrt(r2);
+      const f=G*B.m*inv/r2;
+      A.vx+=dx*f*dt; A.vy+=dy*f*dt;
+    }
+    if(blackhole){
+      let dx=blackhole.x-A.x, dy=blackhole.y-A.y;
+      const r2=dx*dx+dy*dy+SOFT_CORE;
+      const inv=1/Math.sqrt(r2);
+      const f=G*blackhole.m*inv/r2;
+      A.vx+=dx*f*dt; A.vy+=dy*f*dt;
+    }
+    // weak restoring spring toward screen center: keeps the merged system
+    // composed and on-screen without freezing the orbital dynamics
+    A.vx += (CX-A.x)*0.00055*dt;
+    A.vy += (CY-A.y)*0.00055*dt;
+    A.vx *= 0.9994; A.vy *= 0.9994;
+  }
+  for(const A of cores){ A.x+=A.vx*dt; A.y+=A.vy*dt; }
+  // coalescence: when the two nuclei meet, merge into one super-nucleus
+  // (momentum-conserving) so the late stage is a single bright merged galaxy
+  if(cores.length===2){
+    const A=cores[0], B=cores[1];
+    const dx=B.x-A.x, dy=B.y-A.y;
+    if(dx*dx+dy*dy < 34*34){
+      const mt=A.m+B.m;
+      const nx=(A.x*A.m+B.x*B.m)/mt, ny=(A.y*A.m+B.y*B.m)/mt;
+      const nvx=(A.vx*A.m+B.vx*B.m)/mt, nvy=(A.vy*A.m+B.vy*B.m)/mt;
+      cores.length=0;
+      cores.push({ x:nx, y:ny, vx:nvx, vy:nvy, m:mt, merged:true });
+      shock.push({x:nx,y:ny,r:10,a:1});
+    }
+  }
+
+  // pointer drag becomes a transient attractor with throw velocity
+  const dragOn = pointer.down && attractMode===1;
+  const dragM = 1700;
+
+  let energy=0;
+  const cN=cores.length;
+  const c0=cores[0], c1=cores[1]; // c1 may be undefined after merge
+  const bh=blackhole;
+
+  for(let i=0;i<N;i++){
+    let ax=0, ay=0;
+    let X=px[i], Y=py[i];
+
+    // core 0
+    let dx=c0.x-X, dy=c0.y-Y;
+    let r2=dx*dx+dy*dy+SOFT;
+    let inv=1/Math.sqrt(r2);
+    let f=G*c0.m*inv/r2;
+    ax+=dx*f; ay+=dy*f;
+
+    // core 1 (only before coalescence)
+    if(cN>1){
+      dx=c1.x-X; dy=c1.y-Y;
+      r2=dx*dx+dy*dy+SOFT;
+      inv=1/Math.sqrt(r2);
+      f=G*c1.m*inv/r2;
+      ax+=dx*f; ay+=dy*f;
+    }
+
+    // black hole (devours)
+    if(bh){
+      dx=bh.x-X; dy=bh.y-Y;
+      r2=dx*dx+dy*dy+SOFT;
+      inv=1/Math.sqrt(r2);
+      f=G*bh.m*inv/r2;
+      ax+=dx*f; ay+=dy*f;
+      if(r2 < bh.r2eat){
+        // swallowed -> respawn at far edge as fresh infalling matter
+        const ang=Math.random()*Math.PI*2;
+        const rr=Math.max(W,H)*0.62;
+        px[i]=CX+Math.cos(ang)*rr; py[i]=CY+Math.sin(ang)*rr;
+        vx[i]=-Math.cos(ang)*0.4; vy[i]=-Math.sin(ang)*0.4;
+        bh.m += 0.12; // grows
+        continue;
+      }
+    }
+
+    // pointer attractor / repulsor
+    if(dragOn){
+      dx=pointer.x-X; dy=pointer.y-Y;
+      r2=dx*dx+dy*dy+140;
+      inv=1/Math.sqrt(r2);
+      f=G*dragM*inv/r2;
+      ax+=dx*f; ay+=dy*f;
+    }
+
+    // very weak restoring field toward center -> the unbound tidal debris
+    // slowly returns instead of escaping, keeping a living composition
+    ax += (CX-X)*0.00018;
+    ay += (CY-Y)*0.00018;
+
+    vx[i]+=ax*dt; vy[i]+=ay*dt;
+    // featherlight damping: bleeds runaway energy without erasing structure
+    vx[i]*=0.99975; vy[i]*=0.99975;
+    px[i]=X+vx[i]*dt; py[i]=Y+vy[i]*dt;
+
+    const sp=vx[i]*vx[i]+vy[i]*vy[i];
+    energy+=sp;
+
+    // soft toroidal wrap far off-screen so nothing is lost
+    const m=200;
+    if(px[i]<-m){px[i]=W+m;} else if(px[i]>W+m){px[i]=-m;}
+    if(py[i]<-m){py[i]=H+m;} else if(py[i]>H+m){py[i]=-m;}
+  }
+  return energy/N;
+}
+
+// ---- supernova burst -------------------------------------------------
+function supernova(x,y){
+  const k = Math.min(N, 360);
+  for(let j=0;j<k;j++){
+    const i=(Math.random()*N)|0;
+    const dx=px[i]-x, dy=py[i]-y;
+    const d=Math.hypot(dx,dy)+0.001;
+    const power = 9.5 * Math.exp(-d/ (Math.min(W,H)*0.22));
+    vx[i]+= dx/d*power*rand(0.4,1.3);
+    vy[i]+= dy/d*power*rand(0.4,1.3);
+  }
+  shock.push({x,y,r:6,a:1});
+}
+
+// ---- render ----------------------------------------------------------
+function draw(meanE){
+  // trail fade — additive cosmos
+  ctx.globalCompositeOperation='source-over';
+  ctx.fillStyle = trailsLong ? 'rgba(2,3,10,0.040)' : 'rgba(2,3,10,0.10)';
+  ctx.fillRect(0,0,W,H);
+
+  ctx.globalCompositeOperation='lighter';
+
+  const P=PALETTES[pal];
+  // HUE is a permanent galaxy identity (ember vs ice) fanned across the disk
+  // radius — collisions cannot wash it out. SPEED drives only heat/brightness.
+  const eScale = 1/Math.max(meanE,1.2);
+
+  for(let i=0;i<N;i++){
+    const sp = vx[i]*vx[i]+vy[i]*vy[i];
+    let t = sp*eScale; if(t>1)t=1;
+    const heat = Math.sqrt(t);              // perceptual: even slow stars glow
+    const g = seedGal[i];
+    const base = g===0 ? P.a : P.b;
+    // radial fan of the galaxy's own hue band (stored at spawn in hue[i])
+    const hu = base[0] + (base[1]-base[0])*hue[i];
+    // fast-moving (shocked/tidal) matter shifts a touch toward white-hot
+    const lite = 48 + heat*40;
+    const sat = 95 - heat*34;
+    const sz = (0.6 + heat*2.1) * (DPR>1?1:1.05);
+    const alpha = 0.50 + heat*0.48;
+    ctx.fillStyle = `hsla(${hu|0},${sat|0}%,${lite|0}%,${alpha.toFixed(3)})`;
+    // tiny square is cheaper than arc, looks like stars when additive
+    ctx.fillRect(px[i]-sz, py[i]-sz, sz*2, sz*2);
+  }
+
+  // galactic cores as luminous nuclei with glow (merged core is larger/brighter)
+  for(const c of cores){
+    const rad = c.merged ? 72 : 46;
+    const grd=ctx.createRadialGradient(c.x,c.y,0,c.x,c.y,rad);
+    grd.addColorStop(0,'rgba(255,250,240,0.95)');
+    grd.addColorStop(0.25,'rgba(220,225,255,0.5)');
+    grd.addColorStop(1,'rgba(120,150,255,0)');
+    ctx.fillStyle=grd;
+    ctx.beginPath(); ctx.arc(c.x,c.y,rad,0,7); ctx.fill();
+  }
+
+  // black hole: dark disk with bright accretion ring
+  if(blackhole){
+    const b=blackhole, rr=Math.max(10, Math.sqrt(b.r2eat)*0.9);
+    const grd=ctx.createRadialGradient(b.x,b.y,rr*0.4,b.x,b.y,rr*3.4);
+    grd.addColorStop(0,'rgba(255,170,90,0.0)');
+    grd.addColorStop(0.34,'rgba(255,170,90,0.85)');
+    grd.addColorStop(0.6,'rgba(255,90,160,0.35)');
+    grd.addColorStop(1,'rgba(120,40,160,0)');
+    ctx.fillStyle=grd;
+    ctx.beginPath(); ctx.arc(b.x,b.y,rr*3.4,0,7); ctx.fill();
+    // event horizon
+    ctx.globalCompositeOperation='source-over';
+    ctx.fillStyle='#01010a';
+    ctx.beginPath(); ctx.arc(b.x,b.y,rr,0,7); ctx.fill();
+    ctx.globalCompositeOperation='lighter';
+  }
+
+  // shockwaves
+  for(let s=shock.length-1;s>=0;s--){
+    const sh=shock[s];
+    sh.r += 6.5; sh.a *= 0.93;
+    if(sh.a<0.02){ shock.splice(s,1); continue; }
+    ctx.strokeStyle=`rgba(255,235,210,${sh.a*0.6})`;
+    ctx.lineWidth=2;
+    ctx.beginPath(); ctx.arc(sh.x,sh.y,sh.r,0,7); ctx.stroke();
+  }
+
+  // drag indicator ring
+  if(pointer.down && attractMode===1){
+    ctx.globalCompositeOperation='source-over';
+    ctx.strokeStyle='rgba(180,205,255,0.5)';
+    ctx.lineWidth=1.2;
+    ctx.beginPath(); ctx.arc(pointer.x,pointer.y,22,0,7); ctx.stroke();
+    ctx.globalCompositeOperation='lighter';
+  }
+}
+
+// ---- loop ------------------------------------------------------------
+let prev=performance.now();
+let started=false;
+function frame(now){
+  const raw=(now-prev)/16.6667; prev=now;
+  const dt = (raw>0 && raw<6) ? raw : 1;
+
+  // pointer velocity (for throw)
+  pointer.vx = pointer.x-pointer.px; pointer.vy=pointer.y-pointer.py;
+  pointer.px=pointer.x; pointer.py=pointer.y;
+
+  const meanE = physics(dt);
+  draw(meanE);
+
+  // hud
+  frames++; acc += now-lastT; lastT=now;
+  if(acc>420){ fps=Math.round(1000/((acc)/frames)); acc=0; frames=0;
+    hudF.textContent=fps;
+    hudE.textContent=(meanE).toFixed(1);
+  }
+  requestAnimationFrame(frame);
+}
+
+// ---- input -----------------------------------------------------------
+function setPointer(x,y){ pointer.x=x; pointer.y=y; }
+
+function onDown(x,y){
+  setPointer(x,y); pointer.px=x; pointer.py=y;
+  pointer.down=true; attractMode=1;
+  hideHint();
+}
+function onMove(x,y){ setPointer(x,y); }
+function onUp(){
+  // throw a fresh massive clump along the drag velocity
+  if(pointer.down && attractMode===1){
+    flingClump(pointer.x, pointer.y, pointer.vx, pointer.vy);
+  }
+  pointer.down=false; attractMode=0;
+}
+function flingClump(x,y,vX,vY){
+  const k=Math.min(110, (N*0.05)|0);
+  const speed=Math.hypot(vX,vY);
+  for(let j=0;j<k;j++){
+    const i=(Math.random()*N)|0;
+    px[i]=x+rand(-14,14); py[i]=y+rand(-14,14);
+    vx[i]=vX*rand(0.4,1.1)+rand(-1,1);
+    vy[i]=vY*rand(0.4,1.1)+rand(-1,1);
+    mass[i]=rand(1.0,2.0);
+  }
+  if(speed>2) shock.push({x,y,r:4,a:0.7});
+}
+
+// mouse
+cv.addEventListener('mousedown', e=>{ onDown(e.clientX,e.clientY); });
+window.addEventListener('mousemove', e=>{ onMove(e.clientX,e.clientY); });
+window.addEventListener('mouseup', onUp);
+// quick click (no drag) -> black hole toggle handled via threshold
+let downX=0,downY=0,downT=0;
+cv.addEventListener('mousedown',e=>{ downX=e.clientX;downY=e.clientY;downT=performance.now(); });
+cv.addEventListener('click', e=>{
+  const moved=Math.hypot(e.clientX-downX,e.clientY-downY);
+  const quick=performance.now()-downT<350;
+  if(moved<6 && quick) spawnHole(e.clientX,e.clientY);
+});
+
+// wheel -> zoom the whole field toward/away from cursor (re-scales positions)
+cv.addEventListener('wheel', e=>{
+  e.preventDefault();
+  const f = e.deltaY>0 ? 0.94 : 1.064;
+  const ox=e.clientX, oy=e.clientY;
+  for(let i=0;i<N;i++){
+    px[i]=ox+(px[i]-ox)*f; py[i]=oy+(py[i]-oy)*f;
+    vx[i]*=f; vy[i]*=f;
+  }
+  for(const c of cores){ c.x=ox+(c.x-ox)*f; c.y=oy+(c.y-oy)*f; }
+  if(blackhole){ blackhole.x=ox+(blackhole.x-ox)*f; blackhole.y=oy+(blackhole.y-oy)*f; }
+  hideHint();
+}, {passive:false});
+
+// touch
+cv.addEventListener('touchstart', e=>{
+  const t=e.touches[0]; onDown(t.clientX,t.clientY);
+  // double-tap -> hole
+  const nowt=performance.now();
+  if(nowt-lastTap<300){ spawnHole(t.clientX,t.clientY); }
+  lastTap=nowt;
+}, {passive:false});
+cv.addEventListener('touchmove', e=>{ e.preventDefault(); const t=e.touches[0]; onMove(t.clientX,t.clientY); }, {passive:false});
+cv.addEventListener('touchend', e=>{ onUp(); }, {passive:false});
+let lastTap=0;
+
+function spawnHole(x,y){
+  if(blackhole){ blackhole=null; setChip('hole',false); return; }
+  blackhole={ x,y, m:5200, r2eat: 16*16 };
+  setChip('hole',true);
+  shock.push({x,y,r:8,a:1});
+  hideHint();
+}
+
+// keys
+window.addEventListener('keydown', e=>{
+  const k=e.key.toLowerCase();
+  if(k===' '){ e.preventDefault(); buildScene(); pulseChip('collide'); }
+  else if(k==='t'){ trailsLong=!trailsLong; setChip('trails',trailsLong); }
+  else if(k==='c'){ pal=(pal+1)%PALETTES.length; pulseChip('palette'); }
+  else if(k==='b'){ supernova(CX+rand(-80,80),CY+rand(-80,80)); pulseChip('burst'); }
+  else if(k==='h'){ spawnHole(CX,CY); }
+});
+
+// chips
+document.getElementById('foot').addEventListener('click', e=>{
+  const c=e.target.closest('.chip'); if(!c) return;
+  const act=c.dataset.act;
+  if(act==='collide'){ buildScene(); pulseChip('collide'); }
+  else if(act==='hole'){ spawnHole(CX,CY); }
+  else if(act==='trails'){ trailsLong=!trailsLong; setChip('trails',trailsLong); }
+  else if(act==='palette'){ pal=(pal+1)%PALETTES.length; pulseChip('palette'); }
+  else if(act==='burst'){ supernova(CX+rand(-80,80),CY+rand(-80,80)); pulseChip('burst'); }
+  hideHint();
+});
+function chipEl(act){ return document.querySelector(`.chip[data-act="${act}"]`); }
+function setChip(act,on){ const el=chipEl(act); if(el) el.classList.toggle('on',on); }
+function pulseChip(act){ const el=chipEl(act); if(!el) return; el.classList.add('on'); setTimeout(()=>el.classList.remove('on'),260); }
+
+// hint fade
+const hintEl=document.getElementById('hint');
+let hintShown=false, hintTimer=null;
+function showHint(){ hintEl.style.color='rgba(220,228,255,.62)'; hintShown=true;
+  hintTimer=setTimeout(hideHint, 4200);
+}
+function hideHint(){ if(hintShown){ hintEl.style.color='rgba(220,228,255,0)'; hintShown=false; if(hintTimer)clearTimeout(hintTimer);} }
+
+// resize rebuild when shape changes a lot
+let lastW=W,lastH=H;
+window.addEventListener('resize', ()=>{
+  if(Math.abs(W-lastW)>120 || Math.abs(H-lastH)>120){ lastW=W; lastH=H; buildScene(); }
+}, {passive:true});
+
+// expose for verification
+window.__gravid = {
+  state:()=>({ N, fps, cores:cores.length, hole: !!blackhole, pal, trailsLong,
+               meanX: (()=>{let s=0;for(let i=0;i<N;i++)s+=px[i];return s/N;})() }),
+  collide:buildScene,
+  hole:()=>spawnHole(CX,CY),
+  burst:()=>supernova(CX,CY),
+  palette:()=>{pal=(pal+1)%PALETTES.length;},
+  drag:(x0,y0,x1,y1)=>{ onDown(x0,y0); onMove(x1,y1); pointer.vx=x1-x0; pointer.vy=y1-y0; onUp(); }
+};
+
+// boot
+buildScene();
+requestAnimationFrame(frame);
+setTimeout(showHint, 700);
+})();
+</script>
+</body>
+</html>

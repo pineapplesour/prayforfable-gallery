@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RUST//NET ::: 486 DITHER BBS</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<style>
+  :root{
+    /* restricted warm palette ~12 colors */
+    --c-void:    #1a0d11;   /* deep maroon-black */
+    --c-maroon:  #2a1016;
+    --c-maroon2: #3d161d;
+    --c-rust:    #6e2a22;
+    --c-rust2:   #8f3a26;
+    --c-salmon:  #c05a3c;
+    --c-salmon2: #d97a4e;
+    --c-peach:   #f0b27a;
+    --c-cream:   #f6d9a8;
+    --c-teal:    #1f4a44;
+    --c-teal2:   #2f6f63;
+    --c-green:   #57997e;
+    --c-ink:     #120a0c;
+    --line:      #b85a3a;
+    --line-dim:  #5a2820;
+  }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html,body{ height:100%; }
+  body{
+    background:
+      radial-gradient(120% 90% at 50% -10%, #2a1016 0%, #1a0d11 55%, #120709 100%);
+    color:var(--c-peach);
+    font-family:'VT323', monospace;
+    font-size:18px;
+    line-height:1.05;
+    -webkit-font-smoothing:none;
+    image-rendering:pixelated;
+    min-height:100vh;
+    padding:14px;
+    letter-spacing:.5px;
+    overflow-x:hidden;
+  }
+  /* CRT scanlines + vignette */
+  body::after{
+    content:"";
+    position:fixed; inset:0; pointer-events:none; z-index:9999;
+    background:
+      repeating-linear-gradient(0deg,
+        rgba(0,0,0,0) 0px,
+        rgba(0,0,0,0) 2px,
+        rgba(0,0,0,.18) 3px,
+        rgba(0,0,0,.18) 3px),
+      radial-gradient(120% 120% at 50% 50%, rgba(0,0,0,0) 60%, rgba(0,0,0,.45) 100%);
+    mix-blend-mode:multiply;
+  }
+  body::before{
+    content:"";
+    position:fixed; inset:0; pointer-events:none; z-index:9998;
+    background:radial-gradient(80% 60% at 50% 40%, rgba(240,178,122,.04), transparent 70%);
+  }
+
+  .pixel{ font-family:'Press Start 2P', monospace; }
+
+  .frame{
+    max-width:1320px; margin:0 auto;
+    border:3px solid var(--line);
+    background:linear-gradient(180deg,#231016,#1a0c10);
+    box-shadow:0 0 0 2px var(--c-void), 6px 6px 0 0 rgba(0,0,0,.55);
+  }
+
+  /* ---- top window chrome bar ---- */
+  .titlebar{
+    display:flex; align-items:center; gap:8px;
+    background:repeating-linear-gradient(90deg,var(--c-rust),var(--c-rust) 4px,var(--c-rust2) 4px,var(--c-rust2) 8px);
+    border-bottom:3px solid var(--line);
+    padding:7px 8px;
+    color:var(--c-cream);
+  }
+  .titlebar .dot{
+    width:12px;height:12px;border:2px solid var(--c-ink);background:var(--c-peach);
+    box-shadow:inset -2px -2px 0 rgba(0,0,0,.3);
+  }
+  .titlebar .dot.s{ background:var(--c-salmon); }
+  .titlebar .dot.g{ background:var(--c-green); }
+  .titlebar .ttl{
+    font-family:'Press Start 2P'; font-size:11px; color:var(--c-ink);
+    background:var(--c-peach); padding:6px 10px; border:2px solid var(--c-ink);
+    text-shadow:1px 1px 0 rgba(255,255,255,.25);
+  }
+  .titlebar .spacer{ flex:1; }
+  .titlebar .winbtn{
+    font-family:'Press Start 2P'; font-size:11px; color:var(--c-cream);
+    border:2px solid var(--c-ink); background:var(--c-maroon2);
+    width:26px;height:26px; display:grid; place-items:center;
+    box-shadow:inset -2px -2px 0 rgba(0,0,0,.35);
+  }
+  .titlebar .clk{
+    font-family:'Press Start 2P'; font-size:10px; color:var(--c-peach);
+    border:2px solid var(--line-dim); padding:6px 8px; background:#1c0d11;
+  }
+
+  /* ---- ANSI marquee ---- */
+  .marquee{
+    overflow:hidden; white-space:nowrap;
+    border-bottom:3px solid var(--line);
+    background:#150a0d; color:var(--c-salmon2);
+    font-size:20px; padding:5px 0;
+  }
+  .marquee span{ display:inline-block; padding-left:100%; animation:scroll 26s linear infinite; }
+  @keyframes scroll{ to{ transform:translateX(-100%); } }
+
+  /* ---- banner (real dither canvas) ---- */
+  .banner{
+    position:relative; border-bottom:3px solid var(--line);
+    background:var(--c-void); line-height:0;
+  }
+  #ditherCanvas{
+    display:block; width:100%; height:auto;
+    image-rendering:pixelated; image-rendering:crisp-edges;
+  }
+  .banner .overlay{
+    position:absolute; inset:0; pointer-events:none;
+    display:flex; flex-direction:column; justify-content:space-between;
+    padding:14px 16px;
+  }
+  .banner .tag{
+    font-family:'Press Start 2P'; font-size:10px; color:var(--c-cream);
+    background:rgba(20,9,12,.62); border:2px solid var(--line);
+    padding:6px 8px; align-self:flex-start;
+    text-shadow:1px 1px 0 #000;
+  }
+  .banner .bigtitle{
+    font-family:'Press Start 2P'; align-self:flex-start;
+    color:var(--c-cream); text-shadow:3px 3px 0 #4a160f, 6px 6px 0 rgba(0,0,0,.4);
+    line-height:1.15;
+  }
+  .banner .bigtitle .l1{ font-size:34px; display:block; }
+  .banner .bigtitle .l2{ font-size:15px; color:var(--c-peach); margin-top:8px; display:block; }
+  .banner .bottomtag{
+    font-size:18px; color:var(--c-cream); background:rgba(20,9,12,.6);
+    border:2px solid var(--line-dim); padding:3px 8px; align-self:flex-end;
+  }
+
+  /* ---- main grid ---- */
+  .grid{ display:grid; grid-template-columns:1fr 300px; }
+  @media (max-width:900px){ .grid{ grid-template-columns:minmax(0,1fr); } }
+
+  .col-main{ border-right:3px solid var(--line); }
+  @media (max-width:900px){ .col-main{ border-right:none; border-bottom:3px solid var(--line); } }
+
+  .panel-h{
+    font-family:'Press Start 2P'; font-size:11px; color:var(--c-ink);
+    background:var(--c-salmon); padding:8px 10px;
+    border-bottom:3px solid var(--line);
+    display:flex; align-items:center; gap:8px;
+  }
+  .panel-h .ix{ background:var(--c-ink); color:var(--c-peach); padding:3px 5px; font-size:9px; }
+  .panel-h .right{ margin-left:auto; color:var(--c-maroon); font-size:9px; }
+
+  /* board table */
+  .board{ padding:0; }
+  .board .row{
+    display:grid; grid-template-columns:34px minmax(0,1fr) 78px 52px;
+    gap:8px; align-items:center;
+    padding:9px 12px; border-bottom:1px solid var(--line-dim);
+    color:var(--c-peach); font-size:19px;
+  }
+  .board .subj{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .board .usr{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .board .row.head{
+    font-family:'Press Start 2P'; font-size:9px; color:var(--c-salmon2);
+    background:#1c0d11; border-bottom:3px solid var(--line);
+  }
+  .board .row:hover:not(.head){ background:#27121a; color:var(--c-cream); }
+  .board .row:hover:not(.head) .no{ color:var(--c-salmon2); }
+  .board .no{ color:var(--c-rust2); font-family:'Press Start 2P'; font-size:9px; }
+  .board .subj b{ color:var(--c-cream); }
+  .board .subj .pin{ color:var(--c-green); font-family:'Press Start 2P'; font-size:8px; margin-right:6px; }
+  .board .subj .hot{ color:var(--c-salmon2); font-family:'Press Start 2P'; font-size:8px; margin-right:6px; }
+  .board .usr{ color:var(--c-green); }
+  .board .rep{ color:var(--c-peach); text-align:right; }
+  .board .rep .bar{
+    display:inline-block; height:8px; background:var(--c-teal2);
+    border:1px solid var(--c-green); vertical-align:middle; margin-left:5px;
+  }
+
+  /* chat window */
+  .chat{ padding:0; }
+  .chat .crome{
+    display:flex; align-items:center; gap:6px;
+    background:var(--c-teal); border-bottom:3px solid var(--c-green);
+    padding:6px 8px;
+  }
+  .chat .crome .lbl{ font-family:'Press Start 2P'; font-size:9px; color:var(--c-cream); }
+  .chat .crome .who{ margin-left:auto; font-size:16px; color:var(--c-peach); }
+  .chat .crome .dotg{ width:9px;height:9px;background:var(--c-green);border:1px solid var(--c-cream); }
+  .chat .log{ padding:10px 12px; max-height:220px; overflow:auto; }
+  .chat .msg{ margin-bottom:7px; font-size:19px; }
+  .chat .msg .h{ color:var(--c-salmon2); }
+  .chat .msg .h2{ color:var(--c-green); }
+  .chat .msg .h3{ color:var(--c-peach); }
+  .chat .msg .t{ color:var(--c-cream); }
+  .chat .msg .sys{ color:var(--c-rust2); font-family:'Press Start 2P'; font-size:9px; }
+  .chat .inp{
+    display:flex; border-top:3px solid var(--line); align-items:stretch;
+  }
+  .chat .inp .prompt{ font-family:'Press Start 2P'; font-size:10px; color:var(--c-green); padding:11px 10px; background:#11070a; }
+  .chat .inp input{
+    flex:1; background:#160a0e; border:none; color:var(--c-cream);
+    font-family:'VT323'; font-size:20px; padding:8px 6px; outline:none;
+  }
+  .chat .inp .send{
+    font-family:'Press Start 2P'; font-size:10px; color:var(--c-ink);
+    background:var(--c-salmon); border:none; border-left:3px solid var(--line);
+    padding:0 14px; cursor:pointer;
+  }
+  .chat .inp .send:active{ background:var(--c-peach); }
+  .cursor{ animation:blink 1s steps(2) infinite; }
+  @keyframes blink{ 0%,50%{opacity:1;} 50.01%,100%{opacity:0;} }
+
+  /* ---- right CONTROL panel ---- */
+  .control{ background:#180b0f; }
+  .control .ch{
+    font-family:'Press Start 2P'; font-size:11px; color:var(--c-ink);
+    background:repeating-linear-gradient(90deg,var(--c-peach),var(--c-peach) 6px,var(--c-cream) 6px,var(--c-cream) 12px);
+    padding:8px 10px; border-bottom:3px solid var(--line);
+  }
+  .control .body{ padding:12px 12px; }
+  .control .item{
+    display:flex; justify-content:space-between; align-items:center;
+    font-size:17px; padding:6px 0; border-bottom:1px dashed var(--line-dim);
+    color:var(--c-peach);
+  }
+  .control .item .k{ font-family:'Press Start 2P'; font-size:9px; color:var(--c-salmon2); }
+  .control .item .v{ color:var(--c-cream); }
+  .control .chips{ display:flex; flex-wrap:wrap; gap:6px; margin:10px 0 4px; }
+  .control .chip{
+    font-family:'Press Start 2P'; font-size:8px; color:var(--c-cream);
+    border:2px solid var(--line-dim); background:#22101a; padding:6px 7px;
+    cursor:pointer; box-shadow:inset -2px -2px 0 rgba(0,0,0,.35);
+  }
+  .control .chip.on{ background:var(--c-teal); border-color:var(--c-green); color:var(--c-cream); }
+  .control .chip:active{ transform:translate(1px,1px); }
+  .control .pal{
+    display:grid; grid-template-columns:repeat(8,1fr); gap:0; margin:8px 0;
+    border:2px solid var(--line-dim);
+  }
+  .control .pal i{ display:block; height:16px; }
+  .control .meter{ margin-top:10px; }
+  .control .meter .lbl{ font-family:'Press Start 2P'; font-size:8px; color:var(--c-salmon2); margin-bottom:4px; display:block; }
+  .control .meter .track{ height:12px; border:2px solid var(--line-dim); background:#11070a; }
+  .control .meter .fill{
+    height:100%;
+    background:repeating-linear-gradient(90deg,var(--c-green),var(--c-green) 3px,var(--c-teal) 3px,var(--c-teal) 6px);
+  }
+  .control .gauge{
+    margin-top:12px; border:2px solid var(--line-dim); padding:8px;
+    text-align:center; background:#11070a;
+  }
+  .control .gauge .big{ font-family:'Press Start 2P'; font-size:20px; color:var(--c-peach); }
+  .control .gauge .sub{ font-size:14px; color:var(--c-green); }
+
+  /* ---- status bar ---- */
+  .statusbar{
+    display:flex; flex-wrap:wrap; gap:0; align-items:stretch;
+    background:#150a0d; border-top:3px solid var(--line);
+    font-family:'Press Start 2P'; font-size:9px; color:var(--c-peach);
+  }
+  .statusbar .seg{ padding:8px 10px; border-right:2px solid var(--line-dim); }
+  .statusbar .seg.warn{ color:var(--c-salmon2); }
+  .statusbar .seg.ok{ color:var(--c-green); }
+  .statusbar .spacer{ flex:1; }
+  .statusbar .seg.pray{ color:var(--c-cream); background:var(--c-rust); border:none; }
+
+  /* mobile tightening (390) */
+  @media (max-width:480px){
+    body{ padding:6px; }
+    .frame{ border-width:2px; box-shadow:0 0 0 2px var(--c-void), 3px 3px 0 0 rgba(0,0,0,.55); }
+    .banner .bigtitle .l1{ font-size:24px; }
+    .banner .bigtitle .l2{ font-size:11px; }
+    .banner .bottomtag{ font-size:13px; }
+    .titlebar .ttl{ font-size:9px; padding:5px 7px; }
+    .titlebar .clk{ font-size:8px; }
+    .titlebar .winbtn{ width:22px; height:22px; font-size:9px; }
+    .chat .inp .prompt{ font-size:8px; padding:9px 6px; }
+    .chat .inp .send{ font-size:8px; padding:0 9px; }
+    .statusbar{ font-size:8px; }
+    .statusbar .seg{ padding:6px 7px; }
+    .control .item .v{ font-size:15px; }
+  }
+
+  ::-webkit-scrollbar{ width:12px; height:12px; }
+  ::-webkit-scrollbar-track{ background:#11070a; }
+  ::-webkit-scrollbar-thumb{ background:var(--c-rust); border:2px solid #11070a; }
+</style>
+</head>
+<body>
+<div class="frame">
+
+  <!-- window chrome -->
+  <div class="titlebar">
+    <span class="dot s"></span><span class="dot"></span><span class="dot g"></span>
+    <span class="ttl">RUST//NET v4.86</span>
+    <span class="spacer"></span>
+    <span class="clk" id="clk">--:--:--</span>
+    <span class="winbtn">_</span>
+    <span class="winbtn">▢</span>
+    <span class="winbtn">x</span>
+  </div>
+
+  <!-- ANSI marquee -->
+  <div class="marquee"><span>:: WELCOME TO RUST//NET ::: 2400 BAUD ::: DITHER ENGINE ONLINE ::: NODE 03 OF 08 ::: NEW MSGS IN [GENERAL] [DEMOSCENE] [SWAP-MEET] ::: TYPE /HELP FOR COMMANDS ::: PRAY FOR FABLE ::: ANSI ART CONTEST CLOSES FRI ::&nbsp;&nbsp;&nbsp;</span></div>
+
+  <!-- dithered banner -->
+  <div class="banner">
+    <canvas id="ditherCanvas" width="1280" height="320"></canvas>
+    <div class="overlay">
+      <div class="tag">SYSOP BBS // SUNSET HARBOR NODE</div>
+      <div class="bigtitle">
+        <span class="l1">RUST//NET</span>
+        <span class="l2">486 DITHER BOARD &amp; CHAT TERMINAL</span>
+      </div>
+      <div class="bottomtag">8x8 BAYER ORDERED DITHER &nbsp;//&nbsp; 12-COLOR WARM QUANT</div>
+    </div>
+  </div>
+
+  <!-- main grid -->
+  <div class="grid">
+
+    <!-- left: board + chat -->
+    <div class="col-main">
+
+      <div class="panel-h">
+        <span class="ix">F2</span> MESSAGE BOARD :: GENERAL
+        <span class="right">42 THREADS / 309 POSTS</span>
+      </div>
+
+      <div class="board" id="board">
+        <div class="row head">
+          <span>NO</span><span>SUBJECT</span><span>FROM</span><span class="rep" style="text-align:right">RE</span>
+        </div>
+        <!-- rows injected by JS, fallback static below -->
+      </div>
+
+      <div class="chat">
+        <div class="crome">
+          <span class="dotg"></span>
+          <span class="lbl">LIVE CHAT // #LOBBY</span>
+          <span class="who">7 NODES CONNECTED</span>
+        </div>
+        <div class="log" id="chatlog">
+          <div class="msg"><span class="sys">*** topic: dither till you die ***</span></div>
+          <div class="msg"><span class="h">&lt;sysop&gt;</span> <span class="t">banner's drawn live w/ real bayer matrix, no png</span></div>
+          <div class="msg"><span class="h2">&lt;crt_kid&gt;</span> <span class="t">whoa the sun mosaics out perfect, what palette?</span></div>
+          <div class="msg"><span class="h">&lt;sysop&gt;</span> <span class="t">rust/salmon/peach over teal water, 12 colors flat</span></div>
+          <div class="msg"><span class="h3">&lt;moddred&gt;</span> <span class="t">2400 baud gang rise up</span></div>
+          <div class="msg"><span class="h2">&lt;crt_kid&gt;</span> <span class="t">/me adjusts the bayer toggle. lo-fi 4ever</span></div>
+        </div>
+        <div class="inp">
+          <span class="prompt">guest@rustnet:~$</span>
+          <input id="chatinput" type="text" placeholder="type a message + ENTER..." maxlength="120" autocomplete="off">
+          <button class="send" id="sendbtn">SEND</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- right: control panel -->
+    <div class="control">
+      <div class="ch">CONTROL PANEL</div>
+      <div class="body">
+        <div class="item"><span class="k">RENDER</span><span class="v">DITHER</span></div>
+        <div class="item"><span class="k">MATRIX</span><span class="v" id="matlabel">BAYER 8x8</span></div>
+        <div class="item"><span class="k">PALETTE</span><span class="v">12 / WARM</span></div>
+        <div class="item"><span class="k">SCAN</span><span class="v" id="scanlabel">ON</span></div>
+        <div class="item"><span class="k">NODE</span><span class="v">03 / 08</span></div>
+
+        <div class="chips" id="chips">
+          <span class="chip on" data-m="8">8x8</span>
+          <span class="chip" data-m="4">4x4</span>
+          <span class="chip" data-m="2">2x2</span>
+          <span class="chip" data-act="scan" id="scanchip">SCANLN</span>
+          <span class="chip" data-act="redraw">RE-DITHER</span>
+        </div>
+
+        <div class="meter">
+          <span class="lbl">PALETTE</span>
+          <div class="pal">
+            <i style="background:var(--c-void)"></i>
+            <i style="background:var(--c-maroon2)"></i>
+            <i style="background:var(--c-rust)"></i>
+            <i style="background:var(--c-rust2)"></i>
+            <i style="background:var(--c-salmon)"></i>
+            <i style="background:var(--c-salmon2)"></i>
+            <i style="background:var(--c-peach)"></i>
+            <i style="background:var(--c-cream)"></i>
+            <i style="background:var(--c-teal)"></i>
+            <i style="background:var(--c-teal2)"></i>
+            <i style="background:var(--c-green)"></i>
+            <i style="background:var(--c-ink)"></i>
+          </div>
+        </div>
+
+        <div class="meter">
+          <span class="lbl">BUFFER LOAD</span>
+          <div class="track"><div class="fill" style="width:64%"></div></div>
+        </div>
+        <div class="meter">
+          <span class="lbl">SIGNAL</span>
+          <div class="track"><div class="fill" style="width:88%"></div></div>
+        </div>
+
+        <div class="gauge">
+          <div class="big" id="baud">2400</div>
+          <div class="sub">BAUD // CARRIER OK</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- status bar -->
+  <div class="statusbar">
+    <span class="seg ok">● ONLINE</span>
+    <span class="seg">F1 HELP</span>
+    <span class="seg">F2 BOARD</span>
+    <span class="seg">F3 CHAT</span>
+    <span class="seg warn">F9 LOGOUT</span>
+    <span class="spacer"></span>
+    <span class="seg" id="upt">UPTIME 00:00</span>
+    <span class="seg pray">PRAY FOR FABLE</span>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   REAL BAYER ORDERED DITHERING
+   1) paint a warm sunset/harbor scene to an offscreen buffer
+   2) quantize each pixel to a 12-color warm palette using the
+      Bayer threshold matrix (true ordered dithering)
+   3) blit to visible canvas at low res -> mosaic look
+   ============================================================ */
+
+(function(){
+  const canvas = document.getElementById('ditherCanvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently:true });
+
+  // ---- restricted warm palette (rgb) ----
+  const PALETTE = [
+    [26,13,17],    // void
+    [42,16,22],    // maroon
+    [61,22,29],    // maroon2
+    [110,42,34],   // rust
+    [143,58,38],   // rust2
+    [192,90,60],   // salmon
+    [217,122,78],  // salmon2
+    [240,178,122], // peach
+    [246,217,168], // cream
+    [31,74,68],    // teal
+    [47,111,99],   // teal2
+    [87,153,126]   // green
+  ];
+
+  // ---- Bayer threshold matrices (normalized 0..1) ----
+  const BAYER = {
+    2: [[0,2],[3,1]],
+    4: [[0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]],
+    8: [
+      [ 0,32, 8,40, 2,34,10,42],
+      [48,16,56,24,50,18,58,26],
+      [12,44, 4,36,14,46, 6,38],
+      [60,28,52,20,62,30,54,22],
+      [ 3,35,11,43, 1,33, 9,41],
+      [51,19,59,27,49,17,57,25],
+      [15,47, 7,39,13,45, 5,37],
+      [63,31,55,23,61,29,53,21]
+    ]
+  };
+  function normMatrix(m){
+    const n = m.length, max = n*n, out=[];
+    for(let y=0;y<n;y++){ out.push([]); for(let x=0;x<n;x++) out[y][x]=(m[y][x]+0.5)/max - 0.5; }
+    return out;
+  }
+
+  let matSize = 8;
+
+  // low internal resolution -> chunky pixels (the mosaic)
+  const W = 320, H = 80;            // internal buffer
+  const buf = document.createElement('canvas');
+  buf.width = W; buf.height = H;
+  const bctx = buf.getContext('2d', { willReadFrequently:true });
+
+  // ---------- 1. draw the source scene (smooth) ----------
+  function drawScene(){
+    // sky gradient: deep maroon -> rust -> salmon -> peach near horizon
+    const horizon = Math.round(H*0.62);
+    const sky = bctx.createLinearGradient(0,0,0,horizon);
+    sky.addColorStop(0.00,'#2a1016');
+    sky.addColorStop(0.35,'#6e2a22');
+    sky.addColorStop(0.62,'#c05a3c');
+    sky.addColorStop(0.85,'#e89a5c');
+    sky.addColorStop(1.00,'#f6d9a8');
+    bctx.fillStyle = sky;
+    bctx.fillRect(0,0,W,horizon);
+
+    // the sun (peach/cream glow)
+    const cx = W*0.52, cy = horizon*0.66, r = H*0.30;
+    const sun = bctx.createRadialGradient(cx,cy,0,cx,cy,r*2.2);
+    sun.addColorStop(0,'#f9e6c0');
+    sun.addColorStop(0.35,'#f0b27a');
+    sun.addColorStop(0.7,'rgba(217,122,78,.55)');
+    sun.addColorStop(1,'rgba(192,90,60,0)');
+    bctx.fillStyle = sun;
+    bctx.beginPath(); bctx.arc(cx,cy,r*2.2,0,Math.PI*2); bctx.fill();
+    bctx.fillStyle = '#f9e6c0';
+    bctx.beginPath(); bctx.arc(cx,cy,r,0,Math.PI*2); bctx.fill();
+
+    // sun "venetian blind" bands (classic retro sun)
+    bctx.fillStyle = '#c05a3c';
+    for(let i=0;i<5;i++){
+      const yy = cy - r*0.1 + i*(r*0.30);
+      bctx.fillRect(cx-r*1.05, yy, r*2.1, r*0.10);
+    }
+
+    // distant hill silhouettes (rust)
+    bctx.fillStyle = '#8f3a26';
+    bctx.beginPath();
+    bctx.moveTo(0,horizon);
+    for(let x=0;x<=W;x+=8){
+      const y = horizon - 10 - 8*Math.sin(x*0.03) - 5*Math.sin(x*0.11);
+      bctx.lineTo(x,y);
+    }
+    bctx.lineTo(W,horizon); bctx.closePath(); bctx.fill();
+
+    // a lighthouse / tower silhouette
+    bctx.fillStyle = '#3d161d';
+    const tx = W*0.80;
+    bctx.fillRect(tx-3, horizon-34, 6, 34);
+    bctx.beginPath();
+    bctx.moveTo(tx-5,horizon-34); bctx.lineTo(tx+5,horizon-34); bctx.lineTo(tx,horizon-44); bctx.closePath(); bctx.fill();
+
+    // a few birds
+    bctx.strokeStyle = '#2a1016'; bctx.lineWidth = 1;
+    [[40,16],[60,12],[80,20],[230,14]].forEach(([bx,by])=>{
+      bctx.beginPath(); bctx.moveTo(bx,by); bctx.lineTo(bx+3,by-2); bctx.lineTo(bx+6,by);
+      bctx.stroke();
+    });
+
+    // water: teal -> green gradient
+    const water = bctx.createLinearGradient(0,horizon,0,H);
+    water.addColorStop(0,'#2f6f63');
+    water.addColorStop(0.5,'#1f4a44');
+    water.addColorStop(1,'#163a36');
+    bctx.fillStyle = water;
+    bctx.fillRect(0,horizon,W,H-horizon);
+
+    // sun reflection on water (salmon shimmer)
+    bctx.fillStyle = 'rgba(240,178,122,.5)';
+    for(let y=horizon;y<H;y+=3){
+      const w = (cx) * (1 - (y-horizon)/(H-horizon)) * 0.4 + 8;
+      bctx.fillRect(cx-w/2, y, w, 1);
+    }
+  }
+
+  // ---------- 2. apply ordered dithering + quantize ----------
+  function nearest(r,g,b){
+    let best=0, bd=Infinity;
+    for(let i=0;i<PALETTE.length;i++){
+      const p=PALETTE[i];
+      const d=(r-p[0])**2+(g-p[1])**2+(b-p[2])**2;
+      if(d<bd){ bd=d; best=i; }
+    }
+    return PALETTE[best];
+  }
+
+  function dither(){
+    drawScene();
+    const img = bctx.getImageData(0,0,W,H);
+    const d = img.data;
+    const m = normMatrix(BAYER[matSize]);
+    const n = matSize;
+    const spread = 56; // dither strength in 0..255 space
+    for(let y=0;y<H;y++){
+      for(let x=0;x<W;x++){
+        const i=(y*W+x)*4;
+        const t = m[y%n][x%n] * spread;
+        let r = d[i]   + t;
+        let g = d[i+1] + t;
+        let b = d[i+2] + t;
+        const c = nearest(r,g,b);
+        d[i]=c[0]; d[i+1]=c[1]; d[i+2]=c[2]; d[i+3]=255;
+      }
+    }
+    bctx.putImageData(img,0,0);
+
+    // blit scaled-up with nearest-neighbour -> chunky mosaic
+    canvas.width = W*4; canvas.height = H*4;
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.drawImage(buf,0,0,W,H,0,0,canvas.width,canvas.height);
+  }
+
+  // FIRST PAINT = the dither (no loading gate)
+  dither();
+
+  // ---- control chips ----
+  document.getElementById('chips').addEventListener('click', (e)=>{
+    const chip = e.target.closest('.chip'); if(!chip) return;
+    if(chip.dataset.m){
+      matSize = parseInt(chip.dataset.m,10);
+      document.querySelectorAll('.chip[data-m]').forEach(c=>c.classList.remove('on'));
+      chip.classList.add('on');
+      document.getElementById('matlabel').textContent = 'BAYER '+matSize+'x'+matSize;
+      dither();
+    } else if(chip.dataset.act === 'redraw'){
+      dither();
+      chip.classList.add('on'); setTimeout(()=>chip.classList.remove('on'),180);
+    } else if(chip.dataset.act === 'scan'){
+      const on = !document.body.classList.toggle('noscan');
+      chip.classList.toggle('on', !on);
+      document.getElementById('scanlabel').textContent = on ? 'ON' : 'OFF';
+    }
+  });
+})();
+
+/* scanline toggle: hide pseudo-element via class */
+const style = document.createElement('style');
+style.textContent = '.noscan::after{ background:radial-gradient(120% 120% at 50% 50%, rgba(0,0,0,0) 60%, rgba(0,0,0,.45) 100%) !important; }';
+document.head.appendChild(style);
+
+/* ---- live clock + uptime ---- */
+(function(){
+  const clk = document.getElementById('clk');
+  const upt = document.getElementById('upt');
+  const t0 = Date.now();
+  function tick(){
+    const d = new Date();
+    const p = n => String(n).padStart(2,'0');
+    clk.textContent = p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());
+    const s = Math.floor((Date.now()-t0)/1000);
+    upt.textContent = 'UPTIME '+p(Math.floor(s/60))+':'+p(s%60);
+  }
+  tick(); setInterval(tick,1000);
+})();
+
+/* ---- message board data ---- */
+(function(){
+  const rows = [
+    {pin:'PIN', sub:'RULES // read before posting, lamers', usr:'sysop',   re:0,  bar:6},
+    {hot:'HOT', sub:'best 16-color palettes for sunset art?', usr:'crt_kid', re:48, bar:46},
+    {sub:'ANSI art contest — submit yer .ANS here', usr:'moddred', re:31, bar:30},
+    {sub:'WTB: SoundBlaster 16, will trade floppies', usr:'swapr',  re:12, bar:14},
+    {hot:'HOT', sub:'bayer vs floyd-steinberg holy war thread', usr:'ditherlord', re:77, bar:60},
+    {sub:'demoscene party node sync — who is in?', usr:'plasma',  re:23, bar:24},
+    {sub:'my 2400 modem screams at me, normal?', usr:'newbie01', re:9,  bar:10},
+    {sub:'recovered: lost ANSI of the harbor sun', usr:'archivist', re:18, bar:20},
+    {sub:'POLL: VT323 or Press Start 2P for headers', usr:'typeface', re:34, bar:33},
+    {sub:'door game high scores — beat my run', usr:'gamer486', re:27, bar:27}
+  ];
+  const board = document.getElementById('board');
+  rows.forEach((r,idx)=>{
+    const el = document.createElement('div');
+    el.className = 'row';
+    const tag = r.pin ? `<span class="pin">[${r.pin}]</span>` : (r.hot?`<span class="hot">[${r.hot}]</span>`:'');
+    el.innerHTML =
+      `<span class="no">${String(idx+1).padStart(2,'0')}</span>`+
+      `<span class="subj">${tag}<b>${r.sub}</b></span>`+
+      `<span class="usr">@${r.usr}</span>`+
+      `<span class="rep">${r.re}<span class="bar" style="width:${r.bar}px"></span></span>`;
+    board.appendChild(el);
+  });
+})();
+
+/* ---- chat send ---- */
+(function(){
+  const log = document.getElementById('chatlog');
+  const input = document.getElementById('chatinput');
+  const btn = document.getElementById('sendbtn');
+  const bots = [
+    {n:'crt_kid', c:'h2', r:['nice. dither holds up at any zoom','that sun reflection is clean','+1 lo-fi forever']},
+    {n:'moddred', c:'h3', r:['copy that, logged','beep boop 2400 baud approves','adding to the .ANS pile']},
+    {n:'sysop',   c:'h',  r:['received, guest','msg relayed to node 04','carrier still OK']}
+  ];
+  function add(html){
+    const d=document.createElement('div'); d.className='msg'; d.innerHTML=html;
+    log.appendChild(d); log.scrollTop = log.scrollHeight;
+  }
+  function send(){
+    const v = input.value.trim(); if(!v) return;
+    add(`<span class="h3">&lt;guest&gt;</span> <span class="t">${v.replace(/[<>&]/g,s=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[s]))}</span>`);
+    input.value='';
+    const b = bots[Math.floor(Math.random()*bots.length)];
+    const r = b.r[Math.floor(Math.random()*b.r.length)];
+    setTimeout(()=>add(`<span class="${b.c}">&lt;${b.n}&gt;</span> <span class="t">${r}</span>`), 600+Math.random()*700);
+  }
+  btn.addEventListener('click', send);
+  input.addEventListener('keydown', e=>{ if(e.key==='Enter') send(); });
+})();
+</script>
+</body>
+</html>

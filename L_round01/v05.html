@@ -1,0 +1,1015 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>돌 던전</title>
+<style>
+  :root{
+    --stone:#0f0d0b; --ink:#cdbf9d; --dim:#7d7257; --gold:#d8b15a;
+    --moss:#5f7050; --blood:#9c4a3c; --paper:#e8ddc4;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; overflow:hidden; background:#0a0908; }
+  #wrap{ position:fixed; inset:0; display:flex; flex-direction:column; }
+  #view{
+    flex:1 1 auto; margin:0; padding:0;
+    font:13px/13px ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    color:var(--ink); background:#0a0908;
+    white-space:pre; overflow:hidden; letter-spacing:0;
+    user-select:none; -webkit-user-select:none; cursor:crosshair;
+    text-shadow:0 0 7px rgba(216,177,90,.10);
+  }
+  #hud{
+    flex:0 0 auto; display:flex; align-items:stretch; min-height:0;
+    background:#151210; border-top:1px solid #2a241b; color:var(--ink);
+    font:12px/1.45 ui-monospace,Menlo,monospace;
+  }
+  #status{
+    flex:1 1 auto; padding:7px 12px; min-width:0;
+    color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  #status b{ color:var(--ink); font-weight:600; }
+  #status .g{ color:var(--gold); }
+  #bag{
+    flex:0 0 auto; max-width:42%; padding:7px 12px; border-left:1px solid #2a241b;
+    color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  #bag .it{ color:var(--moss); }
+  /* 터치 컨트롤 */
+  #pad{ position:fixed; inset:0; z-index:6; pointer-events:none; display:none; }
+  .tbtn{
+    position:absolute; pointer-events:auto;
+    background:rgba(232,221,196,.05); border:1px solid rgba(232,221,196,.18);
+    border-radius:12px; color:var(--ink); font:16px/1 ui-monospace,monospace;
+    display:flex; align-items:center; justify-content:center;
+    width:64px; height:64px; user-select:none; -webkit-user-select:none;
+    backdrop-filter:blur(1px);
+  }
+  .tbtn:active{ background:rgba(216,177,90,.22); }
+  #t-up{ left:78px; bottom:150px; } #t-dn{ left:78px; bottom:78px; }
+  #t-l{ left:6px; bottom:114px; } #t-r{ left:150px; bottom:114px; }
+  #t-ql{ left:6px; bottom:186px; width:64px; } #t-qr{ left:150px; bottom:186px; width:64px; }
+  #t-e{ right:14px; bottom:96px; width:96px; height:96px; border-radius:50%;
+        background:rgba(216,177,90,.10); border-color:rgba(216,177,90,.4); font-size:13px; }
+  #t-e:active{ background:rgba(216,177,90,.3); }
+  /* 인트로 / 막 전환 */
+  #intro,#scene{
+    position:fixed; inset:0; z-index:10; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; text-align:center; padding:24px;
+    background:radial-gradient(120% 120% at 50% 38%, #1b1712 0%, #0a0908 78%);
+    color:var(--paper); transition:opacity .55s ease;
+  }
+  #intro h1{
+    font:600 46px/1 "Noto Serif KR",ui-monospace,serif;
+    letter-spacing:20px; text-indent:20px; margin:0 0 22px; color:var(--gold);
+    text-shadow:0 0 28px rgba(216,177,90,.35);
+  }
+  #intro .art{ color:var(--dim); font:12px/13px ui-monospace,monospace; white-space:pre; margin:0 0 22px; opacity:.85; }
+  #intro p{ font:15px/2 "Noto Serif KR",serif; max-width:480px; margin:5px 0; color:#cabf a3; color:#c9bda1; }
+  #intro .keys{ font:13px/1.8 ui-monospace,monospace; color:var(--dim); margin-top:24px; }
+  #intro .go{ margin-top:18px; font:13px ui-monospace,monospace; color:var(--gold); animation:blink 1.6s infinite; }
+  @keyframes blink{ 0%,100%{opacity:.25} 50%{opacity:1} }
+  #scene{ opacity:0; pointer-events:none; background:rgba(10,9,8,.97); }
+  #scene h2{ font:600 26px/1 "Noto Serif KR",serif; letter-spacing:8px; color:var(--gold); margin:0 0 16px; }
+  #scene p{ font:15px/1.9 "Noto Serif KR",serif; max-width:460px; color:var(--paper); }
+  #scene .sub{ color:var(--dim); font:13px ui-monospace,monospace; margin-top:18px; }
+  .hidden{ opacity:0 !important; pointer-events:none !important; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <pre id="view"></pre>
+  <div id="hud">
+    <div id="status">…</div>
+    <div id="bag">소지품: 없음</div>
+  </div>
+</div>
+
+<!-- 터치 패드 -->
+<div id="pad">
+  <div id="t-ql" class="tbtn">↺</div><div id="t-qr" class="tbtn">↻</div>
+  <div id="t-up" class="tbtn">▲</div><div id="t-l" class="tbtn">◀</div>
+  <div id="t-r" class="tbtn">▶</div><div id="t-dn" class="tbtn">▼</div>
+  <div id="t-e" class="tbtn">조사<br>E</div>
+</div>
+
+<!-- 인트로 -->
+<div id="intro">
+  <h1>돌 던전</h1>
+<pre class="art">        _____________________________
+       /    ___      ___      ___    \
+      |    |[ ]|    |[ ]|    |[ ]|    |
+      |    |___|    |___|    |___|    |
+      |   .-----.  .-----.  .-----.  |
+      \__|  ▢  |__|  ▥  |__|  ╪  |__/</pre>
+  <p>램프 하나만 들고 무너진 돌의 방들을 내려간다.<br>
+  방마다 무엇인가가 놓여 있다 — 화로, 제단, 우리, 옥좌.</p>
+  <p>가장 깊은 방의 봉인을 풀면, 밖으로 나가는 문이 열린다.</p>
+  <p class="keys">W A S D / ←↓→ 이동 · Q E 또는 ←→ 회전 · E 조사·작동·줍기</p>
+  <p class="go">▶ 아무 키나 누르거나 화면을 눌러 입장</p>
+</div>
+
+<!-- 막 전환(방 도착 / 엔딩) -->
+<div id="scene">
+  <h2 id="scene-h">방</h2>
+  <p id="scene-p"></p>
+  <div class="sub" id="scene-s"></div>
+</div>
+
+<script>
+"use strict";
+(() => {
+/* =========================================================================
+   돌 던전 — 1인칭 아스키 레이캐스터 + 배치형 3D 빌보드 사물 + 상호작용
+   단일 자기완결 HTML / CDN 없음 / 백엔드 없음 / 모노스페이스
+   ========================================================================= */
+
+/* ---------------------------------------------------------------------------
+   1. 방 정의 — 각 방은 격자 맵(벽 텍스처 = 돌결) + 배치된 사물 목록 + 출구
+   맵 기호:  '#' 벽 / '.' 바닥 / 글자 = 그 방으로 통하는 문(door id)
+   사물은 월드 좌표(x,y)에 빌보드 스프라이트로 세워진다.
+--------------------------------------------------------------------------- */
+const ROOMS = {
+  hall: {
+    name: "무너진 입구 광장",
+    intro: "천장이 절반쯤 내려앉은 너른 돌의 방. 차가운 외풍이 발목을 스친다.",
+    tint: [205,191,157],
+    grid: [
+      "###############",
+      "#.............#",
+      "#.............#",
+      "#...#.....#...#",   // 양옆 기둥
+      "#.............#",
+      "B.............C",   // 좌:화로방, 우:상자방
+      "#.............#",
+      "#...#.....#...#",
+      "#.............#",
+      "#.............#",
+      "######...######",   // 아래 통로 -> altar
+      "######.A.######",
+    ],
+    spawn: [7.5, 6.0, 0],
+    objects: [
+      { x:7.5, y:1.6, kind:"brazier", id:"hall_brazier", name:"꺼진 화로",
+        sprite:"brazier_off",
+        examine:"한때 불을 품던 무쇠 화로. 안에는 마른 장작과 송진 냄새가 남아 있다.",
+        operate:{ need:"flint", on:"light_brazier",
+          ok:"부싯돌을 치자 송진이 타오른다. 방 전체가 주황빛으로 물든다.",
+          fail:"불씨가 없다. 불을 붙일 무언가가 필요하다." } },
+      { x:2.0, y:7.5, kind:"item", id:"hall_flint", name:"부싯돌",
+        sprite:"flint",
+        examine:"모서리가 닳은 부싯돌. 아직 불꽃을 낼 수 있을 것 같다.",
+        pickup:{ item:"flint", label:"부싯돌",
+          msg:"부싯돌을 주웠다. 무엇엔가 불을 붙일 수 있겠다." } },
+      { x:12.5, y:2.0, kind:"pillar", id:"hall_pillar", name:"무너진 기둥",
+        sprite:"pillar",
+        examine:"반쯤 무너진 기둥. 표면의 비문은 세월에 닳아 읽히지 않는다." },
+    ],
+    doors: {
+      B:{ to:"brazier", at:[1,5], spawn:[12.0,6.0,Math.PI] },
+      C:{ to:"chest",   at:[13,5], spawn:[2.0,6.0,0] },
+      A:{ to:"altar",   at:[7,11], spawn:[7.5,2.0,Math.PI/2] },
+    },
+  },
+
+  brazier: {
+    name: "재의 회랑",
+    intro: "벽을 따라 식은 횃불 받침이 줄지어 있다. 발밑에서 재가 부서진다.",
+    tint: [196,150,96],
+    grid: [
+      "###############",
+      "#.....G.......#",   // G: 봉인된 문(엔딩 게이트)
+      "#.###########.#",
+      "#.#.........#.#",
+      "#.#.#######.#.#",
+      "#.#.#.....#.#.#",
+      "#.#.#.....#.#.#",
+      "#.#.#######.#.#",
+      "#.#.........#.#",
+      "#.###########.#",
+      "H.............#",   // H -> hall
+      "###############",
+    ],
+    spawn: [12.0, 6.0, Math.PI],
+    objects: [
+      { x:7.5, y:6.0, kind:"statue", id:"br_statue", name:"수호자 석상",
+        sprite:"statue",
+        examine:"두 손으로 텅 빈 받침대를 받든 석상. 받침에 '열쇠를 바쳐라'라 새겨 있다.",
+        operate:{ need:"ironkey", on:"offer_key",
+          ok:"녹슨 열쇠를 받침대에 올리자, 석상의 눈에서 먼지가 흘러내린다. 봉인된 문이 삐걱인다.",
+          fail:"받침대는 비어 있다. 무언가를 바쳐야 한다." } },
+      { x:3.0, y:6.0, kind:"torch", id:"br_torch1", name:"꺼진 횃불",
+        sprite:"torch",
+        examine:"기름이 말라 불이 붙지 않는 횃불. 받침만 차갑게 남았다." },
+      { x:12.0, y:6.0, kind:"torch", id:"br_torch2", name:"꺼진 횃불",
+        sprite:"torch",
+        examine:"또 하나의 식은 횃불. 누군가 오래전 불을 끄고 떠났다." },
+    ],
+    doors: {
+      H:{ to:"hall", at:[0,10], spawn:[2.0,5.0,0] },
+      G:{ to:"__ending__", at:[6,1], locked:true,
+          lockedMsg:"거대한 돌문이 봉인되어 있다. 수호자 석상이 무언가를 요구한다." },
+    },
+  },
+
+  chest: {
+    name: "보물지기의 방",
+    intro: "철창 너머에서 무언가 숨소리가 들린다. 한가운데 무쇠 상자가 놓여 있다.",
+    tint: [180,170,150],
+    grid: [
+      "###############",
+      "#......H......#",   // H -> hall (위쪽 문)
+      "#.............#",
+      "#..#########..#",
+      "#..#.......#..#",
+      "#..#.......#..#",
+      "#..#.......#..#",
+      "#..#########..#",
+      "#.............#",
+      "#.............#",
+      "###############",
+      "###############",
+    ],
+    spawn: [2.0, 6.0, 0],
+    objects: [
+      { x:7.5, y:5.5, kind:"chest", id:"ch_chest", name:"무쇠 상자", locked:true,
+        sprite:"chest_closed",
+        examine:"두꺼운 자물쇠가 채워진 무쇠 상자. 흔들면 안에서 쇳소리가 난다.",
+        operate:{ need:"lever_pulled", on:"open_chest",
+          ok:"철창이 열리며 짐승이 물러나자, 상자의 자물쇠도 함께 풀린다. 안에 녹슨 열쇠가 있다.",
+          fail:"자물쇠가 단단하다. 이 방 어딘가의 장치를 먼저 풀어야 한다." } },
+      { x:3.0, y:9.0, kind:"lever", id:"ch_lever", name:"녹슨 레버", pulled:false,
+        sprite:"lever",
+        examine:"벽에 박힌 녹슨 레버. 철창 우리와 연결된 듯하다.",
+        operate:{ on:"pull_lever",
+          ok:"레버를 당기자 우리의 철창이 천천히 올라간다. 짐승이 어둠 속으로 물러선다." } },
+      { x:7.5, y:8.5, kind:"cage", id:"ch_cage", name:"철창 우리",
+        sprite:"cage",
+        examine:"녹슨 철창 안에서 붉은 두 눈이 당신을 노려본다. 함부로 다가가지 마라." },
+    ],
+    doors: {
+      H:{ to:"hall", at:[7,1], spawn:[12.0,6.0,Math.PI] },
+    },
+  },
+
+  altar: {
+    name: "옥좌의 제단",
+    intro: "방 끝에 부서진 옥좌가, 그 앞에 검은 제단이 놓여 있다.",
+    tint: [150,140,170],
+    grid: [
+      "###############",
+      "#.............#",
+      "#.............#",
+      "#...#######...#",
+      "#...#.....#...#",
+      "#...#.....#...#",
+      "#...#.....#...#",
+      "#...#######...#",
+      "#.............#",
+      "#.............#",
+      "######H#######",   // H -> hall (위)
+      "###############",
+    ],
+    spawn: [7.5, 2.0, Math.PI/2],
+    objects: [
+      { x:7.5, y:5.5, kind:"altar", id:"al_altar", name:"검은 제단",
+        sprite:"altar",
+        examine:"제단 위 홈에 무엇인가 끼워질 자리가 있다. 화로의 불이 닿으면 답할 것 같다.",
+        operate:{ need:"light_brazier_global", on:"bless_altar",
+          ok:"멀리 화로의 불빛이 제단의 수정을 깨운다. 제단이 빛나며 부싯돌 곁에 철의 열쇠 환영을 비춘다… 길이 분명해졌다.",
+          fail:"제단은 차갑다. 어딘가의 불이 이곳까지 닿아야 한다." } },
+      { x:7.5, y:9.0, kind:"throne", id:"al_throne", name:"부서진 옥좌",
+        sprite:"throne",
+        examine:"한쪽 팔걸이가 떨어져 나간 돌 옥좌. 앉았던 자는 오래전 먼지가 되었다." },
+    ],
+    doors: {
+      H:{ to:"hall", at:[6,10], spawn:[7.5,9.0,-Math.PI/2] },
+    },
+  },
+};
+
+/* ---------------------------------------------------------------------------
+   2. 사물 빌보드 스프라이트 — 3D처럼 보이도록 음영/원근선 포함한 아스키 아트
+   각 스프라이트는 행 배열. 가까울수록 크게 스케일되어 월드에 세워진다.
+--------------------------------------------------------------------------- */
+const SPRITES = {
+  brazier_off:[
+    "   .--.   ",
+    "  /::::\\  ",
+    " |::::::| ",
+    "  \\.--./  ",
+    "   |##|   ",
+    "  /####\\  ",
+    " /######\\ ",
+    "'--------'",
+  ],
+  brazier_on:[
+    "  (  )) ) ",
+    "  ))(( (  ",
+    "  (())))  ",
+    " {######} ",
+    "  |####|  ",
+    "  /####\\  ",
+    " /######\\ ",
+    "'--------'",
+  ],
+  flint:[
+    "         ",
+    "         ",
+    "         ",
+    "   /\\    ",
+    "  /  \\_  ",
+    " < flint>",
+    "  \\__/   ",
+    "         ",
+  ],
+  pillar:[
+    " .====.  ",
+    " |::::|  ",
+    " |::::|  ",
+    " |::::|  ",
+    " |::::|  ",
+    " |::::|  ",
+    "/::::::\\ ",
+    "'======' ",
+  ],
+  statue:[
+    "   ___   ",
+    "  /o_o\\  ",
+    "  \\_-_/  ",
+    " /|   |\\ ",
+    "( | _ | )",
+    "  | | |  ",
+    " /|   |\\ ",
+    "/__===__\\",
+  ],
+  torch:[
+    "         ",
+    "    ^    ",
+    "   ( )   ",
+    "    |    ",
+    "    |    ",
+    "    |    ",
+    "   /=\\   ",
+    "         ",
+  ],
+  torch_lit:[
+    "   ((    ",
+    "  )((    ",
+    "  (())   ",
+    "    |    ",
+    "    |    ",
+    "    |    ",
+    "   /=\\   ",
+    "         ",
+  ],
+  chest_closed:[
+    "         ",
+    "         ",
+    " .-----. ",
+    " |[#]  | ",
+    " |=====| ",
+    " | (o) | ",
+    " |_____| ",
+    "'-------'",
+  ],
+  chest_open:[
+    " \\-----/ ",
+    "  \\$$$/  ",
+    " .-----. ",
+    " |.~.~.| ",
+    " |=====| ",
+    " |     | ",
+    " |_____| ",
+    "'-------'",
+  ],
+  lever:[
+    "     o   ",
+    "    /    ",
+    "   /     ",
+    "  []     ",
+    "  ||     ",
+    "  ||     ",
+    " /||\\    ",
+    "'----'   ",
+  ],
+  lever_on:[
+    "         ",
+    "         ",
+    "  __o    ",
+    "  []     ",
+    "  ||     ",
+    "  ||     ",
+    " /||\\    ",
+    "'----'   ",
+  ],
+  cage:[
+    " +-+-+-+ ",
+    " | | | | ",
+    " +-+-+-+ ",
+    " |o   o| ",
+    " | \\_/ | ",
+    " | | | | ",
+    " +-+-+-+ ",
+    "'-------'",
+  ],
+  cage_open:[
+    " +-+-+-+ ",
+    "  \\   /  ",
+    "   \\ /   ",
+    " |     | ",
+    " |     | ",
+    " | | | | ",
+    " +-+-+-+ ",
+    "'-------'",
+  ],
+  altar:[
+    "  _____  ",
+    " /     \\ ",
+    "| [ ] |  ",
+    "|  v  |  ",
+    " \\___/   ",
+    " |###|   ",
+    " |###|   ",
+    "/#####\\  ",
+  ],
+  altar_lit:[
+    "  *****  ",
+    " /*****\\ ",
+    "| [*] | ",
+    "|  V  | ",
+    " \\***/  ",
+    " |###|  ",
+    " |###|  ",
+    "/#####\\ ",
+  ],
+  throne:[
+    " |^^^^^| ",
+    " |     | ",
+    " | .-. | ",
+    " ==| |== ",
+    "   | |   ",
+    "  /| |\\  ",
+    " /_|_|_\\ ",
+    "'-------'",
+  ],
+};
+
+/* ---------------------------------------------------------------------------
+   3. 전역 상태
+--------------------------------------------------------------------------- */
+const state = {
+  room:"hall",
+  px:7.5, py:6.0, dir:0,
+  inv:new Set(),
+  flags:new Set(),           // light_brazier, lever_pulled, offer_key ...
+  entered:false,
+  transition:false,
+  endingShown:false,
+};
+const keys = {};
+
+// 사물 동적 상태는 ROOMS 안 객체에 직접 boolean 플래그로 저장(locked/pulled/lit 등)
+
+/* ---------------------------------------------------------------------------
+   4. 화면 적응
+--------------------------------------------------------------------------- */
+const view = document.getElementById("view");
+const statusEl = document.getElementById("status");
+const bagEl = document.getElementById("bag");
+let W=110, H=42, CW=7.8, CHpx=13;
+
+function fit(){
+  const probe=document.createElement("span");
+  probe.style.cssText="position:absolute;visibility:hidden;font:13px/13px ui-monospace,Menlo,monospace;white-space:pre";
+  probe.textContent="M".repeat(100);
+  document.body.appendChild(probe);
+  CW=probe.getBoundingClientRect().width/100 || 7.8;
+  probe.remove();
+  const vh=view.clientHeight || (innerHeight-50);
+  const vw=view.clientWidth  || innerWidth;
+  W=Math.max(54, Math.min(240, Math.floor(vw/CW)));
+  H=Math.max(22, Math.floor(vh/CHpx));
+}
+addEventListener("resize", ()=>{ fit(); });
+
+/* ---------------------------------------------------------------------------
+   5. 레이캐스터 — 벽(돌결 텍스처) + 바닥/천장 음영
+--------------------------------------------------------------------------- */
+function grid(){ return ROOMS[state.room].grid; }
+function gw(){ return grid()[0].length; }
+function gh(){ return grid().length; }
+function cellAt(x,y){
+  const g=grid();
+  if(y<0||x<0||y>=g.length||x>=g[0].length) return "#";
+  return g[y][x];
+}
+function isWall(x,y){
+  const c=cellAt(x|0,y|0);
+  return c==="#";
+}
+// 문 셀(영문 대문자)도 통과 가능한 바닥으로 취급하되, 진입 트리거로 쓴다
+function isBlocked(x,y){
+  const c=cellAt(x|0,y|0);
+  return c==="#";
+}
+
+// 돌결 벽 텍스처: 거리 음영 램프 + 사각 석재 블록(줄눈) 구조
+// 어두움 -> 밝음 순서. 횃불빛 느낌으로 가까운 벽은 밝게.
+const SHADE = " .,:;~=+*xX#%&@$".split("");   // 0=어두움 .. 끝=밝음
+const DUST  = "·`'\"".split("");               // 천장(돌가루/어둠)
+const GROUND= " .,:-_~=".split("");            // 바닥(가까울수록 짙게)
+
+// 결정적 의사난수(돌 얼룩)
+function rnd2(a,b){
+  let s=((a*73856093)^(b*19349663))>>>0;
+  s^=s<<13; s>>>=0; s^=s>>17; s^=s<<5; s>>>=0;
+  return (s%1000)/1000;
+}
+
+// 한 벽 셀의 한 픽셀 문자. wu=벽 가로(0..1), wv=벽 세로(0..1)
+function wallChar(ix,iy,wu,wv,dist,side){
+  // 거리 기반 밝기(횃불): 가까우면 밝고, 멀면 어둠으로 떨어진다
+  let lum = 1 - Math.min(1, (dist*(side?1.16:1.0)) / 14);
+  lum = Math.max(0, lum*lum*0.72 + lum*0.32);    // 부드러운 감쇠(근거리 가산)
+  side && (lum*=0.84);                            // 측면은 약간 어둡게(입체)
+
+  // 석재 블록: 8x4 격자, 행마다 절반 어긋남(벽돌쌓기)
+  const blockW=0.16, blockH=0.115;
+  let row=(wv/blockH)|0;
+  let ucol = wu + (row%2 ? blockW*0.5 : 0);
+  const fu = (ucol%blockW)/blockW;     // 블록 내 가로 위치 0..1
+  const fv = (wv%blockH)/blockH;       // 블록 내 세로 위치 0..1
+  const onMortar = (fu<0.07 || fu>0.93 || fv<0.10 || fv>0.90);
+
+  // 블록별 고유 얼룩
+  const bx=(ucol/blockW)|0, by=row;
+  const blotch = (rnd2(ix*31+bx, iy*29+by)-0.5)*0.22;
+
+  let v = lum + blotch;
+  if(onMortar) v -= 0.34;              // 줄눈은 짙게 패임
+  v=Math.max(0,Math.min(0.999,v));
+  return SHADE[(v*(SHADE.length-1))|0];
+}
+
+function castColumns(){
+  const cols=new Array(W);
+  const dir=state.dir, px=state.px, py=state.py;
+  const planeScale=0.66;
+  for(let x=0;x<W;x++){
+    const cam=(2*x)/W-1;
+    const rdx=Math.cos(dir)+Math.cos(dir+Math.PI/2)*planeScale*cam;
+    const rdy=Math.sin(dir)+Math.sin(dir+Math.PI/2)*planeScale*cam;
+    let mx=px|0, my=py|0;
+    const ddx=Math.abs(1/(rdx||1e-9)), ddy=Math.abs(1/(rdy||1e-9));
+    let sx,sy,sdx,sdy,side=0;
+    if(rdx<0){ sx=-1; sdx=(px-mx)*ddx; } else { sx=1; sdx=(mx+1-px)*ddx; }
+    if(rdy<0){ sy=-1; sdy=(py-my)*ddy; } else { sy=1; sdy=(my+1-py)*ddy; }
+    let hit=0, guard=0;
+    while(!hit && guard++<128){
+      if(sdx<sdy){ sdx+=ddx; mx+=sx; side=0; } else { sdy+=ddy; my+=sy; side=1; }
+      if(isBlocked(mx,my)) hit=1;
+    }
+    const dist=Math.max(0.06, side===0 ? sdx-ddx : sdy-ddy);
+    let wallX = side===0 ? py+dist*rdy : px+dist*rdx;
+    wallX -= wallX|0;
+    cols[x]={ dist, side, mx, my, wallX, rdx, rdy };
+  }
+  return cols;
+}
+
+/* ---------------------------------------------------------------------------
+   6. 사물 빌보드 — 카메라 변환으로 깊이정렬·스케일하여 zbuffer 합성
+--------------------------------------------------------------------------- */
+let reticleObj=null;     // 현재 조준 중(상호작용 가능) 사물
+
+function spriteForObject(o){
+  switch(o.sprite){
+    case "brazier_off": return state.flags.has("light_brazier")?SPRITES.brazier_on:SPRITES.brazier_off;
+    case "chest_closed": return o.locked?SPRITES.chest_closed:SPRITES.chest_open;
+    case "lever": return o.pulled?SPRITES.lever_on:SPRITES.lever;
+    case "cage": return ROOMS.chest.objects.find(z=>z.id==="ch_lever")?.pulled?SPRITES.cage_open:SPRITES.cage;
+    case "altar": return state.flags.has("bless_altar")?SPRITES.altar_lit:SPRITES.altar;
+    case "torch": return SPRITES.torch;
+    default: return SPRITES[o.sprite]||SPRITES.pillar;
+  }
+}
+
+function drawObjects(screen, zbuf, cols){
+  reticleObj=null;
+  const objs=ROOMS[state.room].objects.filter(o=>{
+    // 주운 아이템은 사라진다
+    if(o.pickup && state.flags.has("picked_"+o.id)) return false;
+    return true;
+  });
+  const dir=state.dir, px=state.px, py=state.py;
+  const dirx=Math.cos(dir), diry=Math.sin(dir);
+  const planeX=Math.cos(dir+Math.PI/2)*0.66, planeY=Math.sin(dir+Math.PI/2)*0.66;
+  const inv=1.0/(planeX*diry - dirx*planeY);
+  const horizon=H>>1;
+
+  // 거리 내림차순(먼 것 먼저)
+  const list=objs.map(o=>({o,d:(o.x-px)**2+(o.y-py)**2})).sort((a,b)=>b.d-a.d);
+  let bestCenterDist=Infinity;
+
+  for(const {o,d} of list){
+    const relx=o.x-px, rely=o.y-py;
+    const tx=inv*(diry*relx - dirx*rely);
+    const ty=inv*(-planeY*relx + planeX*rely);   // 카메라 깊이
+    if(ty<=0.18) continue;                        // 뒤/너무 가까움
+    const screenX=((W/2)*(1+tx/ty))|0;
+    const sp=spriteForObject(o);
+    const spH=sp.length, spW=sp[0].length;
+    // 스케일: 깊이에 반비례, 사물 높이를 화면 높이에 맞춤
+    const drawH=Math.min(H*1.3, Math.abs((H/ty)*0.95))|0;
+    if(drawH<3) continue;
+    const aspect=spW/spH;
+    const drawW=Math.max(2, (drawH*aspect*0.62)|0);
+    // 바닥에 세움: 아래쪽이 바닥(지평선 아래로)
+    const groundY=horizon + (drawH*0.42|0);
+    const startY=groundY-drawH;
+    const startX=screenX-(drawW>>1);
+
+    let visibleCols=0, litReticle=false;
+    for(let sxp=0;sxp<drawW;sxp++){
+      const cx=startX+sxp;
+      if(cx<0||cx>=W) continue;
+      if(ty>=zbuf[cx]) continue;                 // 벽 뒤
+      const u=((sxp/drawW)*spW)|0;
+      for(let syp=0;syp<drawH;syp++){
+        const cy=startY+syp;
+        if(cy<0||cy>=H) continue;
+        const v=((syp/drawH)*spH)|0;
+        const ch=sp[v]?.[u];
+        if(!ch||ch===" ") continue;
+        screen[cy][cx]=ch;
+        visibleCols++;
+      }
+    }
+    // 조준 판정: 사물 중심이 화면 중앙 근처 + 가까움 + 보임
+    const centerOff=Math.abs(screenX-(W>>1));
+    if(visibleCols>0 && ty<3.4 && centerOff< Math.max(7,drawW*0.55) ){
+      if(ty<bestCenterDist){ bestCenterDist=ty; reticleObj=o; }
+    }
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   7. 합성 렌더
+--------------------------------------------------------------------------- */
+function render(){
+  const cols=castColumns();
+  const horizon=H>>1;
+  // 화면 버퍼
+  const screen=Array.from({length:H},()=>new Array(W).fill(" "));
+  const zbuf=new Array(W).fill(Infinity);
+
+  for(let x=0;x<W;x++){
+    const c=cols[x];
+    const dist=c.dist;
+    const lh=(H/dist)|0;                       // 실제 벽 슬라이스 높이(클리핑 전)
+    const topF=horizon-(lh>>1);                // 화면상 벽 윗변(음수 가능)
+    const ds=Math.max(0,topF);
+    const de=Math.min(H-1,horizon+(lh>>1));
+    zbuf[x]=dist;
+    for(let y=0;y<H;y++){
+      if(y<ds){
+        // 천장 — 멀리(지평선 근처)일수록 살짝 밝은 돌가루
+        const t=(y)/(horizon||1);             // 0(위) .. 1(지평선)
+        const k=(t*(DUST.length-1))|0;
+        screen[y][x]= t>0.55 ? DUST[Math.min(DUST.length-1,k)] : (t>0.3?DUST[0]:" ");
+      }else if(y>de){
+        const fd=(y-horizon)/((H-horizon)||1); // 0(지평선) .. 1(발밑)
+        screen[y][x]=GROUND[Math.min(GROUND.length-1,(fd*(GROUND.length-1))|0)]||" ";
+      }else{
+        // 벽 텍스처 세로좌표: 슬라이스 안에서의 절대 위치(클리핑 보정)
+        const wv = lh>0 ? (y-topF)/lh : 0;
+        screen[y][x]=wallChar(c.mx,c.my,c.wallX,Math.max(0,Math.min(0.999,wv)),dist,c.side);
+      }
+    }
+  }
+
+  // 사물
+  drawObjects(screen, zbuf, cols);
+
+  // 중앙 십자선(조준)
+  const cy=horizon, cx=W>>1;
+  if(reticleObj){
+    if(screen[cy]) screen[cy][cx]="+";
+    if(screen[cy-1]&&screen[cy-1][cx]===" ")screen[cy-1][cx]="|";
+    if(screen[cy+1]&&screen[cy+1][cx]===" ")screen[cy+1][cx]="|";
+  }else{
+    if(screen[cy]&&screen[cy][cx]===" ")screen[cy][cx]="·";
+  }
+
+  // 비네팅: 가장자리 살짝 어둡게(가벼운 분위기)
+  view.textContent=screen.map(r=>r.join("")).join("\n");
+}
+
+/* ---------------------------------------------------------------------------
+   8. 이동 / 충돌
+--------------------------------------------------------------------------- */
+function tryMove(nx,ny){
+  const m=0.24;
+  const cxx=nx+Math.sign(nx-state.px)*m;
+  const cyy=ny+Math.sign(ny-state.py)*m;
+  if(!isBlocked(cxx|0, state.py|0)) state.px=nx;
+  if(!isBlocked(state.px|0, cyy|0)) state.py=ny;
+  checkDoor();
+}
+
+/* 문 셀(대문자)에 발을 디디면 방 전환 */
+function checkDoor(){
+  const room=ROOMS[state.room];
+  const cell=cellAt(state.px|0, state.py|0);
+  if(/[A-Z]/.test(cell) && room.doors[cell]){
+    const d=room.doors[cell];
+    if(d.locked){
+      // 봉인 해제 여부
+      if(cell==="G" && state.flags.has("offer_key")) d.locked=false;
+      if(d.locked){ flash(d.lockedMsg||"이 문은 잠겨 있다."); pushBack(); return; }
+    }
+    if(d.to==="__ending__"){ doEnding(); return; }
+    enterRoom(d.to, d.spawn);
+  }
+}
+function pushBack(){
+  // 문에서 한 칸 안으로 밀어내기
+  const c=Math.cos(state.dir), s=Math.sin(state.dir);
+  state.px-=c*0.4; state.py-=s*0.4;
+}
+
+/* ---------------------------------------------------------------------------
+   9. 방 전환 — 막 전환 연출
+--------------------------------------------------------------------------- */
+const sceneEl=document.getElementById("scene");
+const sceneH=document.getElementById("scene-h");
+const sceneP=document.getElementById("scene-p");
+const sceneS=document.getElementById("scene-s");
+
+function enterRoom(to, spawn){
+  if(state.transition) return;
+  state.transition=true;
+  const r=ROOMS[to];
+  sceneH.textContent=r.name;
+  sceneP.textContent=r.intro;
+  sceneS.textContent="— 잠시 후 입장 —";
+  sceneEl.classList.remove("hidden");
+  sceneEl.style.opacity="1"; sceneEl.style.pointerEvents="auto";
+  setTimeout(()=>{
+    state.room=to;
+    state.px=spawn[0]; state.py=spawn[1]; state.dir=spawn[2]||0;
+    document.documentElement.style.setProperty('--tint', r.tint?`rgb(${r.tint.join(",")})`:'');
+    sceneEl.style.opacity="0"; sceneEl.style.pointerEvents="none";
+    setStatus(`<b>${r.name}</b> · ${hint()}`);
+    setTimeout(()=>{ state.transition=false; sceneEl.classList.add("hidden"); render(); }, 700);
+  }, 1200);
+}
+
+/* ---------------------------------------------------------------------------
+   10. 상호작용 — E
+--------------------------------------------------------------------------- */
+function setStatus(html){ statusEl.innerHTML=html; }
+let lastFlash=0;
+function flash(msg){
+  setStatus(`<span class="g">${msg}</span>`);
+  lastFlash=performance.now();
+}
+function refreshBag(){
+  if(state.inv.size===0){ bagEl.textContent="소지품: 없음"; return; }
+  const labels=[...state.inv].map(i=>`<span class="it">${ITEM_LABEL[i]||i}</span>`);
+  bagEl.innerHTML="소지품: "+labels.join(" · ");
+}
+const ITEM_LABEL={ flint:"부싯돌", ironkey:"녹슨 열쇠" };
+
+function interact(){
+  const o=reticleObj;
+  if(!o){ flash("아무것도 조준하지 않았다. 사물 정면에 서라."); return; }
+
+  // 줍기
+  if(o.pickup){
+    state.inv.add(o.pickup.item);
+    state.flags.add("picked_"+o.id);
+    ITEM_LABEL[o.pickup.item]=o.pickup.label;
+    refreshBag();
+    flash(o.pickup.msg);
+    return;
+  }
+
+  // 작동(operate) — 조건 충족 시 효과
+  if(o.operate){
+    const op=o.operate;
+    let satisfied=true;
+    if(op.need){
+      if(op.need==="flint") satisfied=state.inv.has("flint");
+      else if(op.need==="ironkey") satisfied=state.inv.has("ironkey");
+      else if(op.need==="lever_pulled") satisfied=ROOMS.chest.objects.find(z=>z.id==="ch_lever")?.pulled;
+      else if(op.need==="light_brazier_global") satisfied=state.flags.has("light_brazier");
+      else satisfied=state.flags.has(op.need);
+    }
+    if(!satisfied){ flash(op.fail||o.examine); return; }
+
+    // 효과 적용
+    applyEffect(op.on, o);
+    flash(op.ok);
+    return;
+  }
+
+  // 그 외: 살펴보기
+  flash(o.examine||`${o.name}. 특별한 것은 없다.`);
+}
+
+function applyEffect(effect, o){
+  switch(effect){
+    case "light_brazier":
+      state.flags.add("light_brazier");
+      // 부싯돌 소모
+      break;
+    case "pull_lever":
+      o.pulled=true;
+      state.flags.add("lever_pulled");
+      break;
+    case "open_chest":{
+      const chest=ROOMS.chest.objects.find(z=>z.id==="ch_chest");
+      if(chest) chest.locked=false;
+      chest && (chest.sprite="chest_open");
+      // 열쇠 획득
+      state.inv.add("ironkey");
+      state.flags.add("got_ironkey");
+      refreshBag();
+      break;
+    }
+    case "offer_key":
+      state.flags.add("offer_key");
+      // 열쇠 소모
+      state.inv.delete("ironkey");
+      refreshBag();
+      // 봉인 문 해제
+      ROOMS.brazier.doors.G.locked=false;
+      break;
+    case "bless_altar":
+      state.flags.add("bless_altar");
+      break;
+  }
+}
+
+/* 진행 힌트 */
+function hint(){
+  if(!state.flags.has("light_brazier")) return "어두운 방을 밝힐 불씨를 찾아라.";
+  if(!state.flags.has("lever_pulled")) return "철창 우리의 장치를 풀어 상자를 열어라.";
+  if(!state.flags.has("got_ironkey")) return "무쇠 상자에서 녹슨 열쇠를 꺼내라.";
+  if(!state.flags.has("offer_key")) return "수호자 석상에 녹슨 열쇠를 바쳐라.";
+  return "봉인이 풀렸다 — 재의 회랑의 거대한 돌문으로 나가라.";
+}
+
+/* ---------------------------------------------------------------------------
+   11. 엔딩
+--------------------------------------------------------------------------- */
+function doEnding(){
+  if(state.endingShown) return;
+  state.endingShown=true; state.transition=true;
+  sceneH.textContent="문 너머";
+  sceneP.innerHTML="봉인된 돌문이 굉음과 함께 열린다.<br>차가운 던전 너머로 새벽의 빛이 흘러든다.<br><br>당신은 돌의 방들을 모두 지나, 밖으로 나섰다.";
+  sceneS.textContent="— 돌 던전 클리어 · 아무 키나 눌러 다시 내려간다 —";
+  sceneEl.classList.remove("hidden");
+  sceneEl.style.opacity="1"; sceneEl.style.pointerEvents="auto";
+  state.endingWait=true;
+}
+function restart(){
+  // 상태 초기화
+  state.inv.clear(); state.flags.clear();
+  state.endingShown=false; state.endingWait=false; state.transition=false;
+  // 사물 동적 플래그 복원
+  ROOMS.chest.objects.find(z=>z.id==="ch_lever").pulled=false;
+  const chest=ROOMS.chest.objects.find(z=>z.id==="ch_chest");
+  chest.locked=true; chest.sprite="chest_closed";
+  ROOMS.brazier.doors.G.locked=true;
+  state.room="hall"; const sp=ROOMS.hall.spawn;
+  state.px=sp[0]; state.py=sp[1]; state.dir=sp[2];
+  refreshBag();
+  sceneEl.style.opacity="0"; sceneEl.style.pointerEvents="none";
+  setStatus(`<b>${ROOMS.hall.name}</b> · ${hint()}`);
+  setTimeout(()=>sceneEl.classList.add("hidden"),700);
+}
+
+/* ---------------------------------------------------------------------------
+   12. 입력
+--------------------------------------------------------------------------- */
+const intro=document.getElementById("intro");
+function enter(){
+  if(state.entered) return;
+  state.entered=true;
+  intro.classList.add("hidden");
+  if(matchMedia("(pointer:coarse)").matches || innerWidth<760){
+    document.getElementById("pad").style.display="block";
+  }
+  setStatus(`<b>${ROOMS.hall.name}</b> · ${hint()}`);
+}
+
+addEventListener("keydown", e=>{
+  const k=e.key.toLowerCase();
+  if(state.endingWait){ restart(); return; }
+  if(!state.entered){ enter(); e.preventDefault(); return; }
+  keys[k]=true;
+  if(k==="e"||k===" "||k==="f"||k==="enter"){ e.preventDefault(); interact(); }
+  if(["arrowup","arrowdown","arrowleft","arrowright"," "].includes(k)) e.preventDefault();
+});
+addEventListener("keyup", e=>{ keys[e.key.toLowerCase()]=false; });
+
+/* 터치 패드 버튼 */
+function bindHold(id, key){
+  const el=document.getElementById(id);
+  if(!el) return;
+  const dn=ev=>{ ev.preventDefault(); if(!state.entered){enter();return;} if(state.endingWait){restart();return;} keys[key]=true; };
+  const up=ev=>{ ev.preventDefault(); keys[key]=false; };
+  el.addEventListener("touchstart",dn,{passive:false});
+  el.addEventListener("touchend",up,{passive:false});
+  el.addEventListener("touchcancel",up,{passive:false});
+  el.addEventListener("mousedown",dn);
+  el.addEventListener("mouseup",up);
+  el.addEventListener("mouseleave",up);
+}
+bindHold("t-up","w"); bindHold("t-dn","s");
+bindHold("t-l","a"); bindHold("t-r","d");
+bindHold("t-ql","arrowleft"); bindHold("t-qr","arrowright");
+(()=>{
+  const e=document.getElementById("t-e");
+  const fire=ev=>{ ev.preventDefault();
+    if(!state.entered){enter();return;}
+    if(state.endingWait){restart();return;}
+    interact(); };
+  e.addEventListener("touchstart",fire,{passive:false});
+  e.addEventListener("click",fire);
+})();
+// 화면 탭으로 입장(인트로)
+intro.addEventListener("touchstart",e=>{e.preventDefault();enter();},{passive:false});
+intro.addEventListener("click",()=>enter());
+
+/* ---------------------------------------------------------------------------
+   13. 메인 루프
+--------------------------------------------------------------------------- */
+let lastT=performance.now(), acc=0;
+function loop(t){
+  const dt=Math.min(0.05,(t-lastT)/1000); lastT=t;
+  if(state.entered && !state.transition && !state.endingWait){
+    const rs=2.6*dt, ms=2.7*dt;
+    if(keys["arrowleft"]||keys["q"]) state.dir-=rs;
+    if(keys["arrowright"]) state.dir+=rs;
+    // e는 상호작용 전용. 회전은 Q/← (좌), →/ (우)
+    const fx=Math.cos(state.dir), fy=Math.sin(state.dir);
+    if(keys["w"]||keys["arrowup"]) tryMove(state.px+fx*ms, state.py+fy*ms);
+    if(keys["s"]||keys["arrowdown"]) tryMove(state.px-fx*ms, state.py-fy*ms);
+    if(keys["a"]) tryMove(state.px+fy*ms, state.py-fx*ms);
+    if(keys["d"]) tryMove(state.px-fy*ms, state.py+fx*ms);
+  }
+  acc+=dt;
+  if(acc>1/30){
+    acc=0; render();
+    // 상태바: 조준 사물 안내 / 진행 힌트
+    if(state.entered && !state.transition && !state.endingWait && performance.now()-lastFlash>2600){
+      if(reticleObj){
+        const o=reticleObj;
+        let verb = o.pickup ? "줍기" : (o.operate ? "작동" : "살펴보기");
+        setStatus(`<b>${o.name}</b> 앞 — <span class="g">E</span>로 ${verb} · ${hint()}`);
+      }else{
+        const r=ROOMS[state.room];
+        setStatus(`<b>${r.name}</b> · ${hint()}`);
+      }
+    }
+  }
+  requestAnimationFrame(loop);
+}
+
+/* 검증용 훅(테스트에서만 사용; 게임 동작엔 무해) */
+window.__dbg={
+  state, ROOMS,
+  face(x,y){ state.dir=Math.atan2(y-state.py, x-state.px); },
+  setPos(x,y){ state.px=x; state.py=y; },
+  reticle(){ return reticleObj?reticleObj.name:null; },
+  enter(){ enter(); },
+  interact(){ interact(); },
+};
+
+/* 초기화 */
+function boot(){
+  fit();
+  // 초기 spawn
+  const sp=ROOMS.hall.spawn;
+  state.px=sp[0]; state.py=sp[1]; state.dir=sp[2];
+  refreshBag();
+  render();
+  requestAnimationFrame(loop);
+}
+// 레이아웃 확정 후 fit
+if(document.readyState==="complete"||document.readyState==="interactive"){
+  requestAnimationFrame(()=>{ boot(); });
+}else{
+  addEventListener("DOMContentLoaded",()=>requestAnimationFrame(boot));
+}
+addEventListener("load",()=>{ fit(); render(); });
+
+})();
+</script>
+</body>
+</html>

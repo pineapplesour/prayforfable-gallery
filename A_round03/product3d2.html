@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>OBSIDIAN — Chronométrie Atelier</title>
+<style>
+  :root{
+    --bg:#070608;
+    --bg2:#0d0b10;
+    --ink:#f4efe6;
+    --mut:#8d8576;
+    --faint:#56514a;
+    --line:rgba(220,205,170,.13);
+    --gold:#c9a24b;
+    --gold-soft:#e7cf92;
+    --accent:#c9a24b;
+    --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+    --serif:"Cormorant Garamond",Georgia,"Times New Roman",serif;
+    --sans:"Space Grotesk","Helvetica Neue",Arial,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:var(--sans);
+    overflow:hidden;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+    cursor:default;
+  }
+  #stage{position:fixed;inset:0;z-index:0}
+  canvas{display:block}
+
+  /* ambient grain + vignette overlays — always painted, content-first */
+  .vignette{position:fixed;inset:0;z-index:1;pointer-events:none;
+    background:radial-gradient(120% 100% at 50% 38%,rgba(0,0,0,0) 42%,rgba(0,0,0,.5) 88%,rgba(0,0,0,.78) 100%);}
+  .grain{position:fixed;inset:-50%;z-index:2;pointer-events:none;opacity:.05;mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    animation:grain 6s steps(6) infinite;}
+  @keyframes grain{0%{transform:translate(0,0)}20%{transform:translate(-4%,3%)}40%{transform:translate(3%,-2%)}60%{transform:translate(-2%,2%)}80%{transform:translate(2%,-3%)}100%{transform:translate(0,0)}}
+
+  .ui{position:fixed;inset:0;z-index:3;pointer-events:none}
+  .ui > *{pointer-events:auto}
+
+  /* ---- top bar ---- */
+  .topbar{position:absolute;top:0;left:0;right:0;display:flex;justify-content:space-between;align-items:center;
+    padding:22px 34px;font-family:var(--mono);font-size:10.5px;letter-spacing:.34em;color:var(--mut);text-transform:uppercase}
+  .brand{display:flex;align-items:center;gap:13px;color:var(--ink);letter-spacing:.5em}
+  .brand .dot{width:6px;height:6px;border:1px solid var(--gold);border-radius:50%;position:relative}
+  .brand .dot::after{content:"";position:absolute;inset:1.5px;background:var(--gold);border-radius:50%;
+    animation:pulse 2.6s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:.35;transform:scale(.7)}50%{opacity:1;transform:scale(1)}}
+  .topnav{display:flex;gap:30px}
+  .topnav span{position:relative;transition:color .3s}
+  .topnav span:hover{color:var(--gold-soft)}
+  .topnav .live{color:var(--gold);display:flex;align-items:center;gap:7px}
+  .topnav .live::before{content:"";width:5px;height:5px;background:var(--gold);border-radius:50%;animation:pulse 1.6s infinite}
+
+  /* ---- editorial headline (left) ---- */
+  .hero{position:absolute;left:46px;top:50%;transform:translateY(-50%);max-width:430px}
+  .kick{font-family:var(--mono);font-size:10px;letter-spacing:.42em;color:var(--gold);text-transform:uppercase;
+    margin-bottom:20px;display:flex;align-items:center;gap:12px}
+  .kick::before{content:"";width:34px;height:1px;background:linear-gradient(90deg,var(--gold),transparent)}
+  .display{font-family:var(--serif);font-weight:500;line-height:.92;letter-spacing:-.01em;
+    font-size:clamp(56px,7.4vw,118px)}
+  .display .it{font-style:italic;color:var(--gold-soft);font-weight:500}
+  .display .row{overflow:hidden;display:block}
+  .display .row > span{display:block;transform:translateY(105%);animation:rise .95s cubic-bezier(.2,.8,.2,1) forwards}
+  .display .row:nth-child(2) > span{animation-delay:.08s}
+  .display .row:nth-child(3) > span{animation-delay:.16s}
+  @keyframes rise{to{transform:translateY(0)}}
+  .lede{margin-top:26px;max-width:360px;color:var(--mut);font-size:14px;line-height:1.65;
+    font-weight:300;opacity:0;animation:fade 1s ease .5s forwards}
+  .lede b{color:var(--ink);font-weight:500}
+  @keyframes fade{to{opacity:1}}
+
+  .stats{margin-top:34px;display:flex;gap:34px;opacity:0;animation:fade 1s ease .7s forwards}
+  .stat .n{font-family:var(--serif);font-size:32px;line-height:1;color:var(--ink)}
+  .stat .n .u{font-family:var(--mono);font-size:11px;color:var(--gold);margin-left:3px;letter-spacing:.1em}
+  .stat .l{font-family:var(--mono);font-size:9px;letter-spacing:.26em;color:var(--faint);text-transform:uppercase;margin-top:8px}
+
+  /* ---- atelier console (right) ---- */
+  .console{position:absolute;right:30px;top:50%;transform:translateY(-50%);width:296px;
+    background:linear-gradient(180deg,rgba(20,18,22,.78),rgba(11,10,13,.86));
+    border:1px solid var(--line);border-radius:14px;backdrop-filter:blur(18px) saturate(1.2);
+    padding:20px 20px 18px;box-shadow:0 30px 80px -30px rgba(0,0,0,.8),inset 0 1px 0 rgba(255,255,255,.05);
+    opacity:0;animation:fade 1s ease .4s forwards}
+  .console .hd{display:flex;justify-content:space-between;align-items:baseline;
+    padding-bottom:14px;margin-bottom:16px;border-bottom:1px solid var(--line)}
+  .console .hd .t{font-family:var(--mono);font-size:10px;letter-spacing:.3em;color:var(--ink);text-transform:uppercase}
+  .console .hd .ref{font-family:var(--mono);font-size:9px;color:var(--faint);letter-spacing:.16em}
+
+  .grp{margin-bottom:17px}
+  .grp .lab{font-family:var(--mono);font-size:9px;letter-spacing:.24em;color:var(--mut);text-transform:uppercase;
+    display:flex;justify-content:space-between;margin-bottom:10px}
+  .grp .lab .v{color:var(--gold-soft)}
+  .sw{display:flex;gap:9px}
+  .sw button{flex:1;height:30px;border-radius:7px;border:1px solid var(--line);background:#000;
+    cursor:pointer;position:relative;transition:transform .25s,border-color .25s;overflow:hidden}
+  .sw button:hover{transform:translateY(-2px)}
+  .sw button.on{border-color:var(--gold);box-shadow:0 0 0 1px var(--gold),0 6px 18px -6px var(--gold)}
+  .sw button.on::after{content:"";position:absolute;top:5px;right:5px;width:5px;height:5px;border-radius:50%;
+    background:var(--gold);box-shadow:0 0 8px var(--gold)}
+
+  .slider{position:relative;height:30px;display:flex;align-items:center}
+  .slider input{-webkit-appearance:none;appearance:none;width:100%;height:2px;border-radius:2px;
+    background:linear-gradient(90deg,var(--gold) var(--p,50%),rgba(255,255,255,.12) var(--p,50%));outline:none}
+  .slider input::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;border-radius:50%;
+    background:var(--gold-soft);cursor:pointer;box-shadow:0 0 0 4px rgba(201,162,75,.18),0 2px 6px rgba(0,0,0,.6);transition:transform .2s}
+  .slider input::-webkit-slider-thumb:hover{transform:scale(1.18)}
+  .slider input::-moz-range-thumb{width:13px;height:13px;border:none;border-radius:50%;background:var(--gold-soft);cursor:pointer}
+
+  .toggle{display:flex;justify-content:space-between;align-items:center;
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;color:var(--mut);text-transform:uppercase}
+  .tg{width:38px;height:20px;border-radius:11px;border:1px solid var(--line);background:#000;position:relative;cursor:pointer;transition:.3s}
+  .tg::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:var(--faint);transition:.3s}
+  .tg.on{background:rgba(201,162,75,.2);border-color:var(--gold)}
+  .tg.on::after{left:20px;background:var(--gold);box-shadow:0 0 8px var(--gold)}
+
+  .price{display:flex;justify-content:space-between;align-items:flex-end;margin-top:18px;padding-top:15px;border-top:1px solid var(--line)}
+  .price .pl{font-family:var(--mono);font-size:9px;letter-spacing:.24em;color:var(--faint);text-transform:uppercase}
+  .price .pv{font-family:var(--serif);font-size:30px;color:var(--ink);line-height:1}
+  .price .pv .c{font-size:15px;color:var(--gold);vertical-align:top;margin-right:2px}
+  .cta{margin-top:14px;width:100%;height:42px;border:1px solid var(--gold);border-radius:9px;
+    background:linear-gradient(180deg,rgba(201,162,75,.16),rgba(201,162,75,.04));color:var(--gold-soft);
+    font-family:var(--mono);font-size:10px;letter-spacing:.3em;text-transform:uppercase;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;gap:10px;transition:.3s;position:relative;overflow:hidden}
+  .cta:hover{background:var(--gold);color:#1a1407;box-shadow:0 0 30px -6px var(--gold)}
+  .cta .arr{transition:transform .3s}
+  .cta:hover .arr{transform:translateX(5px)}
+
+  /* ---- bottom HUD ---- */
+  .hud{position:absolute;left:46px;bottom:26px;right:30px;display:flex;justify-content:space-between;align-items:flex-end;
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.24em;color:var(--faint);text-transform:uppercase;
+    opacity:0;animation:fade 1s ease .9s forwards}
+  .hud .drag{display:flex;align-items:center;gap:10px;color:var(--mut)}
+  .hud .drag .ic{width:24px;height:24px;border:1px solid var(--line);border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--gold)}
+  .hud .meta{display:flex;gap:26px}
+  .hud .meta .fps{color:var(--gold)}
+
+  /* loader (≤0.8s, non-blocking, content visible underneath) */
+  #boot{position:fixed;inset:0;z-index:6;background:var(--bg);display:flex;align-items:center;justify-content:center;
+    flex-direction:column;gap:18px;transition:opacity .6s ease;pointer-events:none}
+  #boot.hide{opacity:0}
+  #boot .ring{width:42px;height:42px;border:1px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:spin 1s linear infinite}
+  #boot .bt{font-family:var(--mono);font-size:9px;letter-spacing:.4em;color:var(--mut);text-transform:uppercase}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  /* ---- responsive : mobile 390 ---- */
+  @media (max-width:760px){
+    .topnav{display:none}
+    .topbar{padding:16px 18px}
+    .hero{left:18px;right:18px;top:88px;transform:none;max-width:none}
+    .display{font-size:clamp(46px,15vw,66px)}
+    .lede{max-width:none;font-size:13px}
+    .stats{gap:24px;margin-top:24px}
+    .stat .n{font-size:26px}
+    .console{right:12px;left:12px;width:auto;top:auto;bottom:78px;transform:none;
+      max-height:46vh;overflow:auto;padding:16px}
+    .hud{left:18px;right:18px;bottom:14px;font-size:8.5px;letter-spacing:.16em}
+    .hud .drag span.t{display:none}
+    .hud .meta{gap:14px}
+  }
+  @media (max-width:760px) and (max-height:740px){
+    .hero{top:74px}
+    .stats{display:none}
+  }
+</style>
+</head>
+<body>
+  <div id="stage"></div>
+  <div class="vignette"></div>
+  <div class="grain"></div>
+
+  <div class="ui">
+    <div class="topbar">
+      <div class="brand"><span class="dot"></span>OBSIDIAN</div>
+      <div class="topnav">
+        <span>컬렉션</span><span>무브먼트</span><span>아틀리에</span>
+        <span class="live">LIVE RENDER</span>
+      </div>
+    </div>
+
+    <div class="hero">
+      <div class="kick">Chronométrie · No. 04</div>
+      <h1 class="display">
+        <span class="row"><span>시간을</span></span>
+        <span class="row"><span><span class="it">조각</span>하다</span></span>
+      </h1>
+      <p class="lede">사파이어 크리스털 아래, 빛은 <b>108개의 면</b>을 통과하며 굴절된다. 실시간으로 케이스·다이얼·조명을 다듬어 단 하나의 크로노미터를 완성하세요.</p>
+      <div class="stats">
+        <div class="stat"><div class="n">108<span class="u">FACETS</span></div><div class="l">Sapphire Crystal</div></div>
+        <div class="stat"><div class="n">72<span class="u">HRS</span></div><div class="l">Power Reserve</div></div>
+        <div class="stat"><div class="n">5<span class="u">ATM</span></div><div class="l">Water Resist</div></div>
+      </div>
+    </div>
+
+    <div class="console">
+      <div class="hd"><div class="t">Atelier Console</div><div class="ref" id="ref">REF · OBX-04</div></div>
+
+      <div class="grp">
+        <div class="lab"><span>케이스 메탈</span><span class="v" id="vMetal">Champagne Gold</span></div>
+        <div class="sw" id="swMetal">
+          <button data-i="0" class="on" style="background:linear-gradient(135deg,#e7cf92,#9c7a30)"></button>
+          <button data-i="1" style="background:linear-gradient(135deg,#d7dadf,#8a8d92)"></button>
+          <button data-i="2" style="background:linear-gradient(135deg,#e9b9a3,#a86a54)"></button>
+          <button data-i="3" style="background:linear-gradient(135deg,#3a3d44,#15171b)"></button>
+        </div>
+      </div>
+
+      <div class="grp">
+        <div class="lab"><span>다이얼</span><span class="v" id="vDial">Obsidian Black</span></div>
+        <div class="sw" id="swDial">
+          <button data-i="0" class="on" style="background:linear-gradient(135deg,#1c1c20,#050506)"></button>
+          <button data-i="1" style="background:linear-gradient(135deg,#0e2a3a,#04121c)"></button>
+          <button data-i="2" style="background:linear-gradient(135deg,#143323,#04130b)"></button>
+          <button data-i="3" style="background:linear-gradient(135deg,#3a1422,#15050c)"></button>
+        </div>
+      </div>
+
+      <div class="grp">
+        <div class="lab"><span>크리스털 굴절</span><span class="v" id="vIor">1.77</span></div>
+        <div class="slider"><input id="sIor" type="range" min="0" max="100" value="62"></div>
+      </div>
+
+      <div class="grp">
+        <div class="lab"><span>조명 무드</span><span class="v" id="vLight">Atelier Warm</span></div>
+        <div class="slider"><input id="sLight" type="range" min="0" max="100" value="50"></div>
+      </div>
+
+      <div class="grp">
+        <div class="toggle"><span>자동 회전 (오버추어)</span><div class="tg on" id="tgSpin"></div></div>
+      </div>
+
+      <div class="price">
+        <div><div class="pl">Estimated</div></div>
+        <div class="pv"><span class="c">₩</span><span id="priceVal">38,400,000</span></div>
+      </div>
+      <button class="cta">예약 주문 <span class="arr">→</span></button>
+    </div>
+
+    <div class="hud">
+      <div class="drag"><span class="ic">↻</span><span class="t">드래그하여 회전 · 스크롤로 줌</span></div>
+      <div class="meta">
+        <span>RAYTRACED · ENVMAP</span>
+        <span>VEVOR · CH-9100</span>
+        <span class="fps" id="fps">60 FPS</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="boot"><div class="ring"></div><div class="bt">Calibrating Movement</div></div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+const stage = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ antialias:true, alpha:false, powerPreference:'high-performance' });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 0.82;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+stage.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x070608);
+scene.fog = new THREE.FogExp2(0x070608, 0.045);
+
+const camera = new THREE.PerspectiveCamera(36, innerWidth/innerHeight, 0.1, 100);
+camera.position.set(0, 4.6, 6.6);
+
+// environment for PBR reflections
+const pmrem = new THREE.PMREMGenerator(renderer);
+const envRT = pmrem.fromScene(new RoomEnvironment(renderer), 0.04);
+scene.environment = envRT.texture;
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.minDistance = 5;
+controls.maxDistance = 11;
+controls.minPolarAngle = 0.25;
+controls.maxPolarAngle = Math.PI - 0.7;
+controls.enablePan = false;
+controls.target.set(0, 0.0, 0);
+
+// -------------------- LIGHTING --------------------
+const keyLight = new THREE.SpotLight(0xfff0d8, 26, 32, 0.85, 0.55, 1.0);
+keyLight.position.set(4, 9, 6);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048,2048);
+keyLight.shadow.bias = -0.0002;
+scene.add(keyLight);
+
+const rimLight = new THREE.SpotLight(0xc9a24b, 18, 32, 0.9, 0.6);
+rimLight.position.set(-6, 4, -5);
+scene.add(rimLight);
+
+const fillLight = new THREE.PointLight(0x7d92d4, 5, 26);
+fillLight.position.set(-4, 1, 6);
+scene.add(fillLight);
+
+// dedicated face light so the dial / hands / indices always read
+const faceLight = new THREE.DirectionalLight(0xfff4e0, 1.1);
+faceLight.position.set(0.5, 3, 4);
+scene.add(faceLight);
+
+const ambient = new THREE.AmbientLight(0xffffff, 0.12);
+scene.add(ambient);
+
+// rotating studio "softbox" — gives moving highlights across the crystal
+const sweep = new THREE.RectAreaLight(0xffffff, 2.4, 6, 3);
+sweep.position.set(0, 4, 6);
+sweep.lookAt(0,0,0);
+scene.add(sweep);
+
+// -------------------- MATERIALS --------------------
+const metals = [
+  { c:0xe7cf92, name:'Champagne Gold', r:0.18, m:1.0 },
+  { c:0xd7dadf, name:'Platinum Steel', r:0.14, m:1.0 },
+  { c:0xe0a98c, name:'Rose Gold',      r:0.2,  m:1.0 },
+  { c:0x2a2c31, name:'DLC Obsidian',   r:0.3,  m:1.0 },
+];
+const dials = [
+  { c:0x14141a, name:'Obsidian Black' },
+  { c:0x0e3247, name:'Abyss Blue' },
+  { c:0x123a26, name:'British Green' },
+  { c:0x44192a, name:'Bordeaux' },
+];
+
+const matMetal = new THREE.MeshPhysicalMaterial({
+  color: metals[0].c, metalness:1.0, roughness:metals[0].r,
+  envMapIntensity:1.4, clearcoat:0.4, clearcoatRoughness:0.2
+});
+const matCaseSide = matMetal.clone();
+const matDial = new THREE.MeshPhysicalMaterial({
+  color: dials[0].c, metalness:0.25, roughness:0.5, envMapIntensity:0.3, clearcoat:0.4, clearcoatRoughness:0.3
+});
+const matCrystal = new THREE.MeshPhysicalMaterial({
+  color:0xffffff, metalness:0, roughness:0.0, transmission:1.0, thickness:0.45,
+  ior:1.77, clearcoat:1.0, clearcoatRoughness:0.0, envMapIntensity:0.9,
+  transparent:true, opacity:1.0, reflectivity:0.5,
+  attenuationColor:new THREE.Color(0xffffff), attenuationDistance:8
+});
+const matHand = new THREE.MeshPhysicalMaterial({ color:0xfbf7ef, metalness:1, roughness:0.16, envMapIntensity:1.5 });
+const matLume = new THREE.MeshStandardMaterial({ color:0xcdeee2, emissive:0x7af0c4, emissiveIntensity:2.2, roughness:0.5 });
+const matIndex = new THREE.MeshPhysicalMaterial({ color:0xf0e8d2, metalness:1, roughness:0.18, envMapIntensity:1.4 });
+const matSeconds = new THREE.MeshStandardMaterial({ color:0xc9a24b, emissive:0xc9a24b, emissiveIntensity:0.6, metalness:1, roughness:0.3 });
+
+// -------------------- BUILD WATCH --------------------
+const watch = new THREE.Group();
+scene.add(watch);
+
+// fluted bezel (the 108 facets) — torus-ish ring built from a faceted lathe
+function makeBezel(){
+  const grp = new THREE.Group();
+  const teeth = 108;
+  const outerR = 2.18, innerR = 1.92;
+  const seg = new THREE.BoxGeometry(0.085, 0.16, outerR-innerR+0.02);
+  for(let i=0;i<teeth;i++){
+    const a = (i/teeth)*Math.PI*2;
+    const m = new THREE.Mesh(seg, matMetal);
+    const rr = (outerR+innerR)/2;
+    m.position.set(Math.cos(a)*rr, 0.0, Math.sin(a)*rr);
+    m.rotation.y = -a;
+    m.castShadow = true;
+    grp.add(m);
+  }
+  // smooth rim cap
+  const cap = new THREE.Mesh(new THREE.TorusGeometry(outerR-0.02, 0.07, 24, 160), matMetal);
+  cap.rotation.x = Math.PI/2; cap.position.y = 0.08; cap.castShadow = true;
+  grp.add(cap);
+  return grp;
+}
+watch.add(makeBezel());
+
+// case body (lathe profile)
+const casePts = [
+  new THREE.Vector2(0, -0.55),
+  new THREE.Vector2(1.7, -0.55),
+  new THREE.Vector2(2.05, -0.3),
+  new THREE.Vector2(2.18, 0.0),
+  new THREE.Vector2(2.1, 0.12),
+  new THREE.Vector2(1.95, 0.14),
+];
+const caseGeo = new THREE.LatheGeometry(casePts, 128);
+const caseMesh = new THREE.Mesh(caseGeo, matCaseSide);
+caseMesh.castShadow = true; caseMesh.receiveShadow = true;
+watch.add(caseMesh);
+
+// caseback / inner
+const back = new THREE.Mesh(new THREE.CylinderGeometry(1.7,1.7,0.06,128), matMetal);
+back.position.y = -0.54; watch.add(back);
+
+// dial
+const dialMesh = new THREE.Mesh(new THREE.CylinderGeometry(1.9,1.9,0.05,128), matDial);
+dialMesh.position.y = 0.02; dialMesh.receiveShadow = true;
+watch.add(dialMesh);
+
+// guilloché — concentric grooves on dial (instanced thin tori)
+const guil = new THREE.Group();
+for(let i=0;i<26;i++){
+  const r = 0.14 + i*0.068;
+  const t = new THREE.Mesh(new THREE.TorusGeometry(r, 0.004, 6, 120), matDial);
+  t.rotation.x = Math.PI/2; t.position.y = 0.048;
+  guil.add(t);
+}
+watch.add(guil);
+
+// hour indices (applied, faceted batons) + 12 marker triangle
+const indices = new THREE.Group();
+for(let i=0;i<12;i++){
+  const a = (i/12)*Math.PI*2;
+  const len = (i%3===0)?0.34:0.2;
+  const baton = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.04, len), matIndex);
+  const rr = 1.6;
+  baton.position.set(Math.sin(a)*rr, 0.06, Math.cos(a)*rr);
+  baton.rotation.y = a;
+  baton.castShadow = true;
+  indices.add(baton);
+  // lume pip near each index
+  const pip = new THREE.Mesh(new THREE.SphereGeometry(0.035,16,16), matLume);
+  pip.position.set(Math.sin(a)*1.78, 0.07, Math.cos(a)*1.78);
+  indices.add(pip);
+}
+watch.add(indices);
+
+// hands group
+const hands = new THREE.Group();
+hands.position.y = 0.1; watch.add(hands);
+function makeHand(len, w, back, mat){
+  const shape = new THREE.Shape();
+  shape.moveTo(-w, -back); shape.lineTo(w, -back);
+  shape.lineTo(w*0.5, len); shape.lineTo(0, len+w*0.6); shape.lineTo(-w*0.5, len);
+  shape.lineTo(-w,-back);
+  const g = new THREE.ExtrudeGeometry(shape, { depth:0.03, bevelEnabled:true, bevelSize:0.01, bevelThickness:0.01, bevelSegments:2 });
+  g.rotateX(-Math.PI/2);
+  const m = new THREE.Mesh(g, mat); m.castShadow = true; return m;
+}
+const hourHand = makeHand(0.95, 0.06, 0.25, matHand);
+const minHand  = makeHand(1.35, 0.045, 0.3, matHand);
+hourHand.position.y = 0.0; minHand.position.y = 0.04;
+// lume inlay strips on hands
+const hourLume = new THREE.Mesh(new THREE.BoxGeometry(0.04,0.01,0.6), matLume); hourLume.position.set(0,0.03,0.32);
+const minLume  = new THREE.Mesh(new THREE.BoxGeometry(0.03,0.01,0.9),  matLume); minLume.position.set(0,0.07,0.5);
+// seconds hand
+const secHand = new THREE.Mesh(new THREE.BoxGeometry(0.018,0.012,1.5), matSeconds); secHand.position.set(0,0.1,0.55);
+const secTail = new THREE.Mesh(new THREE.BoxGeometry(0.018,0.012,0.4), matSeconds); secTail.position.set(0,0.1,-0.18);
+const secG = new THREE.Group(); secG.add(secHand, secTail);
+const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.07,0.07,0.14,24), matIndex); cap.position.y=0.08;
+hands.add(hourHand, hourLume, minHand, minLume, secG, cap);
+
+// crown + guards
+const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.22,0.22,0.34,24), matMetal);
+crown.rotation.z = Math.PI/2; crown.position.set(2.28, -0.18, 0); crown.castShadow=true;
+const crownGem = new THREE.Mesh(new THREE.OctahedronGeometry(0.1,0), matCrystal);
+crownGem.position.set(2.46,-0.18,0); crownGem.scale.set(1,1,0.6);
+watch.add(crown, crownGem);
+
+// SAPPHIRE CRYSTAL DOME (the refraction hero) — domed glass over the dial
+const crystalGeo = new THREE.SphereGeometry(1.95, 96, 96, 0, Math.PI*2, 0, Math.PI*0.30);
+const crystal = new THREE.Mesh(crystalGeo, matCrystal);
+crystal.position.y = 0.08; crystal.scale.y = 0.34;
+watch.add(crystal);
+// inner anti-reflection ring
+const arRing = new THREE.Mesh(new THREE.TorusGeometry(1.9,0.02,16,120), matCrystal);
+arRing.rotation.x = Math.PI/2; arRing.position.y = 0.06; watch.add(arRing);
+
+// lay watch face-up, slight tilt — read from the elevated camera
+watch.rotation.x = -0.18;
+watch.position.y = 0.1;
+
+// reflective pedestal floor
+const floorMat = new THREE.MeshPhysicalMaterial({ color:0x0a090c, metalness:0.85, roughness:0.42, envMapIntensity:0.6, clearcoat:0.6 });
+const floor = new THREE.Mesh(new THREE.CircleGeometry(14, 96), floorMat);
+floor.rotation.x = -Math.PI/2; floor.position.y = -2.4; floor.receiveShadow = true;
+scene.add(floor);
+const glowRing = new THREE.Mesh(new THREE.RingGeometry(3.0,3.06,128),
+  new THREE.MeshBasicMaterial({ color:0xc9a24b, transparent:true, opacity:0.25, side:THREE.DoubleSide }));
+glowRing.rotation.x = -Math.PI/2; glowRing.position.y = -2.39; scene.add(glowRing);
+
+// floating dust particles for atmosphere
+const dustGeo = new THREE.BufferGeometry();
+const N = 320; const pos = new Float32Array(N*3);
+for(let i=0;i<N;i++){ pos[i*3]=(Math.random()-.5)*16; pos[i*3+1]=Math.random()*8-2; pos[i*3+2]=(Math.random()-.5)*16; }
+dustGeo.setAttribute('position', new THREE.BufferAttribute(pos,3));
+const dust = new THREE.Points(dustGeo, new THREE.PointsMaterial({ color:0xc9a24b, size:0.018, transparent:true, opacity:0.5, depthWrite:false }));
+scene.add(dust);
+
+// -------------------- POST --------------------
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight), 0.32, 0.6, 0.9);
+composer.addPass(bloom);
+// subtle chromatic aberration + vignette shader
+const caShader = {
+  uniforms:{ tDiffuse:{value:null}, amount:{value:0.0014}, vig:{value:1.0} },
+  vertexShader:`varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+  fragmentShader:`uniform sampler2D tDiffuse; uniform float amount; uniform float vig; varying vec2 vUv;
+    void main(){ vec2 d=vUv-0.5; float r=texture2D(tDiffuse,vUv-d*amount).r;
+    float g=texture2D(tDiffuse,vUv).g; float b=texture2D(tDiffuse,vUv+d*amount).b;
+    vec3 c=vec3(r,g,b); float v=smoothstep(0.95,0.35,length(d)*vig); gl_FragColor=vec4(c*mix(0.78,1.0,v),1.0); }`
+};
+composer.addPass(new ShaderPass(caShader));
+composer.addPass(new OutputPass());
+
+// -------------------- INTERACTION / CONSOLE --------------------
+let autoSpin = true;
+const $ = s=>document.querySelector(s);
+
+function applyMetal(i){
+  const mm = metals[i];
+  matMetal.color.set(mm.c); matMetal.roughness = mm.r;
+  matCaseSide.color.set(mm.c); matCaseSide.roughness = mm.r;
+  matIndex.color.set(i===3?0xd7dadf:mm.c);
+  $('#vMetal').textContent = mm.name;
+}
+function applyDial(i){
+  matDial.color.set(dials[i].c);
+  $('#vDial').textContent = dials[i].name;
+}
+document.querySelectorAll('#swMetal button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#swMetal button').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on'); applyMetal(+b.dataset.i); priceUpdate();
+});
+document.querySelectorAll('#swDial button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#swDial button').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on'); applyDial(+b.dataset.i); priceUpdate();
+});
+
+const sIor = $('#sIor');
+sIor.oninput = ()=>{
+  const t = sIor.value/100; const ior = 1.4 + t*0.6; // 1.40 – 2.00
+  matCrystal.ior = ior;
+  matCrystal.thickness = 0.2 + t*0.7;
+  $('#vIor').textContent = ior.toFixed(2);
+  sIor.style.setProperty('--p', sIor.value+'%');
+  priceUpdate();
+};
+const sLight = $('#sLight');
+const warm = new THREE.Color(0xfff0d8), cool = new THREE.Color(0xbfd2ff);
+const warmName=['Candle Noir','Atelier Warm','Studio Neutral','Cool Vitrine','Cyan Lab'];
+sLight.oninput = ()=>{
+  const t = sLight.value/100;
+  const col = warm.clone().lerp(cool, t);
+  keyLight.color.copy(col);
+  sweep.color.copy(col);
+  toneTarget = 0.7 + (1-Math.abs(t-0.5)*1.0)*0.28;
+  fillLight.intensity = 3 + t*7;
+  $('#vLight').textContent = warmName[Math.min(4,Math.floor(t*5))];
+  sLight.style.setProperty('--p', sLight.value+'%');
+};
+let toneTarget = 0.82;
+
+$('#tgSpin').onclick = e=>{ autoSpin=!autoSpin; e.currentTarget.classList.toggle('on', autoSpin); };
+
+function priceUpdate(){
+  const mi = [...document.querySelectorAll('#swMetal button')].findIndex(x=>x.classList.contains('on'));
+  const di = [...document.querySelectorAll('#swDial button')].findIndex(x=>x.classList.contains('on'));
+  let base = 32000000;
+  base += [6400000, 4200000, 5800000, 7200000][mi];
+  base += di*450000;
+  base += Math.round((matCrystal.ior-1.4)/0.6 * 2200000);
+  $('#priceVal').textContent = base.toLocaleString('ko-KR');
+}
+// init slider fills
+sIor.style.setProperty('--p','62%'); sLight.style.setProperty('--p','50%');
+priceUpdate();
+
+// double-click to focus-zoom
+renderer.domElement.addEventListener('dblclick', ()=>{ controls.minDistance=4; camera.position.set(0,0.6,4.6); });
+
+// -------------------- RESIZE --------------------
+addEventListener('resize', ()=>{
+  camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight);
+});
+
+// -------------------- ANIMATE --------------------
+let last = performance.now(), frames=0, acc=0;
+const fpsEl = $('#fps');
+const clock = new THREE.Clock();
+function loop(){
+  requestAnimationFrame(loop);
+  const dt = clock.getDelta();
+  const t = clock.elapsedTime;
+
+  if(autoSpin) watch.rotation.y += dt*0.35;
+
+  // real running movement
+  const now = new Date();
+  const sec = now.getSeconds() + now.getMilliseconds()/1000;
+  const min = now.getMinutes() + sec/60;
+  const hr  = (now.getHours()%12) + min/60;
+  secG.rotation.y   = -sec/60 * Math.PI*2;
+  hourHand.rotation.y = -hr/12 * Math.PI*2;
+  hourLume.rotation.y = hourHand.rotation.y;
+  minHand.rotation.y  = -min/60 * Math.PI*2;
+  minLume.rotation.y  = minHand.rotation.y;
+
+  // sweeping softbox for living highlights
+  sweep.position.x = Math.sin(t*0.4)*5;
+  sweep.position.z = Math.cos(t*0.4)*5 + 2;
+  sweep.lookAt(0,0,0);
+
+  // breathing exposure toward lighting target
+  renderer.toneMappingExposure += (toneTarget - renderer.toneMappingExposure)*0.05;
+
+  // dust drift
+  dust.rotation.y += dt*0.02;
+
+  controls.update();
+  composer.render();
+
+  // fps meter
+  frames++; acc += dt;
+  if(acc>=0.5){ const f=Math.round(frames/acc); fpsEl.textContent = f+' FPS'; frames=0; acc=0; }
+}
+loop();
+
+// hide boot loader fast (non-blocking; content already painted beneath)
+function killBoot(){ const b=document.getElementById('boot'); b.classList.add('hide'); setTimeout(()=>b.remove(),700); }
+// render a couple frames first, then drop
+requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(killBoot, 240)));
+setTimeout(killBoot, 800); // hard cap ≤0.8s
+</script>
+</body>
+</html>

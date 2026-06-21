@@ -1,0 +1,1317 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>루미그로브 모험기 — Lumigrove</title>
+<style>
+  :root{
+    --bg:#0f1020; --panel:#1b1d33; --ink:#eef2ff; --accent:#7be0a4; --warn:#ff7b8a;
+    --pixel:4px;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
+    font-family:'Courier New',ui-monospace,monospace;overflow:hidden;}
+  #app{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;}
+  #stage{position:relative;image-rendering:pixelated;background:#000;
+    box-shadow:0 0 0 4px #000, 0 0 0 8px #2a2d4d, 0 10px 40px rgba(0,0,0,.6);}
+  canvas{display:block;image-rendering:pixelated;}
+  /* ---- UI overlays ---- */
+  .overlay{position:absolute;inset:0;display:none;flex-direction:column;
+    align-items:center;justify-content:center;pointer-events:none;}
+  .overlay.show{display:flex;}
+  .box{background:rgba(15,16,32,.94);border:4px solid #4a4f7a;border-radius:8px;
+    padding:14px 16px;pointer-events:auto;max-width:92%;}
+  .title{font-weight:bold;letter-spacing:1px;}
+  button.btn{font-family:inherit;cursor:pointer;background:#2a2d4d;color:var(--ink);
+    border:3px solid #565c8c;border-radius:6px;padding:10px 12px;font-size:14px;
+    margin:3px;min-width:78px;}
+  button.btn:hover{background:#383d63;}
+  button.btn:disabled{opacity:.4;cursor:default;}
+  button.btn.sel{outline:3px solid var(--accent);}
+  /* dialog */
+  #dialog{position:absolute;left:8px;right:8px;bottom:8px;display:none;
+    background:rgba(12,13,28,.96);border:4px solid #565c8c;border-radius:8px;
+    padding:12px 14px;min-height:62px;font-size:15px;line-height:1.4;pointer-events:auto;z-index:30;}
+  #dialog.show{display:block;}
+  #dialog .more{position:absolute;right:10px;bottom:6px;color:var(--accent);
+    animation:blink 1s steps(2) infinite;}
+  @keyframes blink{50%{opacity:0;}}
+  /* touch controls */
+  #touch{position:absolute;inset:0;display:none;pointer-events:none;z-index:20;}
+  #touch.show{display:block;}
+  .dpad{position:absolute;left:14px;bottom:18px;width:148px;height:148px;}
+  .dbtn{position:absolute;width:48px;height:48px;background:rgba(60,66,110,.78);
+    border:3px solid #8189c4;border-radius:8px;color:#fff;font-size:20px;
+    display:flex;align-items:center;justify-content:center;pointer-events:auto;user-select:none;}
+  .dbtn:active{background:rgba(120,128,200,.9);}
+  .d-up{left:50px;top:0;} .d-dn{left:50px;top:100px;}
+  .d-lf{left:0;top:50px;} .d-rt{left:100px;top:50px;}
+  .abtns{position:absolute;right:14px;bottom:24px;}
+  .abtn{width:64px;height:64px;border-radius:50%;background:rgba(123,224,164,.85);
+    border:3px solid #fff;color:#10231a;font-weight:bold;font-size:16px;margin:6px;
+    display:inline-flex;align-items:center;justify-content:center;pointer-events:auto;user-select:none;}
+  .abtn.b{background:rgba(255,123,138,.85);color:#2a0d10;}
+  .abtn:active{filter:brightness(1.2);}
+  /* hud / credit */
+  #credit{position:absolute;top:4px;left:6px;right:6px;font-size:9px;color:#9aa0cf;
+    z-index:5;text-align:center;pointer-events:none;line-height:1.2;}
+  #hint{position:absolute;bottom:2px;left:0;right:0;text-align:center;font-size:10px;
+    color:#7d83b3;z-index:5;pointer-events:none;}
+  .row{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;}
+  .hpbar{height:8px;background:#3a1d22;border:2px solid #000;border-radius:4px;overflow:hidden;width:140px;}
+  .hpfill{height:100%;background:var(--accent);transition:width .25s;}
+  .xpbar{height:5px;background:#1d2233;border:1px solid #000;width:140px;margin-top:2px;}
+  .xpfill{height:100%;background:#6fa8ff;}
+  .small{font-size:12px;color:#aeb4e0;}
+  .center{text-align:center;}
+  h1.menu{font-size:22px;margin:6px 0;color:var(--accent);text-shadow:2px 2px #000;}
+  .typechip{display:inline-block;font-size:10px;padding:1px 6px;border-radius:8px;
+    border:1px solid #000;margin-left:4px;color:#10131f;font-weight:bold;}
+  .list{max-height:220px;overflow:auto;width:300px;}
+  .listitem{display:flex;justify-content:space-between;align-items:center;
+    padding:6px 8px;border:2px solid #3a3f63;border-radius:6px;margin:3px 0;background:#191b30;cursor:pointer;}
+  .listitem.sel{outline:3px solid var(--accent);}
+  .flash{animation:fl .2s 3;}
+  @keyframes fl{50%{opacity:.25;}}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <canvas id="game"></canvas>
+    <div id="credit">포켓몬에서 영감 — © Nintendo / Game Freak / The Pokémon Company. 오리지널 구현 (Lumigrove)</div>
+    <div id="hint"></div>
+
+    <!-- battle / menu overlays -->
+    <div id="ovTitle" class="overlay"></div>
+    <div id="ovBattle" class="overlay"></div>
+    <div id="ovMenu" class="overlay"></div>
+
+    <!-- dialog -->
+    <div id="dialog"><span id="dlgText"></span><span class="more">▼</span></div>
+
+    <!-- touch -->
+    <div id="touch">
+      <div class="dpad">
+        <div class="dbtn d-up" data-dir="up">▲</div>
+        <div class="dbtn d-dn" data-dir="down">▼</div>
+        <div class="dbtn d-lf" data-dir="left">◀</div>
+        <div class="dbtn d-rt" data-dir="right">▶</div>
+      </div>
+      <div class="abtns">
+        <div class="abtn" data-act="A">A</div>
+        <div class="abtn b" data-act="B">B</div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+"use strict";
+/* ============================================================
+   루미그로브 모험기 (Lumigrove) — 오리지널 몬스터 수집 JRPG
+   단일 자기완결 HTML. CDN 없음(폰트만 시스템). 백엔드 없음.
+   ============================================================ */
+
+const TILE = 16;           // logical tile size in pixels
+const VIEW_W = 15, VIEW_H = 11; // tiles shown
+const SCREEN_W = VIEW_W * TILE; // 240
+const SCREEN_H = VIEW_H * TILE; // 176
+
+// ---------- scaling to fit device ----------
+const stage = document.getElementById('stage');
+const cv = document.getElementById('game');
+cv.width = SCREEN_W; cv.height = SCREEN_H;
+const ctx = cv.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+
+let isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0 || window.innerWidth < 700;
+
+function fit(){
+  const margin = isTouch ? 0 : 24;
+  const availW = window.innerWidth - margin;
+  const availH = window.innerHeight - margin;
+  let scale = Math.floor(Math.min(availW/SCREEN_W, availH/SCREEN_H));
+  if(scale < 1) scale = Math.min(availW/SCREEN_W, availH/SCREEN_H);
+  scale = Math.max(scale, 1);
+  const w = SCREEN_W*scale, h = SCREEN_H*scale;
+  stage.style.width = w+'px'; stage.style.height = h+'px';
+  cv.style.width = w+'px'; cv.style.height = h+'px';
+}
+window.addEventListener('resize', fit);
+
+// ============================================================
+//  TYPE CHART (original): Verdant 풀, Ember 불, Tide 물,
+//  Spark 전, Stone 암, Gale 풍, Normal 보통
+// ============================================================
+const TYPES = {
+  Verdant:{ko:'풀',  col:'#7be08a'},
+  Ember:  {ko:'불',  col:'#ff8a5c'},
+  Tide:   {ko:'물',  col:'#5cb8ff'},
+  Spark:  {ko:'전',  col:'#ffe05c'},
+  Stone:  {ko:'암',  col:'#c8a86a'},
+  Gale:   {ko:'풍',  col:'#bfe0ff'},
+  Normal: {ko:'보통',col:'#d8d8d8'},
+};
+// attacker -> {defender: mult}
+const EFF = {
+  Verdant:{Tide:2, Stone:2, Ember:.5, Verdant:.5, Gale:.5},
+  Ember:  {Verdant:2, Gale:.5, Tide:.5, Ember:.5, Stone:.5},
+  Tide:   {Ember:2, Stone:2, Verdant:.5, Tide:.5, Spark:.5},
+  Spark:  {Tide:2, Gale:2, Stone:.5, Spark:.5, Verdant:.5},
+  Stone:  {Ember:2, Spark:2, Tide:.5, Verdant:.5, Gale:0},
+  Gale:   {Verdant:2, Stone:2, Spark:.5, Gale:.5},
+  Normal: {Stone:.5},
+};
+function eff(atk, def){
+  const r = EFF[atk]; if(!r) return 1;
+  return (def in r) ? r[def] : 1;
+}
+
+// ============================================================
+//  CREATURE SPECIES (original roster, 12 species)
+//  sprite = 12x12 grid using a small palette index map (string rows)
+//  Palette legend per-creature in `pal`.
+// ============================================================
+// helper: rows are 12 chars, '.' = transparent
+function S(rows, pal){ return {rows, pal}; }
+
+const PAL_COMMON = {'.':null,'k':'#1a1326','w':'#ffffff','e':'#101018'};
+
+const SPECIES = {
+  // ---- Verdant line (starter 1) ----
+  Sproutle:{ name:'스프라우틀', type:'Verdant', baseHP:45, atk:9, def:8, spd:10,
+    evolveTo:'Florabuck', evolveLv:14, catchRate:.45,
+    moves:[['몸통박치기','Normal',8],['잎날리기','Verdant',10]],
+    learn:{12:['덩굴채찍','Verdant',14], 16:['광합성회복','Verdant',0]},
+    sprite:S([
+      '....gggg....',
+      '...gGGGGg...',
+      '..gGwGGwGg..',
+      '..gGkGGkGg..',
+      '..gGGGGGGg..',
+      '...gGyyGg...',
+      '..ggGGGGgg..',
+      '.gGGGGGGGGg.',
+      '.gGGGGGGGGg.',
+      '..gGG..GGg..',
+      '..gg....gg..',
+      '..g......g..',
+    ], {g:'#3a7d34',G:'#5fb04f',y:'#d8e85c',w:'#fff','k':'#1a1326'}) },
+  Florabuck:{ name:'플로라벅', type:'Verdant', baseHP:70, atk:14, def:12, spd:13,
+    evolveTo:'Verdanthorn', evolveLv:30, catchRate:.2,
+    moves:[['덩굴채찍','Verdant',14],['몸통박치기','Normal',8]],
+    learn:{22:['잎폭풍','Verdant',20], 28:['뿌리속박','Verdant',16]},
+    sprite:S([
+      '...f.gg.f...',
+      '..fGGGGGGf..',
+      '.gGwGGGGwGg.',
+      '.gGkGGGGkGg.',
+      '.gGGGGGGGGg.',
+      '.gGGGyyGGGg.',
+      'ggGGGGGGGGgg',
+      'gGGGGGGGGGGg',
+      'gGGGGGGGGGGg',
+      '.gGG.gg.GGg.',
+      '.gg..gg..gg.',
+      '.g........g.',
+    ], {g:'#2f6b2a',G:'#54a346',y:'#e6f06a',f:'#ff9ad1','w':'#fff','k':'#1a1326'}) },
+  Verdanthorn:{ name:'베르단톤', type:'Verdant', baseHP:95, atk:20, def:18, spd:15,
+    evolveTo:null, catchRate:.08,
+    moves:[['잎폭풍','Verdant',20],['뿌리속박','Verdant',16]],
+    learn:{36:['대지의분노','Stone',26]},
+    sprite:S([
+      'h.h.gg.h.h..',
+      '.hGGGGGGh...',
+      'gGwGGGGwGg..',
+      'gGkGGGGkGg..',
+      'gGGGGGGGGg..',
+      'gGGyyyyGGg..',
+      'gGGGGGGGGgh.',
+      'hGGGGGGGGGh.',
+      'gGGGGGGGGGg.',
+      'gGG.gg.GGg..',
+      'gg..gg..gg..',
+      'g........g..',
+    ], {g:'#27551f',G:'#4a9038',y:'#f0fa7a',h:'#caa14a','w':'#fff','k':'#1a1326'}) },
+
+  // ---- Ember line (starter 2) ----
+  Cindro:{ name:'신드로', type:'Ember', baseHP:42, atk:11, def:7, spd:12,
+    evolveTo:'Pyrokit', evolveLv:14, catchRate:.45,
+    moves:[['할퀴기','Normal',8],['불씨','Ember',10]],
+    learn:{12:['화염송곳니','Ember',14], 16:['연막','Normal',0]},
+    sprite:S([
+      '..r......r..',
+      '..rR....Rr..',
+      '..rRRRRRRr..',
+      '.rRwRRRRwRr.',
+      '.rRkRRRRkRr.',
+      '.rRRRyyRRRr.',
+      '.rRRRRRRRRr.',
+      '..rRRRRRRr..',
+      '..rRR..RRr..',
+      '..rr....rr..',
+      '..r......r..',
+      '.O.O....O.O.',
+    ], {r:'#b83a1f',R:'#ff7a3a',y:'#ffe04a',O:'#ffb14a','w':'#fff','k':'#1a1326'}) },
+  Pyrokit:{ name:'파이로킷', type:'Ember', baseHP:66, atk:16, def:11, spd:15,
+    evolveTo:'Infernyx', evolveLv:30, catchRate:.2,
+    moves:[['화염송곳니','Ember',14],['할퀴기','Normal',8]],
+    learn:{22:['화염방사','Ember',20], 27:['맹화돌진','Ember',18]},
+    sprite:S([
+      '.f.r....r.f.',
+      '.frR....Rrf.',
+      '..rRRRRRRr..',
+      '.rRwRRRRwRr.',
+      '.rRkRRRRkRr.',
+      '.rRRRyyRRRr.',
+      'frRRRRRRRRrf',
+      '.rRRRRRRRRr.',
+      '.rRR.ff.RRr.',
+      '.rr..ff..rr.',
+      '.r........r.',
+      'O.O.O..O.O.O',
+    ], {r:'#a8311a',R:'#ff6a2a',y:'#ffe04a',f:'#ffd24a',O:'#ffb14a','w':'#fff','k':'#1a1326'}) },
+  Infernyx:{ name:'인페르닉스', type:'Ember', baseHP:92, atk:23, def:15, spd:17,
+    evolveTo:null, catchRate:.08,
+    moves:[['화염방사','Ember',20],['맹화돌진','Ember',18]],
+    learn:{38:['업화','Ember',30]},
+    sprite:S([
+      'F.f.r..r.f.F',
+      '.FfrR..RrfF.',
+      '..frRRRRrf..',
+      '.frRwRRwRrf.',
+      '.rRRkRRkRRr.',
+      '.rRRRyyRRRr.',
+      'frRRRRRRRRrf',
+      'FrRRRRRRRRrF',
+      '.rRR.ff.RRr.',
+      '.rr..ff..rr.',
+      'O.r......r.O',
+      'O.O.O..O.O.O',
+    ], {r:'#931207',R:'#ff5a1a',y:'#fff06a',f:'#ffcf3a',F:'#ff9a2a',O:'#ffb14a','w':'#fff','k':'#1a1326'}) },
+
+  // ---- Tide line (starter 3) ----
+  Drizzlet:{ name:'드리즐릿', type:'Tide', baseHP:48, atk:8, def:9, spd:9,
+    evolveTo:'Marlune', evolveLv:14, catchRate:.45,
+    moves:[['물방울','Tide',10],['몸통박치기','Normal',8]],
+    learn:{12:['거품광선','Tide',14], 16:['물대포','Tide',16]},
+    sprite:S([
+      '....bbbb....',
+      '...bBBBBb...',
+      '..bBwBBwBb..',
+      '..bBkBBkBb..',
+      '..bBBBBBBb..',
+      '..bBBccBBb..',
+      '.bBBBBBBBBb.',
+      '.bBBBBBBBBb.',
+      '.bBBBBBBBBb.',
+      '..bBB..BBb..',
+      '..bb....bb..',
+      '..b......b..',
+    ], {b:'#2a6bb0',B:'#5cb0ff',c:'#bfeaff','w':'#fff','k':'#1a1326'}) },
+  Marlune:{ name:'마를룬', type:'Tide', baseHP:72, atk:12, def:14, spd:12,
+    evolveTo:'Tidalux', evolveLv:30, catchRate:.2,
+    moves:[['거품광선','Tide',14],['물대포','Tide',16]],
+    learn:{22:['하이드로펄스','Tide',20], 26:['소용돌이','Tide',16]},
+    sprite:S([
+      '...bb..bb...',
+      '..bBBBBBBb..',
+      '.bBwBBBBwBb.',
+      '.bBkBBBBkBb.',
+      '.bBBBBBBBBb.',
+      '.bBBBccBBBb.',
+      'bBBBBBBBBBBb',
+      'bBBBBBBBBBBb',
+      'bBBBBBBBBBBb',
+      '.bBB.cc.BBb.',
+      '.bb..cc..bb.',
+      '.b........b.',
+    ], {b:'#22579a',B:'#4aa0f0',c:'#cdf0ff','w':'#fff','k':'#1a1326'}) },
+  Tidalux:{ name:'타이달럭스', type:'Tide', baseHP:96, atk:18, def:20, spd:14,
+    evolveTo:null, catchRate:.08,
+    moves:[['하이드로펄스','Tide',20],['소용돌이','Tide',16]],
+    learn:{36:['해일','Tide',30]},
+    sprite:S([
+      'c.c.bb.c.c..',
+      '.cbBBBBbc...',
+      'bBwBBBBwBb..',
+      'bBkBBBBkBb..',
+      'bBBBBBBBBb..',
+      'bBBBccBBBb..',
+      'bBBBBBBBBbc.',
+      'cBBBBBBBBBc.',
+      'bBBBBBBBBBb.',
+      'bBB.cc.BBb..',
+      'bb..cc..bb..',
+      'b........b..',
+    ], {b:'#1c4a86',B:'#3f93e8',c:'#d6f4ff','w':'#fff','k':'#1a1326'}) },
+
+  // ---- Wild only ----
+  Bzztwig:{ name:'즈즈위그', type:'Spark', baseHP:40, atk:12, def:6, spd:16,
+    evolveTo:'Voltfeatha', evolveLv:18, catchRate:.4,
+    moves:[['스파크','Spark',10],['몸통박치기','Normal',8]],
+    learn:{14:['전기충격','Spark',14], 18:['방전','Spark',18]},
+    sprite:S([
+      '...y....y...',
+      '...yY..Yy...',
+      '..yYYYYYYy..',
+      '.yYwYYYYwYy.',
+      '.yYkYYYYkYy.',
+      '.yYYYbbYYYy.',
+      '.yYYYYYYYYy.',
+      '..yYYYYYYy..',
+      '..yYY..YYy..',
+      '..yy....yy..',
+      '.y........y.',
+      'Y..........Y',
+    ], {y:'#c8a420',Y:'#ffe14a',b:'#3a3a55','w':'#fff','k':'#1a1326'}) },
+  Voltfeatha:{ name:'볼트페더', type:'Spark', baseHP:68, atk:18, def:10, spd:22,
+    evolveTo:null, catchRate:.15,
+    moves:[['전기충격','Spark',14],['방전','Spark',18]],
+    learn:{26:['천둥','Spark',28]},
+    sprite:S([
+      'Y..y..y..Y..',
+      '.Y.yY.Yy.Y..',
+      '..yYYYYYYy..',
+      '.yYwYYYYwYy.',
+      '.yYkYYYYkYy.',
+      '.yYYYbbYYYy.',
+      'YyYYYYYYYYyY',
+      '.yYYYYYYYYy.',
+      '.yYY.YY.YYy.',
+      '.yy..YY..yy.',
+      'Y.y......y.Y',
+      'Y..........Y',
+    ], {y:'#b89018',Y:'#ffdd3a',b:'#33334d','w':'#fff','k':'#1a1326'}) },
+  Pebblit:{ name:'페블릿', type:'Stone', baseHP:55, atk:11, def:15, spd:5,
+    evolveTo:'Boulderon', evolveLv:20, catchRate:.4,
+    moves:[['몸통박치기','Normal',8],['돌굴리기','Stone',12]],
+    learn:{16:['바위깨기','Stone',16], 20:['낙석','Stone',20]},
+    sprite:S([
+      '....nnnn....',
+      '...nNNNNn...',
+      '..nNwNNwNn..',
+      '..nNkNNkNn..',
+      '..nNNNNNNn..',
+      '.nNNNooNNNn.',
+      '.nNNNNNNNNn.',
+      'nNNNNNNNNNNn',
+      'nNNNNNNNNNNn',
+      'nNN.nn.NNn..',
+      'nn..nn..nn..',
+      'n........n..',
+    ], {n:'#7a6038',N:'#b8945c',o:'#5a4a30','w':'#fff','k':'#1a1326'}) },
+  Boulderon:{ name:'볼더론', type:'Stone', baseHP:88, atk:18, def:26, spd:8,
+    evolveTo:null, catchRate:.12,
+    moves:[['바위깨기','Stone',16],['낙석','Stone',20]],
+    learn:{28:['지진','Stone',30]},
+    sprite:S([
+      '..nnnnnnnn..',
+      '.nNNNNNNNNn.',
+      'nNwNNNNNNwNn',
+      'nNkNNNNNNkNn',
+      'nNNNNNNNNNNn',
+      'nNNNooooNNNn',
+      'nNNNNNNNNNNn',
+      'nNNNNNNNNNNn',
+      'nNNNNNNNNNNn',
+      'nNN.nnnn.NNn',
+      '.nn.nnnn.nn.',
+      '.n........n.',
+    ], {n:'#5e4a2a',N:'#9c7c48',o:'#473820','w':'#fff','k':'#1a1326'}) },
+  Zephlit:{ name:'제플릿', type:'Gale', baseHP:44, atk:10, def:8, spd:18,
+    evolveTo:null, catchRate:.4,
+    moves:[['바람가르기','Gale',12],['몸통박치기','Normal',8]],
+    learn:{16:['질풍','Gale',16], 22:['폭풍','Gale',24]},
+    sprite:S([
+      '...a....a...',
+      '..aAAAAAAa..',
+      '.aAwAAAAwAa.',
+      '.aAkAAAAkAa.',
+      '.aAAAAAAAAa.',
+      'aAAAvvvvAAAa',
+      'aAAAAAAAAAAa',
+      '.aAAAAAAAAa.',
+      '..aAA..AAa..',
+      '...a....a...',
+      '..A......A..',
+      '.A........A.',
+    ], {a:'#6a90b0',A:'#bfe0ff',v:'#dff4ff','w':'#fff','k':'#1a1326'}) },
+};
+
+const STARTERS = ['Sproutle','Cindro','Drizzlet'];
+const WILD_GRASS = ['Sproutle','Cindro','Drizzlet','Bzztwig','Pebblit','Zephlit']; // tier1 + commons
+const WILD_GRASS_RARE = ['Marlune','Pyrokit','Florabuck','Voltfeatha','Bzztwig','Zephlit'];
+
+// ============================================================
+//  CREATURE INSTANCE
+// ============================================================
+function statAt(base, lv){ return Math.floor(base * (1 + (lv-1)*0.12)); }
+function maxHpAt(species, lv){ return Math.floor(SPECIES[species].baseHP * (1 + (lv-1)*0.10)) + 5; }
+function xpForLevel(lv){ return Math.floor(8 * lv * lv); } // cumulative-ish per level need
+
+function makeCreature(speciesKey, lv, wild){
+  const sp = SPECIES[speciesKey];
+  const c = {
+    species: speciesKey, name: sp.name, type: sp.type, lv,
+    xp: 0, wild: !!wild,
+    moves: sp.moves.map(m => ({name:m[0], type:m[1], power:m[2]})),
+  };
+  c.maxHp = maxHpAt(speciesKey, lv);
+  c.hp = c.maxHp;
+  c.atk = statAt(sp.atk, lv);
+  c.def = statAt(sp.def, lv);
+  c.spd = statAt(sp.spd, lv);
+  // apply learned moves up to lv
+  applyLearnset(c);
+  return c;
+}
+function applyLearnset(c){
+  const sp = SPECIES[c.species];
+  if(!sp.learn) return;
+  for(const lvStr in sp.learn){
+    const lv = parseInt(lvStr,10);
+    if(c.lv >= lv){
+      const m = sp.learn[lvStr];
+      if(!c.moves.find(x=>x.name===m[0])){
+        const nm = {name:m[0], type:m[1], power:m[2]};
+        if(c.moves.length < 4) c.moves.push(nm);
+        else c.moves[3] = nm; // replace last
+      }
+    }
+  }
+}
+function recalcStats(c){
+  const sp = SPECIES[c.species];
+  c.maxHp = maxHpAt(c.species, c.lv);
+  c.atk = statAt(sp.atk, c.lv);
+  c.def = statAt(sp.def, c.lv);
+  c.spd = statAt(sp.spd, c.lv);
+}
+
+// ============================================================
+//  WORLD MAP — tile codes
+//  0 grass(walk) 1 tallgrass(encounter) 2 tree(block) 3 water(block)
+//  4 path 5 sign(block,interact) 6 house(block) 7 flower(walk)
+//  8 healtile(walk, heal at center) 9 shop(block,interact)
+// ============================================================
+const MAP_W = 28, MAP_H = 24;
+const RAW = [
+"2222222222222222222222222222",
+"2444444444444444444444444442",
+"24777707777702222204444444a2",  // 'a' marker placeholder (treated as path)
+"2477766077770222220444411442",  // house at top-left village
+"2444440447770444440444411442",
+"2444444444444044444044444442",
+"2411114444404404444404444442",
+"2411114444404401111104444442",  // tall grass patch
+"2444444444404401111104444442",
+"2222204444404401111104444442",
+"2444404444404444444444444442",
+"2444404444444444444402222222",
+"2441104444411111044440333332",  // tall grass + water
+"2441104444411111044440333332",
+"2444404444411111044440333332",
+"2444444444444444044440444442",
+"2222220444444444044444444442",
+"2477704444444444044411111442",  // shop area + grass
+"2479904444444444044411111442",  // shop '9'
+"2477704444444444044444444442",
+"2444444444444444044444444442",
+"2444444444444444444444444442",
+"2444444444444444444444444442",
+"2222222222222222222222222222",
+];
+// Build numeric grid; map letters
+const MAP = [];
+for(let y=0;y<MAP_H;y++){
+  const row=[];
+  const line = RAW[y] || ("2".repeat(MAP_W));
+  for(let x=0;x<MAP_W;x++){
+    let ch = line[x] || '2';
+    if(ch==='a') ch='4';
+    row.push(parseInt(ch,10));
+  }
+  MAP.push(row);
+}
+function tileAt(x,y){
+  if(y<0||y>=MAP_H||x<0||x>=MAP_W) return 2;
+  return MAP[y][x];
+}
+const BLOCKING = new Set([2,3,5,6,9]);
+function isBlocked(x,y){ return BLOCKING.has(tileAt(x,y)); }
+
+// NPCs / signs
+const SIGNS = {
+  '5,5':'루미그로브 마을입니다. 풀숲에선 야생 크리처가 나타나요!',
+};
+// trainer NPCs on map: {x,y,dir,team,beaten,name,msg}
+let TRAINERS = [];
+function resetTrainers(){
+  TRAINERS = [
+    {x:13,y:8,dir:'down',name:'산책꾼 토미',beaten:false,
+     msg:'어이! 내 크리처랑 한판 어때?',
+     team:[['Zephlit',6],['Pebblit',7]]},
+    {x:6,y:13,dir:'down',name:'낚시꾼 미라',beaten:false,
+     msg:'물가의 강자를 보여주지!',
+     team:[['Drizzlet',8],['Bzztwig',8]]},
+    {x:20,y:17,dir:'up',name:'등산가 카이',beaten:false,
+     msg:'바위처럼 단단한 내 팀이다!',
+     team:[['Pebblit',9],['Boulderon',11]]},
+  ];
+}
+
+// ============================================================
+//  GAME STATE
+// ============================================================
+const G = {
+  scene:'title',  // title | overworld | battle
+  player:{x:5,y:5,dir:'down', steps:0},
+  party:[],
+  box:[],
+  bag:{ '포획볼':5, '회복약':3 },
+  dex:new Set(),
+  flags:{ gotStarter:false },
+  walkFrame:0,
+};
+
+// ============================================================
+//  RENDER — pixel tile drawing
+// ============================================================
+function camOffset(){
+  let cx = G.player.x - Math.floor(VIEW_W/2);
+  let cy = G.player.y - Math.floor(VIEW_H/2);
+  cx = Math.max(0, Math.min(cx, MAP_W-VIEW_W));
+  cy = Math.max(0, Math.min(cy, MAP_H-VIEW_H));
+  return {cx,cy};
+}
+function drawTile(px,py,t){
+  // base
+  let base = '#5aa14a';
+  if(t===3) base='#3a78c0';
+  ctx.fillStyle = base;
+  ctx.fillRect(px,py,TILE,TILE);
+  switch(t){
+    case 0: case 7: case 8: // grass variants
+      ctx.fillStyle='#69b556';
+      for(let i=0;i<4;i++){ ctx.fillRect(px+(i*4+2)%TILE, py+((i*5+3)%TILE), 2,2); }
+      if(t===7){ ctx.fillStyle='#ff8ad1'; ctx.fillRect(px+5,py+5,3,3); ctx.fillStyle='#ffe04a'; ctx.fillRect(px+6,py+6,1,1); }
+      if(t===8){ ctx.fillStyle='#9be8b0'; ctx.fillRect(px+4,py+4,8,8); ctx.fillStyle='#fff'; ctx.fillRect(px+7,py+5,2,6); ctx.fillRect(px+5,py+7,6,2); }
+      break;
+    case 1: // tall grass
+      ctx.fillStyle='#3f8a3a'; ctx.fillRect(px,py,TILE,TILE);
+      ctx.fillStyle='#56a94c';
+      for(let i=0;i<TILE;i+=3){ ctx.fillRect(px+i, py+4+((i)%3), 2, 12); }
+      ctx.fillStyle='#2f6b2a';
+      for(let i=1;i<TILE;i+=4){ ctx.fillRect(px+i, py+8, 1, 8); }
+      break;
+    case 2: // tree
+      ctx.fillStyle='#3a78c0'; // (unused) keep base grassy under
+      ctx.fillStyle='#5aa14a'; ctx.fillRect(px,py,TILE,TILE);
+      ctx.fillStyle='#6b4a2a'; ctx.fillRect(px+6,py+9,4,7);
+      ctx.fillStyle='#2e6e2c'; ctx.beginPath?0:0;
+      ctx.fillRect(px+3,py+2,10,9);
+      ctx.fillStyle='#3f8a3a'; ctx.fillRect(px+4,py+1,8,4);
+      ctx.fillStyle='#256022'; ctx.fillRect(px+3,py+8,10,2);
+      break;
+    case 3: // water
+      ctx.fillStyle='#3a78c0'; ctx.fillRect(px,py,TILE,TILE);
+      ctx.fillStyle='#5a98e0';
+      ctx.fillRect(px+2,py+3+((G.walkFrame)%2),6,1);
+      ctx.fillRect(px+8,py+9-((G.walkFrame)%2),5,1);
+      break;
+    case 4: // path
+      ctx.fillStyle='#c8b48a'; ctx.fillRect(px,py,TILE,TILE);
+      ctx.fillStyle='#b8a378';
+      ctx.fillRect(px+2,py+2,2,2); ctx.fillRect(px+10,py+8,2,2);
+      break;
+    case 5: // sign
+      ctx.fillStyle='#5aa14a'; ctx.fillRect(px,py,TILE,TILE);
+      ctx.fillStyle='#8a5a2a'; ctx.fillRect(px+3,py+2,10,7);
+      ctx.fillStyle='#6b4a2a'; ctx.fillRect(px+7,py+9,2,6);
+      ctx.fillStyle='#e8d8b0'; ctx.fillRect(px+4,py+3,8,5);
+      ctx.fillStyle='#5a4a30'; ctx.fillRect(px+5,py+4,6,1); ctx.fillRect(px+5,py+6,4,1);
+      break;
+    case 6: // house
+      ctx.fillStyle='#5aa14a'; ctx.fillRect(px,py,TILE,TILE);
+      ctx.fillStyle='#c05a3a'; ctx.fillRect(px+1,py+1,14,6); // roof
+      ctx.fillStyle='#e8d8c0'; ctx.fillRect(px+2,py+7,12,8); // wall
+      ctx.fillStyle='#6b4a2a'; ctx.fillRect(px+6,py+9,4,6); // door
+      ctx.fillStyle='#8ad8ff'; ctx.fillRect(px+3,py+9,2,2); ctx.fillRect(px+11,py+9,2,2);
+      break;
+    case 9: // shop
+      ctx.fillStyle='#5aa14a'; ctx.fillRect(px,py,TILE,TILE);
+      ctx.fillStyle='#3a6ac0'; ctx.fillRect(px+1,py+1,14,6);
+      ctx.fillStyle='#e8e0d0'; ctx.fillRect(px+2,py+7,12,8);
+      ctx.fillStyle='#6b4a2a'; ctx.fillRect(px+6,py+9,4,6);
+      ctx.fillStyle='#ffe04a'; ctx.fillRect(px+3,py+8,3,3); // sign light
+      break;
+  }
+}
+function drawSprite12(spec, dx, dy, scale){
+  const sp = SPECIES[spec].sprite;
+  const pal = Object.assign({}, PAL_COMMON, sp.pal);
+  for(let y=0;y<12;y++){
+    const row = sp.rows[y];
+    for(let x=0;x<12;x++){
+      const ch = row[x];
+      const col = pal[ch];
+      if(!col) continue;
+      ctx.fillStyle = col;
+      ctx.fillRect(dx + x*scale, dy + y*scale, scale, scale);
+    }
+  }
+}
+function drawPlayer(px,py){
+  const f = G.walkFrame%2;
+  // body
+  ctx.fillStyle='#3a4a8a'; ctx.fillRect(px+4,py+7,8,7);   // torso
+  ctx.fillStyle='#e8c08a'; ctx.fillRect(px+5,py+2,6,5);   // face
+  ctx.fillStyle='#c0302a'; ctx.fillRect(px+4,py+1,8,3);   // cap
+  ctx.fillStyle='#c0302a'; ctx.fillRect(px+3,py+2,2,1);   // cap brim by dir
+  // eyes by dir
+  ctx.fillStyle='#1a1326';
+  if(G.player.dir==='down'){ ctx.fillRect(px+6,py+4,1,1); ctx.fillRect(px+9,py+4,1,1); }
+  else if(G.player.dir==='up'){ /* back */ ctx.fillStyle='#7a5a3a'; ctx.fillRect(px+5,py+3,6,3); }
+  else if(G.player.dir==='left'){ ctx.fillRect(px+6,py+4,1,1); }
+  else { ctx.fillRect(px+9,py+4,1,1); }
+  // legs (animate)
+  ctx.fillStyle='#2a2a40';
+  if(f===0){ ctx.fillRect(px+4,py+14,3,2); ctx.fillRect(px+9,py+14,3,2);}
+  else { ctx.fillRect(px+5,py+14,3,2); ctx.fillRect(px+8,py+14,3,2);}
+}
+function drawNPC(px,py,t){
+  ctx.fillStyle='#5a3a8a'; ctx.fillRect(px+4,py+7,8,7);
+  ctx.fillStyle='#e8c08a'; ctx.fillRect(px+5,py+2,6,5);
+  ctx.fillStyle='#2a8a4a'; ctx.fillRect(px+4,py+1,8,3);
+  ctx.fillStyle='#1a1326'; ctx.fillRect(px+6,py+4,1,1); ctx.fillRect(px+9,py+4,1,1);
+  ctx.fillStyle='#2a2a40'; ctx.fillRect(px+4,py+14,3,2); ctx.fillRect(px+9,py+14,3,2);
+}
+
+function renderOverworld(){
+  ctx.fillStyle='#000'; ctx.fillRect(0,0,SCREEN_W,SCREEN_H);
+  const {cx,cy} = camOffset();
+  for(let y=0;y<VIEW_H;y++){
+    for(let x=0;x<VIEW_W;x++){
+      const mx=cx+x, my=cy+y;
+      drawTile(x*TILE, y*TILE, tileAt(mx,my));
+    }
+  }
+  // trainers
+  for(const t of TRAINERS){
+    if(t.beaten && t.captured) continue;
+    const sx=(t.x-cx)*TILE, sy=(t.y-cy)*TILE;
+    if(sx>=-TILE&&sx<SCREEN_W&&sy>=-TILE&&sy<SCREEN_H) drawNPC(sx,sy,t);
+  }
+  // player
+  drawPlayer((G.player.x-cx)*TILE, (G.player.y-cy)*TILE);
+}
+
+// ============================================================
+//  DIALOG SYSTEM
+// ============================================================
+const dlg = document.getElementById('dialog');
+const dlgText = document.getElementById('dlgText');
+let dlgQueue = [], dlgCb = null, dlgActive=false;
+function say(lines, cb){
+  if(typeof lines==='string') lines=[lines];
+  dlgQueue = lines.slice(); dlgCb = cb||null; dlgActive=true;
+  nextDlg();
+}
+dlg.addEventListener('click', ()=>{ if(dlgActive) nextDlg(); });
+function nextDlg(){
+  if(dlgQueue.length===0){
+    dlg.classList.remove('show'); dlgActive=false;
+    const cb=dlgCb; dlgCb=null;
+    if(cb) cb();
+    return;
+  }
+  dlgText.textContent = dlgQueue.shift();
+  dlg.classList.add('show');
+}
+
+// ============================================================
+//  TITLE SCREEN
+// ============================================================
+const ovTitle = document.getElementById('ovTitle');
+function showTitle(){
+  G.scene='title';
+  ovTitle.innerHTML = `
+    <div class="box center" style="border-color:#7be0a4;max-width:300px;">
+      <h1 class="menu">루미그로브 모험기</h1>
+      <div class="small">Lumigrove — 오리지널 몬스터 수집 JRPG</div>
+      <div style="margin:14px 0;" class="row">
+        ${STARTERS.map(s=>`<div style="text-align:center"><canvas data-st="${s}" width="48" height="48" style="image-rendering:pixelated;border:2px solid #444;border-radius:6px;background:#10131f"></canvas><div class="small">${SPECIES[s].name}</div></div>`).join('')}
+      </div>
+      <button class="btn" id="startBtn" style="min-width:160px;background:#2a6b4a;border-color:#7be0a4">모험 시작 ▶</button>
+      <div class="small" style="margin-top:10px;color:#8089b8">
+        ${isTouch?'D패드로 이동 · A 확인 · B 취소':'방향키 이동 · Z/Enter 확인 · X 취소'}
+      </div>
+      <div class="small" style="margin-top:8px;font-size:9px;color:#6a70a0">
+        포켓몬에서 영감 — © Nintendo / Game Freak / The Pokémon Company.<br>본 게임은 오리지널 구현입니다.
+      </div>
+    </div>`;
+  ovTitle.classList.add('show');
+  // hide on-screen touch controls while on the title (no game movement yet)
+  if(isTouch){ const tc=document.getElementById('touch'); if(tc) tc.style.display='none'; }
+  // draw starter mini sprites
+  ovTitle.querySelectorAll('canvas[data-st]').forEach(c=>{
+    const c2=c.getContext('2d'); c2.imageSmoothingEnabled=false;
+    const spec=c.getAttribute('data-st');
+    drawSpriteTo(c2, spec, 0,0,4);
+  });
+  document.getElementById('startBtn').onclick = ()=>{ ovTitle.classList.remove('show'); chooseStarter(); };
+}
+function drawSpriteTo(c2, spec, dx,dy,scale){
+  const sp = SPECIES[spec].sprite;
+  const pal = Object.assign({}, PAL_COMMON, sp.pal);
+  for(let y=0;y<12;y++){ const row=sp.rows[y];
+    for(let x=0;x<12;x++){ const col=pal[row[x]]; if(!col)continue;
+      c2.fillStyle=col; c2.fillRect(dx+x*scale,dy+y*scale,scale,scale);}}
+}
+
+// ============================================================
+//  STARTER CHOICE
+// ============================================================
+function chooseStarter(){
+  say(['루미그로브 마을의 모험가가 되었구나!','첫 동료 크리처를 골라보렴.'], ()=>{
+    const ov = document.getElementById('ovMenu');
+    ov.innerHTML = `<div class="box center" style="max-width:320px">
+      <div class="title" style="margin-bottom:8px">시작 크리처 선택</div>
+      <div class="row">
+        ${STARTERS.map((s,i)=>{const sp=SPECIES[s];return `
+          <button class="btn" data-pick="${s}" style="display:flex;flex-direction:column;align-items:center;width:92px;height:118px">
+            <canvas data-st="${s}" width="48" height="48" style="image-rendering:pixelated"></canvas>
+            <div style="font-size:12px;margin-top:4px">${sp.name}</div>
+            <div class="typechip" style="background:${TYPES[sp.type].col}">${TYPES[sp.type].ko}</div>
+          </button>`;}).join('')}
+      </div>
+    </div>`;
+    ov.classList.add('show');
+    ov.querySelectorAll('canvas[data-st]').forEach(c=>{
+      drawSpriteTo(c.getContext('2d'), c.getAttribute('data-st'),0,0,4); });
+    ov.querySelectorAll('button[data-pick]').forEach(b=>{
+      b.onclick=()=>{
+        const sp=b.getAttribute('data-pick');
+        ov.classList.remove('show');
+        const c=makeCreature(sp,5,false);
+        G.party.push(c); G.dex.add(sp); G.flags.gotStarter=true;
+        say([`${SPECIES[sp].name}을(를) 동료로 맞이했다!`,'풀숲을 탐험하며 더 많은 크리처를 잡아보자.'], startOverworld);
+      };
+    });
+  });
+}
+
+// ============================================================
+//  OVERWORLD MOVEMENT
+// ============================================================
+let inputLock=false;
+function startOverworld(){
+  G.scene='overworld';
+  if(isTouch){ const tc=document.getElementById('touch'); if(tc) tc.style.display='block'; }
+  updateHint();
+  loop();
+}
+function updateHint(){
+  const h=document.getElementById('hint');
+  if(G.scene==='overworld')
+    h.textContent = isTouch? '메뉴: A를 멈춰서 누름' : 'P:파티  Z:확인  ←↑↓→ 이동';
+  else h.textContent='';
+}
+const DIRV = {up:[0,-1],down:[0,1],left:[-1,0],right:[1,0]};
+function tryMove(dir){
+  if(G.scene!=='overworld'||inputLock||dlgActive) return;
+  G.player.dir=dir;
+  const [dx,dy]=DIRV[dir];
+  const nx=G.player.x+dx, ny=G.player.y+dy;
+  // trainer block / engage
+  const tr = TRAINERS.find(t=>t.x===nx&&t.y===ny&&!t.beaten);
+  if(tr){ engageTrainer(tr); return; }
+  if(isBlocked(nx,ny)){
+    // sign/shop interact handled by A; movement just blocked
+    G.walkFrame^=1; return;
+  }
+  if(TRAINERS.find(t=>t.x===nx&&t.y===ny)){ G.walkFrame^=1; return; } // beaten trainer still stands
+  G.player.x=nx; G.player.y=ny; G.player.steps++; G.walkFrame^=1;
+  // heal tile
+  if(tileAt(nx,ny)===8){ healParty(); say('따스한 빛이 크리처들을 회복시켰다!'); }
+  // encounter
+  if(tileAt(nx,ny)===1 && Math.random()<0.18){ startWildBattle(); }
+}
+function interact(){
+  if(G.scene!=='overworld'||dlgActive){ if(dlgActive) nextDlg(); return; }
+  const [dx,dy]=DIRV[G.player.dir];
+  const fx=G.player.x+dx, fy=G.player.y+dy;
+  const t=tileAt(fx,fy);
+  // trainer
+  const tr=TRAINERS.find(x=>x.x===fx&&x.y===fy);
+  if(tr && !tr.beaten){ engageTrainer(tr); return; }
+  if(tr && tr.beaten){ say(`${tr.name}: 좋은 승부였어!`); return; }
+  if(t===5 || SIGNS[`${fx},${fy}`]){ say(SIGNS[`${fx},${fy}`]||'표지판: 풀숲 주의!'); return; }
+  if(t===6){ say('집 문은 잠겨 있다.'); return; }
+  if(t===9){ openShop(); return; }
+  // otherwise open menu (esp touch)
+  openMenu();
+}
+function healParty(){ G.party.forEach(c=>{ c.hp=c.maxHp; }); }
+
+// ============================================================
+//  MAIN LOOP
+// ============================================================
+let lastT=0, acc=0;
+function loop(t){
+  requestAnimationFrame(loop);
+  if(G.scene==='overworld') renderOverworld();
+}
+
+// ============================================================
+//  BATTLE SYSTEM
+// ============================================================
+const ovBattle = document.getElementById('ovBattle');
+let B = null; // battle state
+function activeMon(){ return G.party.find(c=>c.hp>0); }
+
+function startWildBattle(){
+  const rare = Math.random()<0.25;
+  const pool = rare? WILD_GRASS_RARE : WILD_GRASS;
+  const sp = pool[Math.floor(Math.random()*pool.length)];
+  const lv = 3 + Math.floor(Math.random()* (rare?6:4)) + Math.floor(G.player.steps/120);
+  const foe = makeCreature(sp, Math.max(3,lv), true);
+  beginBattle(foe, null);
+}
+function engageTrainer(tr){
+  if(tr.beaten){ return; }
+  G.player.dir = (tr.y>G.player.y)?'down':(tr.y<G.player.y)?'up':(tr.x>G.player.x)?'right':'left';
+  say([`${tr.name}: ${tr.msg}`], ()=>{
+    const team = tr.team.map(([s,l])=>makeCreature(s,l,false));
+    beginBattle(team[0], {tr, team, idx:0});
+  });
+}
+
+function beginBattle(foe, trainer){
+  // guarantee the player has at least one usable creature
+  if(G.party.length===0){ G.party.push(makeCreature(STARTERS[0],5,false)); G.dex.add(STARTERS[0]); }
+  if(!activeMon()){ healParty(); }
+  G.scene='battle';
+  B = { foe, you: activeMon(), trainer, menu:'main', busy:false,
+        canCatch: !trainer, log:[] };
+  renderBattle();
+  const intro = trainer? `${trainer.tr.name}이(가) ${foe.name}을(를) 내보냈다!`
+                       : `앗! 야생 ${foe.name}이(가) 나타났다!`;
+  battleSay([intro, `가라, ${B.you.name}!`], ()=>{ B.menu='main'; renderBattle(); });
+}
+
+let bsQueue=[], bsCb=null, bsCur='';
+function battleSay(lines, cb){
+  if(typeof lines==='string') lines=[lines];
+  bsQueue=lines.slice(); bsCb=cb||null; B.busy=true; B.menu='msg';
+  // show first line, then full render once (DOM rebuild preserves bsCur)
+  bsCur = bsQueue.length? bsQueue.shift() : '';
+  renderBattle();
+}
+// called when player advances the message box
+function advanceBS(){
+  if(bsQueue.length>0){
+    bsCur = bsQueue.shift();
+    const el=document.getElementById('bMsg');
+    if(el) el.textContent = bsCur;   // update in place, no full rebuild
+    return;
+  }
+  // queue empty -> end of this message group
+  B.busy=false; bsCur='';
+  const cb=bsCb; bsCb=null;
+  if(cb) cb();
+}
+
+function hpColor(c){ const r=c.hp/c.maxHp; return r>0.5?'#7be0a4':r>0.2?'#ffd24a':'#ff7b8a'; }
+
+function renderBattle(keepMsg){
+  const you=B.you, foe=B.foe;
+  let html = `<div class="box" style="width:96%;max-width:340px;padding:8px">`;
+  // arena canvas
+  html += `<canvas id="bArena" width="320" height="150" style="width:100%;image-rendering:pixelated;border:3px solid #2a2d4d;border-radius:6px;background:linear-gradient(#bfe0ff,#9be8b0)"></canvas>`;
+  // info bars
+  html += `<div style="display:flex;justify-content:space-between;margin-top:6px;font-size:12px">
+    <div><b>${foe.name}</b> Lv${foe.lv} <span class="typechip" style="background:${TYPES[foe.type].col}">${TYPES[foe.type].ko}</span>
+      <div class="hpbar"><div class="hpfill" style="width:${100*foe.hp/foe.maxHp}%;background:${hpColor(foe)}"></div></div></div>
+    <div style="text-align:right"><b>${you.name}</b> Lv${you.lv}
+      <div class="hpbar" style="margin-left:auto"><div class="hpfill" style="width:${100*you.hp/you.maxHp}%;background:${hpColor(you)}"></div></div>
+      <div class="small">${you.hp}/${you.maxHp}</div></div>
+  </div>`;
+  // menu / message
+  if(B.menu==='main'){
+    html += `<div class="row" style="margin-top:6px">
+      <button class="btn" id="mFight">싸운다</button>
+      <button class="btn" id="mBag">가방</button>
+      <button class="btn" id="mParty">파티</button>
+      <button class="btn" id="mRun" ${B.trainer?'disabled':''}>${B.trainer?'못 도망':'도망'}</button>
+    </div>`;
+  } else if(B.menu==='fight'){
+    html += `<div class="row" style="margin-top:6px">
+      ${you.moves.map((m,i)=>`<button class="btn" data-mv="${i}" style="min-width:120px">${m.name}<br><span class="typechip" style="background:${TYPES[m.type].col}">${TYPES[m.type].ko}</span> <span class="small">${m.power||'-'}</span></button>`).join('')}
+      <button class="btn" id="mBack">↩ 뒤로</button></div>`;
+  } else if(B.menu==='bag'){
+    html += `<div class="row" style="margin-top:6px">
+      ${Object.entries(G.bag).map(([k,v])=>`<button class="btn" data-item="${k}" ${v<=0?'disabled':''}>${k} x${v}</button>`).join('')}
+      <button class="btn" id="mBack">↩ 뒤로</button></div>`;
+  } else if(B.menu==='party'){
+    html += `<div class="list">${G.party.map((c,i)=>`<div class="listitem" data-sw="${i}">
+      <span>${c.name} Lv${c.lv} ${c===you?'(전투중)':''}</span>
+      <span class="small">${c.hp}/${c.maxHp}</span></div>`).join('')}</div>
+      <button class="btn" id="mBack">↩ 뒤로</button>`;
+  } else { // msg
+    html += `<div style="margin-top:6px;min-height:40px;background:#10131f;border:3px solid #565c8c;border-radius:6px;padding:8px;font-size:14px;cursor:pointer" id="bMsgWrap"><span id="bMsg">${bsCur||''}</span><span class="more">▼</span></div>`;
+  }
+  html += `</div>`;
+  ovBattle.innerHTML = html; ovBattle.classList.add('show');
+  drawArena();
+  wireBattle();
+}
+function drawArena(){
+  const c=document.getElementById('bArena'); if(!c)return;
+  const a=c.getContext('2d'); a.imageSmoothingEnabled=false;
+  a.clearRect(0,0,320,150);
+  // ground platforms
+  a.fillStyle='#7bc86a'; a.beginPath();
+  a.ellipse?a.ellipse(240,52,46,12,0,0,7):0; a.fill?a.fill():0;
+  a.fillStyle='#6ab85a'; if(a.ellipse){a.beginPath();a.ellipse(80,128,60,16,0,0,7);a.fill();}
+  // foe sprite (top-right)
+  if(B.foe.hp>0) drawSpriteTo(a, B.foe.species, 240-36, 8, 6);
+  // your sprite (bottom-left, bigger back-ish)
+  if(B.you.hp>0) drawSpriteTo(a, B.you.species, 80-42, 70, 7);
+}
+
+function wireBattle(){
+  const $=id=>document.getElementById(id);
+  if(B.menu==='msg'){
+    const wrap=$('bMsgWrap'); if(wrap) wrap.onclick=()=>{ if(B && B.menu==='msg') advanceBS(); };
+    return;
+  }
+  if(B.menu==='main'){
+    $('mFight').onclick=()=>{B.menu='fight';renderBattle();};
+    $('mBag').onclick=()=>{B.menu='bag';renderBattle();};
+    $('mParty').onclick=()=>{B.menu='party';renderBattle();};
+    $('mRun').onclick=()=>{ if(B.trainer)return; tryRun(); };
+  } else if(B.menu==='fight'){
+    ovBattle.querySelectorAll('button[data-mv]').forEach(b=>b.onclick=()=>playerMove(parseInt(b.dataset.mv)));
+    $('mBack').onclick=()=>{B.menu='main';renderBattle();};
+  } else if(B.menu==='bag'){
+    ovBattle.querySelectorAll('button[data-item]').forEach(b=>b.onclick=()=>useItem(b.dataset.item));
+    $('mBack').onclick=()=>{B.menu='main';renderBattle();};
+  } else if(B.menu==='party'){
+    ovBattle.querySelectorAll('div[data-sw]').forEach(d=>d.onclick=()=>switchMon(parseInt(d.dataset.sw)));
+    $('mBack').onclick=()=>{B.menu='main';renderBattle();};
+  }
+}
+
+function damageCalc(att, defn, move){
+  if(!move.power) return {dmg:0, mult:1, miss:false};
+  const mult = eff(move.type, defn.type);
+  const stab = (move.type===att.type)?1.3:1;
+  const variance = 0.85 + Math.random()*0.3;
+  let dmg = ((att.atk*2*move.power/25)/Math.max(1,defn.def))*0.6 + 2;
+  dmg = Math.max(1, Math.floor(dmg*mult*stab*variance));
+  return {dmg, mult};
+}
+function effText(m){ return m===0?'효과가 없는 것 같다…': m>=2?'효과가 굉장했다!': m<=0.5?'효과가 별로인 듯하다…':''; }
+
+function playerMove(i){
+  if(B.busy) return;
+  const move=B.you.moves[i];
+  // decide order by speed
+  const youFirst = B.you.spd >= B.foe.spd;
+  const seq = youFirst? ['you','foe'] : ['foe','you'];
+  runTurn(seq, move);
+}
+function foeChooseMove(){
+  // simple AI: prefer super-effective
+  const ms=B.foe.moves.filter(m=>m.power>0);
+  let best=ms[0], bestE=-1;
+  for(const m of ms){ const e=eff(m.type,B.you.type); if(e>bestE){bestE=e;best=m;} }
+  return best || B.foe.moves[0];
+}
+function runTurn(seq, yourMove){
+  B.busy=true;
+  const foeMove=foeChooseMove();
+  const steps=[];
+  for(const who of seq){
+    if(who==='you') steps.push((cb)=>doAttack(B.you,B.foe,yourMove,'you',cb));
+    else steps.push((cb)=>doAttack(B.foe,B.you,foeMove,'foe',cb));
+  }
+  // run sequential with KO checks
+  function run(idx){
+    if(idx>=steps.length){ endTurn(); return; }
+    steps[idx](()=>{
+      // check KO
+      if(B.foe.hp<=0){ onFoeFaint(); return; }
+      if(B.you.hp<=0){ onYouFaint(); return; }
+      run(idx+1);
+    });
+  }
+  run(0);
+}
+function doAttack(att, defn, move, side, done){
+  const lines=[`${att.name}의 ${move.name}!`];
+  if(move.power===0){
+    // status / heal move
+    if(move.name.includes('회복')||move.name.includes('광합성')){
+      const heal=Math.floor(att.maxHp*0.4); att.hp=Math.min(att.maxHp,att.hp+heal);
+      lines.push(`${att.name}이(가) 체력을 회복했다!`);
+    } else { lines.push('하지만 큰 효과는 없었다…'); }
+    battleSay(lines, done); return;
+  }
+  const {dmg,mult}=damageCalc(att,defn,move);
+  defn.hp=Math.max(0,defn.hp-dmg);
+  const et=effText(mult);
+  if(et) lines.push(et);
+  battleSay(lines, ()=>{ done&&done(); });
+}
+function endTurn(){
+  if(B.you.hp<=0){ onYouFaint(); return; }
+  if(B.foe.hp<=0){ onFoeFaint(); return; }
+  B.busy=false; B.menu='main'; renderBattle();
+}
+
+function onFoeFaint(){
+  const foe=B.foe;
+  // xp gain
+  const gain = Math.floor((SPECIES[foe.species].baseHP/6 + foe.lv*4) * (B.trainer?1.5:1));
+  battleSay([`적 ${foe.name}을(를) 쓰러뜨렸다!`, `${B.you.name}은(는) 경험치 ${gain}을(를) 얻었다!`], ()=>{
+    gainXP(B.you, gain, ()=>{
+      if(B.trainer){ trainerNext(); }
+      else { endBattle(); }
+    });
+  });
+}
+function trainerNext(){
+  const t=B.trainer; t.idx++;
+  if(t.idx>=t.team.length){
+    t.tr.beaten=true;
+    const reward = 2;
+    G.bag['포획볼'] = (G.bag['포획볼']||0)+reward;
+    battleSay([`${t.tr.name}을(를) 이겼다!`,`상으로 포획볼 ${reward}개를 받았다.`], endBattle);
+  } else {
+    B.foe = t.team[t.idx];
+    battleSay([`${t.tr.name}이(가) ${B.foe.name}을(를) 내보냈다!`], ()=>{ B.menu='main'; renderBattle(); });
+  }
+}
+function onYouFaint(){
+  battleSay([`${B.you.name}은(는) 쓰러졌다!`], ()=>{
+    const next=G.party.find(c=>c.hp>0);
+    if(next){ B.you=next; battleSay([`가라, ${next.name}!`], ()=>{B.menu='main';renderBattle();}); }
+    else { battleSay(['눈앞이 캄캄해졌다…','마을에서 정신을 차렸다.'], ()=>{
+      healParty(); G.player.x=5; G.player.y=5; G.player.dir='down'; endBattle(); }); }
+  });
+}
+function gainXP(c, amount, done){
+  c.xp += amount;
+  let leveled=false, evolveTo=null;
+  while(c.xp >= xpForLevel(c.lv+1) && c.lv<50){
+    c.xp -= xpForLevel(c.lv+1);
+    c.lv++;
+    leveled=true;
+    const oldMax=c.maxHp; recalcStats(c); c.hp += (c.maxHp-oldMax);
+    applyLearnset(c);
+    const sp=SPECIES[c.species];
+    if(sp.evolveTo && sp.evolveLv && c.lv>=sp.evolveLv){ evolveTo=sp.evolveTo; }
+  }
+  if(leveled){
+    battleSay([`${c.name}은(는) 레벨 ${c.lv}이(가) 되었다!`], ()=>{
+      if(evolveTo){
+        const from=c.name;
+        c.species=evolveTo; c.name=SPECIES[evolveTo].name; c.type=SPECIES[evolveTo].type;
+        recalcStats(c); applyLearnset(c); G.dex.add(evolveTo);
+        battleSay([`어라…?`, `${from}이(가) ${c.name}(으)로 진화했다!`], done);
+      } else done&&done();
+    });
+  } else done&&done();
+}
+
+function tryRun(){
+  if(B.trainer) return;
+  const chance = 0.5 + 0.3*(B.you.spd>=B.foe.spd?1:0);
+  if(Math.random()<chance){ battleSay(['무사히 도망쳤다!'], endBattle); }
+  else { battleSay(['도망칠 수 없었다!'], ()=>{ const m=foeChooseMove(); doAttack(B.foe,B.you,m,'foe',()=>{ if(B.you.hp<=0) onYouFaint(); else { B.busy=false;B.menu='main';renderBattle(); } }); }); }
+}
+function useItem(item){
+  if((G.bag[item]||0)<=0) return;
+  if(item==='회복약'){
+    if(B.you.hp>=B.you.maxHp){ battleSay(['이미 체력이 가득 찼다.'],()=>{B.menu='main';renderBattle();}); return; }
+    G.bag[item]--; const heal=40; B.you.hp=Math.min(B.you.maxHp,B.you.hp+heal);
+    battleSay([`${B.you.name}의 체력을 ${heal} 회복했다!`], ()=>{ foeFreeTurn(); });
+  } else if(item==='포획볼'){
+    if(!B.canCatch){ battleSay(['트레이너의 크리처는 잡을 수 없다!'],()=>{B.menu='main';renderBattle();}); return; }
+    G.bag[item]--; attemptCatch();
+  }
+}
+function foeFreeTurn(){
+  const m=foeChooseMove();
+  doAttack(B.foe,B.you,m,'foe',()=>{ if(B.you.hp<=0) onYouFaint(); else { B.busy=false;B.menu='main';renderBattle(); } });
+}
+function attemptCatch(){
+  const foe=B.foe;
+  const hpFactor = 1 - foe.hp/foe.maxHp; // lower hp -> easier
+  const base = SPECIES[foe.species].catchRate;
+  const p = Math.min(0.95, base + hpFactor*0.55 + 0.05);
+  battleSay(['포획볼을 던졌다!','...','...'], ()=>{
+    if(Math.random()<p){
+      G.dex.add(foe.species);
+      const caught = makeCreature(foe.species, foe.lv, false);
+      caught.hp = foe.hp; caught.xp = 0;
+      if(G.party.length<6) G.party.push(caught); else G.box.push(caught);
+      const where = G.party.length<=6 && G.party[G.party.length-1]===caught ? '파티에' : '보관함으로';
+      battleSay([`해냈다! ${foe.name}을(를) 잡았다!`, `${foe.name}을(를) ${G.party.length<=6?'파티에':'보관함으로'} 넣었다.`], endBattle);
+    } else {
+      battleSay(['아쉽다! 크리처가 튀어나왔다!'], ()=>{ foeFreeTurn(); });
+    }
+  });
+}
+function switchMon(i){
+  const c=G.party[i];
+  if(c.hp<=0){ battleSay([`${c.name}은(는) 싸울 수 없다!`],()=>{B.menu='party';renderBattle();}); return; }
+  if(c===B.you){ B.menu='main'; renderBattle(); return; }
+  B.you=c;
+  battleSay([`돌아와! 가라, ${c.name}!`], ()=>{ foeFreeTurn(); });
+}
+function endBattle(){
+  ovBattle.classList.remove('show'); B=null; G.scene='overworld'; updateHint();
+}
+
+// ============================================================
+//  OVERWORLD MENU (party / bag / dex)
+// ============================================================
+const ovMenu=document.getElementById('ovMenu');
+function openMenu(){
+  if(G.scene!=='overworld'||dlgActive) return;
+  let html=`<div class="box" style="width:96%;max-width:340px">
+    <div class="title center" style="margin-bottom:6px">메뉴</div>
+    <div class="row"><button class="btn" id="kParty">파티</button>
+      <button class="btn" id="kBag">가방</button>
+      <button class="btn" id="kDex">도감</button>
+      <button class="btn" id="kClose">닫기</button></div>
+    <div id="menuBody"></div></div>`;
+  ovMenu.innerHTML=html; ovMenu.classList.add('show');
+  const body=document.getElementById('menuBody');
+  document.getElementById('kClose').onclick=closeMenu;
+  document.getElementById('kParty').onclick=()=>showParty(body);
+  document.getElementById('kBag').onclick=()=>showBag(body);
+  document.getElementById('kDex').onclick=()=>showDex(body);
+  showParty(body);
+}
+function closeMenu(){ ovMenu.classList.remove('show'); }
+function showParty(body){
+  body.innerHTML=`<div class="list">${G.party.map((c,i)=>{
+    const xpNeed=xpForLevel(c.lv+1);
+    return `<div class="listitem">
+      <canvas class="pc" data-st="${c.species}" width="36" height="36" style="image-rendering:pixelated"></canvas>
+      <div style="flex:1;margin-left:8px">
+        <div>${c.name} <span class="typechip" style="background:${TYPES[c.type].col}">${TYPES[c.type].ko}</span> Lv${c.lv}</div>
+        <div class="hpbar" style="width:120px"><div class="hpfill" style="width:${100*c.hp/c.maxHp}%;background:${hpColor(c)}"></div></div>
+        <div class="xpbar"><div class="xpfill" style="width:${Math.min(100,100*c.xp/xpNeed)}%"></div></div>
+        <div class="small">HP ${c.hp}/${c.maxHp} · ${c.moves.map(m=>m.name).join(', ')}</div>
+      </div></div>`;}).join('')||'<div class="small center">파티가 비었다</div>'}
+    ${G.box.length?`<div class="small" style="margin-top:6px">보관함: ${G.box.map(c=>c.name+' Lv'+c.lv).join(', ')}</div>`:''}</div>`;
+  body.querySelectorAll('canvas.pc').forEach(c=>drawSpriteTo(c.getContext('2d'),c.dataset.st,0,0,3));
+}
+function showBag(body){
+  body.innerHTML=`<div class="list">${Object.entries(G.bag).map(([k,v])=>
+    `<div class="listitem"><span>${k}</span><span class="small">x${v}</span></div>`).join('')}
+    <div class="small center" style="margin-top:6px">회복약/포획볼은 전투 중 [가방]에서 사용</div></div>`;
+}
+function showDex(body){
+  const all=Object.keys(SPECIES);
+  body.innerHTML=`<div class="small center">도감: ${G.dex.size}/${all.length} 발견</div>
+    <div class="list" style="display:flex;flex-wrap:wrap">${all.map(s=>{
+      const seen=G.dex.has(s); const sp=SPECIES[s];
+      return `<div style="width:90px;text-align:center;margin:4px;${seen?'':'opacity:.35'}">
+        <canvas class="dc" data-st="${s}" width="40" height="40" style="image-rendering:pixelated;background:#10131f;border:2px solid #333;border-radius:6px"></canvas>
+        <div class="small">${seen?sp.name:'???'}</div>
+        ${seen?`<span class="typechip" style="background:${TYPES[sp.type].col}">${TYPES[sp.type].ko}</span>`:''}</div>`;}).join('')}</div>`;
+  body.querySelectorAll('canvas.dc').forEach(c=>{ if(G.dex.has(c.dataset.st)) drawSpriteTo(c.getContext('2d'),c.dataset.st,2,2,3); });
+}
+
+// ============================================================
+//  SHOP
+// ============================================================
+function openShop(){
+  let html=`<div class="box" style="width:96%;max-width:320px">
+    <div class="title center">루미그로브 상점</div>
+    <div class="small center" style="margin:4px 0">소지 포획볼:${G.bag['포획볼']||0} · 회복약:${G.bag['회복약']||0}</div>
+    <div class="small center">(무료 보급소 — 마을 인심!)</div>
+    <div class="row" style="margin-top:8px">
+      <button class="btn" id="buyBall">포획볼 +3</button>
+      <button class="btn" id="buyPotion">회복약 +3</button>
+      <button class="btn" id="shopClose">닫기</button></div></div>`;
+  ovMenu.innerHTML=html; ovMenu.classList.add('show');
+  document.getElementById('buyBall').onclick=()=>{G.bag['포획볼']=(G.bag['포획볼']||0)+3;openShop();};
+  document.getElementById('buyPotion').onclick=()=>{G.bag['회복약']=(G.bag['회복약']||0)+3;openShop();};
+  document.getElementById('shopClose').onclick=closeMenu;
+}
+
+// ============================================================
+//  INPUT
+// ============================================================
+const heldKeys={};
+window.addEventListener('keydown', e=>{
+  const k=e.key;
+  if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(k)) e.preventDefault();
+  if(G.scene==='title') return;
+  if(dlgActive){ if(k==='z'||k==='Z'||k==='Enter'||k===' ') nextDlg(); return; }
+  if(G.scene==='battle'){
+    if(B&&B.menu==='msg'&&(k==='z'||k==='Z'||k==='Enter'||k===' ')){ advanceBS(); }
+    if(k==='x'||k==='X'){ if(B&&['fight','bag','party'].includes(B.menu)){B.menu='main';renderBattle();} }
+    return;
+  }
+  if(G.scene==='overworld'){
+    if(k==='ArrowUp') tryMove('up');
+    else if(k==='ArrowDown') tryMove('down');
+    else if(k==='ArrowLeft') tryMove('left');
+    else if(k==='ArrowRight') tryMove('right');
+    else if(k==='z'||k==='Z'||k==='Enter') interact();
+    else if(k==='p'||k==='P') { if(ovMenu.classList.contains('show')) closeMenu(); else openMenu(); }
+    else if(k==='x'||k==='X') closeMenu();
+  }
+});
+
+// touch controls
+let moveTimer=null;
+function bindTouch(){
+  document.querySelectorAll('.dbtn').forEach(b=>{
+    const dir=b.dataset.dir;
+    const start=e=>{ e.preventDefault(); tryMove(dir);
+      clearInterval(moveTimer); moveTimer=setInterval(()=>tryMove(dir),180); };
+    const stop=e=>{ e&&e.preventDefault(); clearInterval(moveTimer); };
+    b.addEventListener('touchstart',start,{passive:false});
+    b.addEventListener('touchend',stop); b.addEventListener('touchcancel',stop);
+    b.addEventListener('mousedown',start); b.addEventListener('mouseup',stop); b.addEventListener('mouseleave',stop);
+  });
+  document.querySelectorAll('.abtn').forEach(b=>{
+    const act=b.dataset.act;
+    const h=e=>{ e.preventDefault();
+      if(dlgActive){ nextDlg(); return; }
+      if(G.scene==='battle'){ if(act==='A'&&B&&B.menu==='msg') advanceBS(); else if(act==='B'&&B&&['fight','bag','party'].includes(B.menu)){B.menu='main';renderBattle();} return; }
+      if(G.scene==='overworld'){ if(act==='A') interact(); else { if(ovMenu.classList.contains('show'))closeMenu(); else openMenu(); } }
+    };
+    b.addEventListener('touchstart',h,{passive:false});
+    b.addEventListener('click',h);
+  });
+}
+
+// ============================================================
+//  BOOT
+// ============================================================
+function boot(){
+  fit();
+  if(isTouch){ document.getElementById('touch').classList.add('show'); }
+  bindTouch();
+  resetTrainers();
+  showTitle();
+  requestAnimationFrame(loop);
+}
+boot();
+window.__GAME__ = {G, SPECIES, TYPES, eff, makeCreature, startWildBattle, beginBattle,
+  getB:()=>B, weakenFoe:()=>{ if(B) B.foe.hp=1; }, addBalls:(n)=>{ G.bag['포획볼']=(G.bag['포획볼']||0)+n; }}; // for self-test hooks
+</script>
+</body>
+</html>

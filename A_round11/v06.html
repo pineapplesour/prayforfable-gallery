@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>ORBITAL ATLAS — 수소 전자 확률구름</title>
+<style>
+  :root{ color-scheme:dark; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#04050b; }
+  body{
+    font-family:"SF Mono",ui-monospace,"Menlo",monospace;
+    -webkit-tap-highlight-color:transparent;
+    cursor:grab;
+    touch-action:none;
+  }
+  body.dragging{ cursor:grabbing; }
+  #stage{ position:fixed; inset:0; display:block; }
+  /* ---- HUD ---- */
+  .hud{ position:fixed; z-index:10; pointer-events:none; user-select:none;
+        text-shadow:0 0 12px rgba(0,0,0,.9); }
+  #title{ top:22px; left:26px; }
+  #title h1{ font-size:13px; letter-spacing:.42em; font-weight:700;
+    color:#e8ecff; opacity:.92; }
+  #title .sub{ margin-top:7px; font-size:10px; letter-spacing:.30em;
+    color:#7d8bbf; opacity:.8; }
+  /* orbital readout */
+  #orb{ top:22px; right:26px; text-align:right; }
+  #orb .term{ font-size:42px; font-weight:700; line-height:.92;
+    letter-spacing:.02em;
+    background:linear-gradient(180deg,#fff,#9fb4ff 60%,#5e6fc4);
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+    filter:drop-shadow(0 0 18px rgba(120,150,255,.35)); }
+  #orb .qn{ margin-top:6px; font-size:10px; letter-spacing:.24em; color:#9aa6dd; }
+  #orb .energy{ margin-top:3px; font-size:10px; letter-spacing:.18em; color:#5f6aa0; }
+  /* bottom legend */
+  #legend{ bottom:20px; left:26px; }
+  #legend .row{ font-size:10px; letter-spacing:.16em; color:#8590c0;
+    line-height:1.85; opacity:.9; }
+  #legend b{ color:#cfd6ff; font-weight:600; }
+  .ph{ display:inline-block; width:9px; height:9px; border-radius:2px;
+    vertical-align:-1px; margin:0 5px 0 9px; box-shadow:0 0 8px currentColor; }
+  /* state selector */
+  #pick{ position:fixed; z-index:11; bottom:18px; left:50%;
+    transform:translateX(-50%); display:flex; gap:7px; flex-wrap:wrap;
+    justify-content:center; max-width:min(92vw,720px); pointer-events:auto; }
+  #pick button{
+    pointer-events:auto; cursor:pointer; font-family:inherit;
+    font-size:11px; letter-spacing:.12em; font-weight:600;
+    padding:7px 11px; border-radius:9px;
+    color:#aab4e6; background:rgba(20,26,52,.42);
+    border:1px solid rgba(120,140,220,.18);
+    backdrop-filter:blur(7px); -webkit-backdrop-filter:blur(7px);
+    transition:.22s cubic-bezier(.4,0,.2,1);
+  }
+  #pick button:hover{ color:#fff; border-color:rgba(150,175,255,.55);
+    background:rgba(40,52,100,.6); transform:translateY(-2px); }
+  #pick button.on{ color:#04050b;
+    background:linear-gradient(180deg,#cdd8ff,#8ea2ff);
+    border-color:transparent;
+    box-shadow:0 0 22px rgba(130,160,255,.6),0 6px 18px rgba(0,0,0,.4); }
+  #hint{ position:fixed; z-index:10; bottom:64px; left:50%;
+    transform:translateX(-50%); font-size:9.5px; letter-spacing:.22em;
+    color:#5b659a; opacity:.0; transition:opacity 1s; pointer-events:none;
+    text-align:center; white-space:nowrap; }
+  #hint.show{ opacity:.85; }
+  @media (max-width:560px){
+    #title{ top:16px; left:16px; }
+    #title h1{ font-size:11px; letter-spacing:.30em; }
+    #orb{ top:14px; right:16px; }
+    #orb .term{ font-size:30px; }
+    #legend{ display:none; }
+    #pick{ bottom:14px; gap:5px; max-width:94vw; }
+    #pick button{ font-size:10px; padding:6px 8px; letter-spacing:.06em; }
+    #hint{ bottom:58px; font-size:8.5px; letter-spacing:.12em; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div id="title" class="hud">
+  <h1>ORBITAL ATLAS</h1>
+  <div class="sub">HYDROGENIC PROBABILITY CLOUD · |ψ|²</div>
+</div>
+<div id="orb" class="hud">
+  <div class="term" id="term">2p<sub>z</sub></div>
+  <div class="qn" id="qn">n=2 · ℓ=1 · m=0</div>
+  <div class="energy" id="energy">E = −3.40 eV</div>
+</div>
+<div id="legend" class="hud">
+  <div class="row"><b>드래그</b> 회전 &nbsp;·&nbsp; <b>스크롤 / 핀치</b> 줌 &nbsp;·&nbsp; <b>클릭</b> 양자도약</div>
+  <div class="row">위상 <span class="ph" style="color:#ff5d8f"></span>ψ&nbsp;&gt;&nbsp;0 <span class="ph" style="color:#34c7ff"></span>ψ&nbsp;&lt;&nbsp;0 &nbsp;·&nbsp; 밝기 = 확률밀도</div>
+</div>
+<div id="hint" class="hud">드래그하여 회전 · 클릭하여 양자 도약</div>
+
+<div id="pick">
+  <button data-k="1s">1s</button>
+  <button data-k="2s">2s</button>
+  <button data-k="2p" class="on">2p</button>
+  <button data-k="3p">3p</button>
+  <button data-k="3d">3d</button>
+  <button data-k="3dz">3d z²</button>
+  <button data-k="4f">4f</button>
+  <button data-k="hybrid">sp³ 혼성</button>
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   ORBITAL ATLAS
+   실제 수소꼴 파동함수 |ψ_{n,l,m}|² 에서 몬테카를로로 점을 샘플,
+   3D 회전 + 위상색(파동함수 부호) + 양자도약 전이 애니메이션.
+   순수 canvas 2D. 의존성 없음.
+   ============================================================ */
+const cv  = document.getElementById('stage');
+const ctx = cv.getContext('2d',{alpha:false});
+let W=0,H=0,DPR=1,CX=0,CY=0;
+
+/* ---------- 파동함수 (실수형, 직교 실 구면조화) ----------
+   r 단위 = 보어반경 a0. 정규화는 시각화엔 불필요(상대값만).
+   radial R_{n,l}(r) (associated Laguerre, 알려진 닫힌형),
+   angular Y (실수형). 부호 보존 -> 위상색.                  */
+const A0=1;
+function radial(n,l,r){
+  const rho = 2*r/(n*A0);
+  switch(n+'_'+l){
+    case '1_0': return Math.exp(-r);
+    case '2_0': return (2-r)*Math.exp(-r/2);
+    case '2_1': return r*Math.exp(-r/2);
+    case '3_0': return (27-18*r+2*r*r)*Math.exp(-r/3);
+    case '3_1': return (6*r-r*r)*Math.exp(-r/3);
+    case '3_2': return r*r*Math.exp(-r/3);
+    case '4_3': return r*r*r*Math.exp(-r/4);
+    default:    return Math.exp(-r);
+  }
+}
+/* 실수형 구면조화 (방향성분, 부호 포함). (x,y,z) 단위벡터 */
+function angular(l,m,key,x,y,z){
+  switch(key){
+    case 's':   return 0.2820948; // Y00
+    case 'pz':  return 0.4886025*z;
+    case 'px':  return 0.4886025*x;
+    case 'py':  return 0.4886025*y;
+    case 'dz2': return 0.3153916*(3*z*z-1);
+    case 'dxz': return 1.0925485*x*z;
+    case 'dyz': return 1.0925485*y*z;
+    case 'dxy': return 1.0925485*x*y;
+    case 'dx2': return 0.5462742*(x*x-y*y);
+    case 'fxyz':return 2.890611*x*y*z;
+    case 'fz3': return 0.3731763*z*(5*z*z-3);
+    default:    return 1;
+  }
+}
+
+/* ---------- 오비탈 정의 ---------- */
+// 각 오비탈: 여러 "lobe-set" 의 합. 표시용 양자수 + 색팔레트.
+const ORB = {
+  '1s':  {term:'1s', qn:'n=1 · ℓ=0 · m=0', E:'E = −13.6 eV',
+          n:1,l:0, parts:[{key:'s',w:1}], scale:5.5},
+  '2s':  {term:'2s', qn:'n=2 · ℓ=0 · m=0', E:'E = −3.40 eV',
+          n:2,l:0, parts:[{key:'s',w:1}], scale:13},
+  '2p':  {term:'2p<sub>z</sub>', qn:'n=2 · ℓ=1 · m=0', E:'E = −3.40 eV',
+          n:2,l:1, parts:[{key:'pz',w:1}], scale:13},
+  '3p':  {term:'3p<sub>z</sub>', qn:'n=3 · ℓ=1 · m=0', E:'E = −1.51 eV',
+          n:3,l:1, parts:[{key:'pz',w:1}], scale:26},
+  '3d':  {term:'3d<sub>xy</sub>', qn:'n=3 · ℓ=2 · m=±2', E:'E = −1.51 eV',
+          n:3,l:2, parts:[{key:'dxy',w:1}], scale:26},
+  '3dz': {term:'3d<sub>z²</sub>', qn:'n=3 · ℓ=2 · m=0', E:'E = −1.51 eV',
+          n:3,l:2, parts:[{key:'dz2',w:1}], scale:26},
+  '4f':  {term:'4f<sub>z³</sub>', qn:'n=4 · ℓ=3 · m=0', E:'E = −0.85 eV',
+          n:4,l:3, parts:[{key:'fz3',w:1}], scale:42},
+  'hybrid':{term:'sp³', qn:'4 개 등가 혼성궤도', E:'tetrahedral',
+          n:2,l:1, hybrid:true, scale:16},
+};
+
+/* sp3 혼성: s + (px,py,pz) 4개의 사면체 조합. 각 lobe는
+   방향벡터 d 를 기준으로 (s + p·d) 형태. 부호 양수쪽이 큰 lobe. */
+const SP3_DIRS=[[1,1,1],[1,-1,-1],[-1,1,-1],[-1,-1,1]].map(v=>{
+  const n=Math.hypot(v[0],v[1],v[2]); return [v[0]/n,v[1]/n,v[2]/n];
+});
+
+/* ---------- 점 구름 ---------- */
+// 점 하나: 위치(x,y,z, a0단위), phase부호, 밝기, 미세 위상오프(반짝임)
+let N = 0;          // 점 개수 (반응형 캡)
+let px,py,pz, pph, pbr, pseed;   // typed arrays
+let curKey='2p', nextKey=null;
+let morph=1;        // 0..1 전이 진행
+let morphFrom=null; // 이전 위치 백업(보간 출발)
+let fromX,fromY,fromZ,fromPh,fromBr;
+
+function maxR(o){ return o.scale; }
+
+/* rejection sampling: |ψ|² 비례로 점 1개 좌표 생성 */
+function sampleOne(o){
+  const R=maxR(o);
+  for(let tries=0; tries<60; tries++){
+    // 구 안쪽 균등 후보
+    const x=(Math.random()*2-1)*R;
+    const y=(Math.random()*2-1)*R;
+    const z=(Math.random()*2-1)*R;
+    const r=Math.hypot(x,y,z);
+    if(r<1e-4||r>R) continue;
+    let psi=0, sign=1;
+    if(o.hybrid){
+      // sp3: 4개 등가 사면체 lobe(전방 지향 물방울). 각 점은 최강 lobe에 귀속.
+      const ux=x/r,uy=y/r,uz=z/r;
+      const Rr = radial(2,1,r);           // 반경부(2p 기반, 적당한 외연)
+      let best=-1, bestProj=0;
+      for(let di=0;di<4;di++){
+        const d=SP3_DIRS[di];
+        const proj=ux*d[0]+uy*d[1]+uz*d[2];   // -1..1
+        if(proj>bestProj){ bestProj=proj; best=di; }
+      }
+      // 전방 집중: 강한 cos 가중으로 또렷한 물방울 lobe 형성
+      const fwd = Math.max(0,bestProj);
+      psi  = Rr * Math.pow(fwd, 4.0);
+      sign = 1;                               // 모든 lobe 동위상(결합 궤도 느낌)
+      // lobe별 미묘한 색 분리: 인덱스 짝/홀로 위상색 교차 → 사면체 가독성↑
+      if(best===1||best===2) sign=-1;
+    }else{
+      const ux=x/r,uy=y/r,uz=z/r;
+      let ang=0;
+      for(const p of o.parts){ ang += p.w*angular(o.l, 0, p.key, ux,uy,uz); }
+      const Rr = radial(o.n,o.l,r);
+      psi = Rr*ang;
+      sign = psi>=0?1:-1;
+    }
+    const prob = psi*psi*r*r; // |ψ|² · 부피요소(r²) → 방사 분포 보정
+    // 정규화 상한 추정 (러프). 너무 빡세면 tries 늘림.
+    const probN = prob;
+    if(Math.random()*o._pmax < probN){
+      return {x,y,z,sign, br: Math.min(1, 0.25+psi*psi*o._brk)};
+    }
+  }
+  // fallback: 작은 점
+  return {x:(Math.random()*2-1)*R*0.3, y:(Math.random()*2-1)*R*0.3,
+          z:(Math.random()*2-1)*R*0.3, sign:1, br:0.3};
+}
+
+/* o._pmax, o._brk 추정: 샘플 스캔으로 prob 최대치 캘리브레이션 */
+function calibrate(o){
+  let pm=0, scan=4000;
+  const R=maxR(o);
+  for(let i=0;i<scan;i++){
+    const x=(Math.random()*2-1)*R, y=(Math.random()*2-1)*R, z=(Math.random()*2-1)*R;
+    const r=Math.hypot(x,y,z); if(r<1e-4||r>R) continue;
+    const ux=x/r,uy=y/r,uz=z/r;
+    let psi;
+    if(o.hybrid){
+      const Rr=radial(2,1,r);
+      let bp=0;
+      for(const d of SP3_DIRS){ const pr=ux*d[0]+uy*d[1]+uz*d[2]; if(pr>bp)bp=pr; }
+      psi=Rr*Math.pow(Math.max(0,bp),4.0);
+    }else{
+      let ang=0; for(const p of o.parts) ang+=p.w*angular(o.l,0,p.key,ux,uy,uz);
+      psi=radial(o.n,o.l,r)*ang;
+    }
+    const prob=psi*psi*r*r;
+    if(prob>pm) pm=prob;
+  }
+  o._pmax = pm*1.05 || 1;
+  o._brk  = 1/(pm/Math.max(R*R,1)+1e-9)*0.0; // (미세조정 placeholder)
+  // 밝기 키: psi² 가 lobe peak 근처에서 ~0.8 되도록
+  o._brk = 1/(Math.sqrt(pm)/Math.max(R,1)+1e-6)*0.45;
+}
+
+/* 오비탈 점 채우기 → 타깃 배열 */
+function buildCloud(key, arrX,arrY,arrZ,arrPh,arrBr){
+  const o=ORB[key];
+  if(o._pmax===undefined) calibrate(o);
+  for(let i=0;i<N;i++){
+    const s=sampleOne(o);
+    arrX[i]=s.x; arrY[i]=s.y; arrZ[i]=s.z;
+    arrPh[i]=s.sign; arrBr[i]=s.br;
+  }
+}
+
+/* ---------- 렌더 상태 (회전/줌) ---------- */
+let yaw=0.6, pitch=-0.35, zoom=1;
+let tYaw=0.6, tPitch=-0.35, tZoom=1;     // 타깃(관성)
+let autoSpin=0.00085;
+let lastInteract=performance.now();
+
+/* ---------- 셋업 ---------- */
+function resize(){
+  DPR=Math.min(window.devicePixelRatio||1, 2);
+  W=window.innerWidth; H=window.innerHeight;
+  cv.width=W*DPR; cv.height=H*DPR;
+  cv.style.width=W+'px'; cv.style.height=H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  CX=W/2; CY=H/2;
+  // 점 개수: 화면 면적 + DPR 기반, 모바일 캡
+  const area=W*H;
+  let target = Math.round(area*0.030);
+  target = Math.max(9000, Math.min(target, 34000));
+  if(W<560) target=Math.min(target, 15000);
+  if(target!==N){
+    N=target;
+    px=new Float32Array(N); py=new Float32Array(N); pz=new Float32Array(N);
+    pph=new Int8Array(N);    pbr=new Float32Array(N); pseed=new Float32Array(N);
+    fromX=new Float32Array(N); fromY=new Float32Array(N); fromZ=new Float32Array(N);
+    fromPh=new Int8Array(N);   fromBr=new Float32Array(N);
+    for(let i=0;i<N;i++) pseed[i]=Math.random()*6.2832;
+    buildCloud(curKey, px,py,pz,pph,pbr);
+  }
+}
+window.addEventListener('resize', ()=>{ clearTimeout(window.__rt);
+  window.__rt=setTimeout(resize,120); });
+
+/* ---------- 양자 도약 전이 ---------- */
+function jumpTo(key){
+  ensureTo();
+  if(key===curKey && morph>=1) { pulse(); return; }
+  // 현재 점들을 출발점으로 백업
+  for(let i=0;i<N;i++){ fromX[i]=px[i]; fromY[i]=py[i]; fromZ[i]=pz[i];
+    fromPh[i]=pph[i]; fromBr[i]=pbr[i]; }
+  // 도착 점들을 px..에 채우되, 별도 보관
+  nextKey=key;
+  // 도착 좌표는 px에 직접 빌드한 뒤 toX 로 옮긴다
+  buildCloud(key, toX,toY,toZ,toPh,toBr);
+  morph=0; morphFrom=true;
+  curKey=key;
+  updateHUD(key);
+  setActiveBtn(key);
+  pulse();
+}
+let toX,toY,toZ,toPh,toBr;
+function ensureTo(){
+  if(!toX||toX.length!==N){
+    toX=new Float32Array(N); toY=new Float32Array(N); toZ=new Float32Array(N);
+    toPh=new Int8Array(N);   toBr=new Float32Array(N);
+  }
+}
+
+let pulseT=0;
+function pulse(){ pulseT=1; }
+
+function updateHUD(key){
+  const o=ORB[key];
+  document.getElementById('term').innerHTML=o.term;
+  document.getElementById('qn').textContent=o.qn;
+  document.getElementById('energy').textContent=o.E;
+}
+function setActiveBtn(key){
+  document.querySelectorAll('#pick button').forEach(b=>{
+    b.classList.toggle('on', b.dataset.k===key);
+  });
+}
+
+/* ---------- 입력 ---------- */
+let dragging=false, lx=0, ly=0, vYaw=0, vPitch=0, moved=0;
+function pointerDown(e){
+  dragging=true; moved=0; document.body.classList.add('dragging');
+  const p=pt(e); lx=p.x; ly=p.y; vYaw=0; vPitch=0;
+  lastInteract=performance.now();
+}
+function pointerMove(e){
+  if(!dragging) return;
+  const p=pt(e); const dx=p.x-lx, dy=p.y-ly; lx=p.x; ly=p.y;
+  moved+=Math.abs(dx)+Math.abs(dy);
+  tYaw   += dx*0.006;
+  tPitch += dy*0.006;
+  tPitch = Math.max(-1.45, Math.min(1.45, tPitch));
+  vYaw=dx*0.006; vPitch=dy*0.006;
+  lastInteract=performance.now();
+}
+function pointerUp(e){
+  if(!dragging) return;
+  dragging=false; document.body.classList.remove('dragging');
+  if(moved<6){ // 탭/클릭 = 다음 오비탈로 도약
+    cycleNext();
+  }
+}
+function cycleNext(){
+  const keys=Object.keys(ORB);
+  const idx=keys.indexOf(curKey);
+  jumpTo(keys[(idx+1)%keys.length]);
+}
+function pt(e){
+  if(e.touches&&e.touches[0]) return {x:e.touches[0].clientX,y:e.touches[0].clientY};
+  return {x:e.clientX,y:e.clientY};
+}
+cv.addEventListener('mousedown',pointerDown);
+window.addEventListener('mousemove',pointerMove);
+window.addEventListener('mouseup',pointerUp);
+cv.addEventListener('touchstart',e=>{pointerDown(e);},{passive:true});
+cv.addEventListener('touchmove',e=>{pointerMove(e); e.preventDefault();},{passive:false});
+cv.addEventListener('touchend',e=>{
+  // pinch end 처리
+  if(e.touches.length===0){ pointerUp(e); pinchD=0; }
+},{passive:true});
+cv.addEventListener('wheel',e=>{
+  e.preventDefault();
+  tZoom *= (1 - Math.sign(e.deltaY)*0.12);
+  tZoom = Math.max(0.4, Math.min(3.2, tZoom));
+  lastInteract=performance.now();
+},{passive:false});
+/* 핀치 줌 */
+let pinchD=0;
+cv.addEventListener('touchmove',e=>{
+  if(e.touches.length===2){
+    const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
+                       e.touches[0].clientY-e.touches[1].clientY);
+    if(pinchD>0){ tZoom*= d/pinchD; tZoom=Math.max(0.4,Math.min(3.2,tZoom)); }
+    pinchD=d; lastInteract=performance.now();
+    e.preventDefault();
+  }
+},{passive:false});
+
+/* 버튼 */
+document.querySelectorAll('#pick button').forEach(b=>{
+  b.addEventListener('click',ev=>{ ev.stopPropagation(); jumpTo(b.dataset.k); });
+});
+
+/* 키보드 */
+window.addEventListener('keydown',e=>{
+  if(e.key===' '){ cycleNext(); e.preventDefault(); }
+  if(e.key==='ArrowUp')   tZoom=Math.min(3.2,tZoom*1.1);
+  if(e.key==='ArrowDown') tZoom=Math.max(0.4,tZoom/1.1);
+});
+
+/* ---------- 색상 ---------- */
+// 위상 + 밝기 + 깊이 → rgb. 가산 블렌딩.
+function phaseColor(sign, br, depth){
+  // depth 0(뒤)..1(앞). 앞쪽 더 밝고 채도↑
+  const v = br*(0.42+0.58*depth);
+  if(sign>0){ // ψ>0 : 마젠타/핑크 계열
+    return [Math.round(255*v*1.0),
+            Math.round(80*v),
+            Math.round(150*v)];
+  }else{      // ψ<0 : 시안/블루 계열
+    return [Math.round(60*v),
+            Math.round(200*v),
+            Math.round(255*v)];
+  }
+}
+
+/* ---------- 소프트 스프라이트 캐시 ----------
+   위상별(핑크/시안) 부드러운 방사 글로우 점 2개를 미리 렌더.
+   메인 루프에서 drawImage 로 깔아 가산 블렌딩 → 부드러운 구름. */
+const SPR=64; // 스프라이트 원본 px
+function makeSprite(rgb){
+  const c=document.createElement('canvas'); c.width=c.height=SPR;
+  const g=c.getContext('2d');
+  const grd=g.createRadialGradient(SPR/2,SPR/2,0, SPR/2,SPR/2,SPR/2);
+  grd.addColorStop(0,   `rgba(255,255,255,0.98)`);
+  grd.addColorStop(0.14,`rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.95)`);
+  grd.addColorStop(0.40,`rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.30)`);
+  grd.addColorStop(1,   `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0)`);
+  g.fillStyle=grd; g.fillRect(0,0,SPR,SPR);
+  return c;
+}
+const SPRITE_POS = makeSprite([255,70,150]);  // ψ>0 핑크
+const SPRITE_NEG = makeSprite([60,190,255]);  // ψ<0 시안
+
+/* ---------- 메인 루프 ---------- */
+ensureTo();
+resize();
+let last=performance.now(), fps=60, frame=0;
+let t=0;
+
+function frameLoop(now){
+  const dt=Math.min(40, now-last); last=now; t+=dt*0.001; frame++;
+  // 관성 + 오토스핀
+  if(!dragging){
+    tYaw   += vYaw; vYaw*=0.94;
+    tPitch += vPitch; vPitch*=0.94;
+    tPitch=Math.max(-1.45,Math.min(1.45,tPitch));
+    if(now-lastInteract>2600){ tYaw += autoSpin*dt; }
+  }
+  yaw   += (tYaw-yaw)*0.12;
+  pitch += (tPitch-pitch)*0.12;
+  zoom  += (tZoom-zoom)*0.10;
+
+  // morph 진행
+  if(morph<1){ morph=Math.min(1, morph + dt*0.0016); }
+  if(pulseT>0) pulseT=Math.max(0, pulseT-dt*0.0022);
+
+  // --- 배경 (잔상 트레일) ---
+  ctx.globalCompositeOperation='source-over';
+  ctx.fillStyle='rgba(4,5,11,0.42)';
+  ctx.fillRect(0,0,W,H);
+
+  // 중심 코어 글로우 (핵)
+  drawBackdrop();
+
+  // --- 점 투영 ---
+  const cy_=Math.cos(yaw),  sy_=Math.sin(yaw);
+  const cp_=Math.cos(pitch),sp_=Math.sin(pitch);
+  const o=ORB[curKey];
+  const sc = (Math.min(W,H)/(o.scale*2.35)) * zoom * (W<560?0.92:1);
+  const persp=520; // 원근 거리(스크린px 환산용)
+
+  ctx.globalCompositeOperation='lighter';
+
+  const easeM = morph<1 ? (morph<0.5? 2*morph*morph : 1-Math.pow(-2*morph+2,2)/2) : 1;
+  const pul = pulseT>0 ? (1 + 0.55*Math.sin(pulseT*Math.PI)*pulseT) : 1;
+
+  // 소프트 스프라이트 기본 크기(px).
+  const spriteBase = (W<560?4.6:5.2);
+
+  for(let i=0;i<N;i++){
+    let X,Y,Z,ph,br;
+    if(morph<1){
+      // 출발(fromX) → 도착(toX) 보간 + 도약 "흩어졌다 모임" 곡선
+      const k=easeM;
+      // 중간에 살짝 폭발(확장) 시키기
+      const burst = Math.sin(morph*Math.PI)*0.18;
+      X=fromX[i]*(1-k)+toX[i]*k;
+      Y=fromY[i]*(1-k)+toY[i]*k;
+      Z=fromZ[i]*(1-k)+toZ[i]*k;
+      const r=Math.hypot(X,Y,Z)+1e-4;
+      X*= (1+burst); Y*=(1+burst); Z*=(1+burst);
+      ph= k<0.5? fromPh[i] : toPh[i];
+      br= fromBr[i]*(1-k)+toBr[i]*k;
+      // 전이 끝나면 px로 확정
+      if(morph+dt*0.0016>=1){ px[i]=toX[i];py[i]=toY[i];pz[i]=toZ[i];pph[i]=toPh[i];pbr[i]=toBr[i]; }
+    }else{
+      X=px[i]; Y=py[i]; Z=pz[i]; ph=pph[i]; br=pbr[i];
+    }
+
+    // 미세 양자 떨림 (반짝임 + 부피감)
+    const sd=pseed[i];
+    const jit=0.05;
+    X+=Math.sin(t*1.3+sd)*jit;
+    Y+=Math.cos(t*1.1+sd*1.7)*jit;
+    Z+=Math.sin(t*0.9+sd*2.3)*jit;
+
+    X*=pul; Y*=pul; Z*=pul;
+
+    // 회전 (yaw around Y, pitch around X)
+    let x1= X*cy_ + Z*sy_;
+    let z1=-X*sy_ + Z*cy_;
+    let y1= Y*cp_ - z1*sp_;
+    let z2= Y*sp_ + z1*cp_;
+
+    // 원근 투영
+    const depth = z2; // a0 단위
+    const pf = persp/(persp + depth*sc*0.9 + 0.001);
+    const sx = CX + x1*sc*pf;
+    const sy = CY + y1*sc*pf;
+    if(sx<-20||sx>W+20||sy<-20||sy>H+20) continue;
+
+    // 깊이 정규화 0..1 (앞쪽=1)
+    const dn = 0.5 + 0.5*(-z2)/(o.scale*1.1);
+    const dnc=Math.max(0,Math.min(1,dn));
+
+    // 반짝임 (양자 떨림)
+    const tw = 0.74 + 0.26*Math.sin(t*2.1 + sd*3.0);
+    // 알파 = 밝기·반짝임·깊이. 앞 점이 더 또렷.
+    let a = br*tw*(0.30+0.70*dnc);
+    if(a<0.012) continue;
+    if(a>1) a=1;
+    ctx.globalAlpha=a;
+    const spr = ph>0 ? SPRITE_POS : SPRITE_NEG;
+    const sz = spriteBase*pf*(0.62+0.62*dnc);
+    const h=sz*0.5;
+    ctx.drawImage(spr, sx-h, sy-h, sz, sz);
+  }
+  ctx.globalAlpha=1;
+
+  // 비네팅 + 그레인틱한 가장자리 어둠
+  drawVignette();
+
+  // fps 추정
+  fps += ((1000/Math.max(1,dt)) - fps)*0.05;
+
+  requestAnimationFrame(frameLoop);
+}
+
+/* 핵 글로우 + 그라데이션 무드 배경 */
+let bgGrad=null, bgKey='';
+function drawBackdrop(){
+  // 중심 방사 글로우
+  ctx.globalCompositeOperation='lighter';
+  const rg=ctx.createRadialGradient(CX,CY,0, CX,CY, Math.min(W,H)*0.5);
+  rg.addColorStop(0,'rgba(70,90,180,0.10)');
+  rg.addColorStop(0.4,'rgba(40,50,120,0.05)');
+  rg.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=rg; ctx.fillRect(0,0,W,H);
+  // 핵 점
+  const coreR=3.2+1.6*Math.sin(t*3);
+  const cg=ctx.createRadialGradient(CX,CY,0,CX,CY,coreR*4);
+  cg.addColorStop(0,'rgba(255,255,255,0.9)');
+  cg.addColorStop(0.5,'rgba(200,215,255,0.35)');
+  cg.addColorStop(1,'rgba(120,150,255,0)');
+  ctx.fillStyle=cg;
+  ctx.beginPath(); ctx.arc(CX,CY,coreR*4,0,6.2832); ctx.fill();
+}
+function drawVignette(){
+  ctx.globalCompositeOperation='source-over';
+  const vg=ctx.createRadialGradient(CX,CY,Math.min(W,H)*0.30, CX,CY,Math.max(W,H)*0.72);
+  vg.addColorStop(0,'rgba(0,0,0,0)');
+  vg.addColorStop(1,'rgba(2,3,8,0.72)');
+  ctx.fillStyle=vg; ctx.fillRect(0,0,W,H);
+}
+
+/* 첫 페인트: 즉시 완성된 구름을 그려 빈 화면/로딩 방지.
+   가산 블렌딩이라 한 프레임이면 이미 충분히 밀도가 있다. */
+function firstPaint(){
+  ctx.fillStyle='#04050b'; ctx.fillRect(0,0,W,H);
+  drawBackdrop();
+  ctx.globalCompositeOperation='lighter';
+  const cy_=Math.cos(yaw),sy_=Math.sin(yaw),cp_=Math.cos(pitch),sp_=Math.sin(pitch);
+  const o=ORB[curKey];
+  const sc=(Math.min(W,H)/(o.scale*2.35))*zoom*(W<560?0.92:1);
+  const spriteBase=(W<560?4.6:5.4);
+  for(let i=0;i<N;i++){
+    let X=px[i],Y=py[i],Z=pz[i];
+    let x1=X*cy_+Z*sy_, z1=-X*sy_+Z*cy_;
+    let y1=Y*cp_-z1*sp_, z2=Y*sp_+z1*cp_;
+    const pf=520/(520+z2*sc*0.9+0.001);
+    const sx=CX+x1*sc*pf, sy=CY+y1*sc*pf;
+    const dn=Math.max(0,Math.min(1,0.5+0.5*(-z2)/(o.scale*1.1)));
+    let a=pbr[i]*(0.30+0.70*dn);
+    if(a<0.012) continue; if(a>1)a=1;
+    ctx.globalAlpha=a;
+    const spr=pph[i]>0?SPRITE_POS:SPRITE_NEG;
+    const sz=spriteBase*pf*(0.62+0.62*dn); const h=sz*0.5;
+    ctx.drawImage(spr,sx-h,sy-h,sz,sz);
+  }
+  ctx.globalAlpha=1;
+  drawVignette();
+}
+ensureTo();
+firstPaint();
+requestAnimationFrame(frameLoop);
+
+// 힌트: 잠깐 보여줬다 숨김
+setTimeout(()=>document.getElementById('hint').classList.add('show'),600);
+setTimeout(()=>document.getElementById('hint').classList.remove('show'),5200);
+
+/* 테스트 훅 */
+window.__atlas={
+  jump:(k)=>jumpTo(k),
+  state:()=>({key:curKey,N,yaw,pitch,zoom,morph,fps:Math.round(fps)}),
+  rotate:(dy,dp)=>{ tYaw+=dy; tPitch+=dp; },
+  setZoom:(z)=>{ tZoom=z; },
+};
+</script>
+</body>
+</html>

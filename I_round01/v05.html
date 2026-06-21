@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>심해 발광 · 리퀴드 글래스 스탯</title>
+<style>
+  :root{
+    --ink:#eaf6ff;
+    --glass-bg:rgba(255,255,255,0.06);
+    --glass-bg-2:rgba(255,255,255,0.10);
+    --glass-bd:rgba(255,255,255,0.30);
+    --glow:#5ff0ff;
+    --glow2:#9b6bff;
+  }
+  *{box-sizing:border-box;-webkit-font-smoothing:antialiased;}
+  html,body{margin:0;height:100%;overflow:hidden;background:#01060c;
+    font-family:"Inter","Helvetica Neue",-apple-system,"Segoe UI","Noto Sans KR",sans-serif;
+    color:var(--ink);cursor:default;touch-action:none;}
+  /* full-screen ambient deep-sea canvas */
+  #scene{position:fixed;inset:0;width:100%;height:100%;display:block;z-index:0;}
+  /* darkening + vignette over scene so glass reads */
+  #grade{position:fixed;inset:0;z-index:1;pointer-events:none;
+    background:
+      radial-gradient(120% 90% at 50% 8%, rgba(20,80,120,.10), transparent 55%),
+      radial-gradient(140% 120% at 50% 120%, rgba(0,0,0,.55), transparent 60%),
+      radial-gradient(100% 100% at 50% 50%, transparent 40%, rgba(0,6,14,.55) 100%);}
+
+  /* floating glass layer (parallax-translated as a group) */
+  #stage{position:fixed;inset:0;z-index:2;}
+  #layer{position:absolute;inset:0;will-change:transform;}
+
+  .glass{
+    position:absolute;
+    background:var(--glass-bg);
+    border:1px solid var(--glass-bd);
+    border-radius:26px;
+    -webkit-backdrop-filter:blur(22px) saturate(1.5) brightness(1.05);
+    backdrop-filter:blur(22px) saturate(1.5) brightness(1.05);
+    box-shadow:
+      0 24px 60px rgba(0,0,0,.45),
+      0 4px 14px rgba(0,0,0,.30),
+      inset 0 1px 0 rgba(255,255,255,.45),
+      inset 0 -1px 0 rgba(255,255,255,.06),
+      inset 0 0 40px rgba(95,240,255,.05);
+    cursor:grab;
+    overflow:hidden;
+    transition:box-shadow .25s ease, transform .05s linear;
+  }
+  .glass:active{cursor:grabbing;}
+  .glass.drag{box-shadow:
+      0 36px 80px rgba(0,0,0,.55),
+      0 6px 18px rgba(0,0,0,.40),
+      inset 0 1px 0 rgba(255,255,255,.55),
+      inset 0 0 60px rgba(95,240,255,.10);}
+  /* specular top sheen */
+  .glass::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+    background:linear-gradient(155deg, rgba(255,255,255,.16), rgba(255,255,255,0) 38%);}
+  /* faint refractive caustic tint that drifts */
+  .glass::after{content:"";position:absolute;inset:-40%;pointer-events:none;opacity:.5;
+    background:radial-gradient(60% 50% at 30% 20%, rgba(95,240,255,.10), transparent 60%),
+              radial-gradient(50% 60% at 80% 90%, rgba(155,107,255,.10), transparent 60%);
+    animation:caust 18s linear infinite;}
+  @keyframes caust{0%{transform:translate(0,0)}50%{transform:translate(4%,-3%)}100%{transform:translate(0,0)}}
+
+  .pad{position:relative;z-index:1;padding:22px 24px;}
+
+  /* ---- main hero panel ---- */
+  #hero{left:7%;top:18%;width:360px;}
+  .eyebrow{font-size:11px;letter-spacing:.32em;text-transform:uppercase;
+    color:rgba(180,230,255,.72);margin:0 0 14px;display:flex;align-items:center;gap:8px;}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--glow);
+    box-shadow:0 0 10px var(--glow),0 0 20px var(--glow);animation:pulse 2.6s ease-in-out infinite;}
+  @keyframes pulse{0%,100%{opacity:.55;transform:scale(.85)}50%{opacity:1;transform:scale(1.15)}}
+  h1{margin:0 0 10px;font-size:30px;line-height:1.12;font-weight:700;letter-spacing:-.01em;
+    text-shadow:0 2px 18px rgba(0,0,0,.5);}
+  h1 .accent{background:linear-gradient(100deg,var(--glow),var(--glow2));
+    -webkit-background-clip:text;background-clip:text;color:transparent;}
+  .lede{margin:0;font-size:14px;line-height:1.6;color:rgba(220,238,250,.80);}
+  .meterwrap{margin-top:18px;}
+  .meterlabel{display:flex;justify-content:space-between;font-size:11px;letter-spacing:.06em;
+    color:rgba(200,230,250,.7);margin-bottom:7px;}
+  .meter{height:8px;border-radius:99px;background:rgba(255,255,255,.10);overflow:hidden;
+    border:1px solid rgba(255,255,255,.14);}
+  .meter > i{display:block;height:100%;width:0;border-radius:99px;
+    background:linear-gradient(90deg,var(--glow),var(--glow2));
+    box-shadow:0 0 12px rgba(95,240,255,.6);transition:width 1.4s cubic-bezier(.22,1,.36,1);}
+
+  /* ---- stat trio panel ---- */
+  #stats{right:7%;top:16%;width:320px;border-radius:24px;}
+  .stitle{display:flex;align-items:center;justify-content:space-between;
+    font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:rgba(180,225,255,.7);
+    padding:18px 22px 12px;}
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:0 18px 6px;}
+  .cell{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);
+    border-radius:16px;padding:14px 8px;text-align:center;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.18);}
+  .cell .v{font-size:22px;font-weight:700;letter-spacing:-.02em;
+    background:linear-gradient(120deg,#dffaff,#7fd9ff);-webkit-background-clip:text;background-clip:text;color:transparent;}
+  .cell .k{font-size:10px;letter-spacing:.08em;color:rgba(200,228,248,.68);margin-top:4px;}
+  /* sparkline */
+  .spark{padding:12px 22px 20px;}
+  .spark .lab{font-size:11px;letter-spacing:.1em;color:rgba(195,228,250,.66);margin-bottom:8px;
+    display:flex;justify-content:space-between;}
+  .spark svg{display:block;width:100%;height:54px;overflow:visible;}
+
+  /* ---- mini status chip panel ---- */
+  #chip{left:11%;bottom:13%;width:230px;border-radius:20px;}
+  .chiprow{display:flex;align-items:center;gap:13px;padding:16px 18px;}
+  .orb{width:44px;height:44px;border-radius:14px;flex:0 0 auto;position:relative;
+    background:radial-gradient(circle at 35% 30%,rgba(95,240,255,.9),rgba(95,240,255,.15) 60%,transparent),
+              rgba(255,255,255,.06);
+    border:1px solid rgba(255,255,255,.25);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.4),0 0 22px rgba(95,240,255,.35);}
+  .orb b{position:absolute;inset:0;display:grid;place-items:center;font-size:18px;}
+  .chiptxt .t{font-size:14px;font-weight:600;}
+  .chiptxt .s{font-size:11px;color:rgba(150,235,200,.9);margin-top:3px;display:flex;align-items:center;gap:6px;}
+  .live{width:6px;height:6px;border-radius:50%;background:#46f0a0;box-shadow:0 0 9px #46f0a0;animation:pulse 1.8s infinite;}
+
+  .hint{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:3;
+    font-size:12px;letter-spacing:.14em;color:rgba(220,240,255,.7);
+    background:rgba(8,24,34,.34);border:1px solid rgba(255,255,255,.10);
+    padding:8px 18px;border-radius:99px;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
+    pointer-events:none;transition:opacity 1.4s;white-space:nowrap;}
+
+  /* ---- responsive: 390 mobile ---- */
+  @media (max-width:560px){
+    #hero{left:5%;right:5%;top:7%;width:auto;}
+    h1{font-size:25px;}
+    #stats{left:5%;right:5%;top:auto;bottom:25%;width:auto;}
+    #chip{left:5%;right:5%;bottom:11%;width:auto;}
+    .pad{padding:18px 20px;}
+  }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<div id="grade"></div>
+
+<div id="stage">
+  <div id="layer">
+
+    <!-- HERO -->
+    <section class="glass" id="hero" data-depth="1">
+      <div class="pad">
+        <p class="eyebrow"><span class="dot"></span>ABYSSAL TELEMETRY</p>
+        <h1>심해 발광 <span class="accent">관측 노드</span></h1>
+        <p class="lede">앰비언트 자연 씬 위에 떠 있는 리퀴드 글래스 패널. 아래 발광 입자와 캐스틱 빛이 유리를 통과하며 실제로 굴절·블러됩니다.</p>
+        <div class="meterwrap">
+          <div class="meterlabel"><span>생체발광 강도</span><span id="m1v">0%</span></div>
+          <div class="meter"><i id="m1"></i></div>
+        </div>
+        <div class="meterwrap">
+          <div class="meterlabel"><span>수압 안정도</span><span id="m2v">0%</span></div>
+          <div class="meter"><i id="m2"></i></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- STATS -->
+    <section class="glass" id="stats" data-depth="1.8">
+      <div class="stitle"><span>해류 스탯</span><span style="color:rgba(120,235,255,.85)">−2,840 m</span></div>
+      <div class="grid">
+        <div class="cell"><div class="v" data-count="128">0</div><div class="k">개체</div></div>
+        <div class="cell"><div class="v" data-count="4.2" data-dec="1" data-suf="℃">0</div><div class="k">수온</div></div>
+        <div class="cell"><div class="v" data-count="96" data-suf="%">0</div><div class="k">투과율</div></div>
+      </div>
+      <div class="spark">
+        <div class="lab"><span>발광 펄스 / 24h</span><span style="color:rgba(155,107,255,.9)">▲ 12.4%</span></div>
+        <svg viewBox="0 0 280 54" preserveAspectRatio="none" aria-hidden="true">
+          <defs>
+            <linearGradient id="sg" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#5ff0ff" stop-opacity=".45"/>
+              <stop offset="1" stop-color="#5ff0ff" stop-opacity="0"/>
+            </linearGradient>
+            <linearGradient id="sl" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0" stop-color="#5ff0ff"/><stop offset="1" stop-color="#9b6bff"/>
+            </linearGradient>
+          </defs>
+          <path id="sparkFill" fill="url(#sg)"></path>
+          <path id="sparkLine" fill="none" stroke="url(#sl)" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round"
+                style="filter:drop-shadow(0 0 5px rgba(95,240,255,.55))"></path>
+        </svg>
+      </div>
+    </section>
+
+    <!-- CHIP -->
+    <section class="glass" id="chip" data-depth="2.6">
+      <div class="chiprow">
+        <div class="orb"><b>✦</b></div>
+        <div class="chiptxt">
+          <div class="t">Node A-07 정상</div>
+          <div class="s"><span class="live"></span>실시간 스트리밍 중</div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<div class="hint" id="hint">패널 드래그 · 마우스 이동 패럴랙스 · 씬 클릭으로 발광 입자</div>
+
+<script>
+'use strict';
+/* ============================================================
+   DEEP-SEA BIOLUMINESCENT AMBIENT SCENE (Canvas 2D)
+   - dark abyssal gradient + slow light shafts (caustics)
+   - drifting glow motes (parallax depth bands)
+   - slow swimming luminous creatures
+   - click bursts of bioluminescent particles
+   ============================================================ */
+(()=>{
+  const TAU=Math.PI*2;
+  const cv=document.getElementById('scene');
+  const ctx=cv.getContext('2d');
+  let W=0,H=0,DPR=1;
+
+  function resize(){
+    W=window.innerWidth;H=window.innerHeight;
+    DPR=Math.min(window.devicePixelRatio||1,2);
+    cv.width=Math.round(W*DPR);cv.height=Math.round(H*DPR);
+    cv.style.width=W+'px';cv.style.height=H+'px';
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    buildMotes();
+  }
+  window.addEventListener('resize',resize);
+
+  /* ---- drifting glow motes in depth bands ---- */
+  let motes=[];
+  function buildMotes(){
+    motes=[];
+    const n=Math.max(70,Math.round(W*H/14000));
+    for(let i=0;i<n;i++){
+      const depth=Math.random();          // 0 far .. 1 near
+      motes.push({
+        x:Math.random()*W, y:Math.random()*H,
+        r:(0.6+depth*2.6)*(0.7+Math.random()*0.8),
+        sp:(0.05+depth*0.35)*(Math.random()*0.6+0.7), // upward drift
+        sway:Math.random()*TAU, swaySp:0.2+Math.random()*0.5,
+        depth,
+        hue:Math.random()<0.78?188:268,   // cyan vs violet
+        a:0.10+depth*0.55
+      });
+    }
+  }
+
+  /* ---- luminous creatures (slow drifting, soft glow body + trail) ---- */
+  function makeCreature(){
+    const big=Math.random()<0.35;
+    return{
+      x:Math.random()*W, y:Math.random()*H,
+      a:Math.random()*TAU,
+      len:(big?54:30)+Math.random()*(big?30:18),
+      spd:big?7:11, spdT:0, turn:0, changeT:Math.random()*3,
+      phase:Math.random()*10, po:Math.random()*TAU,
+      hue:Math.random()<0.7?185:275,
+      glow:0.5+Math.random()*0.4
+    };
+  }
+  let creatures=[];
+  function buildCreatures(){
+    creatures=[];
+    const n=Math.max(4,Math.round(Math.min(W,1600)/220));
+    for(let i=0;i<n;i++)creatures.push(makeCreature());
+  }
+
+  const angDiff=(a,b)=>{let d=a-b;while(d>Math.PI)d-=TAU;while(d<-Math.PI)d+=TAU;return d;};
+  function updateCreature(c,dt){
+    c.changeT-=dt;
+    if(c.changeT<=0){c.spdT=(c.len>60?6:9)+Math.random()*10;c.changeT=3+Math.random()*5;}
+    c.turn+=(Math.random()-0.5)*1.6*dt; c.turn*=Math.exp(-dt*1.2);
+    let ta=c.a+c.turn;
+    const m=70;
+    if(c.x<m||c.y<m||c.x>W-m||c.y>H-m) ta=Math.atan2(H*0.5-c.y,W*0.5-c.x);
+    const da=angDiff(ta,c.a);
+    c.a+=Math.max(-0.7*dt,Math.min(0.7*dt,da));
+    c.spd+=(c.spdT-c.spd)*Math.min(1,dt*1.2);
+    c.x+=Math.cos(c.a)*c.spd*dt; c.y+=Math.sin(c.a)*c.spd*dt;
+    c.x=Math.max(10,Math.min(W-10,c.x)); c.y=Math.max(10,Math.min(H-10,c.y));
+    c.phase+=dt*(1.6+c.spd*0.05);
+  }
+  function drawCreature(c){
+    const L=c.len;
+    ctx.save(); ctx.translate(c.x,c.y); ctx.rotate(c.a);
+    const col=c.hue===185?'95,240,255':'160,120,255';
+    // soft outer glow
+    const g=ctx.createRadialGradient(0,0,0,0,0,L*1.6);
+    g.addColorStop(0,'rgba('+col+','+(0.16*c.glow)+')');
+    g.addColorStop(1,'rgba('+col+',0)');
+    ctx.fillStyle=g; ctx.beginPath(); ctx.ellipse(0,0,L*1.6,L*0.9,0,0,TAU); ctx.fill();
+    // undulating body
+    const segs=10; ctx.beginPath();
+    for(let i=0;i<=segs;i++){
+      const s=i/segs, x=L*0.5-s*L, y=Math.sin(c.phase-s*4)*L*0.10*Math.pow(s,1.2);
+      const w=L*0.16*Math.sin(Math.PI*Math.min(0.1+s*0.9,1))*(1-0.5*s)+L*0.02;
+      if(i===0)ctx.moveTo(x,y-w); else ctx.lineTo(x,y-w);
+    }
+    for(let i=segs;i>=0;i--){
+      const s=i/segs, x=L*0.5-s*L, y=Math.sin(c.phase-s*4)*L*0.10*Math.pow(s,1.2);
+      const w=L*0.16*Math.sin(Math.PI*Math.min(0.1+s*0.9,1))*(1-0.5*s)+L*0.02;
+      ctx.lineTo(x,y+w);
+    }
+    ctx.closePath();
+    const bg=ctx.createLinearGradient(L*0.5,0,-L*0.5,0);
+    bg.addColorStop(0,'rgba('+col+',0.55)');
+    bg.addColorStop(1,'rgba('+col+',0.05)');
+    ctx.fillStyle=bg; ctx.fill();
+    // bright core dots (bioluminescent nodes)
+    for(let i=1;i<=4;i++){
+      const s=i/5, x=L*0.5-s*L, y=Math.sin(c.phase-s*4)*L*0.10*Math.pow(s,1.2);
+      ctx.fillStyle='rgba('+col+','+(0.9*c.glow)+')';
+      ctx.beginPath(); ctx.arc(x,y,L*0.035,0,TAU); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  /* ---- click bursts ---- */
+  const sparks=[];
+  function burst(x,y){
+    const n=18+Math.random()*10;
+    for(let i=0;i<n;i++){
+      const a=Math.random()*TAU, sp=20+Math.random()*70;
+      sparks.push({x,y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp-10,life:1,
+        hue:Math.random()<0.6?185:275,r:1+Math.random()*2.2});
+    }
+  }
+  cv.addEventListener('pointerdown',e=>{burst(e.clientX,e.clientY);hideHint();});
+
+  /* ---- light shafts (slow caustic god-rays from top) ---- */
+  function drawShafts(t){
+    ctx.save(); ctx.globalCompositeOperation='lighter';
+    const N=5;
+    for(let i=0;i<N;i++){
+      const baseX=W*(0.12+0.76*(i/(N-1)));
+      const sway=Math.sin(t*0.10+i*1.7)*W*0.05;
+      const x=baseX+sway, top=-40, width=W*0.10*(0.7+0.5*Math.sin(t*0.2+i));
+      const g=ctx.createLinearGradient(x,top,x+W*0.12,H*0.9);
+      const al=0.05+0.035*Math.sin(t*0.35+i*2.1);
+      g.addColorStop(0,'rgba(120,220,255,'+Math.max(0,al)+')');
+      g.addColorStop(1,'rgba(120,220,255,0)');
+      ctx.fillStyle=g;
+      ctx.beginPath();
+      ctx.moveTo(x-width*0.3,top);
+      ctx.lineTo(x+width*0.3,top);
+      ctx.lineTo(x+W*0.12+width,H);
+      ctx.lineTo(x+W*0.12-width,H);
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  /* ---- background gradient (abyssal depth) ---- */
+  function drawBackground(t){
+    const g=ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0,'#0b2a3e');
+    g.addColorStop(0.32,'#072030');
+    g.addColorStop(0.66,'#04121d');
+    g.addColorStop(1,'#01070d');
+    ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+    // slow surface shimmer near top
+    ctx.save(); ctx.globalCompositeOperation='lighter';
+    const sg=ctx.createRadialGradient(W*0.5,-H*0.15,0,W*0.5,-H*0.1,H*0.7);
+    sg.addColorStop(0,'rgba(90,200,255,'+(0.08+0.03*Math.sin(t*0.4))+')');
+    sg.addColorStop(1,'rgba(90,200,255,0)');
+    ctx.fillStyle=sg; ctx.fillRect(0,0,W,H);
+    ctx.restore();
+  }
+
+  /* ---- main render ---- */
+  let last=0;
+  function frame(ts){
+    requestAnimationFrame(frame);
+    const t=ts/1000;
+    const dt=Math.min(0.05,Math.max(0.001,t-last)); last=t;
+
+    drawBackground(t);
+    drawShafts(t);
+
+    // motes (additive)
+    ctx.save(); ctx.globalCompositeOperation='lighter';
+    for(const m of motes){
+      m.y-=m.sp; m.sway+=m.swaySp*dt;
+      const dx=Math.sin(m.sway)*0.3;
+      m.x+=dx;
+      if(m.y<-6){m.y=H+6;m.x=Math.random()*W;}
+      const col=m.hue===188?'120,235,255':'170,130,255';
+      const g=ctx.createRadialGradient(m.x,m.y,0,m.x,m.y,m.r*4);
+      g.addColorStop(0,'rgba('+col+','+m.a+')');
+      g.addColorStop(0.4,'rgba('+col+','+(m.a*0.35)+')');
+      g.addColorStop(1,'rgba('+col+',0)');
+      ctx.fillStyle=g; ctx.beginPath(); ctx.arc(m.x,m.y,m.r*4,0,TAU); ctx.fill();
+      // bright pip
+      ctx.fillStyle='rgba('+col+','+Math.min(1,m.a+0.25)+')';
+      ctx.beginPath(); ctx.arc(m.x,m.y,m.r*0.6,0,TAU); ctx.fill();
+    }
+    ctx.restore();
+
+    // creatures
+    ctx.save(); ctx.globalCompositeOperation='lighter';
+    for(const c of creatures){updateCreature(c,dt);drawCreature(c);}
+    ctx.restore();
+
+    // sparks
+    ctx.save(); ctx.globalCompositeOperation='lighter';
+    for(let i=sparks.length-1;i>=0;i--){
+      const s=sparks[i];
+      s.life-=dt*0.6; if(s.life<=0){sparks.splice(i,1);continue;}
+      s.vy+=18*dt; s.vx*=0.985; s.vy*=0.985;
+      s.x+=s.vx*dt; s.y+=s.vy*dt;
+      const col=s.hue===185?'120,240,255':'175,135,255';
+      const g=ctx.createRadialGradient(s.x,s.y,0,s.x,s.y,s.r*5);
+      g.addColorStop(0,'rgba('+col+','+(0.9*s.life)+')');
+      g.addColorStop(1,'rgba('+col+',0)');
+      ctx.fillStyle=g; ctx.beginPath(); ctx.arc(s.x,s.y,s.r*5,0,TAU); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  resize(); buildCreatures(); requestAnimationFrame(frame);
+
+  /* ============================================================
+     FLOATING GLASS: mouse parallax + drag
+     ============================================================ */
+  const layer=document.getElementById('layer');
+  const panels=[...document.querySelectorAll('.glass')];
+  let mx=0,my=0,tx=0,ty=0;        // parallax target/current
+  // per-panel drag offsets
+  panels.forEach(p=>{p._ox=0;p._oy=0;});
+
+  window.addEventListener('pointermove',e=>{
+    mx=(e.clientX/window.innerWidth-0.5);
+    my=(e.clientY/window.innerHeight-0.5);
+  });
+
+  let dragP=null,dsx=0,dsy=0,dox=0,doy=0;
+  panels.forEach(p=>{
+    p.addEventListener('pointerdown',e=>{
+      dragP=p; p.classList.add('drag'); p.style.zIndex=10;
+      panels.forEach(q=>{if(q!==p)q.style.zIndex=2;});
+      dsx=e.clientX; dsy=e.clientY; dox=p._ox; doy=p._oy;
+      p.setPointerCapture(e.pointerId); e.stopPropagation();
+      hideHint();
+    });
+    p.addEventListener('pointermove',e=>{
+      if(dragP!==p)return;
+      p._ox=dox+(e.clientX-dsx); p._oy=doy+(e.clientY-dsy);
+      applyPanel(p);
+    });
+    const up=()=>{ if(dragP===p){p.classList.remove('drag');dragP=null;} };
+    p.addEventListener('pointerup',up);
+    p.addEventListener('pointercancel',up);
+  });
+
+  function applyPanel(p){
+    const d=parseFloat(p.dataset.depth||'1');
+    // parallax shift scaled by depth (nearer = moves more)
+    const px=-tx*18*d, py=-ty*14*d;
+    p.style.transform='translate('+(p._ox+px)+'px,'+(p._oy+py)+'px)';
+  }
+
+  function paraLoop(){
+    requestAnimationFrame(paraLoop);
+    tx+=(mx-tx)*0.06; ty+=(my-ty)*0.06;
+    panels.forEach(applyPanel);
+  }
+  paraLoop();
+
+  /* ============================================================
+     SPARKLINE + COUNTERS + METERS (first-paint static, then animate)
+     ============================================================ */
+  // sparkline path
+  (function(){
+    const pts=[8,14,10,18,13,22,17,26,20,30,24,34,28,40,33,38,30,44,38,46];
+    const w=280,h=54,n=pts.length, max=Math.max(...pts), min=Math.min(...pts);
+    const X=i=>i/(n-1)*w, Y=v=>h-((v-min)/(max-min||1))*(h-8)-4;
+    let line='M'+X(0)+' '+Y(pts[0]);
+    for(let i=1;i<n;i++){
+      const cx=(X(i-1)+X(i))/2;
+      line+=' C'+cx+' '+Y(pts[i-1])+' '+cx+' '+Y(pts[i])+' '+X(i)+' '+Y(pts[i]);
+    }
+    document.getElementById('sparkLine').setAttribute('d',line);
+    document.getElementById('sparkFill').setAttribute('d',line+' L'+w+' '+h+' L0 '+h+' Z');
+  })();
+
+  // animate meters + counters shortly after paint
+  function animateMeters(){
+    document.getElementById('m1').style.width='84%';
+    document.getElementById('m1v').textContent='84%';
+    document.getElementById('m2').style.width='71%';
+    document.getElementById('m2v').textContent='71%';
+    document.querySelectorAll('.v[data-count]').forEach(el=>{
+      const target=parseFloat(el.dataset.count);
+      const dec=parseInt(el.dataset.dec||'0'); const suf=el.dataset.suf||'';
+      const dur=1400, t0=performance.now();
+      function step(now){
+        const k=Math.min(1,(now-t0)/dur);
+        const e=1-Math.pow(1-k,3);
+        el.textContent=(target*e).toFixed(dec)+suf;
+        if(k<1)requestAnimationFrame(step);
+        else el.textContent=target.toFixed(dec)+suf;
+      }
+      requestAnimationFrame(step);
+    });
+  }
+  // ensure first paint shows scene+glass instantly; animate on next frames
+  requestAnimationFrame(()=>requestAnimationFrame(animateMeters));
+
+  /* hint fade */
+  const hintEl=document.getElementById('hint');
+  function hideHint(){hintEl.style.opacity=0;}
+  setTimeout(hideHint,9000);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>蓮池の蜻蛉</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#1c2a25;}
+  #stage{position:fixed;inset:0;width:100%;height:100%;display:block;}
+  #cap{
+    position:fixed;left:50%;bottom:26px;transform:translateX(-50%);
+    color:rgba(228,236,224,.62);
+    font:11px/1.6 "JetBrains Mono","SFMono-Regular",monospace;
+    letter-spacing:.30em;text-transform:uppercase;
+    pointer-events:none;white-space:nowrap;user-select:none;
+    text-shadow:0 1px 6px rgba(0,0,0,.45);
+  }
+  #cap small{opacity:.62;letter-spacing:.22em;text-transform:none;
+    font-family:"Zen Kaku Gothic New",sans-serif;font-size:11px;}
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="cap">lotus &nbsp;·&nbsp; <small>静かな水面に蜻蛉が舞う</small></div>
+<script>
+'use strict';
+(()=>{
+const TAU=Math.PI*2;
+const cv=document.getElementById('stage');
+const ctx=cv.getContext('2d');
+
+/* ----- offscreen depth layers (painterly blur by depth) ----- */
+const back =document.createElement('canvas'), bctx=back.getContext('2d');   // pond bottom + deep haze
+const mid  =document.createElement('canvas'), mctx=mid.getContext('2d');    // mid lotus pads / blossoms
+const grain=document.createElement('canvas'), gctx=grain.getContext('2d');  // static film grain tile
+
+let W=0,H=0,DPR=1;
+
+/* deterministic-ish seeded rng so a refresh keeps a coherent composition */
+let seed=0.6789;
+function rnd(){ seed=(seed*9301+49297)%233280; return seed/233280; }
+function rrange(a,b){ return a+(b-a)*rnd(); }
+
+/* ----------------------------------------------------------------
+   SCENE OBJECTS
+-----------------------------------------------------------------*/
+let pads=[];        // lotus leaf discs (floating, slow drift + spin)
+let blossoms=[];    // lotus flowers
+let bubbles=[];     // translucent floating discs (frangollo bubble feel)
+let motes=[];       // tiny drifting specks / pollen
+let flies=[];       // dragonflies
+
+function buildScene(){
+  pads=[]; blossoms=[]; bubbles=[]; motes=[]; flies=[];
+
+  // muted lotus-water palette (deep mossy greens, dusty teal)
+  const padCols=[
+    ['#3f5a3a','#2f4630','#243726'],
+    ['#48613f','#33492f','#243a28'],
+    ['#3a5740','#2c4533','#1f3527'],
+    ['#516a44','#3a5132','#283a24']
+  ];
+
+  // LOTUS PADS across 3 depth bands (0=far/blurred, 2=near/sharp)
+  const padN=11;
+  for(let i=0;i<padN;i++){
+    const band=i<4?0:(i<8?1:2);
+    const baseR=[ rrange(60,95), rrange(95,150), rrange(150,235) ][band];
+    const c=padCols[(rnd()*padCols.length)|0];
+    pads.push({
+      x:rrange(-.05,1.05), y:rrange(-.05,1.05),
+      r:baseR, band,
+      rot:rrange(0,TAU),
+      spin:rrange(-0.0011,0.0011),
+      driftA:rrange(0,TAU),
+      driftR:rrange(0.0007,0.0022),
+      driftPh:rrange(0,TAU),
+      notch:rrange(0,TAU),               // direction of the leaf's gap
+      squash:rrange(0.86,1.0),           // slight ellipse = perspective
+      col:c,
+      glint:rrange(0.04,0.12)
+    });
+  }
+
+  // LOTUS BLOSSOMS — fewer, focal, mostly mid/near
+  const bloomN=4;
+  const bloomCols=[
+    ['#f3d9e0','#e7b8c8','#d49ab3'],   // pale pink
+    ['#fbeef0','#f4d6dd','#e6b9c6'],   // near-white pink
+    ['#f0d3da','#dba8bd','#c98ca8']    // dusty rose
+  ];
+  for(let i=0;i<bloomN;i++){
+    const band=i===0?2:(i<3?1:0);
+    const baseR=[ rrange(26,38), rrange(38,55), rrange(54,74) ][band];
+    blossoms.push({
+      x:rrange(0.1,0.9), y:rrange(0.12,0.9),
+      r:baseR, band,
+      rot:rrange(0,TAU),
+      petals:8,
+      col:bloomCols[(rnd()*bloomCols.length)|0],
+      driftA:rrange(0,TAU), driftR:rrange(0.0006,0.0016), driftPh:rrange(0,TAU),
+      breathe:rrange(0,TAU)
+    });
+  }
+
+  // BUBBLE DISCS (translucent, frangollo style) — across all bands
+  const bubN=15;
+  for(let i=0;i<bubN;i++){
+    const band=(rnd()*3)|0;
+    const baseR=[ rrange(26,55), rrange(45,90), rrange(70,150) ][band];
+    bubbles.push({
+      x:rrange(0,1), y:rrange(0,1),
+      r:baseR, band,
+      a:rrange(0,TAU), spd:rrange(0.0006,0.0017),
+      ph:rrange(0,TAU), wob:rrange(0.0004,0.0011)
+    });
+  }
+
+  // floating motes / pollen
+  for(let i=0;i<70;i++){
+    const band=(rnd()*3)|0;
+    motes.push({
+      x:rnd(), y:rnd(), band,
+      r:[rrange(.6,1.3),rrange(1.0,2.0),rrange(1.6,3.0)][band],
+      a:rrange(0,TAU), spd:rrange(0.0003,0.0012), ph:rrange(0,TAU)
+    });
+  }
+
+  // DRAGONFLIES — the focal swimmers-of-the-air
+  const flyDefs=[
+    {band:2, len:78, body:'#5f8f6f', wing:[0.40,0.52]},   // near, green-bronze
+    {band:2, len:64, body:'#7a93b8', wing:[0.34,0.46]},   // near, steel blue
+    {band:1, len:54, body:'#9a7d5a', wing:[0.30,0.40]},   // mid, amber
+    {band:1, len:48, body:'#6b8a86', wing:[0.30,0.40]},   // mid, teal
+    {band:0, len:40, body:'#7e8c74', wing:[0.26,0.36]}    // far, hazy
+  ];
+  for(const d of flyDefs){
+    flies.push({
+      band:d.band, len:d.len, body:d.body, wing:d.wing,
+      x:rrange(0.15,0.85), y:rrange(0.15,0.85),
+      a:rrange(0,TAU),
+      tx:rrange(0.2,0.8), ty:rrange(0.2,0.8),   // hover target
+      v:0, vMax:rrange(34,58),
+      state:'cruise', stateT:rrange(0.6,2.4),
+      wingPh:rrange(0,TAU), wingSpd:rrange(26,40),
+      bob:rrange(0,TAU),
+      hoverPh:rrange(0,TAU)
+    });
+  }
+}
+
+/* ----------------------------------------------------------------
+   STATIC LAYERS — pond bottom + film grain
+-----------------------------------------------------------------*/
+function paintPondBottom(){
+  const w=back.width, h=back.height, c=bctx;
+  c.setTransform(1,0,0,1,0,0);
+  c.clearRect(0,0,w,h);
+
+  // base radial: murky warm-green water, lighter where light pools
+  const g=c.createRadialGradient(w*0.42,h*0.38,0, w*0.5,h*0.52, Math.max(w,h)*0.85);
+  g.addColorStop(0,  '#46584a');
+  g.addColorStop(0.45,'#37473b');
+  g.addColorStop(0.78,'#293a30');
+  g.addColorStop(1,  '#1b2922');
+  c.fillStyle=g; c.fillRect(0,0,w,h);
+
+  // soft mottled depth blooms (algae / silt clouds)
+  let s2=12.3;
+  const r2=()=>{ s2=(s2*9301+49297)%233280; return s2/233280; };
+  for(let i=0;i<22;i++){
+    const x=r2()*w, y=r2()*h, r=Math.max(w,h)*(0.10+r2()*0.30);
+    const ag=c.createRadialGradient(x,y,0,x,y,r);
+    const dark=r2()<0.5;
+    ag.addColorStop(0, dark?'rgba(20,32,24,0.22)':'rgba(96,112,86,0.13)');
+    ag.addColorStop(1, dark?'rgba(20,32,24,0)':'rgba(96,112,86,0)');
+    c.fillStyle=ag; c.beginPath(); c.arc(x,y,r,0,TAU); c.fill();
+  }
+  // faint warm light shafts from upper-left (sun through canopy)
+  c.save();
+  c.globalCompositeOperation='lighter';
+  for(let i=0;i<4;i++){
+    const x=w*(0.1+r2()*0.5), y=h*(0.05+r2()*0.3), r=Math.max(w,h)*(0.25+r2()*0.25);
+    const lg=c.createRadialGradient(x,y,0,x,y,r);
+    lg.addColorStop(0,'rgba(214,206,150,0.06)');
+    lg.addColorStop(1,'rgba(214,206,150,0)');
+    c.fillStyle=lg; c.beginPath(); c.arc(x,y,r,0,TAU); c.fill();
+  }
+  c.restore();
+}
+
+function buildGrain(){
+  const s=160; grain.width=s; grain.height=s;
+  const img=gctx.createImageData(s,s);
+  const d=img.data;
+  for(let i=0;i<d.length;i+=4){
+    const v=200+Math.random()*55;
+    d[i]=d[i+1]=d[i+2]=v;
+    d[i+3]=Math.random()*16;   // very subtle
+  }
+  gctx.putImageData(img,0,0);
+}
+
+/* ----------------------------------------------------------------
+   DRAW PRIMITIVES
+-----------------------------------------------------------------*/
+function drawPad(c,p,t){
+  const drift=p.driftR* (Math.sin(t*0.18+p.driftPh)) ;
+  const px=(p.x+Math.cos(p.driftA)*drift)*W;
+  const py=(p.y+Math.sin(p.driftA)*drift)*H;
+  const rot=p.rot+p.spin*t*60;
+  const R=p.r;
+  c.save();
+  c.translate(px,py);
+  c.rotate(rot);
+  c.scale(1,p.squash);
+
+  // shadow / depth halo under pad
+  const sh=c.createRadialGradient(R*0.08,R*0.10,R*0.2, 0,0,R*1.18);
+  sh.addColorStop(0,'rgba(8,16,12,0.28)');
+  sh.addColorStop(1,'rgba(8,16,12,0)');
+  c.fillStyle=sh; c.beginPath(); c.arc(R*0.06,R*0.08,R*1.12,0,TAU); c.fill();
+
+  // leaf body — disc with a single V notch (lotus pad)
+  const lg=c.createRadialGradient(-R*0.28,-R*0.30,R*0.1, 0,0,R*1.05);
+  lg.addColorStop(0,p.col[0]);
+  lg.addColorStop(0.6,p.col[1]);
+  lg.addColorStop(1,p.col[2]);
+  c.fillStyle=lg;
+  c.beginPath();
+  const gap=0.34; // radians of the notch
+  c.arc(0,0,R,p.notch+gap*0.5,p.notch-gap*0.5+TAU);
+  c.lineTo(0,0);
+  c.closePath();
+  c.fill();
+
+  // rim darkening
+  c.lineWidth=R*0.04;
+  c.strokeStyle='rgba(18,30,20,0.30)';
+  c.beginPath(); c.arc(0,0,R*0.985,p.notch+gap*0.5,p.notch-gap*0.5+TAU); c.stroke();
+
+  // radial veins
+  c.strokeStyle='rgba(20,34,22,0.20)';
+  c.lineWidth=Math.max(0.6,R*0.012);
+  for(let i=0;i<11;i++){
+    const ang=p.notch+0.4+i*((TAU-gap-0.8)/10);
+    c.beginPath(); c.moveTo(0,0);
+    c.lineTo(Math.cos(ang)*R*0.94, Math.sin(ang)*R*0.94);
+    c.stroke();
+  }
+  // center hub
+  const hub=c.createRadialGradient(0,0,0,0,0,R*0.22);
+  hub.addColorStop(0,'rgba(30,46,30,0.55)');
+  hub.addColorStop(1,'rgba(30,46,30,0)');
+  c.fillStyle=hub; c.beginPath(); c.arc(0,0,R*0.22,0,TAU); c.fill();
+
+  // wet specular glint upper-left
+  c.globalCompositeOperation='lighter';
+  const gl=c.createRadialGradient(-R*0.32,-R*0.34,0,-R*0.30,-R*0.32,R*0.7);
+  gl.addColorStop(0,'rgba(220,228,180,'+p.glint+')');
+  gl.addColorStop(1,'rgba(220,228,180,0)');
+  c.fillStyle=gl; c.beginPath(); c.arc(-R*0.28,-R*0.30,R*0.7,0,TAU); c.fill();
+
+  c.restore();
+}
+
+function drawBlossom(c,b,t){
+  const drift=b.driftR*Math.sin(t*0.16+b.driftPh);
+  const px=(b.x+Math.cos(b.driftA)*drift)*W;
+  const py=(b.y+Math.sin(b.driftA)*drift)*H;
+  const breathe=1+0.03*Math.sin(t*0.5+b.breathe);
+  const R=b.r*breathe;
+  c.save();
+  c.translate(px,py);
+  c.rotate(b.rot);
+
+  // soft shadow on water
+  const sh=c.createRadialGradient(0,0,R*0.2,0,0,R*1.5);
+  sh.addColorStop(0,'rgba(10,18,14,0.22)'); sh.addColorStop(1,'rgba(10,18,14,0)');
+  c.fillStyle=sh; c.beginPath(); c.arc(R*0.1,R*0.12,R*1.5,0,TAU); c.fill();
+
+  // outer petals
+  function ring(count,len,wid,off,inner,outer,rotOff){
+    for(let i=0;i<count;i++){
+      const a=rotOff+i*(TAU/count);
+      c.save(); c.rotate(a);
+      const pg=c.createLinearGradient(0,0,0,-len);
+      pg.addColorStop(0,inner); pg.addColorStop(1,outer);
+      c.fillStyle=pg;
+      c.beginPath();
+      c.moveTo(0,off);
+      c.quadraticCurveTo(wid,-len*0.5, 0,-len);
+      c.quadraticCurveTo(-wid,-len*0.5, 0,off);
+      c.closePath(); c.fill();
+      c.restore();
+    }
+  }
+  ring(b.petals, R*1.0, R*0.34, R*0.05, b.col[1], b.col[2], 0);
+  ring(b.petals, R*0.78, R*0.30, R*0.04, b.col[0], b.col[1], TAU/(b.petals*2));
+  ring(Math.max(4,b.petals-3), R*0.5, R*0.24, R*0.03, '#fff7f3', b.col[0], 0);
+
+  // golden center
+  const cg=c.createRadialGradient(0,0,0,0,0,R*0.3);
+  cg.addColorStop(0,'rgba(244,222,150,0.95)');
+  cg.addColorStop(0.7,'rgba(206,176,98,0.85)');
+  cg.addColorStop(1,'rgba(180,150,80,0)');
+  c.fillStyle=cg; c.beginPath(); c.arc(0,0,R*0.3,0,TAU); c.fill();
+  // stamens dots
+  c.fillStyle='rgba(150,120,60,0.7)';
+  for(let i=0;i<10;i++){
+    const a=i*(TAU/10)+0.2, rr=R*0.16;
+    c.beginPath(); c.arc(Math.cos(a)*rr,Math.sin(a)*rr,R*0.022,0,TAU); c.fill();
+  }
+  c.restore();
+}
+
+function drawBubble(c,b,t){
+  const px=(b.x+Math.cos(b.a)*0.0)*W + Math.sin(t*0.1+b.ph)*W*b.wob*40;
+  const py=(b.y)*H + Math.cos(t*0.08+b.ph)*H*b.wob*40 - (t*b.spd*40 % 1.4 - 0.7)*0; // gentle wobble
+  const R=b.r;
+  c.save();
+  c.translate(px,py);
+  // translucent disc
+  const g=c.createRadialGradient(-R*0.3,-R*0.3,R*0.05, 0,0,R);
+  g.addColorStop(0,'rgba(225,235,222,0.10)');
+  g.addColorStop(0.7,'rgba(180,200,185,0.05)');
+  g.addColorStop(0.92,'rgba(210,225,210,0.10)');
+  g.addColorStop(1,'rgba(210,225,210,0)');
+  c.fillStyle=g; c.beginPath(); c.arc(0,0,R,0,TAU); c.fill();
+  // rim highlight
+  c.globalCompositeOperation='lighter';
+  c.lineWidth=Math.max(0.8,R*0.02);
+  c.strokeStyle='rgba(230,240,228,0.10)';
+  c.beginPath(); c.arc(0,0,R*0.95,0,TAU); c.stroke();
+  // little catch-light
+  const hl=c.createRadialGradient(-R*0.34,-R*0.34,0,-R*0.34,-R*0.34,R*0.4);
+  hl.addColorStop(0,'rgba(255,255,255,0.18)'); hl.addColorStop(1,'rgba(255,255,255,0)');
+  c.fillStyle=hl; c.beginPath(); c.arc(-R*0.34,-R*0.34,R*0.4,0,TAU); c.fill();
+  c.restore();
+}
+
+function drawDragonfly(c,f,t){
+  const L=f.len;
+  c.save();
+  c.translate(f.x*0+f.px, f.py);
+  c.rotate(f.a);
+
+  // faint shadow cast slightly offset (sense of hovering above water)
+  c.save();
+  c.translate(L*0.10, L*0.12);
+  c.globalAlpha=0.16;
+  c.fillStyle='#0a120e';
+  c.beginPath(); c.ellipse(-L*0.1,0,L*0.5,L*0.085,0,0,TAU); c.fill();
+  c.restore();
+
+  // WINGS — two pairs, translucent, fast shimmer
+  const beat=Math.sin(f.wingPh);
+  const spread=(f.state==='hover')?0.9:0.6;        // wings flare more when hovering
+  const wl=L*0.62, ww=L*0.18;
+  function wing(side,frontFactor,phaseOff){
+    const flap=Math.sin(f.wingPh+phaseOff)*0.5*spread;
+    c.save();
+    c.rotate(side*(0.5+flap));
+    // perspective squash on the wing's vertical to fake the beat
+    c.scale(1, side<0?1:1);
+    const wg=c.createLinearGradient(0,0, wl,0);
+    wg.addColorStop(0,'rgba(230,240,250,0.34)');
+    wg.addColorStop(0.5,'rgba(210,228,236,0.16)');
+    wg.addColorStop(1,'rgba(200,220,230,0.05)');
+    c.fillStyle=wg;
+    c.beginPath();
+    c.moveTo(0,0);
+    c.quadraticCurveTo(wl*0.5,-ww*frontFactor, wl, -ww*0.25*frontFactor);
+    c.quadraticCurveTo(wl*0.6, ww*0.55*frontFactor, 0,0);
+    c.closePath(); c.fill();
+    // venation hint
+    c.strokeStyle='rgba(160,180,190,0.14)'; c.lineWidth=Math.max(0.5,L*0.006);
+    c.beginPath(); c.moveTo(wl*0.04,0); c.quadraticCurveTo(wl*0.5,-ww*frontFactor*0.4, wl*0.92,-ww*0.18*frontFactor); c.stroke();
+    c.restore();
+  }
+  // mount wings around thorax
+  c.save(); c.translate(-L*0.02,0);
+  wing(-1, 1.0, 0);          // upper-left forewing
+  wing( 1, 1.0, Math.PI);    // upper-right forewing
+  c.restore();
+  c.save(); c.translate(-L*0.14,0);
+  wing(-1, 0.85, 0.5);       // hindwings, slightly out of phase
+  wing( 1, 0.85, Math.PI+0.5);
+  c.restore();
+
+  // ABDOMEN (long slender tail) pointing -x (behind)
+  const segN=7;
+  for(let i=0;i<segN;i++){
+    const s=i/segN;
+    const x=-L*0.10 - s*L*0.62;
+    const w=L*0.05*(1-s*0.55);
+    const seg=c.createLinearGradient(x,-w,x,w);
+    const lum=1-s*0.25;
+    seg.addColorStop(0, shade(f.body, 1.25*lum));
+    seg.addColorStop(0.5, shade(f.body, 1.0*lum));
+    seg.addColorStop(1, shade(f.body, 0.6*lum));
+    c.fillStyle=seg;
+    c.beginPath();
+    c.ellipse(x,0, L*0.075*(1-s*0.45), w, 0,0,TAU);
+    c.fill();
+    // segment band
+    c.fillStyle='rgba(15,25,18,0.35)';
+    c.beginPath(); c.ellipse(x+L*0.05*(1-s*0.45),0, L*0.012, w*0.92,0,0,TAU); c.fill();
+  }
+  // THORAX
+  const th=c.createRadialGradient(-L*0.02,-L*0.03,0,0,0,L*0.16);
+  th.addColorStop(0, shade(f.body,1.4));
+  th.addColorStop(1, shade(f.body,0.75));
+  c.fillStyle=th;
+  c.beginPath(); c.ellipse(0,0,L*0.14,L*0.10,0,0,TAU); c.fill();
+
+  // HEAD + big compound eyes
+  c.fillStyle=shade(f.body,0.9);
+  c.beginPath(); c.ellipse(L*0.14,0,L*0.06,L*0.07,0,0,TAU); c.fill();
+  c.fillStyle='#1c2620';
+  c.beginPath(); c.arc(L*0.17,-L*0.045,L*0.045,0,TAU); c.fill();
+  c.beginPath(); c.arc(L*0.17, L*0.045,L*0.045,0,TAU); c.fill();
+  c.fillStyle='rgba(255,255,255,0.35)';
+  c.beginPath(); c.arc(L*0.155,-L*0.055,L*0.014,0,TAU); c.fill();
+  c.beginPath(); c.arc(L*0.155, L*0.035,L*0.014,0,TAU); c.fill();
+
+  c.restore();
+}
+
+/* tint helper: multiply hex color brightness */
+function shade(hex,m){
+  const n=parseInt(hex.slice(1),16);
+  let r=(n>>16)&255, g=(n>>8)&255, b=n&255;
+  r=Math.min(255,r*m)|0; g=Math.min(255,g*m)|0; b=Math.min(255,b*m)|0;
+  return 'rgb('+r+','+g+','+b+')';
+}
+
+/* ----------------------------------------------------------------
+   UPDATE
+-----------------------------------------------------------------*/
+function updateFly(f,dt,t){
+  f.wingPh += f.wingSpd*dt;
+  f.stateT -= dt;
+  if(f.stateT<=0){
+    if(f.state==='cruise'){
+      f.state='hover';
+      f.stateT=rrange(0.8,2.6);
+      f.tx=Math.max(0.12,Math.min(0.88,f.x+rrange(-0.05,0.05)));
+      f.ty=Math.max(0.12,Math.min(0.88,f.y+rrange(-0.05,0.05)));
+    }else{
+      f.state='cruise';
+      f.stateT=rrange(1.0,3.0);
+      // pick a new destination, dragonflies dart in straight lines
+      f.tx=rrange(0.14,0.86); f.ty=rrange(0.14,0.86);
+    }
+  }
+  const dx=f.tx-f.x, dy=f.ty-f.y;
+  const dist=Math.hypot(dx,dy)+1e-6;
+  let targetA=Math.atan2(dy,dx);
+
+  if(f.state==='hover'){
+    // hover: tiny figure-8 jitter, slow turning, near-zero net travel
+    f.hoverPh+=dt*2.2;
+    f.v += (6 - f.v)*Math.min(1,dt*2);
+    const jx=Math.cos(f.hoverPh)*0.0009;
+    const jy=Math.sin(f.hoverPh*2)*0.0006;
+    f.x+=jx; f.y+=jy;
+    // gentle aimless rotation
+    f.a += Math.sin(t*0.6+f.bob)*dt*0.7;
+  }else{
+    // cruise: accelerate toward target, sharp aim
+    f.v += (f.vMax - f.v)*Math.min(1,dt*1.6);
+    let da=targetA-f.a;
+    while(da> Math.PI)da-=TAU; while(da<-Math.PI)da+=TAU;
+    f.a += Math.max(-dt*4.5,Math.min(dt*4.5,da));
+    const step=f.v*dt/Math.max(W,H);
+    f.x+=Math.cos(f.a)*step; f.y+=Math.sin(f.a)*step;
+    if(dist<0.03){ f.state='hover'; f.stateT=rrange(0.8,2.4); }
+  }
+  // soft boundaries
+  if(f.x<0.08){f.tx=rrange(0.4,0.8);} if(f.x>0.92){f.tx=rrange(0.2,0.6);}
+  if(f.y<0.08){f.ty=rrange(0.4,0.8);} if(f.y>0.92){f.ty=rrange(0.2,0.6);}
+  f.x=Math.max(0.04,Math.min(0.96,f.x));
+  f.y=Math.max(0.04,Math.min(0.96,f.y));
+
+  // bobbing height illusion
+  f.bob+=dt;
+  f.px=f.x*W;
+  f.py=f.y*H + Math.sin(t*1.4+f.bob)*( f.state==='hover'?2.2:1.2 );
+}
+
+/* ----------------------------------------------------------------
+   COMPOSITE FRAME
+-----------------------------------------------------------------*/
+function drawBandSet(c,band,t){
+  for(const p of pads)      if(p.band===band) drawPad(c,p,t);
+  for(const b of bubbles)   if(b.band===band) drawBubble(c,b,t);
+  for(const b of blossoms)  if(b.band===band) drawBlossom(c,b,t);
+  for(const m of motes)     if(m.band===band){
+    const mx=(m.x+Math.cos(m.a+t*m.spd*30)*0.01)*W;
+    const my=(m.y+Math.sin(m.a*1.3+t*m.spd*22)*0.01)*H;
+    c.globalAlpha=0.35;
+    c.fillStyle='rgba(226,232,206,0.7)';
+    c.beginPath(); c.arc(mx,my,m.r,0,TAU); c.fill();
+    c.globalAlpha=1;
+  }
+  for(const f of flies)     if(f.band===band) drawDragonfly(c,f,t);
+}
+
+function frame(ts){
+  requestAnimationFrame(frame);
+  const t=ts/1000;
+  const dt=Math.min(0.05,t-(frame.last||t)); frame.last=t;
+
+  for(const f of flies) updateFly(f,dt,t);
+
+  // base background (drawn directly, sharpest at near, hazed by overlay)
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.clearRect(0,0,W,H);
+  ctx.drawImage(back,0,0,W,H);
+
+  // ---- FAR band: heavy blur (deep depth) ----
+  ctx.save();
+  ctx.filter='blur(7px)';
+  drawBandSet(ctx,0,t);
+  ctx.restore();
+
+  // teal water film between far & mid for atmospheric depth
+  ctx.save();
+  ctx.globalCompositeOperation='source-over';
+  ctx.fillStyle='rgba(38,62,52,0.20)';
+  ctx.fillRect(0,0,W,H);
+  ctx.restore();
+
+  // ---- MID band: soft blur ----
+  ctx.save();
+  ctx.filter='blur(2.4px)';
+  drawBandSet(ctx,1,t);
+  ctx.restore();
+
+  // ---- NEAR band: crisp ----
+  ctx.save();
+  ctx.filter='none';
+  drawBandSet(ctx,2,t);
+  ctx.restore();
+
+  // slow surface shimmer: drifting soft light bands
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  for(let i=0;i<3;i++){
+    const yy=( (t*6 + i*H*0.4) % (H*1.3) ) - H*0.15;
+    const lg=ctx.createLinearGradient(0,yy-60,0,yy+60);
+    lg.addColorStop(0,'rgba(190,200,150,0)');
+    lg.addColorStop(0.5,'rgba(190,200,150,0.025)');
+    lg.addColorStop(1,'rgba(190,200,150,0)');
+    ctx.fillStyle=lg; ctx.fillRect(0,yy-60,W,120);
+  }
+  ctx.restore();
+
+  // vignette
+  const vg=ctx.createRadialGradient(W*0.5,H*0.5,Math.min(W,H)*0.25, W*0.5,H*0.52,Math.max(W,H)*0.72);
+  vg.addColorStop(0,'rgba(0,0,0,0)');
+  vg.addColorStop(1,'rgba(6,12,9,0.46)');
+  ctx.fillStyle=vg; ctx.fillRect(0,0,W,H);
+
+  // film grain (tiled)
+  ctx.save();
+  ctx.globalAlpha=0.5;
+  const gs=160;
+  for(let y=0;y<H;y+=gs) for(let x=0;x<W;x+=gs) ctx.drawImage(grain,x,y);
+  ctx.restore();
+}
+
+/* ----------------------------------------------------------------
+   LAYOUT
+-----------------------------------------------------------------*/
+function resize(){
+  W=window.innerWidth; H=window.innerHeight;
+  DPR=Math.min(window.devicePixelRatio||1,2);
+  cv.width=Math.round(W*DPR); cv.height=Math.round(H*DPR);
+  cv.style.width=W+'px'; cv.style.height=H+'px';
+  // pond bottom rendered once at device res
+  back.width=Math.round(W*DPR); back.height=Math.round(H*DPR);
+  paintPondBottom();
+  // re-fix fly pixel positions
+  for(const f of flies){ f.px=f.x*W; f.py=f.y*H; }
+}
+window.addEventListener('resize',()=>{ seed=0.6789; resize(); });
+
+buildGrain();
+buildScene();
+resize();
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

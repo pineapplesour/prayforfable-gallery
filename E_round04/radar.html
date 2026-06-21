@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>STORMWATCH 486.EXE — DITHER WEATHER RADAR</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<style>
+  :root{
+    /* limited warm 486 palette */
+    --c-maroon:#2a1014;
+    --c-deepmaroon:#3d161b;
+    --c-rust:#7a2d20;
+    --c-burnt:#a8431f;
+    --c-salmon:#d96a3a;
+    --c-peach:#f0a35e;
+    --c-cream:#f6d6a6;
+    --c-teal:#1f5b57;
+    --c-green:#2f7d5e;
+    --c-ink:#160a0c;
+    --c-line:#5a2520;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:
+      radial-gradient(120% 80% at 50% -10%, #4a1c1e 0%, #2a1014 55%, #160a0c 100%);
+    color:var(--c-cream);
+    font-family:'VT323',monospace;
+    overflow:hidden;
+    -webkit-font-smoothing:none;
+    image-rendering:pixelated;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    height:100vh;
+  }
+
+  /* ===== app window chrome ===== */
+  .crt{
+    position:relative;
+    width:min(1180px,98vw);
+    height:min(720px,96vh);
+    background:#1c0d0f;
+    border:2px solid var(--c-line);
+    box-shadow:0 0 0 1px #0a0405, 0 24px 70px -10px #000, inset 0 0 0 1px #3a1a18;
+    display:flex;
+    flex-direction:column;
+    overflow:hidden;
+  }
+  .titlebar{
+    flex:0 0 auto;
+    height:26px;
+    background:linear-gradient(#5a2520,#3d161b);
+    border-bottom:2px solid #1c0d0f;
+    display:flex;
+    align-items:center;
+    gap:8px;
+    padding:0 8px;
+    font-family:'VT323',monospace;
+    font-size:16px;
+    letter-spacing:1px;
+    color:var(--c-cream);
+    user-select:none;
+  }
+  .dots{display:flex;gap:5px;align-items:center}
+  .dot{width:9px;height:9px;border:1px solid #1c0d0f}
+  .dot.r{background:#d96a3a}.dot.y{background:#f0a35e}.dot.g{background:#2f7d5e}
+  .title-id{font-family:'Press Start 2P';font-size:9px;color:#f0a35e;margin-left:2px}
+  .titlebar .menu{margin-left:14px;display:flex;gap:14px;color:#c9885f}
+  .titlebar .menu span{cursor:default}
+  .titlebar .clk{margin-left:auto;color:#e0a06a}
+
+  .menubar{
+    flex:0 0 auto;height:20px;background:#241012;border-bottom:1px solid #1c0d0f;
+    display:flex;align-items:center;gap:18px;padding:0 12px;
+    font-size:15px;color:#a8694a;letter-spacing:1px;
+  }
+  .menubar b{color:#f0a35e;font-weight:normal}
+
+  /* ===== body layout ===== */
+  .work{flex:1 1 auto;display:flex;min-height:0}
+  .screen-wrap{
+    flex:1 1 auto;position:relative;min-width:0;
+    border-right:2px solid #1c0d0f;background:#160a0c;
+    overflow:hidden;
+  }
+  #scope{
+    display:block;width:100%;height:100%;
+    image-rendering:pixelated;image-rendering:crisp-edges;
+  }
+  /* scanlines + crt vignette over canvas */
+  .scan{
+    position:absolute;inset:0;pointer-events:none;z-index:6;
+    background:repeating-linear-gradient(
+      to bottom, rgba(0,0,0,0) 0px, rgba(0,0,0,0) 2px,
+      rgba(0,0,0,.22) 3px, rgba(0,0,0,.22) 4px);
+    mix-blend-mode:multiply;
+  }
+  .vig{
+    position:absolute;inset:0;pointer-events:none;z-index:7;
+    box-shadow:inset 0 0 120px 24px rgba(20,4,6,.85);
+  }
+
+  /* HUD overlays on canvas */
+  .hud{position:absolute;inset:0;pointer-events:none;z-index:8;
+       font-family:'Press Start 2P';color:var(--c-cream);}
+  .hud .tl{position:absolute;top:10px;left:12px;font-size:10px;line-height:1.7;
+           text-shadow:2px 2px 0 #160a0c;}
+  .hud .tl .lab{color:#e8975a;font-size:8px}
+  .hud .tl .big{font-size:18px;color:#f6d6a6}
+  .hud .tr{position:absolute;top:10px;right:12px;text-align:right;font-size:10px;line-height:1.7;
+           text-shadow:2px 2px 0 #160a0c;}
+  .hud .tr .lab{color:#5fae9a;font-size:8px}
+  .hud .tr .big{font-size:18px;color:#f6d6a6}
+  .hud .bl{position:absolute;left:12px;bottom:12px;font-size:8px;line-height:1.9;
+           color:#caa07f;text-shadow:1px 1px 0 #160a0c}
+  .hud .bl .k{color:#5fae9a}
+  .hud .br{position:absolute;right:12px;bottom:12px;text-align:right;font-size:8px;line-height:1.9;
+           color:#caa07f;text-shadow:1px 1px 0 #160a0c}
+  .hud .alert{
+    position:absolute;left:50%;top:14px;transform:translateX(-50%);
+    font-size:9px;color:#160a0c;background:#f0a35e;padding:5px 10px;border:1px solid #160a0c;
+    letter-spacing:1px;box-shadow:2px 2px 0 #160a0c;display:none}
+  .hud .alert.on{display:block;animation:bl 1s steps(2) infinite}
+  @keyframes bl{50%{opacity:.25}}
+
+  /* ===== right control panel ===== */
+  .panel{
+    flex:0 0 252px;background:#1f0d0f;display:flex;flex-direction:column;
+    font-family:'VT323';color:#caa07f;min-height:0;overflow:hidden;
+  }
+  @media(max-width:900px){.panel{flex-basis:212px}}
+  /* phones: drop the side panel, let the dithered scope fill the screen */
+  @media(max-width:640px){
+    .panel{display:none}
+    .menubar{gap:10px;font-size:13px;padding:0 8px}
+    .menubar span:nth-child(3),.menubar span:nth-child(4){display:none}
+    .titlebar .menu{display:none}
+    .crt{height:96vh}
+    /* on phones the side panel is gone, so keep only the essential HUD */
+    .hud .bl,.hud .br{display:none}
+    .hud .alert{font-size:8px;padding:4px 8px;white-space:nowrap}
+  }
+  .pblock{padding:10px 12px;border-bottom:1px solid #2e1416}
+  .ph{font-family:'Press Start 2P';font-size:8px;color:#f0a35e;letter-spacing:1px;
+      margin-bottom:8px;display:flex;justify-content:space-between;align-items:center}
+  .ph small{font-family:'VT323';font-size:13px;color:#7a4a3a;letter-spacing:0}
+  .row{display:flex;justify-content:space-between;font-size:16px;line-height:1.55;color:#d8a578}
+  .row span:first-child{color:#8a5a48}
+  .row .val{color:#f0a35e}
+  .row .valg{color:#5fae9a}
+
+  /* track list */
+  .tracks{font-size:15px;line-height:1.5;color:#caa07f}
+  .trk{display:flex;justify-content:space-between;gap:6px;border-bottom:1px dotted #2e1416;padding:2px 0}
+  .trk .id{color:#f0a35e}
+  .trk .sev1{color:#5fae9a}.trk .sev2{color:#f0a35e}.trk .sev3{color:#d96a3a}
+  .trk.lock{background:#2a1014;outline:1px solid #5a2520}
+
+  /* palette swatches */
+  .palette{display:flex;flex-wrap:wrap;gap:0;border:1px solid #160a0c;width:max-content}
+  .palette i{width:18px;height:16px;display:block;border-right:1px solid #160a0c;border-bottom:1px solid #160a0c}
+
+  /* meter bars */
+  .meter{height:10px;background:#160a0c;border:1px solid #3d161b;margin:5px 0 8px;position:relative;overflow:hidden}
+  .meter b{display:block;height:100%;background:repeating-linear-gradient(90deg,#d96a3a 0 4px,#a8431f 4px 6px)}
+  .meterg b{background:repeating-linear-gradient(90deg,#2f7d5e 0 4px,#1f5b57 4px 6px)}
+
+  .controls-help{font-size:15px;line-height:1.5;color:#a87c64}
+  .controls-help kbd{
+    font-family:'Press Start 2P';font-size:8px;background:#3d161b;color:#f6d6a6;
+    border:1px solid #160a0c;padding:3px 5px;display:inline-block;margin:2px 1px;box-shadow:1px 1px 0 #160a0c}
+
+  .btnrow{display:flex;gap:6px;margin-top:8px}
+  .btn{flex:1;font-family:'Press Start 2P';font-size:8px;text-align:center;
+       background:linear-gradient(#7a2d20,#3d161b);color:#f6d6a6;border:1px solid #160a0c;
+       padding:8px 0;cursor:pointer;box-shadow:inset 0 0 0 1px #5a2520, 2px 2px 0 #160a0c;
+       letter-spacing:1px;user-select:none}
+  .btn:active{transform:translate(2px,2px);box-shadow:inset 0 0 0 1px #5a2520}
+  .btn.alt{background:linear-gradient(#2f7d5e,#1f5b57)}
+  .btn.on{background:linear-gradient(#f0a35e,#a8431f);color:#160a0c}
+
+  /* footer status bar */
+  .statusbar{
+    flex:0 0 auto;height:24px;background:linear-gradient(#3d161b,#241012);
+    border-top:2px solid #1c0d0f;display:flex;align-items:center;gap:0;
+    font-family:'VT323';font-size:15px;color:#b07a5a;letter-spacing:1px;overflow:hidden;
+  }
+  .statusbar .cell{padding:0 12px;border-right:1px solid #160a0c;white-space:nowrap;height:100%;display:flex;align-items:center}
+  .statusbar .marq{flex:1;overflow:hidden;white-space:nowrap;border-right:none}
+  .statusbar .marq span{display:inline-block;padding-left:100%;animation:mq 24s linear infinite;color:#caa07f}
+  @keyframes mq{from{transform:translateX(0)}to{transform:translateX(-100%)}}
+  .statusbar .ok{color:#5fae9a}
+</style>
+</head>
+<body>
+<div class="crt" id="crt">
+  <!-- title bar -->
+  <div class="titlebar">
+    <div class="dots"><i class="dot r"></i><i class="dot y"></i><i class="dot g"></i></div>
+    <span class="title-id">STORMWATCH 486.EXE</span>
+    <span style="color:#7a4a3a;font-size:14px;">— DITHER RADAR CONSOLE v4.86</span>
+    <div class="menu"><span>FILE</span><span>SCAN</span><span>RANGE</span><span>RENDER</span><span>HELP</span></div>
+    <span class="clk" id="clk">00:00</span>
+  </div>
+  <div class="menubar">
+    <span><b>MODE</b> WX-SURVEILLANCE</span><span><b>PALETTE</b> STORM-14</span>
+    <span><b>DITHER</b> BAYER 8×8</span><span><b>RES</b> <span id="resTag">—</span></span>
+  </div>
+
+  <div class="work">
+    <!-- main radar screen -->
+    <div class="screen-wrap">
+      <canvas id="scope"></canvas>
+      <div class="scan"></div>
+      <div class="vig"></div>
+
+      <!-- HUD -->
+      <div class="hud">
+        <div class="tl">
+          <div class="lab">STATION</div>
+          <div class="big">KDX-486</div>
+          <div class="lab" style="margin-top:6px">AZIMUTH <span style="color:#f0a35e" id="hAz">000°</span></div>
+        </div>
+        <div class="tr">
+          <div class="lab">CONTACTS</div>
+          <div class="big" id="hCells">0</div>
+          <div class="lab" style="margin-top:6px">RANGE <span style="color:#f0a35e" id="hRange">240 KM</span></div>
+        </div>
+        <div class="alert" id="alert">⚠ SEVERE CELL — TRACK LOCK</div>
+        <div class="bl">
+          <span class="k">[SPACE]</span> PAUSE SWEEP &nbsp; <span class="k">[+/-]</span> RANGE<br>
+          <span class="k">[G]</span> GAIN &nbsp; <span class="k">[CLICK]</span> LOCK CELL
+        </div>
+        <div class="br">
+          LAT 47.61N · LON 122.33W<br>
+          ELEV 0.5° TILT · NEXRAD-LITE
+        </div>
+      </div>
+    </div>
+
+    <!-- control panel -->
+    <aside class="panel">
+      <div class="pblock">
+        <div class="ph">SWEEP <small id="liveTag">LIVE</small></div>
+        <div class="row"><span>AZIMUTH</span><span class="val"><span id="pAz">000</span>°</span></div>
+        <div class="row"><span>RPM</span><span class="val"><span id="pRpm">12</span></span></div>
+        <div class="meter"><b id="mRpm" style="width:60%"></b></div>
+        <div class="row"><span>GAIN</span><span class="valg" id="pGain">+6 dB</span></div>
+        <div class="meter meterg"><b id="mGain" style="width:60%"></b></div>
+        <div class="row"><span>RANGE</span><span class="val" id="pRange">240 KM</span></div>
+      </div>
+
+      <div class="pblock">
+        <div class="ph">TRACKS <small id="trkCount">0</small></div>
+        <div class="tracks" id="trkList"></div>
+      </div>
+
+      <div class="pblock">
+        <div class="ph">PALETTE <small>STORM-14</small></div>
+        <div class="palette" id="palStrip"></div>
+        <div class="row" style="margin-top:8px"><span>QUANT</span><span class="val">14 COL</span></div>
+        <div class="row"><span>MATRIX</span><span class="val">8×8 ORD</span></div>
+      </div>
+
+      <div class="pblock" style="flex:1 1 auto;display:flex;flex-direction:column">
+        <div class="ph">CONSOLE</div>
+        <div class="row"><span>FPS</span><span class="valg" id="pFps">—</span></div>
+        <div class="meter meterg"><b id="mFps" style="width:0%"></b></div>
+        <div class="row"><span>SCALE</span><span class="val" id="pScale">×1</span></div>
+        <div class="controls-help" style="margin-top:6px">
+          <kbd>SPC</kbd> pause &nbsp; <kbd>G</kbd> gain<br>
+          <kbd>+</kbd><kbd>-</kbd> range &nbsp; <kbd>P</kbd> persist<br>
+          <span style="color:#7a8f6a">click a cell on the scope to lock it.</span>
+        </div>
+        <div class="btnrow">
+          <div class="btn alt" id="btnSweep">SWEEP</div>
+          <div class="btn" id="btnPersist">PERSIST</div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- status footer -->
+  <div class="statusbar">
+    <div class="cell ok" id="sState">● SCANNING</div>
+    <div class="cell">DRV C:\WX</div>
+    <div class="cell marq"><span>STORMWATCH 486.EXE — rotating PPI sweep with phosphor persistence · ordered Bayer 8×8 quantize · warm storm-14 palette · dithered terrain &amp; coastline · live precipitation cells · CRT scanline pipeline ·&nbsp;&nbsp;&nbsp;</span></div>
+    <div class="cell" id="sFps">— FPS</div>
+  </div>
+</div>
+
+<script>
+"use strict";
+(function(){
+/* ============================================================
+   STORMWATCH 486 — lo-fi 486 dither weather radar (PPI scope)
+   Pipeline: render low-res float scene (terrain + range rings +
+   precipitation cells + rotating sweep with phosphor persistence)
+   -> Bayer 8x8 ordered dither -> nearest-color quantize to a
+   14-color warm palette -> nearest-neighbor upscale to display.
+   No loading gate: a fully dithered frame is the first paint.
+   ============================================================ */
+
+// ---- 14-color warm "STORM-14" palette (RGB) ----
+const PAL = [
+  [22,10,12],    // 0  ink
+  [42,16,20],    // 1  maroon
+  [61,22,27],    // 2  deep maroon
+  [90,37,32],    // 3  rust-dark
+  [122,45,32],   // 4  rust
+  [168,67,31],   // 5  burnt orange
+  [201,90,46],   // 6  salmon-dark
+  [217,106,58],  // 7  salmon
+  [240,163,94],  // 8  peach
+  [246,214,166], // 9  cream
+  [255,236,196], // 10 hi-light
+  [31,91,87],    // 11 teal
+  [47,125,94],   // 12 green
+  [122,176,120], // 13 pale green
+];
+
+// Bayer 8x8 ordered dither matrix (0..63)
+const BAYER8 = [
+   0,32, 8,40, 2,34,10,42,
+  48,16,56,24,50,18,58,26,
+  12,44, 4,36,14,46, 6,38,
+  60,28,52,20,62,30,54,22,
+   3,35,11,43, 1,33, 9,41,
+  51,19,59,27,49,17,57,25,
+  15,47, 7,39,13,45, 5,37,
+  63,31,55,23,61,29,53,21
+];
+
+const canvas = document.getElementById('scope');
+const ctx = canvas.getContext('2d', { alpha:false });
+ctx.imageSmoothingEnabled = false;
+
+// offscreen low-res buffer
+const buf = document.createElement('canvas');
+const bctx = buf.getContext('2d', { alpha:false });
+
+let LW = 240, LH = 150;        // low-res internal dims (recomputed on resize)
+let img;                       // ImageData of buffer
+let dispW = 0, dispH = 0;      // device pixel display dims
+
+// ---------- palette quantize (nearest color) ----------
+function nearest(r,g,b){
+  let best=0,bd=1e9;
+  for(let i=0;i<PAL.length;i++){
+    const p=PAL[i];
+    const dr=r-p[0],dg=g-p[1],db=b-p[2];
+    const d=dr*dr+dg*dg+db*db;
+    if(d<bd){bd=d;best=i;}
+  }
+  return best;
+}
+function lerp(a,b,t){return a+(b-a)*t;}
+function clamp(v,a,b){return v<a?a:v>b?b:v;}
+
+// ---------- console / scope state ----------
+const ST = {
+  sweeping:true,
+  persist:true,
+  angle:0,            // sweep azimuth in radians (0 = up/north, clockwise)
+  rpm:12,             // sweep revolutions per minute
+  gainStep:2,         // 0..4 -> gain in dB
+  rangeIdx:1,         // index into RANGES
+  time:0,
+  cellCount:0,
+  lock:-1,            // locked cell index, -1 none
+  alert:false,
+};
+const RANGES = [120,240,480,720]; // km full-scale (radius)
+const GAINS  = [0,3,6,9,12];      // dB
+
+// ---------- precipitation cells (storm systems) ----------
+// Each cell: polar-ish position in scope space (nx,ny in -1..1 from center),
+// a drift vector, a radius, and an intensity field. Cells slowly move with
+// the prevailing wind, breathe (intensity oscillates), and one is "severe".
+const CELLS = [];
+function seedCells(){
+  CELLS.length=0;
+  const defs = [
+    {nx:-0.34, ny:-0.20, r:0.30, base:0.92, sev:3, dx:0.018, dy:0.010, ph:0.0},  // severe core (NW)
+    {nx: 0.42, ny: 0.30, r:0.24, base:0.66, sev:2, dx:-0.010,dy:-0.014,ph:1.7},  // moderate (SE)
+    {nx: 0.10, ny:-0.55, r:0.18, base:0.50, sev:2, dx:0.008, dy:0.012, ph:3.1},  // moderate (N)
+    {nx:-0.52, ny: 0.40, r:0.16, base:0.40, sev:1, dx:0.012, dy:-0.008,ph:4.4},  // light (SW)
+    {nx: 0.60, ny:-0.28, r:0.13, base:0.34, sev:1, dx:-0.014,dy:0.006, ph:5.9},  // light (NE)
+    {nx:-0.05, ny: 0.62, r:0.14, base:0.30, sev:1, dx:0.006, dy:-0.016,ph:2.3},  // light (S)
+  ];
+  defs.forEach((d,i)=>CELLS.push(Object.assign({i, sx:d.nx, sy:d.ny},d)));
+}
+seedCells();
+
+// ---------- terrain: a coastline + land mass (dithered) ----------
+// Procedural value field: land vs water. Land = warm rust/peach low band,
+// water = teal. We render terrain only inside the scope disc, dimmed, so the
+// precipitation reads on top. Coastline wiggles with layered sines.
+function terrainLand(nx,ny){
+  // distance-from-coast function; >0 = land. Coast is a wavy diagonal band.
+  const coast = nx*0.75 + ny*0.55
+    + 0.16*Math.sin(ny*7.0 + 0.6)
+    + 0.10*Math.sin(nx*9.0 - 1.2)
+    + 0.06*Math.sin((nx+ny)*13.0);
+  return coast; // sign => land/water; magnitude => elevation-ish
+}
+
+// ---------- framebuffer ----------
+const fb = { r:null, g:null, b:null };
+// phosphor persistence buffer (intensity decays each frame)
+let phos = null;
+function ensureFB(){
+  const n = LW*LH;
+  if(!fb.r || fb.r.length!==n){
+    fb.r=new Float32Array(n); fb.g=new Float32Array(n); fb.b=new Float32Array(n);
+    phos=new Float32Array(n);
+  }
+}
+
+// ---------- resize ----------
+function resize(){
+  const wrap = canvas.parentElement;
+  const r = wrap.getBoundingClientRect();
+  dispW = Math.max(64, Math.round(r.width));
+  dispH = Math.max(64, Math.round(r.height));
+  canvas.width = dispW;
+  canvas.height = dispH;
+  ctx.imageSmoothingEnabled = false;
+
+  // internal low-res: keep dots chunky. target ~ width/4.7
+  LW = Math.max(170, Math.round(dispW/4.7));
+  LH = Math.max(110, Math.round(LW * (dispH/dispW)));
+  buf.width = LW; buf.height = LH;
+  bctx.imageSmoothingEnabled = false;
+  img = bctx.createImageData(LW, LH);
+  // reset persistence buffer at new size
+  const n=LW*LH; phos=new Float32Array(n);
+  document.getElementById('resTag').textContent = LW+'×'+LH;
+  document.getElementById('pScale').textContent = '×'+(dispW/LW).toFixed(1);
+}
+window.addEventListener('resize', resize);
+
+// geometry helpers (scope center + radius in low-res px)
+function scope(){
+  const cx = LW*0.5, cy = LH*0.5;
+  const R = Math.min(LW,LH)*0.46;
+  return {cx,cy,R};
+}
+
+// ---------- scene render into float framebuffer ----------
+function renderScene(){
+  const {cx,cy,R}=scope();
+  const R2=R*R;
+  const sweepA = ST.angle;                 // current beam angle (rad, 0=up, CW)
+  const beamHalf = 0.05;                    // half-width of bright beam wedge (rad)
+  const trail = 1.15;                       // length of fading phosphor trail (rad)
+
+  // decay phosphor persistence (older returns fade toward 0)
+  const decay = ST.persist ? 0.955 : 0.74;
+  for(let i=0;i<phos.length;i++) phos[i]*=decay;
+
+  for(let y=0;y<LH;y++){
+    const dy=y-cy;
+    let base=y*LW;
+    for(let x=0;x<LW;x++){
+      const dx=x-cx;
+      const d2=dx*dx+dy*dy;
+      let r,g,b;
+
+      if(d2>R2){
+        // ----- outside the scope disc: dark console bezel -----
+        // faint diagonal hatch so the bezel still dithers nicely
+        const h=((x+y)&3)===0?6:0;
+        r=20+h; g=10; b=12;
+        fb.r[base+x]=r; fb.g[base+x]=g; fb.b[base+x]=b;
+        continue;
+      }
+
+      // normalized scope coords (-1..1), nr = radial 0..1
+      const nx=dx/R, ny=dy/R;
+      const nr=Math.sqrt(d2)/R;
+
+      // ===== 1. base scope background (radial: dark center -> deep edge) =====
+      // very dark green-tinted phosphor base so warm returns pop
+      let bg = 0.10 + 0.05*nr;
+      r = lerp(14, 24, nr); g = lerp(20, 30, nr); b = lerp(20, 28, nr);
+
+      // ===== 2. dithered terrain (coastline) inside the disc, dim =====
+      const land = terrainLand(nx,ny);
+      if(land>0){
+        // LAND: warm low band, brighter (higher elevation) further inland
+        const elev = clamp(land*0.9, 0, 1);
+        r = lerp(40, 96, elev); g = lerp(22, 40, elev); b = lerp(24, 30, elev);
+      } else {
+        // WATER: teal, deeper offshore
+        const deep = clamp(-land*0.9, 0, 1);
+        r = lerp(20, 18, deep); g = lerp(46, 70, deep); b = lerp(44, 66, deep);
+      }
+      // coastline highlight (cream rim) where |land| small
+      if(Math.abs(land)<0.03){ r=lerp(r,210,0.6); g=lerp(g,160,0.6); b=lerp(b,110,0.6); }
+      // overall terrain dim so weather reads on top
+      r*=0.62; g*=0.62; b*=0.62;
+
+      // ===== 3. range rings + crosshair graticule =====
+      // concentric rings every 0.25 of radius
+      const ringT = nr*4.0;
+      const ringFrac = ringT - Math.floor(ringT);
+      if(ringFrac<0.045 && nr>0.03){
+        r=lerp(r,120,0.5); g=lerp(g,150,0.5); b=lerp(b,120,0.5);
+      }
+      // cardinal cross lines (N-S, E-W) + diagonals, thin
+      const ax=Math.abs(nx), ay=Math.abs(ny);
+      if(ax<0.012 || ay<0.012){ r=lerp(r,90,0.5); g=lerp(g,120,0.5); b=lerp(b,95,0.5); }
+      if(Math.abs(ax-ay)<0.012){ r=lerp(r,60,0.35); g=lerp(g,90,0.35); b=lerp(b,72,0.35); }
+
+      // ===== 4. precipitation cells -> phosphor intensity field =====
+      // accumulate reflectivity from each storm cell at this pixel
+      let refl=0;
+      for(let c=0;c<CELLS.length;c++){
+        const C=CELLS[c];
+        const ddx=nx-C.nx, ddy=ny-C.ny;
+        const dist=Math.sqrt(ddx*ddx+ddy*ddy);
+        if(dist<C.r){
+          const f=1-dist/C.r;                 // 0 edge -> 1 core
+          // soft falloff + a little internal noise for texture
+          const noise=0.12*Math.sin((nx*40)+(ny*37)+C.ph*3);
+          refl += C.cur*(f*f*0.85 + f*0.15) + noise*f;
+        }
+      }
+      refl=clamp(refl,0,1.25);
+
+      // ===== 5. rotating sweep beam: illuminate where beam passes now =====
+      // angle of this pixel (0 = up/north, clockwise positive)
+      let pa = Math.atan2(nx, -ny);           // up is 0, CW
+      if(pa<0) pa+=Math.PI*2;
+      let da = sweepA - pa;                    // how far behind the beam
+      // wrap to [-PI, PI]
+      while(da> Math.PI) da-=Math.PI*2;
+      while(da<-Math.PI) da+=Math.PI*2;
+
+      // bright leading edge + fading trail behind the beam
+      let beam=0;
+      if(da>=-beamHalf && da<=trail){
+        if(da<beamHalf){ beam=1.0; }                       // bright wedge
+        else { beam = 1.0 - (da-beamHalf)/(trail-beamHalf); } // fade trail
+        beam=clamp(beam,0,1);
+      }
+      // the beam "paints" precipitation into the persistence buffer as it sweeps
+      const paint = beam*refl;
+      if(paint>phos[base+x]) phos[base+x]=paint;
+      // beam itself also faintly lights the empty scope (classic green sweep)
+      const beamGlow = beam*0.16*(0.4+0.6*nr);
+
+      // ===== 6. compose precipitation color from persistence buffer =====
+      // STORM gradient: low=teal/green, mid=peach/salmon, high=cream hot core
+      const I = clamp(phos[base+x] + beamGlow, 0, 1.25);
+      if(I>0.02){
+        let pr,pg,pb;
+        if(I<0.33){
+          const k=I/0.33;            // teal -> green
+          pr=lerp(30,70,k); pg=lerp(95,150,k); pb=lerp(90,120,k);
+        } else if(I<0.62){
+          const k=(I-0.33)/0.29;     // green -> peach
+          pr=lerp(70,240,k); pg=lerp(150,163,k); pb=lerp(120,94,k);
+        } else if(I<0.92){
+          const k=(I-0.62)/0.30;     // peach -> salmon
+          pr=lerp(240,217,k); pg=lerp(163,106,k); pb=lerp(94,58,k);
+        } else {
+          const k=clamp((I-0.92)/0.33,0,1); // salmon -> hot cream core
+          pr=lerp(217,255,k); pg=lerp(106,236,k); pb=lerp(58,196,k);
+        }
+        // blend precipitation over terrain by intensity (more I = more opaque)
+        const op=clamp(I,0,1);
+        r=lerp(r,pr,op); g=lerp(g,pg,op); b=lerp(b,pb,op);
+      }
+
+      // ===== 7. bright beam line itself (leading edge, cream) =====
+      if(beam>0.92){
+        r=lerp(r,200,0.55); g=lerp(g,235,0.55); b=lerp(b,170,0.55);
+      }
+
+      // soft vignette inside disc toward the rim
+      const vig=1-0.18*nr*nr;
+      r*=vig; g*=vig; b*=vig;
+
+      fb.r[base+x]=r; fb.g[base+x]=g; fb.b[base+x]=b;
+    }
+  }
+
+  // ===== center station marker (small dithered diamond) =====
+  drawStation(cx,cy);
+  // ===== crisp scope rim ring =====
+  drawRim(cx,cy,R);
+  // ===== cardinal labels are HTML; draw azimuth tick on rim =====
+  drawAzTick(cx,cy,R,sweepA);
+  // ===== lock box around locked cell =====
+  if(ST.lock>=0) drawLockBox(cx,cy,R,CELLS[ST.lock]);
+}
+
+function setPx(x,y,r,g,b){
+  x|=0;y|=0;
+  if(x<0||x>=LW||y<0||y>=LH)return;
+  const i=y*LW+x; fb.r[i]=r; fb.g[i]=g; fb.b[i]=b;
+}
+function drawStation(cx,cy){
+  // peach diamond + ink center
+  const c=[240,163,94];
+  for(let k=-2;k<=2;k++){
+    const w=2-Math.abs(k);
+    for(let j=-w;j<=w;j++) setPx(cx+j,cy+k,c[0],c[1],c[2]);
+  }
+  setPx(cx,cy,255,236,196);
+}
+function drawRim(cx,cy,R){
+  // 1px cream-ish ring (sampled)
+  const steps=Math.ceil(R*7);
+  for(let i=0;i<steps;i++){
+    const a=i/steps*Math.PI*2;
+    setPx(cx+Math.cos(a)*R, cy+Math.sin(a)*R, 210,165,115);
+    setPx(cx+Math.cos(a)*(R-1), cy+Math.sin(a)*(R-1), 120,150,120);
+  }
+}
+function drawAzTick(cx,cy,R,a){
+  // small bright tick on the rim showing where the beam points
+  const tx=cx+Math.sin(a)*R, ty=cy-Math.cos(a)*R;
+  for(let k=-1;k<=1;k++)for(let j=-1;j<=1;j++) setPx(tx+j,ty+k,255,236,196);
+}
+function drawLockBox(cx,cy,R,C){
+  if(!C)return;
+  const px=cx+C.nx*R, py=cy+C.ny*R;
+  const s=Math.max(4,C.r*R*0.9);
+  const col=[246,214,166];
+  for(let t=-s;t<=s;t++){
+    setPx(px+t,py-s,col[0],col[1],col[2]);
+    setPx(px+t,py+s,col[0],col[1],col[2]);
+    setPx(px-s,py+t,col[0],col[1],col[2]);
+    setPx(px+s,py+t,col[0],col[1],col[2]);
+  }
+}
+
+// ---------- dither + quantize fb -> ImageData ----------
+function ditherToImage(){
+  const d = img.data;
+  let idx=0, pi=0;
+  for(let y=0;y<LH;y++){
+    const brow=(y&7)*8;
+    for(let x=0;x<LW;x++){
+      const t=(BAYER8[brow+(x&7)]/64 - 0.5)*38; // dither amplitude
+      let r=fb.r[pi]+t, g=fb.g[pi]+t, b=fb.b[pi]+t;
+      if(r<0)r=0;if(g<0)g=0;if(b<0)b=0;
+      const p=PAL[nearest(r,g,b)];
+      d[idx]=p[0]; d[idx+1]=p[1]; d[idx+2]=p[2]; d[idx+3]=255;
+      idx+=4; pi++;
+    }
+  }
+  bctx.putImageData(img,0,0);
+  ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(buf,0,0,LW,LH,0,0,dispW,dispH);
+}
+
+// ---------- update sim ----------
+function update(dt){
+  ST.time+=dt;
+  // sweep
+  if(ST.sweeping){
+    const radPerSec = ST.rpm/60*Math.PI*2;
+    ST.angle += radPerSec*dt;
+    if(ST.angle>Math.PI*2) ST.angle-=Math.PI*2;
+  }
+  // cells drift + breathe; bounce off scope edge
+  let severeFront=false;
+  for(const C of CELLS){
+    C.nx += C.dx*dt;
+    C.ny += C.dy*dt;
+    const lim=0.92-C.r;
+    if(C.nx> lim){C.nx=lim;C.dx*=-1;} if(C.nx<-lim){C.nx=-lim;C.dx*=-1;}
+    if(C.ny> lim){C.ny=lim;C.dy*=-1;} if(C.ny<-lim){C.ny=-lim;C.dy*=-1;}
+    // breathing intensity
+    const breathe=0.18*Math.sin(ST.time*0.6 + C.ph);
+    const gainBoost=GAINS[ST.gainStep]/12*0.35;
+    C.cur=clamp(C.base + breathe + gainBoost, 0.12, 1.2);
+    if(C.sev>=3 && C.cur>0.9) severeFront=true;
+  }
+  ST.alert = severeFront;
+  ST.cellCount = CELLS.length;
+}
+
+// ---------- HUD / panel ----------
+const $=id=>document.getElementById(id);
+let trkBuilt=false;
+function buildTracks(){
+  const list=$('trkList'); list.innerHTML='';
+  const names=['ALPHA','BRAVO','CHARLIE','DELTA','ECHO','FOXTROT'];
+  CELLS.forEach((C,i)=>{
+    const el=document.createElement('div');
+    el.className='trk'; el.dataset.i=i;
+    el.innerHTML='<span class="id">'+names[i]+'</span>'+
+      '<span class="dbz" data-dbz></span>'+
+      '<span class="sev sev'+C.sev+'">'+(C.sev===3?'SEV':C.sev===2?'MOD':'LGT')+'</span>';
+    el.addEventListener('click',()=>{ ST.lock = (ST.lock===i?-1:i); });
+    list.appendChild(el);
+  });
+  trkBuilt=true;
+}
+function azDeg(){ let d=Math.round(ST.angle/(Math.PI*2)*360)%360; if(d<0)d+=360; return d; }
+function updatePanel(){
+  const az=azDeg();
+  const azs=String(az).padStart(3,'0');
+  $('hAz').textContent=azs+'°';
+  $('pAz').textContent=azs;
+  $('hCells').textContent=ST.cellCount;
+  $('pRpm').textContent=ST.rpm;
+  $('mRpm').style.width=Math.round(ST.rpm/24*100)+'%';
+  const gain=GAINS[ST.gainStep];
+  $('pGain').textContent=(gain>=0?'+':'')+gain+' dB';
+  $('mGain').style.width=Math.round(ST.gainStep/4*100)+'%';
+  const rng=RANGES[ST.rangeIdx];
+  $('pRange').textContent=rng+' KM';
+  $('hRange').textContent=rng+' KM';
+  $('trkCount').textContent=ST.cellCount;
+  // alert
+  $('alert').className='alert'+(ST.alert?' on':'');
+  // sweep/persist button states
+  $('btnSweep').className='btn alt'+(ST.sweeping?' on':'');
+  $('btnPersist').className='btn'+(ST.persist?' on':'');
+  // track list dbz + lock highlight
+  if(!trkBuilt) buildTracks();
+  const rows=$('trkList').children;
+  for(let i=0;i<rows.length;i++){
+    const C=CELLS[i];
+    const dbz=Math.round(20+C.cur*55);
+    const cell=rows[i].querySelector('[data-dbz]');
+    if(cell) cell.textContent=dbz+' dBZ';
+    rows[i].classList.toggle('lock', ST.lock===i);
+  }
+  $('sState').textContent = ST.sweeping? '● SCANNING' : '● HOLD';
+  $('sState').className='cell '+(ST.sweeping?'ok':'');
+  if(!ST.sweeping) $('sState').style.color='#f0a35e';
+}
+
+// ---------- frame loop ----------
+let last=performance.now(), fpsAcc=0, fpsN=0, fpsShown=60;
+function frame(now){
+  let dt=(now-last)/1000; last=now;
+  if(dt>0.05) dt=0.05;
+  ensureFB();
+  update(dt);
+  renderScene();
+  ditherToImage();
+
+  fpsAcc+=dt; fpsN++;
+  if(fpsAcc>=0.4){
+    fpsShown=Math.round(fpsN/fpsAcc); fpsAcc=0; fpsN=0;
+    $('pFps').textContent=fpsShown;
+    $('mFps').style.width=Math.min(100,Math.round(fpsShown/60*100))+'%';
+    $('sFps').textContent=fpsShown+' FPS';
+    updatePanel();
+  }
+  requestAnimationFrame(frame);
+}
+
+// ---------- input ----------
+window.addEventListener('keydown',e=>{
+  switch(e.code){
+    case 'Space': ST.sweeping=!ST.sweeping; e.preventDefault(); break;
+    case 'KeyG': ST.gainStep=(ST.gainStep+1)%GAINS.length; break;
+    case 'KeyP': ST.persist=!ST.persist; break;
+    case 'Equal': case 'NumpadAdd': ST.rangeIdx=Math.min(RANGES.length-1,ST.rangeIdx+1); break;
+    case 'Minus': case 'NumpadSubtract': ST.rangeIdx=Math.max(0,ST.rangeIdx-1); break;
+    default: return;
+  }
+  updatePanel();
+});
+
+// click on the scope to lock nearest cell
+canvas.addEventListener('click',e=>{
+  const r=canvas.getBoundingClientRect();
+  const mx=(e.clientX-r.left)/r.width;   // 0..1
+  const my=(e.clientY-r.top)/r.height;   // 0..1
+  // map to scope normalized coords (-1..1 from center, accounting for R)
+  const {cx,cy,R}=scope();
+  const px=mx*LW, py=my*LH;
+  const nx=(px-cx)/R, ny=(py-cy)/R;
+  let best=-1,bd=1e9;
+  CELLS.forEach((C,i)=>{
+    const dd=(nx-C.nx)**2+(ny-C.ny)**2;
+    if(dd<bd && dd< (C.r*1.2)**2){bd=dd;best=i;}
+  });
+  ST.lock = best;
+  updatePanel();
+});
+
+// buttons
+$('btnSweep').addEventListener('click',()=>{ST.sweeping=!ST.sweeping;updatePanel();});
+$('btnPersist').addEventListener('click',()=>{ST.persist=!ST.persist;updatePanel();});
+
+// ---------- decorative: palette strip + clock ----------
+(function buildPalette(){
+  const strip=$('palStrip');
+  PAL.forEach(p=>{const i=document.createElement('i');i.style.background='rgb('+p[0]+','+p[1]+','+p[2]+')';strip.appendChild(i);});
+})();
+(function clock(){
+  function tick(){const d=new Date();$('clk').textContent=String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');}
+  tick(); setInterval(tick,15000);
+})();
+
+// ---------- boot: paint a dithered first frame immediately ----------
+resize();
+ensureFB();
+// pre-warm persistence so the very first paint already shows dithered returns
+ST.angle = Math.PI*1.5;
+for(let k=0;k<60;k++){ update(0.016); }
+// run a few sweep passes silently to seed phosphor across the disc
+(function prewarmSweep(){
+  const passes=5;
+  for(let s=0;s<passes;s++){
+    ST.angle=0;
+    const sub=64;
+    for(let q=0;q<sub;q++){ ST.angle=q/sub*Math.PI*2; renderScene(); }
+  }
+  ST.angle=Math.PI*0.35;
+})();
+renderScene();
+ditherToImage();
+buildTracks();
+updatePanel();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

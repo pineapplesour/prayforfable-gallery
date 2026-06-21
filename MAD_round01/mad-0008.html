@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>FRACTURA — 유리의 분열</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#03040a; }
+  body {
+    font-family:"Pretendard","Apple SD Gothic Neo","SF Pro Display",-apple-system,"Helvetica Neue",system-ui,sans-serif;
+    touch-action:none; -webkit-tap-highlight-color:transparent; cursor:crosshair;
+  }
+  #gl { position:fixed; inset:0; width:100%; height:100%; display:block; }
+
+  .ui { position:fixed; pointer-events:none; user-select:none; z-index:5; mix-blend-mode:screen; }
+  #brand { top:clamp(20px,4.4vh,48px); left:clamp(20px,3.4vw,54px);
+           letter-spacing:.5em; font-weight:600; font-size:clamp(13px,1.55vw,18px);
+           color:#eef2ff; text-shadow:0 0 26px rgba(150,160,255,.55); }
+  #brand b { font-weight:200; opacity:.5; letter-spacing:.5em; }
+  #sub { top:calc(clamp(20px,4.4vh,48px) + 27px); left:clamp(20px,3.4vw,54px);
+         font-size:clamp(9px,1.05vw,11px); letter-spacing:.36em; color:#8b8edd; font-weight:300; }
+  #hint { bottom:clamp(18px,3.4vh,40px); left:50%; transform:translateX(-50%);
+          font-size:clamp(9px,1.05vw,11px); letter-spacing:.3em; color:#7c7fc4; font-weight:300;
+          text-align:center; line-height:1.95; transition:opacity 1.2s ease; white-space:nowrap; }
+  #meta { bottom:clamp(18px,3.4vh,40px); right:clamp(20px,3.4vw,54px);
+          font-size:clamp(9px,1.05vw,11px); letter-spacing:.28em; color:#9a8fd6; font-weight:300; text-align:right; }
+  #meta b { color:#e7e2ff; font-weight:500; letter-spacing:.12em; text-shadow:0 0 16px rgba(170,150,255,.6); }
+  .corner { position:fixed; width:clamp(24px,2.8vw,40px); height:clamp(24px,2.8vw,40px);
+            border:1px solid rgba(160,160,255,.2); z-index:4; pointer-events:none; }
+  #c1 { top:clamp(14px,2.6vh,30px); left:clamp(14px,2.2vw,34px); border-right:0; border-bottom:0; }
+  #c2 { top:clamp(14px,2.6vh,30px); right:clamp(14px,2.2vw,34px); border-left:0; border-bottom:0; }
+  #c3 { bottom:clamp(14px,2.6vh,30px); left:clamp(14px,2.2vw,34px); border-right:0; border-top:0; }
+  #c4 { bottom:clamp(14px,2.6vh,30px); right:clamp(14px,2.2vw,34px); border-left:0; border-top:0; }
+  #fallback { position:fixed; inset:0; display:none; place-items:center; color:#9aa; font-size:14px;
+              letter-spacing:.2em; text-align:center; padding:24px; }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="c1" class="corner"></div>
+<div id="c2" class="corner"></div>
+<div id="c3" class="corner"></div>
+<div id="c4" class="corner"></div>
+<div id="brand" class="ui">FRACTURA <b>05</b></div>
+<div id="sub" class="ui">VORONOI · DICHROIC GLASS</div>
+<div id="hint" class="ui">클릭 — 부수기 &nbsp;·&nbsp; 드래그 — 굴절 &nbsp;·&nbsp; 스크롤 — 파편 밀도</div>
+<div id="meta" class="ui">유리의 <b>분열</b></div>
+<div id="fallback">WebGL 미지원 브라우저입니다</div>
+
+<script>
+'use strict';
+(() => {
+const cv = document.getElementById('gl');
+const gl = cv.getContext('webgl', {antialias:false, alpha:false, premultipliedAlpha:false, powerPreference:'high-performance'})
+        || cv.getContext('experimental-webgl');
+if(!gl){ document.getElementById('fallback').style.display='grid'; return; }
+
+const VERT = `
+attribute vec2 aPos;
+void main(){ gl_Position = vec4(aPos,0.0,1.0); }`;
+
+const FRAG = `
+precision highp float;
+uniform vec2  uRes;
+uniform float uTime;
+uniform vec2  uMouse;     // uv, y up
+uniform float uDensity;
+uniform vec4  uShock[8];   // x,y(uv) , age(sec, <0=off) , power
+uniform int   uShockN;
+uniform float uHue;
+
+float h1(vec2 p){ return fract(sin(dot(p,vec2(41.3,289.7)))*43758.5453); }
+vec2  h2(vec2 p){ p=vec2(dot(p,vec2(127.1,311.7)),dot(p,vec2(269.5,183.3))); return fract(sin(p)*43758.5453); }
+float vn(vec2 p){
+  vec2 i=floor(p), f=fract(p); vec2 u=f*f*(3.0-2.0*f);
+  float a=h1(i), b=h1(i+vec2(1.,0.)), c=h1(i+vec2(0.,1.)), d=h1(i+vec2(1.,1.));
+  return mix(mix(a,b,u.x), mix(c,d,u.x), u.y);
+}
+float fbm(vec2 p){ float s=0.,a=0.5; for(int i=0;i<3;i++){ s+=a*vn(p); p=p*2.03+vec2(7.3,9.1); a*=0.5; } return s; }
+vec3 iri(float t){ return 0.55 + 0.45*cos(6.28318*(t+vec3(0.0,0.16,0.30)) + vec3(0.9,2.4,4.6)); }
+
+float fld(vec2 b){
+  float t=uTime*0.05;
+  vec2 q=vec2(fbm(b*1.5+t), fbm(b*1.5+vec2(3.1,1.7)-t*0.8));
+  vec2 r=vec2(fbm(b*1.5+1.8*q+vec2(1.2,7.7)), fbm(b*1.5+1.8*q+vec2(8.3,2.9)));
+  return fbm(b*1.5+2.4*r+t);
+}
+
+void main(){
+  vec2 uv  = gl_FragCoord.xy / uRes;
+  float asp = uRes.x / uRes.y;
+  vec2 auv = vec2(uv.x*asp, uv.y);
+  vec2 mUV = vec2(uMouse.x*asp, uMouse.y);
+
+  // ---- displacement / crack field from shockwaves + cursor ----
+  vec2 disp = vec2(0.0);
+  float crack = 0.0;
+  for(int i=0;i<8;i++){
+    if(i>=uShockN) break;
+    vec4 s = uShock[i];
+    if(s.z < 0.0) continue;
+    vec2 sUV = vec2(s.x*asp, s.y);
+    vec2 d = auv - sUV;
+    float dist = length(d)+1e-4;
+    float radius = s.z*1.7;
+    float x = (dist-radius)*7.0;
+    float ring = exp(-x*x);
+    float life = exp(-s.z*1.4);
+    disp  += (d/dist) * ring * s.w * 0.16 * life;
+    crack += ring * s.w * life;
+  }
+  vec2 md = auv - mUV; float mdist = length(md)+1e-4;
+  float mlens = exp(-mdist*mdist*7.0);
+  disp += (md/mdist) * mlens * 0.05;
+
+  // ---- voronoi tessellation (animated jitter) ----
+  vec2 P = (auv + disp) * uDensity;
+  vec2 ip = floor(P), fp = fract(P);
+  float f1=9.0, f2=9.0; vec2 nOff=vec2(0.0); vec2 cId=vec2(0.0);
+  for(int j=-1;j<=1;j++){
+    for(int i=-1;i<=1;i++){
+      vec2 g = vec2(float(i), float(j));
+      vec2 o = h2(ip+g);
+      o = 0.5 + 0.38*sin(uTime*0.55 + 6.28318*o);
+      vec2 rp = g + o - fp;
+      float dd = dot(rp,rp);
+      if(dd<f1){ f2=f1; f1=dd; nOff=rp; cId=ip+g; }
+      else if(dd<f2){ f2=dd; }
+    }
+  }
+  float d1=sqrt(f1), d2=sqrt(f2);
+  float edge = d2 - d1;
+  vec2 dirw = normalize(nOff + vec2(1e-5));
+  float rad = d1;
+
+  float cr  = h1(cId*1.7);
+  float cr2 = h1(cId*3.3 + 5.0);
+
+  // ---- refraction through the glass shard ----
+  float strength = 0.05*(0.25 + rad*1.8)*(1.0 + crack*2.5);
+  vec2 suv = auv + dirw*vec2(1.0/asp,1.0)*strength + disp*0.5;
+  float F = fld(suv);
+
+  // ---- dichroic color: per-cell tint + chromatic dispersion at cracks ----
+  float hue = F*0.9 + cr*0.5 + uHue + rad*0.25;
+  float dsp = (crack*0.6 + (1.0 - smoothstep(0.0,0.12,edge))*0.18) * 0.6;
+  vec3 col = vec3( iri(hue+dsp).r, iri(hue).g, iri(hue-dsp).b );
+
+  col *= 0.45 + 0.85*F;
+  col *= 0.7 + 0.6*cr2;
+
+  // ---- beveled glass edge highlight + specular glint ----
+  float bevel = smoothstep(0.0,0.015,edge) * (1.0 - smoothstep(0.02,0.09,edge));
+  vec3 N = normalize(vec3(dirw, 0.55));
+  vec3 L = normalize(vec3(0.45,0.65,0.75));
+  float spec = pow(max(dot(N,L),0.0), 18.0);
+  col += vec3(0.85,0.92,1.0) * bevel * (0.25 + spec*0.8);
+
+  // ---- shards separate along live shock fronts ----
+  float gapW = 0.012 + crack*0.05;
+  float gap  = 1.0 - smoothstep(0.0, gapW, edge);
+  col *= mix(1.0, 0.12, gap*0.9);
+  col += iri(hue+0.35) * gap * crack * 1.4;
+
+  // ---- cursor caustic ----
+  col += iri(uHue+0.1) * mlens * 0.25;
+
+  // ---- finish: ambient floor, vignette, filmic, grain ----
+  col += vec3(0.015,0.02,0.035) * (0.5 + 0.5*F);
+  float vig = 1.0 - smoothstep(0.25, 1.15, length(uv-0.5));
+  col *= mix(0.35, 1.0, vig);
+  col = 1.0 - exp(-col*1.55);
+  col += (h1(gl_FragCoord.xy + uTime) - 0.5) * 0.025;
+  col = clamp(col, 0.0, 1.0);
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
+function sh(type, src){
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, sh(gl.VERTEX_SHADER, VERT));
+gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FRAG));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog, gl.LINK_STATUS)){ document.getElementById('fallback').style.display='grid'; return; }
+gl.useProgram(prog);
+
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, 'aPos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+const U = {
+  res:    gl.getUniformLocation(prog,'uRes'),
+  time:   gl.getUniformLocation(prog,'uTime'),
+  mouse:  gl.getUniformLocation(prog,'uMouse'),
+  dens:   gl.getUniformLocation(prog,'uDensity'),
+  shock:  gl.getUniformLocation(prog,'uShock[0]'),
+  shockN: gl.getUniformLocation(prog,'uShockN'),
+  hue:    gl.getUniformLocation(prog,'uHue'),
+};
+
+// ---- state ----
+let cssW=0, cssH=0;
+let mouse=[0.5,0.5], mTarget=[0.5,0.5];
+let densCur=14.0, densTarget=14.0;
+const shocks=[]; const SHMAX=8;
+const shockBuf=new Float32Array(SHMAX*4);
+
+function resize(){
+  cssW=innerWidth; cssH=innerHeight;
+  let RS=Math.min(devicePixelRatio||1, 2);
+  const cap=2.6e6;
+  if(cssW*cssH*RS*RS>cap) RS=Math.sqrt(cap/(cssW*cssH));
+  RS=Math.max(RS,0.6);
+  cv.width=Math.round(cssW*RS);
+  cv.height=Math.round(cssH*RS);
+  gl.viewport(0,0,cv.width,cv.height);
+}
+addEventListener('resize', resize);
+resize();
+
+function addShock(ux,uy,pow){
+  shocks.push({x:ux,y:uy,t0:performance.now()/1000,pow:pow});
+  if(shocks.length>SHMAX) shocks.shift();
+}
+function packShocks(now){
+  for(let i=shocks.length-1;i>=0;i--){ if(now-shocks[i].t0>3.2) shocks.splice(i,1); }
+  const n=Math.min(shocks.length,SHMAX);
+  for(let i=0;i<SHMAX;i++){
+    if(i<n){ const s=shocks[i]; shockBuf[i*4]=s.x; shockBuf[i*4+1]=s.y; shockBuf[i*4+2]=now-s.t0; shockBuf[i*4+3]=s.pow; }
+    else { shockBuf[i*4]=0; shockBuf[i*4+1]=0; shockBuf[i*4+2]=-1; shockBuf[i*4+3]=0; }
+  }
+  return n;
+}
+
+// ---- audio: crystalline shatter chime (lazy, gesture-gated) ----
+let actx=null;
+function chime(uy, pow){
+  try{
+    if(!actx) actx=new (window.AudioContext||window.webkitAudioContext)();
+    if(actx.state==='suspended') actx.resume();
+    const t=actx.currentTime;
+    const base=170 + (uy*uy)*640;
+    const parts=[1.0, 1.5, 2.01, 2.67, 3.86];
+    const master=actx.createGain();
+    master.gain.value=Math.min(0.9, pow)*0.5;
+    master.connect(actx.destination);
+    parts.forEach((m,i)=>{
+      const o=actx.createOscillator(), g=actx.createGain();
+      o.type = i%2 ? 'sine' : 'triangle';
+      o.frequency.value=base*m*(0.99+Math.random()*0.02);
+      const amp=0.14/(i+1.2);
+      g.gain.setValueAtTime(0,t);
+      g.gain.linearRampToValueAtTime(amp, t+0.004);
+      g.gain.exponentialRampToValueAtTime(0.0001, t+1.5+i*0.18);
+      o.connect(g).connect(master);
+      o.start(t); o.stop(t+1.7+i*0.18);
+    });
+    // brief glass transient
+    const N=actx.sampleRate*0.09|0;
+    const nb=actx.createBuffer(1,N,actx.sampleRate); const ch=nb.getChannelData(0);
+    for(let i=0;i<N;i++) ch[i]=(Math.random()*2-1)*Math.pow(1-i/N,3);
+    const ns=actx.createBufferSource(); ns.buffer=nb;
+    const nf=actx.createBiquadFilter(); nf.type='bandpass'; nf.frequency.value=base*3.2; nf.Q.value=1.4;
+    const ng=actx.createGain(); ng.gain.value=0.12*Math.min(1,pow);
+    ns.connect(nf).connect(ng).connect(master); ns.start(t);
+  }catch(e){}
+}
+
+// ---- input ----
+const hintEl=document.getElementById('hint');
+let hintHidden=false;
+function hideHint(){ if(!hintHidden){ hintHidden=true; hintEl.style.opacity='0'; } }
+
+const pointers=new Map();
+let pinchStart=0, densAtPinch=0;
+
+function toUV(e){ return [e.clientX/cssW, 1.0 - e.clientY/cssH]; }
+
+cv.addEventListener('pointerdown', e=>{
+  cv.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, [e.clientX, e.clientY]);
+  const uvp=toUV(e);
+  mTarget=uvp.slice(); mouse=uvp.slice();
+  if(pointers.size===1){
+    addShock(uvp[0], uvp[1], 1.0);
+    chime(uvp[1], 1.0);
+  } else if(pointers.size===2){
+    const p=[...pointers.values()];
+    pinchStart=Math.hypot(p[0][0]-p[1][0], p[0][1]-p[1][1])||1;
+    densAtPinch=densTarget;
+  }
+  hideHint();
+});
+cv.addEventListener('pointermove', e=>{
+  if(pointers.has(e.pointerId)) pointers.set(e.pointerId,[e.clientX,e.clientY]);
+  mTarget=toUV(e);
+  if(pointers.size>=2){
+    const p=[...pointers.values()];
+    const d=Math.hypot(p[0][0]-p[1][0], p[0][1]-p[1][1])||1;
+    densTarget=Math.min(42, Math.max(5, densAtPinch * (pinchStart/d)));
+  } else if(e.buttons){
+    if(Math.random()<0.16) addShock(mTarget[0],mTarget[1], 0.34);
+  }
+});
+function endPtr(e){ pointers.delete(e.pointerId); if(pointers.size<2) pinchStart=0; }
+cv.addEventListener('pointerup', endPtr);
+cv.addEventListener('pointercancel', endPtr);
+cv.addEventListener('pointerleave', e=>{ pointers.delete(e.pointerId); });
+
+addEventListener('wheel', e=>{
+  e.preventDefault();
+  densTarget=Math.min(42, Math.max(5, densTarget*(1+e.deltaY*0.0012)));
+  hideHint();
+}, {passive:false});
+
+// ---- ambient life ----
+let ambT=1.4;
+// opening fractures so the first frame is already alive
+addShock(0.5,0.55,1.0);
+addShock(0.30,0.40,0.7);
+addShock(0.72,0.66,0.6);
+setTimeout(()=>{ if(!hintHidden){ hintEl.style.opacity='0'; hintHidden=true; } }, 8000);
+
+let last=performance.now()/1000;
+function frame(){
+  requestAnimationFrame(frame);
+  const now=performance.now()/1000;
+  const dt=Math.min(0.05, Math.max(0.001, now-last)); last=now;
+
+  ambT-=dt;
+  if(ambT<=0){
+    addShock(Math.random(), Math.random(), 0.4+Math.random()*0.35);
+    ambT=2.4+Math.random()*3.4;
+  }
+
+  const k=1-Math.exp(-dt*9.0);
+  mouse[0]+=(mTarget[0]-mouse[0])*k;
+  mouse[1]+=(mTarget[1]-mouse[1])*k;
+  densCur+=(densTarget-densCur)*(1-Math.exp(-dt*6.0));
+
+  const n=packShocks(now);
+
+  gl.uniform2f(U.res, cv.width, cv.height);
+  gl.uniform1f(U.time, now);
+  gl.uniform2f(U.mouse, mouse[0], mouse[1]);
+  gl.uniform1f(U.dens, densCur);
+  gl.uniform4fv(U.shock, shockBuf);
+  gl.uniform1i(U.shockN, n);
+  gl.uniform1f(U.hue, now*0.012);
+
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+frame();
+})();
+</script>
+</body>
+</html>

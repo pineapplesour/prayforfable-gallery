@@ -1,0 +1,946 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>유원지의 그림자</title>
+<style>
+  :root{
+    --ink:#0a0a0f; --fog:#15151d; --blood:#7a1320; --bone:#d8cdb4; --rust:#5a3a1a;
+    --glow:#9be7ff; --warn:#ffcf4d;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;
+    font-family:'Courier New',monospace;color:var(--bone);
+    user-select:none;-webkit-user-select:none;touch-action:none;}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#000;}
+  canvas{image-rendering:pixelated;image-rendering:crisp-edges;display:block;background:#000;}
+
+  /* HUD */
+  #hud{position:absolute;top:0;left:0;right:0;padding:8px 10px;display:flex;
+    justify-content:space-between;align-items:flex-start;pointer-events:none;z-index:30;
+    font-size:13px;text-shadow:0 0 4px #000,0 0 2px #000;}
+  #hud .left{max-width:62%;}
+  #objtxt{color:var(--warn);line-height:1.35;}
+  #inv{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;}
+  #inv .it{background:rgba(20,20,28,.85);border:1px solid #443;padding:2px 6px;
+    font-size:11px;color:var(--bone);border-radius:3px;}
+  #beat{text-align:right;}
+  #hpwrap{width:120px;height:10px;border:1px solid #553;background:#100;margin-top:4px;margin-left:auto;}
+  #hpbar{height:100%;width:100%;background:linear-gradient(90deg,#7a1320,#c93);transition:width .15s;}
+
+  /* message log */
+  #msg{position:absolute;left:50%;bottom:96px;transform:translateX(-50%);
+    background:rgba(8,8,12,.9);border:1px solid #443;padding:8px 14px;border-radius:5px;
+    max-width:80%;text-align:center;font-size:14px;line-height:1.4;z-index:35;
+    opacity:0;transition:opacity .25s;pointer-events:none;text-shadow:0 0 3px #000;}
+  #msg.show{opacity:1;}
+
+  /* touch controls */
+  #touch{position:absolute;inset:0;z-index:40;pointer-events:none;display:none;}
+  #dpad{position:absolute;left:14px;bottom:18px;width:150px;height:150px;pointer-events:auto;}
+  .dbtn{position:absolute;width:50px;height:50px;background:rgba(40,40,52,.7);
+    border:1px solid #665;border-radius:8px;display:flex;align-items:center;justify-content:center;
+    color:#ccb;font-size:20px;}
+  .dbtn:active{background:rgba(120,60,60,.8);}
+  #du{left:50px;top:0;} #dd{left:50px;top:100px;} #dl{left:0;top:50px;} #dr{left:100px;top:50px;}
+  #actbtns{position:absolute;right:14px;bottom:18px;width:150px;height:150px;pointer-events:auto;}
+  .abtn{position:absolute;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-size:13px;font-weight:bold;border:2px solid #776;color:#eed;text-align:center;line-height:1.05;}
+  #aAct{right:0;bottom:60px;width:74px;height:74px;background:rgba(60,110,120,.78);}
+  #aAct:active{background:rgba(120,200,220,.9);}
+  #aRun{right:78px;bottom:6px;width:60px;height:60px;background:rgba(110,60,60,.78);}
+  #aRun:active,#aRun.on{background:rgba(200,80,80,.95);}
+  #aMap{right:6px;bottom:140px;width:50px;height:50px;background:rgba(60,60,80,.78);font-size:11px;}
+
+  /* overlay screens */
+  .screen{position:absolute;inset:0;z-index:60;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;text-align:center;padding:24px;
+    background:radial-gradient(circle at 50% 30%,#1a0c10,#000 75%);}
+  .screen.hidden{display:none;}
+  .screen h1{font-size:clamp(26px,7vw,52px);margin:0 0 6px;letter-spacing:3px;
+    color:#c9b48a;text-shadow:0 0 18px #7a1320,0 0 4px #000;}
+  .screen h2{font-size:clamp(18px,4.5vw,30px);margin:0 0 18px;color:var(--blood);}
+  .screen p{max-width:560px;line-height:1.6;font-size:14px;color:#aa9;margin:6px 0;}
+  .screen .credit{margin-top:18px;font-size:12px;color:#776;border-top:1px solid #332;padding-top:12px;}
+  .btn{margin-top:18px;background:#1d2630;border:2px solid #5a7;color:#cfe;
+    padding:12px 26px;font-size:16px;font-family:inherit;border-radius:6px;cursor:pointer;
+    letter-spacing:2px;}
+  .btn:hover{background:#27414a;}
+  .keyhint{font-size:12px;color:#665;margin-top:14px;line-height:1.7;}
+  .title-clown{font-size:46px;margin:10px 0 4px;filter:drop-shadow(0 0 12px #7a1320);}
+  #vignette{position:absolute;inset:0;z-index:25;pointer-events:none;
+    box-shadow:inset 0 0 140px 40px rgba(0,0,0,.92);}
+  #flash{position:absolute;inset:0;z-index:55;pointer-events:none;background:#fff;opacity:0;}
+  .blink{animation:bl 1s steps(2) infinite;}
+  @keyframes bl{50%{opacity:.25;}}
+  #endpuz{display:flex;gap:6px;margin:10px 0;}
+  #endpuz input{width:42px;height:46px;font-size:22px;text-align:center;background:#0c0c12;
+    color:var(--warn);border:1px solid #553;font-family:inherit;border-radius:4px;}
+  small.dim{color:#665;}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="cv"></canvas>
+
+  <div id="hud">
+    <div class="left">
+      <div id="objtxt">목표: 출구를 찾아 폐장한 유원지를 탈출하라.</div>
+      <div id="inv"></div>
+    </div>
+    <div id="beat">
+      <div id="loc">정문 광장</div>
+      <div id="hpwrap"><div id="hpbar"></div></div>
+      <div id="dangertxt" style="color:#f55;font-size:12px;margin-top:4px;"></div>
+    </div>
+  </div>
+
+  <div id="msg"></div>
+
+  <div id="touch">
+    <div id="dpad">
+      <div class="dbtn" id="du">▲</div><div class="dbtn" id="dd">▼</div>
+      <div class="dbtn" id="dl">◀</div><div class="dbtn" id="dr">▶</div>
+    </div>
+    <div id="actbtns">
+      <div class="abtn" id="aMap">지도</div>
+      <div class="abtn" id="aAct">조사<br>/숨기</div>
+      <div class="abtn" id="aRun">달리기</div>
+    </div>
+  </div>
+
+  <div id="vignette"></div>
+  <div id="flash"></div>
+
+  <!-- TITLE -->
+  <div class="screen" id="scTitle">
+    <div class="title-clown">🃏</div>
+    <h1>유원지의 그림자</h1>
+    <h2>SHADOW OF THE FAIRGROUND</h2>
+    <p>15년 전 문을 닫은 놀이공원. 친구의 부탁으로 들어온 너는, 정문이 잠긴 것을 깨닫는다.
+       그리고 어둠 속에서 <b style="color:#c66">바느질로 기운 광대</b>가 너를 보고 있다.</p>
+    <button class="btn" id="btnStart">▶ 시작하기</button>
+    <div class="keyhint">
+      키보드: WASD/방향키 = 이동 · Shift = 달리기 · E/Space = 조사·숨기 · M = 지도<br>
+      모바일: 왼쪽 D패드 이동 · 오른쪽 버튼
+    </div>
+    <div class="credit">
+      아오오니(Ao Oni)에서 영감 — © noprops. 오리지널 구현.<br>
+      <small class="dim">괴물·장소·인물·이야기·퍼즐 전부 오리지널 창작물입니다.</small>
+    </div>
+  </div>
+
+  <!-- CODE PUZZLE -->
+  <div class="screen hidden" id="scCode">
+    <h1 style="font-size:30px">🔒 회전목마 제어반</h1>
+    <p id="codeHint">네 자리 숫자를 입력하라. 단서는 회전목마의 망가진 말들에 있다.</p>
+    <div id="endpuz">
+      <input id="c0" maxlength="1" inputmode="numeric"><input id="c1" maxlength="1" inputmode="numeric">
+      <input id="c2" maxlength="1" inputmode="numeric"><input id="c3" maxlength="1" inputmode="numeric">
+    </div>
+    <div id="codeMsg" style="color:#f66;height:18px;"></div>
+    <button class="btn" id="btnCode">입력</button>
+    <button class="btn" id="btnCodeBack" style="border-color:#754;color:#fcc;">취소</button>
+  </div>
+
+  <!-- ENDING -->
+  <div class="screen hidden" id="scEnd">
+    <div id="endIcon" class="title-clown">💀</div>
+    <h1 id="endTitle">사망</h1>
+    <p id="endText"></p>
+    <button class="btn" id="btnRetry">↺ 다시 시작</button>
+    <div class="credit">아오오니(Ao Oni)에서 영감 — © noprops. 오리지널 구현.</div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* =========================================================================
+   유원지의 그림자 — 오리지널 탑다운 픽셀 호러
+   아오오니에서 영감, 완전 오리지널 구현. © noprops
+   ========================================================================= */
+
+const TILE = 16;               // logical tile size (px, pre-scale)
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+
+/* ---------- viewport / scaling ---------- */
+const VIEW_W = 22, VIEW_H = 16;          // tiles visible
+let SCALE = 2;
+function fit(){
+  const w = window.innerWidth, h = window.innerHeight;
+  const sx = Math.floor(w / (VIEW_W*TILE));
+  const sy = Math.floor(h / (VIEW_H*TILE));
+  SCALE = Math.max(1, Math.min(sx, sy));
+  cv.width  = VIEW_W*TILE; cv.height = VIEW_H*TILE;
+  cv.style.width  = (VIEW_W*TILE*SCALE)+'px';
+  cv.style.height = (VIEW_H*TILE*SCALE)+'px';
+  ctx.imageSmoothingEnabled = false;
+}
+window.addEventListener('resize', fit);
+
+/* ---------- tile legend ----------
+   . floor   # wall   D door(needs flag)  L locked door
+   K key item-on-floor (handled via objects)  H hide spot
+   E exit gate
+   Various room-specific decor handled by drawTile by char
+------------------------------------------------------------------- */
+
+/* Map: a connected abandoned amusement park, single grid.
+   Width 64, Height 44. Rooms: 정문광장 / 매표소 / 회전목마장 / 거울미로 /
+   유령의집 / 제어실 / 뒷마당 출구 */
+const MAP = [
+"################################################################",
+"#......................##..............##......................#",
+"#..PLAZA..............b##..MIRROR.....##.....HAUNTED..........#",
+"#.....................b##.....MAZE....##......HOUSE...........#",
+"#.....................b##.............##.....................g#",
+"#.....................b##.m.m.m.m.m.m.##....h.....h.....h....g#",
+"#.....F...............b##.............##....................gg#",
+"#.....................b##.m.m.m.m.m.m.##....h.....h.....h....g#",
+"#.....................bDD.............DD....................gg#",
+"#.....................b##.m.m.m.m.m.m.##.....................g#",
+"#.....................b##.............##....h.....h....h.....g#",
+"#.....................b##.m.m.m.m.m.m.##....................gg#",
+"#.PHOTO...............b##.............##.....................g#",
+"#.BOOTH...............b##.m.m.m.m.m.m.##....h.....h....h.....g#",
+"#..H..................b##.............##.....................g#",
+"#.....................bDDDDDDD###DDDDDDD....................Lg#",
+"#####D##################.............#######D###################",
+"#....................#.....TICKET....#........................#",
+"#...CAROUSEL.........#.....BOOTH.....#.....CONTROL............#",
+"#......HALL..........D.....t.t.t.....D.......ROOM.............#",
+"#...................c#...............#cccccc.................c#",
+"#...c..c..c..c..c....#...K...........#.......................c#",
+"#...................c#.....t.t.t.....#.....p.p.p.....p.p.....c#",
+"#...c..c..c..c..c....#...............#.......................c#",
+"#...................c#....TICKETS....#......................Pc#",
+"#...c..c..c..c..c....D...gate........#cccccccccccccc.........c#",
+"#...................c####D#######D####.......................c#",
+"#...c..c..c..c..c....#...............#.......................c#",
+"#...................c#...LOST........#......EXIT.............E#",
+"#...CONTROL.........c#...&.FOUND.....#......TUNNEL...........E#",
+"#...PANEL...........c#...............#.......................E#",
+"#..@................c#...............#........................#",
+"################################################################",
+];
+const MH = MAP.length, MW = MAP[0].length;
+function mget(x,y){ if(y<0||y>=MH||x<0||x>=MW) return '#'; return MAP[y][x]; }
+function mset(x,y,ch){ const r=MAP[y].split(''); r[x]=ch; MAP[y]=r.join(''); }
+
+/* solid tiles */
+function solidAt(x,y){
+  const c = mget(x,y);
+  if(c==='#') return true;
+  if(c==='b'||c==='g'||c==='c'||c==='t') return true; // barriers/fences/booths
+  if(c==='D'){ return !game.doorsOpen; }              // big arena/transition doors gate
+  if(c==='L'){ return !game.flags.haunted_unlocked; }
+  if(c==='E'){ return !game.flags.escaped_gate; }
+  // 'm' carousel horses & 'h' haunted props & 'p' control consoles are decor but blocking
+  if(c==='m'||c==='p') return true;
+  return false;
+}
+
+/* ---------- interactables (objects) ---------- */
+/* Each: {x,y,type,id,...} type: item / lever / examine / hide / codepanel / endgate / monsterTrigger */
+let OBJECTS = [];
+function buildObjects(){
+  OBJECTS = [
+    // --- key items ---
+    {x:23,y:21,type:'item',id:'oilcan',name:'녹슨 기름통',
+      msg:'녹슨 기름통을 주웠다. 무언가 굳어버린 기계에 쓸 수 있을 것 같다.'},
+    {x:24,y:30,type:'examine',id:'lostfound',name:'분실물 보관함',
+      msg:'분실물 상자. 빛바랜 사진 한 장 — 웃고 있는 가족, 그 뒤에 바느질 자국의 광대가 서 있다. 사진 뒤: "말의 눈을 세어라."'},
+    {x:59,y:24,type:'item',id:'masterkey',name:'관리인 열쇠',flag_need:'control_power',
+      name_locked:'전원이 꺼진 진열장',
+      msg:'관리인 열쇠를 얻었다! 유령의 집 자물쇠를 열 수 있다.',
+      msg_locked:'유리 진열장 안에 열쇠가 있다. 하지만 전원이 꺼져 자석 잠금이 풀리지 않는다.'},
+
+    // --- carousel code panel (opens arena door / powers control) ---
+    {x:36,y:19,type:'codepanel',id:'carousel',
+      msg:'회전목마 제어반. 네 자리 코드를 입력해야 한다.'},
+
+    // --- control room lever: restores power (needs oilcan) ---
+    {x:42,y:22,type:'lever',id:'powerlever',need:'oilcan',flag_set:'control_power',
+      msg_need:'거대한 발전기. 톱니가 녹슬어 꿈쩍도 않는다. 기름이 필요하다.',
+      msg_do:'기름통으로 톱니를 적시고 레버를 당겼다. 유원지에 전기가 들어온다 — 불빛이 깜빡이고, 멀리서 음악이 운다...'},
+
+    // --- haunted house: hidden exit key fragment ---
+    {x:50,y:5,type:'examine',id:'hauntclue',name:'유령의 집 벽',
+      msg:'벽에 긁힌 글씨: "그것은 빛을 싫어한다. 터널의 봉인은 세 개의 불을 원한다."'},
+    {x:30,y:5,type:'item',id:'fuse1',name:'퓨즈 A',msg:'터널 퓨즈 A를 찾았다. (1/3)'},
+    {x:54,y:13,type:'item',id:'fuse2',name:'퓨즈 B',msg:'터널 퓨즈 B를 찾았다. (2/3)'},
+    {x:48,y:11,type:'item',id:'fuse3',name:'퓨즈 C',msg:'터널 퓨즈 C를 찾았다. (3/3)'},
+
+    // --- exit tunnel gate ---
+    {x:59,y:29,type:'endgate',id:'exit',need_fuses:3,
+      msg_need:'탈출 터널. 봉인된 철문. 퓨즈 슬롯 세 개가 비어 있다.',
+      msg_do:'세 퓨즈를 끼우자 철문이 굉음을 내며 열린다. 새벽빛이 보인다!'},
+
+    // --- monster trigger when entering haunted house ---
+    {x:46,y:8,type:'trigger',id:'awaken',once:true,
+      msg:'바닥의 인형이 고개를 든다. 실로 꿰맨 입이 찢어지듯 벌어진다. 그것이 일어선다.'},
+  ];
+  // hide spots from map 'H'
+  for(let y=0;y<MH;y++)for(let x=0;x<MW;x++){
+    if(mget(x,y)==='H') OBJECTS.push({x,y,type:'hide',id:'hide'+x+'_'+y});
+  }
+}
+
+/* ---------- game state ---------- */
+let game;
+function newGame(){
+  game = {
+    px:3.5, py:31.5,            // player pos (tiles, fractional) @ control panel start
+    pdir:0, moving:false, anim:0, walkphase:0,
+    hp:100, dead:false, win:false,
+    running:false, hidden:false, hideObj:null,
+    inv:{}, flags:{}, doorsOpen:false,
+    fuses:0,
+    monster:{active:false,x:46,y:6,dir:0,anim:0,speed:0,seen:false,target:null,
+             stunTimer:0, lungeCd:0},
+    danger:0,             // proximity dread 0..1
+    heartT:0, footT:0,
+    screenShake:0,
+    objective:'잠긴 정문… 다른 출구를 찾아야 한다. 매표소부터 살펴보자.',
+  };
+  buildObjects();
+  // reset map dynamic tiles
+  rebuildMap();
+  updateHUD();
+}
+const MAP_SRC = MAP.slice();
+function rebuildMap(){ for(let i=0;i<MAP_SRC.length;i++) MAP[i]=MAP_SRC[i]; }
+
+/* ---------- input ---------- */
+const keys = {};
+addEventListener('keydown',e=>{
+  const k=e.key.toLowerCase();
+  keys[k]=true;
+  if(['arrowup','arrowdown','arrowleft','arrowright',' '].includes(k)) e.preventDefault();
+  if(k==='e'||k===' ') doAction();
+  if(k==='m') toggleMap();
+  if(k==='shift') game&&(game.running=true);
+});
+addEventListener('keyup',e=>{
+  const k=e.key.toLowerCase(); keys[k]=false;
+  if(k==='shift') game&&(game.running=false);
+});
+
+/* touch */
+const T={u:0,d:0,l:0,r:0};
+function bindHold(id,on,off){
+  const el=document.getElementById(id);
+  const s=e=>{e.preventDefault();on();};
+  const f=e=>{e.preventDefault();off();};
+  el.addEventListener('touchstart',s,{passive:false});
+  el.addEventListener('touchend',f,{passive:false});
+  el.addEventListener('touchcancel',f,{passive:false});
+  el.addEventListener('mousedown',s); el.addEventListener('mouseup',f);
+  el.addEventListener('mouseleave',f);
+}
+bindHold('du',()=>T.u=1,()=>T.u=0);
+bindHold('dd',()=>T.d=1,()=>T.d=0);
+bindHold('dl',()=>T.l=1,()=>T.l=0);
+bindHold('dr',()=>T.r=1,()=>T.r=0);
+document.getElementById('aAct').addEventListener('touchstart',e=>{e.preventDefault();doAction();},{passive:false});
+document.getElementById('aAct').addEventListener('click',e=>{e.preventDefault();doAction();});
+const runBtn=document.getElementById('aRun');
+function setRun(v){ if(game){game.running=v;} runBtn.classList.toggle('on',v); }
+runBtn.addEventListener('touchstart',e=>{e.preventDefault();setRun(true);},{passive:false});
+runBtn.addEventListener('touchend',e=>{e.preventDefault();setRun(false);},{passive:false});
+runBtn.addEventListener('mousedown',e=>{setRun(true);});
+runBtn.addEventListener('mouseup',e=>{setRun(false);});
+document.getElementById('aMap').addEventListener('click',toggleMap);
+document.getElementById('aMap').addEventListener('touchstart',e=>{e.preventDefault();toggleMap();},{passive:false});
+
+/* show touch on touch devices */
+if('ontouchstart' in window || navigator.maxTouchPoints>0){
+  document.getElementById('touch').style.display='block';
+}
+
+/* ---------- messaging ---------- */
+let msgTimer=null;
+function flashMsg(t,ms=2600){
+  const m=document.getElementById('msg');
+  m.textContent=t; m.classList.add('show');
+  clearTimeout(msgTimer);
+  msgTimer=setTimeout(()=>m.classList.remove('show'),ms);
+}
+
+/* ---------- HUD ---------- */
+function updateHUD(){
+  const inv=document.getElementById('inv'); inv.innerHTML='';
+  const names={oilcan:'녹슨 기름통',masterkey:'관리인 열쇠',fuse1:'퓨즈 A',fuse2:'퓨즈 B',fuse3:'퓨즈 C'};
+  for(const k in game.inv){ if(game.inv[k]){const d=document.createElement('div');d.className='it';d.textContent='◆ '+(names[k]||k);inv.appendChild(d);} }
+  document.getElementById('objtxt').textContent='목표: '+game.objective;
+  document.getElementById('hpbar').style.width=Math.max(0,game.hp)+'%';
+}
+
+/* ---------- location name by region ---------- */
+function locName(x,y){
+  if(x<22 && y<16) return '정문 광장';
+  if(x<22 && y>=16) return '회전목마 / 제어 패널';
+  if(x>=23&&x<38&&y<16) return '거울 미로';
+  if(x>=23&&x<38&&y>=16) return '매표소';
+  if(x>=38&&y<16) return '유령의 집';
+  if(x>=38&&y>=16) return '제어실 / 탈출 터널';
+  return '유원지';
+}
+
+/* ============================ ACTION ============================ */
+function nearestObj(range=1.3){
+  let best=null,bd=1e9;
+  for(const o of OBJECTS){
+    if(o.taken) continue;
+    const d=Math.hypot(o.x+0.5-game.px,o.y+0.5-game.py);
+    if(d<range && d<bd){bd=d;best=o;}
+  }
+  return best;
+}
+function doAction(){
+  if(game.dead||game.win) return;
+  // unhide first
+  if(game.hidden){ game.hidden=false; game.hideObj=null; flashMsg('숨은 곳에서 나왔다.'); return; }
+  const o=nearestObj();
+  if(!o){ flashMsg('주변에 조사할 것이 없다.'); return; }
+  switch(o.type){
+    case 'item': pickItem(o); break;
+    case 'examine': flashMsg(o.msg,3400); break;
+    case 'lever': pullLever(o); break;
+    case 'codepanel': openCode(o); break;
+    case 'hide': hideHere(o); break;
+    case 'trigger': trigger(o); break;
+    case 'endgate': endGate(o); break;
+  }
+}
+function pickItem(o){
+  if(o.flag_need && !game.flags[o.flag_need]){ flashMsg(o.msg_locked||'아직 가질 수 없다.',3200); return; }
+  o.taken=true; game.inv[o.id]=true;
+  if(o.id==='fuse1'||o.id==='fuse2'||o.id==='fuse3') game.fuses++;
+  flashMsg(o.msg,3400);
+  if(o.id==='masterkey'){ game.flags.haunted_unlocked=true;
+    game.objective='관리인 열쇠 입수. 유령의 집의 잠긴 문(L)이 열렸다 — 하지만 그것이 깨어났다...'; }
+  if(o.id==='oilcan') game.objective='제어실의 녹슨 발전기에 기름을 쓸 수 있다.';
+  if(game.fuses===3) game.objective='퓨즈 3개 완성! 제어실 너머 탈출 터널(E)의 철문을 열어라.';
+  updateHUD();
+}
+function pullLever(o){
+  if(o.need && !game.inv[o.need]){ flashMsg(o.msg_need,3200); return; }
+  if(game.flags[o.flag_set]){ flashMsg('이미 작동시켰다.'); return; }
+  game.flags[o.flag_set]=true;
+  flashMsg(o.msg_do,3800);
+  doFlash(); game.screenShake=14;
+  if(o.flag_set==='control_power'){
+    game.objective='전원 복구! 분실물 보관함의 진열장 자물쇠가 풀렸다 — 관리인 열쇠를 가져가라.';
+    // wake monster on power (music)
+    if(!game.monster.active){ wakeMonster(); }
+  }
+  updateHUD();
+}
+function endGate(o){
+  if(game.fuses<o.need_fuses){ flashMsg(o.msg_need,3400); return; }
+  game.flags.escaped_gate=true;
+  flashMsg(o.msg_do,2000);
+  setTimeout(()=>doWin(),1400);
+}
+function trigger(o){
+  if(o.once&&o.done) return;
+  o.done=true;
+  if(o.id==='awaken'){ flashMsg(o.msg,3600); wakeMonster(); doFlash(); game.screenShake=20; }
+}
+function hideHere(o){
+  game.hidden=true; game.hideObj=o;
+  // snap player onto hide spot
+  game.px=o.x+0.5; game.py=o.y+0.5;
+  flashMsg('사진 부스 안에 숨었다. 숨을 죽인다... (조사 = 나가기)',3000);
+}
+
+/* ---------- monster ---------- */
+function wakeMonster(){
+  const m=game.monster;
+  if(m.active) return;
+  m.active=true; m.x=46; m.y=6; m.seen=true;
+  flashMsg('어디선가 끌리는 발소리가 시작된다... 그것이 너를 쫓는다.',3400);
+}
+
+/* ============================ MOVEMENT / UPDATE ============================ */
+let last=performance.now();
+function loop(now){
+  const dt=Math.min(0.05,(now-last)/1000); last=now;
+  if(running && game) update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+let running=false;
+
+function tryMove(nx,ny){
+  // collision with a small body box (0.3 radius)
+  const r=0.30;
+  const corners=[[nx-r,ny-r],[nx+r,ny-r],[nx-r,ny+r],[nx+r,ny+r]];
+  for(const [cx,cy] of corners){
+    if(solidAt(Math.floor(cx),Math.floor(cy))) return false;
+  }
+  return true;
+}
+
+function update(dt){
+  if(game.dead||game.win) return;
+
+  // ---- input vector ----
+  let dx=0,dy=0;
+  if(keys['w']||keys['arrowup']||T.u) dy-=1;
+  if(keys['s']||keys['arrowdown']||T.d) dy+=1;
+  if(keys['a']||keys['arrowleft']||T.l) dx-=1;
+  if(keys['d']||keys['arrowright']||T.r) dx+=1;
+
+  if(game.hidden){ dx=dy=0; }
+
+  game.moving = (dx!==0||dy!==0);
+  if(dx||dy){
+    if(dx>0)game.pdir=2; else if(dx<0)game.pdir=1;
+    if(dy>0)game.pdir=0; else if(dy<0)game.pdir=3;
+    const len=Math.hypot(dx,dy)||1; dx/=len; dy/=len;
+    const base=3.0, run=game.running?5.2:base; // tiles/sec
+    const sp=run*dt;
+    if(tryMove(game.px+dx*sp,game.py)) game.px+=dx*sp;
+    if(tryMove(game.px,game.py+dy*sp)) game.py+=dy*sp;
+    game.walkphase += sp*4;
+  }
+
+  // ---- monster AI ----
+  updateMonster(dt);
+
+  // ---- ambient: heartbeat & danger from monster proximity ----
+  const m=game.monster;
+  if(m.active){
+    const d=Math.hypot(m.x-game.px,m.y-game.py);
+    game.danger = Math.max(0, 1 - d/10);
+  } else game.danger*=0.95;
+
+  // footstep dread (not lethal): drains hp slowly only when chased & close & not hidden
+  if(m.active && !game.hidden){
+    const d=Math.hypot(m.x-game.px,m.y-game.py);
+    if(d<0.7){ // caught
+      game.hp-=70*dt;
+      game.screenShake=10;
+      if(game.hp<=0){ doDeath(); }
+    }
+  }
+
+  if(game.screenShake>0) game.screenShake=Math.max(0,game.screenShake-40*dt);
+
+  // hud throttle
+  game.heartT+=dt;
+  if(game.heartT>0.2){ game.heartT=0;
+    document.getElementById('loc').textContent=locName(Math.floor(game.px),Math.floor(game.py));
+    const dt2=document.getElementById('dangertxt');
+    if(m.active){
+      const d=Math.hypot(m.x-game.px,m.y-game.py);
+      dt2.textContent = game.hidden ? '🫥 숨는 중'
+        : d<4 ? '⚠ 바로 뒤에 있다!' : d<8 ? '⚠ 가까이 있다' : '👁 추격 중';
+      dt2.className = (d<4&&!game.hidden) ? 'blink' : '';
+    } else dt2.textContent='';
+    document.getElementById('hpbar').style.width=Math.max(0,game.hp)+'%';
+  }
+}
+
+function updateMonster(dt){
+  const m=game.monster; if(!m.active) return;
+  m.anim+=dt;
+  // If player hidden, monster wanders to last seen and gives up (slows, loses track)
+  let tx,ty;
+  const dPlayer=Math.hypot(game.px-m.x,game.py-m.y);
+  let los = hasLineOfSight(m.x,m.y,game.px,game.py);
+
+  if(game.hidden){
+    // lose interest over time; drift toward last known then idle-wander
+    m.lostTimer=(m.lostTimer||0)+dt;
+    if(m.last && m.lostTimer<3.5){ tx=m.last.x; ty=m.last.y; }
+    else { tx=m.x+Math.sin(m.anim*0.7)*0.5; ty=m.y+Math.cos(m.anim*0.9)*0.5; }
+  } else {
+    m.lostTimer=0;
+    if(los || dPlayer<5){ m.last={x:game.px,y:game.py}; tx=game.px; ty=game.py; m.seen=true; }
+    else if(m.last){ tx=m.last.x; ty=m.last.y; }
+    else { tx=game.px; ty=game.py; }
+  }
+
+  // speed: relentless but slightly slower than running player, faster than walking
+  const chasing = (!game.hidden && (los||dPlayer<6));
+  const spd = (chasing?3.55:1.9);
+  let ddx=tx-m.x, ddy=ty-m.y;
+  const dl=Math.hypot(ddx,ddy)||1; ddx/=dl; ddy/=dl;
+  if(ddx>0.2)m.dir=2;else if(ddx<-0.2)m.dir=1;
+  const step=spd*dt;
+  // monster collision (slightly smaller, can pass big doors which are open by then)
+  const mr=0.32;
+  function mSolid(x,y){
+    for(const [cx,cy] of [[x-mr,y-mr],[x+mr,y-mr],[x-mr,y+mr],[x+mr,y+mr]])
+      if(solidAt(Math.floor(cx),Math.floor(cy))) return true;
+    return false;
+  }
+  if(!mSolid(m.x+ddx*step,m.y)) m.x+=ddx*step;
+  else { // try slide / wall-follow
+    if(!mSolid(m.x,m.y+Math.sign(ddy||1)*step)) m.y+=Math.sign(ddy||1)*step;
+  }
+  if(!mSolid(m.x,m.y+ddy*step)) m.y+=ddy*step;
+  else { if(!mSolid(m.x+Math.sign(ddx||1)*step,m.y)) m.x+=Math.sign(ddx||1)*step; }
+}
+
+function hasLineOfSight(ax,ay,bx,by){
+  const steps=Math.ceil(Math.hypot(bx-ax,by-ay)*2);
+  for(let i=1;i<steps;i++){
+    const t=i/steps, x=ax+(bx-ax)*t, y=ay+(by-ay)*t;
+    if(solidAt(Math.floor(x),Math.floor(y))) return false;
+  }
+  return true;
+}
+
+/* ============================ RENDER ============================ */
+function render(){
+  ctx.fillStyle='#05050a'; ctx.fillRect(0,0,cv.width,cv.height);
+  if(!game) return; // title screen shows over a black canvas before newGame()
+
+  // camera centered on player
+  let camx = game.px - VIEW_W/2;
+  let camy = game.py - VIEW_H/2;
+  camx=Math.max(0,Math.min(MW-VIEW_W,camx));
+  camy=Math.max(0,Math.min(MH-VIEW_H,camy));
+  let shx=0,shy=0;
+  if(game.screenShake>0){ shx=(Math.random()-.5)*game.screenShake; shy=(Math.random()-.5)*game.screenShake; }
+
+  const ox=-Math.round((camx*TILE))+shx, oy=-Math.round((camy*TILE))+shy;
+
+  // tiles
+  const x0=Math.floor(camx), y0=Math.floor(camy);
+  for(let y=y0-1;y<y0+VIEW_H+2;y++){
+    for(let x=x0-1;x<x0+VIEW_W+2;x++){
+      drawTile(x,y,x*TILE+ox,y*TILE+oy);
+    }
+  }
+  // objects
+  for(const o of OBJECTS){
+    if(o.taken) continue;
+    if(o.type==='trigger') continue;
+    drawObject(o,o.x*TILE+ox,o.y*TILE+oy);
+  }
+  // monster (behind player if above)
+  if(game.monster.active) drawMonster(game.monster.x*TILE+ox-8, game.monster.y*TILE+oy-12);
+  // player
+  if(!game.hidden) drawPlayer(game.px*TILE+ox-8, game.py*TILE+oy-12);
+  else drawHiddenIcon(game.px*TILE+ox-8, game.py*TILE+oy-12);
+
+  // lighting / darkness — radial torch around player + power state
+  drawLighting(ox,oy);
+
+  // danger red pulse
+  if(game.danger>0.05){
+    ctx.fillStyle='rgba(120,10,20,'+(game.danger*0.28)+')';
+    ctx.fillRect(0,0,cv.width,cv.height);
+  }
+  // heartbeat vignette pulse
+  if(game.monster.active && game.danger>0.3){
+    const p=(Math.sin(performance.now()/ (260 - game.danger*120))*0.5+0.5)*game.danger*0.4;
+    ctx.fillStyle='rgba(0,0,0,'+p+')';
+    ctx.fillRect(0,0,cv.width,cv.height);
+  }
+}
+
+/* ---- tile drawing ---- */
+function px(x,y,w,h,c){ ctx.fillStyle=c; ctx.fillRect(x,y,w,h); }
+function drawTile(tx,ty,sx,sy){
+  const c=mget(tx,ty);
+  // base floor
+  const checker=((tx+ty)&1);
+  if(c==='#'){
+    // wall: dark brick
+    px(sx,sy,TILE,TILE,'#1b1620');
+    px(sx,sy,TILE,2,'#2a2230');
+    px(sx,sy+8,8,2,'#241d2a');
+    px(sx+8,sy+3,8,2,'#241d2a');
+    return;
+  }
+  // floor variants
+  let f = checker?'#161420':'#13121c';
+  // region tinting
+  if(tx>=23&&tx<38&&ty<16) f=checker?'#141a22':'#101620'; // mirror maze bluish
+  if(tx>=38&&ty<16)        f=checker?'#1b1418':'#160f14';  // haunted reddish
+  if(ty>=16&&tx>=38)       f=checker?'#15161a':'#101116';  // control
+  px(sx,sy,TILE,TILE,f);
+
+  switch(c){
+    case 'b': // plaza/maze barrier rope/fence (vertical)
+      px(sx+6,sy,4,TILE,'#3a2c18'); px(sx+6,sy+6,4,2,'#5a4424'); break;
+    case 'g': // haunted fence
+      px(sx,sy+5,TILE,3,'#2a1018'); px(sx+2,sy,2,TILE,'#1f0c12'); break;
+    case 'c': // carousel/control fence
+      px(sx+3,sy,2,TILE,'#22323a'); px(sx+10,sy,2,TILE,'#22323a'); break;
+    case 't': // ticket booth block
+      px(sx+1,sy+1,14,14,'#2a2028'); px(sx+3,sy+3,10,5,'#4a3a44'); px(sx+4,sy+9,8,4,'#0c0a10'); break;
+    case 'm': // carousel horse
+      drawHorse(sx,sy); break;
+    case 'h': // haunted prop (broken mannequin / tombstone)
+      px(sx+4,sy+4,8,10,'#241c1c'); px(sx+5,sy+2,6,4,'#3a2e2e'); px(sx+6,sy+8,1,1,'#a55'); break;
+    case 'p': // control console
+      px(sx+1,sy+2,14,12,'#1a2228'); px(sx+3,sy+4,3,3,(game.flags.control_power?'#5fef9f':'#3a1010'));
+      px(sx+8,sy+4,3,3,(game.flags.control_power?'#ffcf4d':'#241010')); break;
+    case 'D': // door
+      if(game.doorsOpen){ px(sx,sy+6,TILE,4,'#0c0a10'); }
+      else { px(sx,sy,TILE,TILE,'#3a2a18'); px(sx+6,sy+6,4,4,'#caa24a'); }
+      break;
+    case 'L':
+      if(game.flags.haunted_unlocked){ px(sx,sy+6,TILE,4,'#0c0a10'); }
+      else { px(sx,sy,TILE,TILE,'#2a1820'); px(sx+5,sy+5,6,6,'#883344'); px(sx+7,sy+8,2,4,'#000'); }
+      break;
+    case 'E':
+      if(game.flags.escaped_gate){ px(sx,sy,TILE,TILE,'#2a3a2a'); px(sx+4,sy,2,TILE,'#9fdfff');}
+      else { px(sx,sy,TILE,TILE,'#181c20'); px(sx+2,sy,2,TILE,'#3a4248'); px(sx+7,sy,2,TILE,'#3a4248'); px(sx+12,sy,2,TILE,'#3a4248'); }
+      break;
+    case 'F': // fountain/decor in plaza
+      px(sx+3,sy+3,10,10,'#16202a'); px(sx+5,sy+5,6,6,'#22323f'); break;
+    case '&': // lost&found box
+      px(sx+2,sy+4,12,9,'#3a2c1a'); px(sx+2,sy+4,12,2,'#5a4424'); break;
+    case 'K': // generic glint (oilcan handled as object too)
+      break;
+  }
+}
+function drawHorse(sx,sy){
+  // tiny broken carousel horse silhouette
+  px(sx+4,sy+3,8,7,'#3a2d3a');
+  px(sx+10,sy+2,3,3,'#4a3a4a');     // head
+  px(sx+4,sy+10,2,4,'#241a24'); px(sx+9,sy+10,2,4,'#241a24'); // legs
+  px(sx+7,sy,2,4,'#5a4a2a');        // pole
+  px(sx+11,sy+3,1,1,'#a33');        // eye glint
+}
+
+/* ---- player sprite (pixel) ---- */
+function drawPlayer(sx,sy){
+  const bob = game.moving? Math.sin(game.walkphase)*1 : 0;
+  sy+=bob;
+  // shadow
+  px(sx+4,sy+22,8,3,'rgba(0,0,0,.45)');
+  const dir=game.pdir;
+  // body (hoodie - teal)
+  px(sx+4,sy+10,8,9,'#234a4a');
+  px(sx+5,sy+19,2,4,'#16282a'); px(sx+9,sy+19,2,4,'#16282a'); // legs
+  // head
+  px(sx+5,sy+3,6,7,'#d8b48a');
+  px(sx+5,sy+2,6,3,'#3a2a20'); // hair
+  // face by dir
+  if(dir===0){ px(sx+6,sy+6,1,1,'#000'); px(sx+9,sy+6,1,1,'#000'); } // down
+  else if(dir===3){ px(sx+5,sy+2,6,4,'#3a2a20'); } // up (back of head)
+  else if(dir===2){ px(sx+9,sy+6,1,1,'#000'); }
+  else { px(sx+6,sy+6,1,1,'#000'); }
+  // flashlight cone hint
+  if(game.flags.control_power || true){
+    px(sx+5,sy+9,6,1,'#cfe9ff'); // little light
+  }
+}
+function drawHiddenIcon(sx,sy){
+  px(sx+2,sy+6,12,16,'#241828');
+  px(sx+3,sy+7,10,4,'#3a2a40');
+  px(sx+5,sy+12,2,2,'#9be7ff'); px(sx+9,sy+12,2,2,'#9be7ff'); // eyes peeking
+}
+
+/* ---- monster sprite: stitched harlequin (original) ---- */
+function drawMonster(sx,sy){
+  const t=performance.now()/220;
+  const sway=Math.sin(t)*1.2;
+  sx+=sway;
+  // shadow
+  px(sx+2,sy+24,14,3,'rgba(80,0,10,.5)');
+  // tall ragged body - dull violet/grey patchwork
+  px(sx+3,sy+9,12,15,'#4a3850');
+  // patch stitches
+  px(sx+4,sy+13,8,1,'#1a1018'); px(sx+5,sy+16,1,4,'#1a1018'); px(sx+10,sy+17,1,3,'#1a1018');
+  // long thin arms
+  px(sx+1,sy+11,2,10,'#3a2c40'); px(sx+15,sy+11,2,11,'#3a2c40');
+  px(sx,sy+20,3,3,'#d0c4b0'); px(sx+15,sy+21,3,3,'#d0c4b0'); // pale claws
+  // head: bone-white, ruffled collar
+  px(sx+2,sy+22,14,2,'#7a1320'); // red collar bottom
+  px(sx+4,sy+2,10,9,'#d8cdb4');
+  // pointed hood/cap
+  px(sx+5,sy,8,3,'#5a1828'); px(sx+8,sy-2,2,3,'#7a1320');
+  // stitched mouth (wide, threatening) — pulses
+  const mw = 6 + Math.round(Math.sin(t*1.7)*1.5);
+  px(sx+9-(mw>>1)+4,sy+8,mw,1,'#3a0a10');
+  for(let i=0;i<mw;i+=2) px(sx+9-(mw>>1)+4+i,sy+7,1,2,'#1a0508'); // stitches
+  // hollow eyes — glow
+  const eg = (Math.sin(t*3)*0.5+0.5);
+  px(sx+5,sy+4,2,2,'#000'); px(sx+10,sy+4,2,2,'#000');
+  ctx.fillStyle='rgba(255,40,40,'+(0.4+eg*0.6)+')';
+  ctx.fillRect(sx+5,sy+4,2,2); ctx.fillRect(sx+10,sy+4,2,2);
+  // single tear stitch
+  px(sx+6,sy+6,1,2,'#7a1320');
+}
+
+/* ---- lighting ---- */
+function drawLighting(ox,oy){
+  // create darkness overlay with a hole around player
+  const ctxL=ctx;
+  ctxL.save();
+  // overall darkness depends on whether power on
+  const dark = game.flags.control_power ? 0.62 : 0.86;
+  const cx = game.px*TILE+ox, cy=game.py*TILE+oy;
+  const grd=ctxL.createRadialGradient(cx,cy, 8, cx,cy, game.flags.control_power?96:64);
+  grd.addColorStop(0,'rgba(0,0,0,0)');
+  grd.addColorStop(0.55,'rgba(0,0,0,'+(dark*0.4)+')');
+  grd.addColorStop(1,'rgba(0,0,0,'+dark+')');
+  ctxL.fillStyle=grd;
+  ctxL.fillRect(0,0,cv.width,cv.height);
+  // directional flashlight cone
+  const dir=game.pdir;
+  let ang = dir===0?Math.PI/2: dir===3?-Math.PI/2: dir===2?0:Math.PI;
+  ctxL.save();
+  ctxL.globalCompositeOperation='destination-out';
+  ctxL.beginPath();
+  ctxL.moveTo(cx,cy);
+  const span=0.6, R=120;
+  ctxL.arc(cx,cy,R,ang-span,ang+span);
+  ctxL.closePath();
+  const cone=ctxL.createRadialGradient(cx,cy,6,cx,cy,R);
+  cone.addColorStop(0,'rgba(0,0,0,0.9)');
+  cone.addColorStop(1,'rgba(0,0,0,0)');
+  ctxL.fillStyle=cone; ctxL.fill();
+  ctxL.restore();
+  ctxL.restore();
+}
+
+/* ---- objects glints ---- */
+function drawObject(o,sx,sy){
+  if(o.type==='item'){
+    if(o.flag_need && !game.flags[o.flag_need]) { // locked case shown dim
+      px(sx+3,sy+4,10,9,'#1a2228'); px(sx+5,sy+6,6,5,'#2a3a44'); return;
+    }
+    const t=performance.now()/300;
+    const g=Math.sin(t)*0.5+0.5;
+    if(o.id==='oilcan'){ px(sx+4,sy+6,8,7,'#5a4a2a'); px(sx+10,sy+4,3,3,'#3a2e18'); }
+    else if(o.id.startsWith('fuse')){ px(sx+5,sy+5,6,8,'#caa24a'); px(sx+6,sy+3,4,3,'#e8d68a'); }
+    else if(o.id==='masterkey'){ px(sx+5,sy+5,3,8,'#d8c060'); px(sx+5,sy+5,6,3,'#d8c060'); }
+    else { px(sx+5,sy+5,6,6,'#d8c060'); }
+    ctx.fillStyle='rgba(255,240,160,'+(0.3+g*0.4)+')';
+    ctx.fillRect(sx+6,sy+2,4,1);
+  } else if(o.type==='codepanel'){
+    px(sx+2,sy+2,12,12,'#1a2228'); px(sx+4,sy+4,8,5,'#0c1418');
+    px(sx+5,sy+10,2,2,'#5fef9f'); px(sx+9,sy+10,2,2,'#ffcf4d');
+  } else if(o.type==='lever'){
+    px(sx+3,sy+5,10,9,'#2a2018'); px(sx+7,sy,2,7,(game.flags[o.flag_set]?'#5fef9f':'#a33')); px(sx+6,sy,4,3,'#caa');
+  } else if(o.type==='hide'){
+    px(sx+2,sy+3,12,13,'#241828'); px(sx+3,sy+4,10,4,'#3a2a40');
+    px(sx+6,sy+9,4,5,'#0c0810'); // booth curtain slot
+  } else if(o.type==='examine'){
+    px(sx+3,sy+5,10,9,'#2a2418'); px(sx+5,sy+7,6,5,'#4a4028');
+  } else if(o.type==='endgate'){
+    // shown as part of E tiles; small glint
+    px(sx+6,sy+6,4,4,'rgba(159,223,255,0.5)');
+  }
+}
+
+/* ============================ CODE PUZZLE ============================ */
+let codeObj=null;
+const CODE_ANSWER='4173'; // hint: count of horses per ring etc (story-driven, see lost&found)
+function openCode(o){
+  codeObj=o;
+  document.getElementById('scCode').classList.remove('hidden');
+  ['c0','c1','c2','c3'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('codeMsg').textContent='';
+  document.getElementById('c0').focus();
+}
+function closeCode(){ document.getElementById('scCode').classList.add('hidden'); }
+['c0','c1','c2','c3'].forEach((id,i)=>{
+  const el=document.getElementById(id);
+  el.addEventListener('input',()=>{ el.value=el.value.replace(/\D/g,'');
+    if(el.value && i<3) document.getElementById('c'+(i+1)).focus(); });
+});
+document.getElementById('btnCodeBack').onclick=closeCode;
+document.getElementById('btnCode').onclick=()=>{
+  const v=['c0','c1','c2','c3'].map(id=>document.getElementById(id).value).join('');
+  if(v===CODE_ANSWER){
+    game.doorsOpen=true;
+    closeCode();
+    flashMsg('철컹! 회전목마가 멈추고, 잠겨 있던 모든 아치문이 열렸다.',3600);
+    game.objective='문이 열렸다. 제어실로 가서 전원을 복구하라(기름통 필요). 거울 미로와 유령의 집도 통한다.';
+    doFlash(); updateHUD();
+  } else {
+    document.getElementById('codeMsg').textContent='틀렸다. (단서: 분실물 보관함의 사진)';
+  }
+};
+
+/* ============================ ENDINGS ============================ */
+function doDeath(){
+  if(game.dead) return;
+  game.dead=true; running=false;
+  doFlash();
+  document.getElementById('endIcon').textContent='🃏';
+  document.getElementById('endTitle').textContent='사망 엔딩 — "새 인형"';
+  document.getElementById('endText').innerHTML=
+    '실로 꿰맨 손이 너를 붙잡는다. 시야가 붉게 물들고… 다음 날, 회전목마 위에는 '+
+    '<b style="color:#c66">웃는 새 인형</b>이 하나 늘어 있었다.<br><br>다시 도전하겠는가?';
+  document.getElementById('scEnd').classList.remove('hidden');
+}
+function doWin(){
+  if(game.win) return;
+  game.win=true; running=false;
+  const noPower = !game.flags.control_power;
+  document.getElementById('endIcon').textContent='🌅';
+  document.getElementById('endTitle').textContent='탈출 엔딩 — "새벽"';
+  document.getElementById('endText').innerHTML=
+    '철문 너머, 잡초 무성한 주차장에 새벽빛이 깔린다. 등 뒤에서 음악이 뚝 끊긴다. '+
+    '돌아보지 않고 달렸다. 너는 살아남았다.<br><br>'+
+    '<small class="dim">유원지의 그림자는 여전히 다음 손님을 기다린다…</small>';
+  document.getElementById('scEnd').classList.remove('hidden');
+}
+
+/* ---------- helpers ---------- */
+function doFlash(){
+  const f=document.getElementById('flash');
+  f.style.transition='none'; f.style.opacity='0.8';
+  requestAnimationFrame(()=>{ f.style.transition='opacity .5s'; f.style.opacity='0'; });
+}
+let mapOpen=false;
+function toggleMap(){
+  // minimap as a quick overlay message (simple, no heavy asset)
+  mapOpen=!mapOpen;
+  if(mapOpen){
+    flashMsg('지도 — 정문광장(서북) · 거울미로(북중) · 유령의집(북동) · 매표소(중) · 제어실/탈출터널(동남). 출구는 동남쪽 E.',4200);
+  }
+}
+
+/* ============================ SCREENS / START ============================ */
+document.getElementById('btnStart').onclick=startGame;
+document.getElementById('btnRetry').onclick=()=>{
+  document.getElementById('scEnd').classList.add('hidden');
+  startGame();
+};
+function startGame(){
+  document.getElementById('scTitle').classList.add('hidden');
+  document.getElementById('scEnd').classList.add('hidden');
+  fit();
+  newGame();
+  running=true;
+  flashMsg('정문이 잠겼다. 다른 출구를 찾아라. (E/조사로 상호작용)',3600);
+}
+
+/* boot */
+fit();
+render(); // first paint behind title
+requestAnimationFrame(loop);
+
+/* expose for verification */
+window.__game = ()=>game;
+window.__forceStart = startGame;
+window.__forceWin = doWin;
+window.__state = ()=>({
+  started: !document.getElementById('scTitle').classList.contains('hidden')?false:true,
+  hp: game?game.hp:null,
+  monster: game?game.monster.active:null,
+  px: game?game.px:null, py: game?game.py:null,
+  win: game?game.win:null, dead: game?game.dead:null,
+  fuses: game?game.fuses:null,
+  doorsOpen: game?game.doorsOpen:null,
+});
+</script>
+</body>
+</html>

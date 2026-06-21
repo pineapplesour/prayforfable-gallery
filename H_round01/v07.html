@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>물방울 렌즈 · dewdrop lens</title>
+<style>
+  :root{ color-scheme: dark; }
+  html,body{ margin:0; height:100%; overflow:hidden; background:#05140c; cursor:none; }
+  #gl{ position:fixed; inset:0; width:100vw; height:100vh; display:block; }
+  /* fallback shown only if WebGL truly missing */
+  #fallback{ position:fixed; inset:0; display:none; place-items:center;
+    color:#bfe6c9; font:14px/1.6 system-ui,sans-serif; padding:2em; text-align:center; }
+  #hint{ position:fixed; left:50%; bottom:24px; transform:translateX(-50%);
+    font:11px/1.4 "SF Mono",ui-monospace,Menlo,monospace; letter-spacing:.16em;
+    color:rgba(225,255,235,.6); text-shadow:0 1px 8px rgba(0,0,0,.85);
+    pointer-events:none; transition:opacity 1.4s; text-transform:uppercase; white-space:nowrap; }
+  @media (max-width:520px){ #hint{ font-size:9px; letter-spacing:.10em; } }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="fallback">이 작품은 WebGL이 필요합니다.</div>
+<div id="hint">move · hold to swell · scroll the leaf · right-drag to tilt</div>
+<script>
+'use strict';
+/* ============================================================
+   "물방울 렌즈" — a fat macro dewdrop resting on a leaf,
+   filmed close. content layer = canvas2d leaf macro,
+   optics = webgl fragment shader (real refraction/magnify).
+   variation of "glass on a monitor".
+   ============================================================ */
+
+const DPR = Math.min(window.devicePixelRatio || 1, 1.75);
+let W = 0, H = 0;
+
+const glCanvas = document.getElementById('gl');
+const gl = glCanvas.getContext('webgl', { antialias:false, preserveDrawingBuffer:false, premultipliedAlpha:false });
+if (!gl) {
+  document.getElementById('fallback').style.display = 'grid';
+  glCanvas.style.display = 'none';
+}
+
+/* ------------------------------------------------------------
+   CONTENT LAYER — a leaf macro: chlorophyll gradient body,
+   a branching vein network, surface micro-stipple, scattered
+   small dewdrops, a soft caption card. Logical 1600x1000,
+   cover-scaled & slightly tilted like a handheld macro shot.
+   scrollY pans the leaf so the lens reveals new vein detail.
+   ------------------------------------------------------------ */
+const scene = document.createElement('canvas');
+const sx = scene.getContext('2d');
+const LW = 1600, LH = 1000;
+let scrollY = 0;
+const SCROLL_MAX = 620;
+
+function rr(c, x, y, w, h, r){
+  c.beginPath();
+  c.moveTo(x+r, y); c.arcTo(x+w, y, x+w, y+h, r); c.arcTo(x+w, y+h, x, y+h, r);
+  c.arcTo(x, y+h, x, y, r); c.arcTo(x, y, x+w, y, r); c.closePath();
+}
+function tw(c, text, x, y, size, color, weight, align){
+  c.fillStyle = color;
+  c.font = (weight||400) + ' ' + size + 'px "Helvetica Neue",-apple-system,"Segoe UI",sans-serif';
+  c.textAlign = align || 'left';
+  c.fillText(text, x, y);
+  c.textAlign = 'left';
+}
+
+/* deterministic prng so the leaf is stable across redraws */
+function mulberry(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return((t^t>>>14)>>>0)/4294967296; }; }
+
+/* ---- vein network: midrib + recursive secondary/tertiary veins ---- */
+function buildVeins(){
+  const rnd = mulberry(20240620);
+  const veins = []; // {x0,y0,x1,y1,cx,cy,wpx,depth}
+  const baseX = LW*0.18, baseY = LH*0.92;   // petiole anchor (lower-left)
+  const tipX  = LW*0.86, tipY  = LH*0.10;   // leaf tip (upper-right)
+  // midrib as a gentle bezier
+  const mcx = LW*0.46, mcy = LH*0.40;
+  const N = 220;
+  function midpt(t){
+    const u=1-t;
+    return [ u*u*baseX + 2*u*t*mcx + t*t*tipX,
+             u*u*baseY + 2*u*t*mcy + t*t*tipY ];
+  }
+  function midtan(t){
+    const dx = 2*(1-t)*(mcx-baseX) + 2*t*(tipX-mcx);
+    const dy = 2*(1-t)*(mcy-baseY) + 2*t*(tipY-mcy);
+    const l = Math.hypot(dx,dy)||1; return [dx/l, dy/l];
+  }
+  // sample the midrib
+  let prev = midpt(0);
+  for(let i=1;i<=N;i++){
+    const t=i/N, p=midpt(t);
+    veins.push({x0:prev[0],y0:prev[1],x1:p[0],y1:p[1],wpx:9.5*(1-t)+2.2, depth:0});
+    prev=p;
+  }
+  // secondary veins fanning to both sides
+  const pairs = 9;
+  for(let s=0;s<pairs;s++){
+    const t = 0.10 + s*0.085 + rnd()*0.02;
+    if(t>0.93) continue;
+    const o = midpt(t), tan = midtan(t);
+    const nrm = [-tan[1], tan[0]];
+    for(const side of [1,-1]){
+      const len = (LH*0.40) * (1 - t*0.55) * (0.82+rnd()*0.3);
+      const ang = side*(0.62 + rnd()*0.18); // sweep from midrib
+      // rotate tan toward normal by ang
+      let dx = Math.cos(ang)*tan[0] + Math.sin(ang)*nrm[0]*side*0; // keep forward-ish
+      // direction: blend forward tangent + side normal
+      let ddx = tan[0]*0.45 + nrm[0]*side*0.9;
+      let ddy = tan[1]*0.45 + nrm[1]*side*0.9;
+      const dl=Math.hypot(ddx,ddy)||1; ddx/=dl; ddy/=dl;
+      const ex = o[0]+ddx*len, ey = o[1]+ddy*len;
+      const cx = o[0]+ddx*len*0.5 - tan[0]*len*0.18*side;
+      const cy = o[1]+ddy*len*0.5 - tan[1]*len*0.18*side;
+      // sample secondary as small segments along quad bezier
+      const M = 26; let pp=[o[0],o[1]];
+      for(let k=1;k<=M;k++){
+        const tt=k/M, u=1-tt;
+        const px=u*u*o[0]+2*u*tt*cx+tt*tt*ex;
+        const py=u*u*o[1]+2*u*tt*cy+tt*tt*ey;
+        veins.push({x0:pp[0],y0:pp[1],x1:px,y1:py, wpx:(3.4*(1-tt)+0.8)*(1-t*0.4), depth:1});
+        // tertiary twigs
+        if(k%6===0 && k<M-2 && rnd()>0.35){
+          const twl = len*0.16*(0.6+rnd()*0.6);
+          const tnx = -(py-pp[1]), tny=(px-pp[0]);
+          const tnl=Math.hypot(tnx,tny)||1;
+          const sgn = rnd()>0.5?1:-1;
+          veins.push({x0:px,y0:py,
+            x1:px+ (tnx/tnl)*twl*sgn + ddx*twl*0.4,
+            y1:py+ (tny/tnl)*twl*sgn + ddy*twl*0.4,
+            wpx:0.9, depth:2});
+        }
+        pp=[px,py];
+      }
+    }
+  }
+  return veins;
+}
+const VEINS = buildVeins();
+
+/* small surface dewdrops (decorative, drawn into content) */
+function buildDrops(){
+  const rnd = mulberry(7777);
+  const arr=[];
+  for(let i=0;i<26;i++){
+    arr.push({ x: 120+rnd()*(LW-240), y: 80+rnd()*(LH-160),
+      r: 6+rnd()*22, sq: 0.8+rnd()*0.4 });
+  }
+  return arr;
+}
+const DROPS = buildDrops();
+
+function smallDrop(c, x, y, r, sq){
+  // body: subtle darkening + bottom shadow + top-left highlight (mimics refraction at small scale)
+  c.save();
+  c.translate(x,y); c.scale(1, sq);
+  // contact shadow
+  const sg = c.createRadialGradient(0, r*0.5, r*0.2, 0, r*0.55, r*1.5);
+  sg.addColorStop(0,'rgba(0,30,10,0.33)'); sg.addColorStop(1,'rgba(0,0,0,0)');
+  c.fillStyle=sg; c.beginPath(); c.ellipse(0, r*0.5, r*1.35, r*0.8, 0,0,7); c.fill();
+  // drop body — picks up leaf color, brighter rim
+  const bg = c.createRadialGradient(-r*0.3,-r*0.3, r*0.1, 0,0, r);
+  bg.addColorStop(0,'rgba(225,255,235,0.22)');
+  bg.addColorStop(0.55,'rgba(90,170,110,0.10)');
+  bg.addColorStop(0.86,'rgba(20,70,35,0.30)');
+  bg.addColorStop(1,'rgba(235,255,240,0.55)');
+  c.fillStyle=bg; c.beginPath(); c.arc(0,0,r,0,7); c.fill();
+  // specular dots
+  c.fillStyle='rgba(255,255,255,0.9)';
+  c.beginPath(); c.ellipse(-r*0.34,-r*0.40, r*0.20, r*0.13, -0.6,0,7); c.fill();
+  c.fillStyle='rgba(255,255,255,0.45)';
+  c.beginPath(); c.arc(r*0.30, r*0.36, r*0.10,0,7); c.fill();
+  c.restore();
+}
+
+function drawScene(){
+  scene.width = W; scene.height = H;
+  const c = sx;
+
+  // dark vignette room behind the leaf
+  const rg = c.createRadialGradient(W*0.5,H*0.42,H*0.18, W*0.5,H*0.5,H*0.95);
+  rg.addColorStop(0,'#0a2414'); rg.addColorStop(1,'#020805');
+  c.fillStyle=rg; c.fillRect(0,0,W,H);
+
+  // cover-scale logical space, slight handheld tilt
+  const sc = Math.max(W/LW, H/LH) * 1.05;
+  c.save();
+  c.translate(W/2, H/2); c.rotate(-0.020); c.scale(sc, sc); c.translate(-LW/2, -LH/2);
+
+  // pan the leaf vertically with scroll (content reveal under lens)
+  const pan = scrollY * 0.55;
+  c.save(); c.translate(0, -pan);
+
+  // ---- leaf body: layered chlorophyll gradient ----
+  // base
+  const lg = c.createLinearGradient(0, -200, LW, LH+200);
+  lg.addColorStop(0.00,'#2f7d34');
+  lg.addColorStop(0.35,'#1f6a2b');
+  lg.addColorStop(0.62,'#175a24');
+  lg.addColorStop(1.00,'#0d3d18');
+  c.fillStyle=lg; c.fillRect(-200,-300,LW+400,LH+600);
+
+  // diagonal sheen sweep (waxy cuticle)
+  const sh = c.createLinearGradient(LW*0.1, -200, LW*0.9, LH);
+  sh.addColorStop(0.0,'rgba(150,225,150,0.0)');
+  sh.addColorStop(0.42,'rgba(170,240,160,0.16)');
+  sh.addColorStop(0.55,'rgba(190,255,180,0.05)');
+  sh.addColorStop(1.0,'rgba(0,0,0,0.0)');
+  c.fillStyle=sh; c.fillRect(-200,-300,LW+400,LH+600);
+
+  // micro-stipple cells (procedural, deterministic)
+  const rnd = mulberry(135);
+  c.globalAlpha = 0.06;
+  for(let i=0;i<2600;i++){
+    const x=rnd()*LW, y=rnd()*LH, r=1+rnd()*3.2;
+    c.fillStyle = rnd()>0.5 ? '#bfe9a8' : '#0a3a16';
+    c.beginPath(); c.arc(x,y,r,0,7); c.fill();
+  }
+  c.globalAlpha = 1;
+
+  // faint blotchy variegation patches
+  for(let i=0;i<14;i++){
+    const x=rnd()*LW, y=rnd()*LH, r=60+rnd()*180;
+    const pg=c.createRadialGradient(x,y,0,x,y,r);
+    const bright = rnd()>0.5;
+    pg.addColorStop(0, bright?'rgba(120,200,110,0.10)':'rgba(8,40,18,0.16)');
+    pg.addColorStop(1,'rgba(0,0,0,0)');
+    c.fillStyle=pg; c.beginPath(); c.arc(x,y,r,0,7); c.fill();
+  }
+
+  // ---- vein network ----
+  // dark casing first (groove shadow), then bright capillary on top
+  for(const pass of [0,1]){
+    for(const v of VEINS){
+      c.lineCap='round';
+      if(pass===0){ // shadow groove
+        c.strokeStyle = v.depth===0 ? 'rgba(4,28,12,0.55)' : 'rgba(6,34,16,0.40)';
+        c.lineWidth = v.wpx*sc*0 + v.wpx*1.7 + 1.2;
+      } else {      // bright vein
+        c.strokeStyle = v.depth===0 ? 'rgba(178,232,150,0.85)'
+                      : v.depth===1 ? 'rgba(150,212,130,0.62)'
+                                    : 'rgba(140,205,125,0.40)';
+        c.lineWidth = Math.max(0.6, v.wpx);
+      }
+      c.beginPath(); c.moveTo(v.x0,v.y0); c.lineTo(v.x1,v.y1); c.stroke();
+    }
+  }
+
+  // ---- leaf edge darkening (so lens sits on a body, not a void) ----
+  const eg = c.createRadialGradient(LW*0.5,LH*0.45, LH*0.30, LW*0.5,LH*0.5, LH*0.78);
+  eg.addColorStop(0,'rgba(0,0,0,0)'); eg.addColorStop(1,'rgba(2,14,6,0.55)');
+  c.fillStyle=eg; c.fillRect(0,0,LW,LH);
+
+  // ---- scattered small dewdrops on the surface ----
+  for(const d of DROPS) smallDrop(c, d.x, d.y, d.r, d.sq);
+
+  // ---- caption card (botanical plate label), lower-left ----
+  c.save();
+  rr(c, 70, LH-150, 470, 92, 14);
+  c.fillStyle='rgba(4,20,10,0.55)'; c.fill();
+  c.strokeStyle='rgba(170,230,160,0.25)'; c.lineWidth=1.2; c.stroke();
+  tw(c,'MORNING DEW',  92, LH-110, 22, '#dff6df', 800);
+  tw(c,'macro · single drop lens',  92, LH-84, 15, 'rgba(190,225,190,0.8)', 400);
+  tw(c,'잎맥 위의 물방울 — 아래 콘텐츠를 굴절·확대한다', 92, LH-66, 13, 'rgba(170,210,175,0.7)', 400);
+  // tiny green dot
+  c.fillStyle='#6fd06f'; c.beginPath(); c.arc(LH>0?500:0, LH-112, 6,0,7); c.fill();
+  c.restore();
+
+  c.restore(); // un-pan
+  c.restore(); // un-tilt
+}
+
+/* ------------------------------------------------------------
+   OPTICS — webgl fragment shader.
+   Reads the leaf texture and bends it through a fat dewdrop:
+   strong center magnification, hard edge compression (fisheye),
+   refraction rim ring, chromatic aberration, specular highlight,
+   caustic on the leaf around the drop, contact shadow, mild DOF,
+   handheld breathing. Drop tracks the mouse.
+   ------------------------------------------------------------ */
+const VS = `
+attribute vec2 aP;
+void main(){ gl_Position = vec4(aP, 0.0, 1.0); }`;
+
+const FS = `
+precision highp float;
+uniform sampler2D uScene;
+uniform vec2  uRes, uDrop, uShake, uTilt;
+uniform float uR, uTime, uPress, uBlur, uExpo;
+
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
+
+vec3 scn(vec2 uv){
+  return texture2D(uScene, clamp(uv / uRes, vec2(0.002), vec2(0.998))).rgb;
+}
+/* gentle handheld macro: tiny barrel + shake on source coords */
+vec2 cam(vec2 v){
+  vec2 cen = uRes * 0.5;
+  vec2 p = v - cen;
+  float rr = dot(p,p) / dot(cen,cen);
+  p *= 1.0 + 0.03 * rr;
+  return cen + p + uShake;
+}
+float gband(float x, float c, float w){ float d=(x-c)/w; return exp(-d*d); }
+
+void main(){
+  vec2 fc = gl_FragCoord.xy;
+  vec2 d  = fc - uDrop;
+
+  /* a drop viewed at an angle foreshortens into an ellipse */
+  float tA = length(uTilt);
+  vec2 tD = tA > 0.001 ? uTilt / tA : vec2(1.0, 0.0);
+  vec2 pD = vec2(-tD.y, tD.x);
+  float squash = 1.0 - 0.40 * tA;
+  vec2 ds = tD * (dot(d, tD) / squash) + pD * dot(d, pD);
+  float r = length(ds);
+  vec2 dir = r > 0.5 ? ds / r : vec2(1.0, 0.0);
+  vec2 tdir = vec2(-dir.y, dir.x);
+  float x = r / uR;                 // 0=center .. 1=edge of drop
+
+  float innerX = 0.86;                              // thin bright rim (water, not glass)
+  float w    = smoothstep(innerX-0.045, innerX+0.02, x);   // rim weight
+  float wOut = smoothstep(1.0, 1.05, x);                   // outside drop
+  float q = clamp(x / innerX, 0.0, 1.0);
+
+  /* refracted source radius — a sphere of water magnifies hard at center,
+     compresses violently toward the edge (true droplet fisheye) */
+  float magA = mix(0.30, 0.24, uPress);            // press = flatter, bigger magnify
+  float q6 = q*q*q*q*q*q;
+  float rsG = uR * (magA * q + (1.04 - magA) * q6);
+  float asym = 1.0 + 0.34 * tA * dot(dir, tD);     // tilt -> asymmetric magnify
+  vec2 refr = dir * mix(rsG, uR * 1.04, w) * asym + uTilt * uR * 0.50;
+
+  /* anisotropic DOF blur (px in source space) */
+  float q4 = q*q*q*q;
+  float radial = mix(mix(q4 * uR * 0.10, uR*0.015, w), 0.0, wOut) + uBlur + 0.6;
+  float tang   = mix(mix(q*q*q*uR*0.04, uR*0.16, w), 0.0, wOut) + uBlur + 0.6;
+
+  vec2 srcBase = uDrop + mix(refr, d, wOut);
+  vec3 col = vec3(0.0);
+  #define TAP(rx, ty) col += scn(cam(srcBase + dir*((rx)*radial) + tdir*((ty)*tang)));
+  TAP( 0.00, 0.00) TAP( 0.62, 0.25) TAP(-0.58, 0.30) TAP( 0.21,-0.64)
+  TAP(-0.25,-0.61) TAP( 0.45, 0.68) TAP(-0.70,-0.15) TAP( 0.86,-0.18)
+  TAP(-0.41, 0.74) TAP( 0.05, 0.94) TAP(-0.88, 0.35) TAP( 0.33, 0.13)
+  TAP(-0.18, 0.20) TAP( 0.69,-0.55)
+  col /= 14.0;
+
+  float inG = (1.0 - wOut);          // inside drop (incl rim)
+  float inI = inG * (1.0 - w);       // inner refraction zone only
+
+  /* chromatic aberration, stronger toward rim & when tilted */
+  float caW = 0.55 * smoothstep(0.30, 1.0, x) * (1.0 + 1.3*tA) * inG;
+  caW = min(caW, 0.9);
+  if (caW > 0.01){
+    vec3 cR = scn(cam(uDrop + refr*0.975));
+    vec3 cB = scn(cam(uDrop + refr*1.025));
+    col.r = mix(col.r, cR.r, caW);
+    col.b = mix(col.b, cB.b, caW);
+  }
+
+  /* water tint: a touch cooler/greener, lift, faint inner glow */
+  col *= mix(vec3(1.0), vec3(0.92, 1.03, 0.97), 0.5*inI);
+  col += inI * 0.05 * (1.0 - x*x);                  // soft center bloom
+  // very slight overall body brighten (clean water, not milky glass)
+  col = mix(col, col*1.04 + vec3(0.015), inI*0.6);
+
+  /* radial caustic streaks across the magnified leaf */
+  float th = atan(d.y, d.x);
+  float cau = 0.5*sin(th*11.0+1.2) + 0.5*sin(th*23.0+0.4) + 0.35*sin(th*5.0-0.9);
+  col += cau * 0.045 * q4 * inI;
+
+  /* RIM: thin bright meniscus + a darker outer water-wall + ring bands */
+  float rim = w * (1.0 - wOut);
+  // outer water wall slightly darkens
+  col = mix(col, col*0.55, rim*0.6);
+  // bright meniscus bands (water rims read very bright)
+  float bands = gband(x, 0.880, 0.016) * 0.55
+              + gband(x, 0.945, 0.013) * 0.95
+              + gband(x, 0.992, 0.009) * 0.70;
+  // bright arc where the sky/light wraps the rim (upper-left dominant)
+  float arc = pow(max(cos(th - 2.30), 0.0), 5.0)
+            + 0.7*pow(max(cos(th + 0.70), 0.0), 9.0)
+            + 0.4*pow(max(cos(th - 4.20), 0.0), 12.0);
+  col += rim * bands * (0.20 + 0.95 * arc) * vec3(0.92,1.0,0.95);
+  col += inI * 0.18 * gband(x, 0.845, 0.014) * vec3(0.85,1.0,0.9); // inner bright ring
+
+  /* primary specular: tight hot highlight, upper-left, moves a touch with tilt */
+  vec2 hp = uDrop + vec2(-0.34, 0.40) * uR + uTilt * uR * 0.55;
+  vec2 hd = fc - hp;
+  float spec = exp(-dot(hd,hd) / (uR*uR*0.022));
+  col += spec * (0.95 + 0.4*uPress) * inG * vec3(1.0,1.0,0.98);
+  // secondary smaller glint lower-right
+  vec2 hp2 = uDrop + vec2(0.30, -0.30) * uR;
+  vec2 hd2 = fc - hp2;
+  col += exp(-dot(hd2,hd2)/(uR*uR*0.010)) * 0.35 * inG;
+  // broad soft window reflection
+  vec2 hp3 = uDrop + vec2(-0.20, 0.25)*uR;
+  vec2 hd3 = fc - hp3;
+  col += exp(-dot(hd3,hd3)/(uR*uR*0.20)) * 0.10 * inG;
+
+  /* CAUSTIC on the leaf, just outside the drop (focused light pool) */
+  float caustic = gband(x, 1.16, 0.10) * wOut;
+  // brighter on the side opposite the highlight (light focuses through)
+  caustic *= 0.6 + 0.8 * pow(max(cos(th + 0.85), 0.0), 3.0);
+  col += caustic * 0.45 * vec3(0.85, 1.0, 0.80);
+
+  /* CONTACT SHADOW hugging the drop's footprint */
+  col *= 1.0 - (0.34 - 0.10*uPress) * gband(x, 1.045, 0.05) * wOut;
+
+  /* ---- macro-camera post ---- */
+  col *= uExpo;
+  vec2 vc = (fc - uRes*0.5) / (uRes*0.5);
+  col *= 1.0 - 0.34 * pow(dot(vc,vc)*0.55, 1.4);    // vignette
+  float gn = hash(fc + fract(uTime*7.0)*113.0);
+  col += (gn - 0.5) * 0.035;                         // fine grain
+  col = clamp(col, 0.0, 1.0);
+  col = pow(col, vec3(0.96));                        // slight lift
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
+let prog=null, U={}, ready=false;
+if (gl){
+  function compile(type, src){
+    const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+    if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  }
+  try{
+    prog = gl.createProgram();
+    gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+    gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+    gl.linkProgram(prog);
+    if(!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+    gl.useProgram(prog);
+
+    const buf=gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+    const aP=gl.getAttribLocation(prog,'aP');
+    gl.enableVertexAttribArray(aP);
+    gl.vertexAttribPointer(aP,2,gl.FLOAT,false,0,0);
+
+    for(const n of ['uScene','uRes','uDrop','uShake','uTilt','uR','uTime','uPress','uBlur','uExpo'])
+      U[n]=gl.getUniformLocation(prog,n);
+
+    const tex=gl.createTexture();
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.uniform1i(U.uScene, 0);
+    ready=true;
+  }catch(err){
+    document.getElementById('fallback').style.display='grid';
+    document.getElementById('fallback').textContent='셰이더 컴파일 실패: '+err.message;
+    glCanvas.style.display='none';
+    ready=false;
+  }
+}
+
+function uploadScene(){
+  gl.activeTexture(gl.TEXTURE0);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, scene);
+}
+
+/* ------------------------------------------------------------ state */
+const mouse = { x:0, y:0, has:false };  // CSS px, y-down
+const drop  = { x:0, y:0 };             // device px, y-up
+const tilt  = { x:0, y:0 };
+const tiltManual = { x:0, y:0 };
+const tiltVel = { x:0, y:0 };
+let rightDrag=null;
+let pressTarget=0, press=0;
+let needScene=true;
+
+function resize(){
+  W=Math.round(innerWidth*DPR); H=Math.round(innerHeight*DPR);
+  glCanvas.width=W; glCanvas.height=H;
+  if(gl) gl.viewport(0,0,W,H);
+  if(!mouse.has){ mouse.x=innerWidth*0.5; mouse.y=innerHeight*0.50; drop.x=W*0.5; drop.y=H*0.50; }
+  needScene=true;
+}
+addEventListener('resize', resize); resize();
+
+addEventListener('contextmenu', e=>e.preventDefault());
+addEventListener('pointermove', e=>{
+  mouse.x=e.clientX; mouse.y=e.clientY; mouse.has=true;
+  if(rightDrag){
+    tiltManual.x = rightDrag.tx + (e.clientX-rightDrag.x)*0.0032;
+    tiltManual.y = rightDrag.ty + (rightDrag.y-e.clientY)*0.0032;
+    const m=Math.hypot(tiltManual.x,tiltManual.y);
+    if(m>0.5){ tiltManual.x*=0.5/m; tiltManual.y*=0.5/m; }
+  }
+});
+addEventListener('pointerdown', e=>{
+  if(e.button===2) rightDrag={x:e.clientX,y:e.clientY,tx:tiltManual.x,ty:tiltManual.y};
+  else { pressTarget=1; mouse.x=e.clientX; mouse.y=e.clientY; mouse.has=true; }
+});
+addEventListener('pointerup', e=>{ if(e.button===2) rightDrag=null; else pressTarget=0; });
+addEventListener('wheel', e=>{
+  scrollY=Math.max(0,Math.min(SCROLL_MAX, scrollY+e.deltaY*0.6)); needScene=true;
+}, {passive:true});
+// touch: drag moves drop
+addEventListener('touchmove', e=>{
+  if(e.touches[0]){ mouse.x=e.touches[0].clientX; mouse.y=e.touches[0].clientY; mouse.has=true; }
+}, {passive:true});
+addEventListener('touchstart', e=>{ if(e.touches[0]){ mouse.x=e.touches[0].clientX; mouse.y=e.touches[0].clientY; mouse.has=true; pressTarget=1; } }, {passive:true});
+addEventListener('touchend', ()=>{ pressTarget=0; }, {passive:true});
+
+setTimeout(()=>{ const h=document.getElementById('hint'); if(h) h.style.opacity='0'; }, 5200);
+
+/* occasional macro autofocus hunt */
+let huntT0 = 2000 + Math.random()*3000;
+function focusHunt(now){
+  const dt=now-huntT0;
+  if(dt>800){ huntT0=now+3200+Math.random()*5200; return 0; }
+  if(dt<0) return 0;
+  return Math.sin(dt/800*Math.PI) * (3.2+Math.random()*0.5);
+}
+
+function frame(tms){
+  if(!ready){ return; }
+  const t=tms*0.001;
+  if(needScene){ drawScene(); uploadScene(); needScene=false; }
+
+  // drop follows mouse with lag + faint surface-tension tremor
+  const tx = mouse.x*DPR + Math.sin(t*7.9)*1.2*DPR + Math.sin(t*12.7+2.0)*0.7*DPR;
+  const ty = (innerHeight-mouse.y)*DPR + Math.cos(t*8.8+1.0)*1.1*DPR;
+  const pgx=drop.x, pgy=drop.y;
+  drop.x += (tx-drop.x)*0.14;
+  drop.y += (ty-drop.y)*0.14;
+  press += (pressTarget-press)*0.10;
+
+  // tilt: drop leans against motion + manual right-drag
+  const vk = -0.009/DPR;
+  tiltVel.x += ((drop.x-pgx)*vk - tiltVel.x)*0.18;
+  tiltVel.y += ((drop.y-pgy)*vk - tiltVel.y)*0.18;
+  if(!rightDrag){ tiltManual.x*=0.95; tiltManual.y*=0.95; }
+  let ttx=tiltManual.x+tiltVel.x, tty=tiltManual.y+tiltVel.y;
+  const tm=Math.hypot(ttx,tty);
+  if(tm>0.5){ ttx*=0.5/tm; tty*=0.5/tm; }
+  tilt.x += (ttx-tilt.x)*0.12;
+  tilt.y += (tty-tilt.y)*0.12;
+
+  const R = Math.min(W,H)*(0.30 + press*0.03);
+
+  // handheld shake/drift
+  const shx=(Math.sin(t*1.3)*2.4 + Math.sin(t*0.7+1.7)*3.2 + Math.sin(t*3.1+0.5)*1.0 + Math.sin(t*7.3)*0.4)*DPR;
+  const shy=(Math.cos(t*1.1+0.4)*2.6 + Math.sin(t*0.5+2.6)*3.4 + Math.cos(t*2.7+1.2)*1.1 + Math.cos(t*8.1)*0.4)*DPR;
+
+  // focus breathing + hunts (macro = shallow DOF)
+  const blur = Math.max(0.0, 0.9 + 0.8*Math.sin(t*0.8) + 0.5*Math.sin(t*2.3+0.7))*DPR + focusHunt(tms)*DPR;
+  const expo = 1.0 + 0.04*Math.sin(t*0.4) + 0.025*Math.sin(t*1.1+2.2) - press*0.04;
+
+  gl.uniform2f(U.uRes, W, H);
+  gl.uniform2f(U.uDrop, drop.x, drop.y);
+  gl.uniform2f(U.uShake, shx, shy);
+  gl.uniform2f(U.uTilt, tilt.x, tilt.y);
+  gl.uniform1f(U.uR, R);
+  gl.uniform1f(U.uTime, t);
+  gl.uniform1f(U.uPress, press);
+  gl.uniform1f(U.uBlur, blur);
+  gl.uniform1f(U.uExpo, expo);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(frame);
+}
+if(ready) requestAnimationFrame(frame);
+</script>
+</body>
+</html>

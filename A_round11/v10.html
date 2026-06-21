@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>PYROCLAST — living magma</title>
+<style>
+  :root { color-scheme: dark; }
+  html,body{margin:0;height:100%;background:#08060a;overflow:hidden;
+    font-family:"Helvetica Neue",Inter,system-ui,-apple-system,sans-serif;
+    -webkit-tap-highlight-color:transparent;touch-action:none;cursor:crosshair;}
+  #stage{position:fixed;inset:0;width:100%;height:100%;display:block;}
+  /* ---- overlay UI ---- */
+  .ui{position:fixed;left:0;right:0;pointer-events:none;z-index:5;color:#f6e7d2;
+    mix-blend-mode:screen;user-select:none;}
+  #top{top:0;padding:22px 26px;display:flex;justify-content:space-between;align-items:flex-start;gap:18px;}
+  #title{font-weight:800;letter-spacing:.42em;font-size:13px;
+    text-shadow:0 0 14px rgba(255,120,30,.55);}
+  #title b{display:block;font-size:31px;letter-spacing:.16em;line-height:.92;font-weight:900;
+    background:linear-gradient(90deg,#fff2c4,#ff9a3c 45%,#ff4d12 80%,#b51a1a);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+    filter:drop-shadow(0 0 18px rgba(255,90,20,.6));}
+  #sub{text-align:right;font-size:10.5px;letter-spacing:.26em;line-height:1.9;opacity:.82;
+    font-variant-numeric:tabular-nums;}
+  #sub .k{color:#ffb066;}
+  #bot{bottom:0;padding:18px 26px;display:flex;justify-content:space-between;align-items:flex-end;gap:14px;
+    font-size:10px;letter-spacing:.2em;opacity:.7;}
+  #hint{display:flex;flex-wrap:wrap;gap:6px 16px;}
+  #hint span{white-space:nowrap;}
+  #hint i{font-style:normal;color:#ffae5e;}
+  /* heat gauge */
+  #gauge{pointer-events:none;display:flex;align-items:center;gap:9px;font-size:10px;letter-spacing:.2em;}
+  #bar{width:128px;height:5px;border-radius:3px;background:rgba(255,255,255,.12);overflow:hidden;
+    box-shadow:0 0 0 1px rgba(255,255,255,.08);}
+  #barfill{height:100%;width:50%;border-radius:3px;
+    background:linear-gradient(90deg,#5b2a86,#ff5a14,#ffd24a);transition:width .12s linear;}
+  @media (max-width:640px){
+    #title b{font-size:23px}#sub{display:none}#hint{font-size:9px;gap:5px 10px}
+    #top{padding:16px 16px}#bot{padding:13px 16px}
+  }
+  .vig{position:fixed;inset:0;pointer-events:none;z-index:4;
+    background:radial-gradient(130% 120% at 50% 42%,transparent 52%,rgba(4,2,6,.72) 100%);}
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div class="vig"></div>
+<div class="ui" id="top">
+  <div id="title">A_ROUND11 · V10<b>PYROCLAST</b></div>
+  <div id="sub">
+    <div>LIVING MAGMA TOPOLOGY</div>
+    <div><span class="k">crust</span> ⇄ <span class="k">melt</span> field sim</div>
+    <div id="fps">— fps</div>
+  </div>
+</div>
+<div class="ui" id="bot">
+  <div id="hint">
+    <span><i>드래그</i> 열을 새긴다</span>
+    <span><i>클릭</i> 분화 충격파</span>
+    <span><i>스크롤</i> 냉각 ⇄ 가열</span>
+    <span><i>스페이스</i> 휴면</span>
+  </div>
+  <div id="gauge"><span>HEAT</span><div id="bar"><div id="barfill"></div></div></div>
+</div>
+
+<script>
+"use strict";
+(function(){
+const cv = document.getElementById('stage');
+const gl = cv.getContext('webgl', {antialias:false, alpha:false, premultipliedAlpha:false,
+  powerPreference:'high-performance', preserveDrawingBuffer:false});
+
+if(!gl){ document.body.innerHTML='<div style="color:#ff8855;font:14px sans-serif;padding:30px">WebGL이 필요합니다.</div>'; return; }
+
+/* ---------- shaders ---------- */
+const VERT = `
+attribute vec2 p;
+void main(){ gl_Position = vec4(p,0.0,1.0); }
+`;
+
+// Pass A: heat field accumulator (ping-pong). Carries molten heat / brush strokes / shock fronts.
+// Stored: r = heat (0..1+), g = previous heat (for wave), b = scar/age, a = unused
+const SIM = `
+precision highp float;
+uniform sampler2D uPrev;
+uniform vec2 uRes;
+uniform vec2 uMouse;       // 0..1
+uniform vec2 uPMouse;
+uniform float uDown;       // brush pressing
+uniform float uTime;
+uniform float uHeat;       // global heat balance 0..1
+uniform vec4 uShock[6];    // xy=center(0..1), z=startTime, w=strength
+uniform float uReset;
+
+float hash(vec2 p){ p=fract(p*vec2(123.34,345.45)); p+=dot(p,p+34.345); return fract(p.x*p.y); }
+
+void main(){
+  vec2 uv = gl_FragCoord.xy / uRes;
+  vec2 px = 1.0 / uRes;
+  vec4 c = texture2D(uPrev, uv);
+  float h = c.r;
+  float prev = c.g;
+  float scar = c.b;
+
+  // --- diffusion (5-tap laplacian) for smooth molten spread ---
+  float l = texture2D(uPrev, uv + vec2(-px.x,0.)).r;
+  float r = texture2D(uPrev, uv + vec2( px.x,0.)).r;
+  float u = texture2D(uPrev, uv + vec2(0., px.y)).r;
+  float d = texture2D(uPrev, uv + vec2(0.,-px.y)).r;
+  float lap = (l+r+u+d - 4.0*h);
+
+  // wave-ish propagation gives lava the rolling, breathing motion
+  float nh = h + (h - prev)*0.962 + lap*0.235;
+
+  // global cooling toward an ambient set by uHeat; hotter ambient = more glow
+  float ambient = mix(0.02, 0.46, uHeat);
+  nh += (ambient - nh) * mix(0.018, 0.052, uHeat);
+
+  // --- brush: drag heat into the crust along the segment mouse->pmouse ---
+  if(uDown > 0.5){
+    vec2 a = uMouse, b = uPMouse;
+    vec2 pa = uv - a, ba = b - a;
+    float t = clamp(dot(pa,ba)/max(dot(ba,ba),1e-5), 0.0, 1.0);
+    float dist = length(pa - ba*t);
+    float rad = 0.052;
+    float add = smoothstep(rad, 0.0, dist) * 0.62;
+    nh += add;
+    scar = max(scar, add*1.4);
+  }
+
+  // --- shock fronts: expanding rings of heat from clicks (eruptions) ---
+  for(int i=0;i<6;i++){
+    vec4 s = uShock[i];
+    if(s.w <= 0.0) continue;
+    float age = uTime - s.z;
+    if(age < 0.0 || age > 2.4) continue;
+    float dd = distance(uv, s.xy);
+    float front = age * 0.62;            // ring radius grows
+    float ring = exp(-pow((dd - front)/0.05, 2.0));
+    float fade = exp(-age*1.5);
+    nh += ring * s.w * 1.7 * fade;
+    // central blast
+    nh += exp(-pow(dd/0.07,2.0)) * s.w * exp(-age*4.0) * 0.9;
+    scar = max(scar, ring*fade*1.2);
+  }
+
+  // tiny convective turbulence so the surface never sits still
+  float n = hash(gl_FragCoord.xy + floor(uTime*8.0));
+  nh += (n-0.5) * 0.006 * smoothstep(0.1,0.5,nh);
+
+  scar *= 0.9985;                        // scars slowly heal
+  nh = clamp(nh, 0.0, 2.4);
+
+  if(uReset > 0.5){ nh = ambient; prev = ambient; scar = 0.0; }
+
+  gl_FragColor = vec4(nh, h, scar, 1.0);
+}
+`;
+
+// Pass B: render the magma. Heat field drives molten flow; low heat -> cracked basalt crust.
+const RENDER = `
+precision highp float;
+uniform sampler2D uHeatTex;
+uniform vec2 uRes;
+uniform float uTime;
+uniform float uHeat;
+uniform vec2 uMouse;
+
+// --- value noise / fbm with domain warp (the topology engine) ---
+float hash(vec2 p){ p=fract(p*vec2(123.34,345.45)); p+=dot(p,p+34.345); return fract(p.x*p.y); }
+float vnoise(vec2 p){
+  vec2 i=floor(p), f=fract(p);
+  f=f*f*(3.0-2.0*f);
+  float a=hash(i), b=hash(i+vec2(1,0)), c=hash(i+vec2(0,1)), d=hash(i+vec2(1,1));
+  return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
+}
+float fbm(vec2 p){
+  float v=0.0, a=0.5; mat2 m=mat2(1.6,1.2,-1.2,1.6);
+  for(int i=0;i<5;i++){ v+=a*vnoise(p); p=m*p; a*=0.5; }
+  return v;
+}
+// cheaper 3-octave fbm for the warp vectors (warp doesn't need fine detail)
+float fbm3(vec2 p){
+  float v=0.0, a=0.5; mat2 m=mat2(1.6,1.2,-1.2,1.6);
+  for(int i=0;i<3;i++){ v+=a*vnoise(p); p=m*p; a*=0.5; }
+  return v;
+}
+
+// 5-color lava ramp: deep crust -> char -> dull red -> orange -> white-hot
+vec3 ramp(float t){
+  t=clamp(t,0.0,1.0);
+  vec3 c0=vec3(0.045,0.028,0.052);  // cold violet-black basalt
+  vec3 c1=vec3(0.18,0.05,0.045);    // charred maroon
+  vec3 c2=vec3(0.85,0.13,0.03);     // glowing red
+  vec3 c3=vec3(1.0,0.55,0.07);      // orange
+  vec3 c4=vec3(1.0,0.96,0.72);      // yellow-white hot
+  vec3 c;
+  if(t<0.25) c=mix(c0,c1,t/0.25);
+  else if(t<0.5) c=mix(c1,c2,(t-0.25)/0.25);
+  else if(t<0.78) c=mix(c2,c3,(t-0.5)/0.28);
+  else c=mix(c3,c4,(t-0.78)/0.22);
+  return c;
+}
+
+void main(){
+  vec2 uv = gl_FragCoord.xy / uRes;
+  float aspect = uRes.x / uRes.y;
+  vec2 p = uv; p.x *= aspect;
+
+  float heat = texture2D(uHeatTex, uv).r;
+  float scar = texture2D(uHeatTex, uv).b;
+
+  // slow drift of the whole field — magma always flowing
+  vec2 flow = vec2(uTime*0.012, -uTime*0.02);
+
+  // domain-warped fbm: this is the lava *topology* (ridges of cooled rock)
+  // warp vectors use the cheap 3-octave noise; final field uses the full one
+  vec2 q = vec2( fbm3(p*2.6 + flow), fbm3(p*2.6 + flow + vec2(5.2,1.3)) );
+  vec2 r = vec2( fbm3(p*2.6 + 3.0*q + flow*1.4 + vec2(1.7,9.2)),
+                 fbm3(p*2.6 + 3.0*q + flow*1.4 + vec2(8.3,2.8)) );
+  float topo = fbm(p*2.6 + 3.4*r + flow);   // 0..1 elevation-ish
+
+  // heat from sim warps & lifts the topology — molten zones bulge and brighten
+  float field = topo + heat*0.55;
+
+  // ridge lines: cracks in the crust where molten light leaks through
+  float ridge = 1.0 - abs(fbm3(p*3.4 + 1.5*r) - 0.5)*2.0;
+  ridge = pow(clamp(ridge,0.0,1.0), 2.4);
+
+  // crust mask: where field is low & heat low -> dark solid basalt
+  float crust = smoothstep(0.62, 0.30, field) * smoothstep(0.55, 0.12, heat);
+
+  // base temperature visualized
+  float temp = field*0.62 + heat*0.85 + ridge*0.5*(0.4+heat);
+  temp = pow(temp, 1.15);
+
+  vec3 col = ramp(temp);
+
+  // crack glow: emissive seams that pulse with a heartbeat
+  float pulse = 0.5 + 0.5*sin(uTime*1.6 + topo*9.0);
+  float seam = ridge * (0.35 + 0.65*pulse) * (0.4 + heat*1.6);
+  col += ramp(0.85) * seam * 0.9;
+
+  // darken the cold crust plates & add a subtle rocky texture
+  float rock = fbm3(p*16.0 + r*2.0);
+  col = mix(col, c_basalt(rock), crust*0.92);
+
+  // emissive bloom approximation: hot areas spill light
+  float hot = smoothstep(0.6,1.1, temp);
+  col += ramp(0.95) * hot * hot * 0.6;
+
+  // fresnel-like rim near the cooler edges for depth
+  float depth = smoothstep(0.0,0.5,field);
+  col *= 0.78 + 0.4*depth;
+
+  // mouse heat halo — soft interactive glow following cursor
+  float md = distance(p, vec2(uMouse.x*aspect, uMouse.y));
+  col += ramp(0.9) * exp(-md*md*55.0) * 0.25 * uHeat;
+
+  // scar overlay (fresh molten gashes from interaction) burning bright
+  col += ramp(0.92) * smoothstep(0.05,0.6,scar) * 0.7;
+
+  // filmic-ish tone + gentle gamma
+  col = col / (col + vec3(0.85));
+  col = pow(col, vec3(0.85));
+
+  // faint grain to kill banding
+  col += (hash(gl_FragCoord.xy + uTime)-0.5)*0.018;
+
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+// basalt helper injected (kept out of main string for clarity)
+const BASALT = `
+vec3 c_basalt(float n){
+  vec3 a=vec3(0.035,0.028,0.045);
+  vec3 b=vec3(0.10,0.085,0.11);
+  return mix(a,b,n*n);
+}
+`;
+
+/* ---------- gl helpers ---------- */
+function sh(type, src){
+  const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+    console.error('shader error:', gl.getShaderInfoLog(s), src.slice(0,200));
+    throw new Error(gl.getShaderInfoLog(s));
+  }
+  return s;
+}
+function prog(vs, fs){
+  const p=gl.createProgram();
+  gl.attachShader(p, sh(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs));
+  gl.bindAttribLocation(p, 0, 'p');
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p, gl.LINK_STATUS)){ throw new Error(gl.getProgramInfoLog(p)); }
+  return p;
+}
+
+const simProg = prog(VERT, SIM);
+// inject basalt fn before main of render shader
+const renderSrc = RENDER.replace('void main(){', BASALT + '\nvoid main(){');
+const renderProg = prog(VERT, renderSrc);
+
+// fullscreen triangle
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
+
+/* ---------- ping-pong float-ish textures (sim res capped) ---------- */
+let SIMW=0, SIMH=0;
+let texA, texB, fboA, fboB;
+const FLOAT_EXT = gl.getExtension('OES_texture_float');
+const HALF_EXT  = gl.getExtension('OES_texture_half_float');
+let TEX_TYPE = gl.UNSIGNED_BYTE;
+if(FLOAT_EXT) TEX_TYPE = gl.FLOAT;
+else if(HALF_EXT) TEX_TYPE = HALF_EXT.HALF_FLOAT_OES;
+
+function makeTex(w,h){
+  const t=gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,w,h,0,gl.RGBA,TEX_TYPE,null);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  return t;
+}
+function makeFbo(t){
+  const f=gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER,f);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,t,0);
+  return f;
+}
+
+/* ---------- sizing ---------- */
+let DPR=1, W=0, H=0, needReset=true;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 1.4);
+  // adaptive render scale: very large viewports render below DPR to hold 60fps
+  let rscale = 1.0;
+  const longCss = Math.max(window.innerWidth, window.innerHeight);
+  if(longCss > 1200) rscale = 0.78;
+  else if(longCss > 900) rscale = 0.9;
+  W = Math.round(window.innerWidth * DPR * rscale);
+  H = Math.round(window.innerHeight * DPR * rscale);
+  cv.width=W; cv.height=H; cv.style.width='100%'; cv.style.height='100%';
+
+  // sim runs at a capped resolution for smooth performance
+  let scale = Math.min(1, 460 / Math.max(W,H)); // long side ~460 px sim
+  SIMW = Math.max(96, Math.round(W*scale));
+  SIMH = Math.max(96, Math.round(H*scale));
+
+  if(texA){ gl.deleteTexture(texA); gl.deleteTexture(texB);
+            gl.deleteFramebuffer(fboA); gl.deleteFramebuffer(fboB); }
+  texA=makeTex(SIMW,SIMH); fboA=makeFbo(texA);
+  texB=makeTex(SIMW,SIMH); fboB=makeFbo(texB);
+  needReset=true;
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* ---------- uniform locations ---------- */
+const uSim = {
+  uPrev: gl.getUniformLocation(simProg,'uPrev'),
+  uRes: gl.getUniformLocation(simProg,'uRes'),
+  uMouse: gl.getUniformLocation(simProg,'uMouse'),
+  uPMouse: gl.getUniformLocation(simProg,'uPMouse'),
+  uDown: gl.getUniformLocation(simProg,'uDown'),
+  uTime: gl.getUniformLocation(simProg,'uTime'),
+  uHeat: gl.getUniformLocation(simProg,'uHeat'),
+  uShock: gl.getUniformLocation(simProg,'uShock'),
+  uReset: gl.getUniformLocation(simProg,'uReset'),
+};
+const uRen = {
+  uHeatTex: gl.getUniformLocation(renderProg,'uHeatTex'),
+  uRes: gl.getUniformLocation(renderProg,'uRes'),
+  uTime: gl.getUniformLocation(renderProg,'uTime'),
+  uHeat: gl.getUniformLocation(renderProg,'uHeat'),
+  uMouse: gl.getUniformLocation(renderProg,'uMouse'),
+};
+
+/* ---------- interaction state ---------- */
+const mouse = {x:0.5, y:0.5, px:0.5, py:0.5, down:false};
+let heatBalance = 0.5;      // scroll-controlled cooling<->heating
+let dormant = false;
+const SHOCK_N = 6;
+const shocks = new Float32Array(SHOCK_N*4); // xy,z(start),w(strength)
+let shockIdx = 0;
+
+function setMouse(cx, cy){
+  mouse.x = cx / window.innerWidth;
+  mouse.y = 1.0 - cy / window.innerHeight; // flip to gl space
+}
+function eruption(cx, cy, strength){
+  const x = cx / window.innerWidth;
+  const y = 1.0 - cy / window.innerHeight;
+  const i = shockIdx % SHOCK_N; shockIdx++;
+  shocks[i*4+0]=x; shocks[i*4+1]=y; shocks[i*4+2]=tNow; shocks[i*4+3]=strength;
+}
+
+cv.addEventListener('pointerdown', e=>{
+  cv.setPointerCapture(e.pointerId);
+  setMouse(e.clientX,e.clientY); mouse.px=mouse.x; mouse.py=mouse.y;
+  mouse.down=true;
+  eruption(e.clientX,e.clientY, 1.0);
+});
+cv.addEventListener('pointermove', e=>{
+  setMouse(e.clientX,e.clientY);
+});
+window.addEventListener('pointerup', ()=>{ mouse.down=false; });
+cv.addEventListener('pointerleave', ()=>{ mouse.down=false; });
+
+cv.addEventListener('wheel', e=>{
+  e.preventDefault();
+  heatBalance = Math.min(1, Math.max(0, heatBalance - e.deltaY*0.0011));
+}, {passive:false});
+
+window.addEventListener('keydown', e=>{
+  if(e.code==='Space'){ e.preventDefault(); dormant=!dormant; }
+});
+
+// double-tap / mid-click big eruption handled by single click already; add auto idle bursts
+let lastIdle = 0;
+
+/* ---------- render loop ---------- */
+let tNow=0, last=performance.now(), fpsT=0, fpsN=0, fpsV=60;
+const barfill=document.getElementById('barfill');
+const fpsEl=document.getElementById('fps');
+
+function frame(now){
+  let dt=(now-last)/1000; last=now;
+  if(dt>0.05) dt=0.05;
+  tNow += dt;
+
+  // fps meter
+  fpsN++; fpsT+=dt;
+  if(fpsT>=0.5){ fpsV=Math.round(fpsN/fpsT); fpsN=0; fpsT=0;
+    fpsEl.textContent = fpsV+' fps'; }
+
+  // gauge
+  barfill.style.width = (heatBalance*100).toFixed(0)+'%';
+
+  // ambient autonomous life: occasional self-eruptions when idle & not dormant
+  if(!dormant && now-lastIdle > 2600 + Math.random()*3400){
+    lastIdle = now;
+    eruption(Math.random()*window.innerWidth, Math.random()*window.innerHeight, 0.55+Math.random()*0.4);
+  }
+
+  // ---------- SIM pass (into fboB, reading texA) ----------
+  const steps = dormant ? 1 : 2; // sub-steps for crisper wave propagation
+  for(let s=0;s<steps;s++){
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fboB);
+    gl.viewport(0,0,SIMW,SIMH);
+    gl.useProgram(simProg);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texA);
+    gl.uniform1i(uSim.uPrev,0);
+    gl.uniform2f(uSim.uRes,SIMW,SIMH);
+    gl.uniform2f(uSim.uMouse,mouse.x,mouse.y);
+    gl.uniform2f(uSim.uPMouse,mouse.px,mouse.py);
+    gl.uniform1f(uSim.uDown, (mouse.down && !dormant)?1:0);
+    gl.uniform1f(uSim.uTime, tNow);
+    gl.uniform1f(uSim.uHeat, dormant?0.06:heatBalance);
+    gl.uniform4fv(uSim.uShock, shocks);
+    gl.uniform1f(uSim.uReset, needReset?1:0);
+    gl.drawArrays(gl.TRIANGLES,0,3);
+    // swap
+    let tt=texA; texA=texB; texB=tt;
+    let tf=fboA; fboA=fboB; fboB=tf;
+    needReset=false;
+  }
+  // trail update after sim consumed prev mouse
+  mouse.px += (mouse.x-mouse.px)*0.5;
+  mouse.py += (mouse.y-mouse.py)*0.5;
+
+  // ---------- RENDER pass (to screen, reading texA) ----------
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0,0,W,H);
+  gl.useProgram(renderProg);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, texA);
+  gl.uniform1i(uRen.uHeatTex,0);
+  gl.uniform2f(uRen.uRes,W,H);
+  gl.uniform1f(uRen.uTime,tNow);
+  gl.uniform1f(uRen.uHeat, dormant?0.06:heatBalance);
+  gl.uniform2f(uRen.uMouse,mouse.x,mouse.y);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+
+  // in-frame readback for verification (valid before buffer swap/clear)
+  if(window.__needSample){
+    const sw=64, sh=64;
+    const px=new Uint8Array(4*sw*sh);
+    gl.readPixels((W*0.5-sw/2)|0,(H*0.5-sh/2)|0,sw,sh,gl.RGBA,gl.UNSIGNED_BYTE,px);
+    let sum=0,sq=0,n=sw*sh;
+    for(let i=0;i<px.length;i+=4){ const v=(px[i]+px[i+1]+px[i+2])/3; sum+=v; sq+=v*v; }
+    const avg=sum/n;
+    window.__sample={avg:avg, varc:Math.sqrt(Math.max(0,sq/n-avg*avg))};
+    window.__needSample=false;
+  }
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// expose for verification
+window.__pyroclast = {
+  forcePoint:(x,y)=>{ setMouse(x,y); mouse.px=mouse.x; mouse.py=mouse.y; mouse.down=true; },
+  release:()=>{ mouse.down=false; },
+  erupt:(x,y)=>eruption(x,y,1.0),
+  setHeat:(v)=>{ heatBalance=v; },
+  sample:()=>new Promise(res=>{ window.__sample=null; window.__needSample=true;
+    const iv=setInterval(()=>{ if(window.__sample){ clearInterval(iv); res(window.__sample); } },20); }),
+  info:()=>({fps:fpsV, simW:SIMW, simH:SIMH, dpr:DPR, W:W, H:H, texType: TEX_TYPE===gl.FLOAT?'float':(TEX_TYPE===gl.UNSIGNED_BYTE?'ubyte':'half'), heat:heatBalance, t:tNow})
+};
+})();
+</script>
+</body>
+</html>

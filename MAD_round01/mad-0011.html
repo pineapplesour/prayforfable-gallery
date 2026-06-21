@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>KINETIC · FABLE</title>
+<style>
+  :root{ --bg:#06070e; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:var(--bg); }
+  body{
+    font-family:"Helvetica Neue",Arial,system-ui,sans-serif;
+    -webkit-tap-highlight-color:transparent;
+    touch-action:none;
+    cursor:crosshair;
+  }
+  #stage{ position:fixed; inset:0; display:block; }
+
+  /* 정적 오버레이: 비네팅 + 미세 그레인 (모두 pointer-events:none) */
+  .veil{ position:fixed; inset:0; pointer-events:none; }
+  #vignette{
+    background:radial-gradient(120% 120% at 50% 42%, transparent 52%, rgba(0,0,0,.55) 100%);
+    mix-blend-mode:multiply;
+  }
+  #grain{
+    opacity:.05; mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    background-size:200px 200px;
+  }
+
+  /* UI 텍스트 */
+  .ui{ position:fixed; pointer-events:none; color:#cfd6ff;
+       font-weight:600; letter-spacing:.28em; text-transform:uppercase;
+       font-size:11px; mix-blend-mode:screen; user-select:none; }
+  #brand{ top:26px; left:30px; }
+  #brand b{ color:#fff; font-weight:800; letter-spacing:.34em; }
+  #brand span{ display:block; margin-top:7px; opacity:.5; letter-spacing:.34em; font-size:9.5px; }
+  #hint{ bottom:26px; left:30px; opacity:.62; line-height:1.9;
+         animation:breathe 5.5s ease-in-out infinite; }
+  #hint i{ font-style:normal; color:#8fa0ff; }
+  #idx{ bottom:26px; right:30px; text-align:right; opacity:.5;
+        font-variant-numeric:tabular-nums; }
+  #idx b{ color:#fff; font-weight:800; font-size:13px; letter-spacing:.1em; }
+  @keyframes breathe{ 0%,100%{opacity:.32} 50%{opacity:.7} }
+  @media (max-width:560px){
+    #brand{ top:18px; left:18px; } #hint{ bottom:18px; left:18px; font-size:10px; }
+    #idx{ bottom:18px; right:18px; } .ui{ letter-spacing:.2em; }
+  }
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <div id="vignette" class="veil"></div>
+  <div id="grain" class="veil"></div>
+
+  <div id="brand" class="ui"><b>KINETIC</b><span>// FABLE · TYPE STORM</span></div>
+  <div id="hint" class="ui"><i>움직여</i> 깎고 · <i>클릭</i>해 터뜨리고 · <i>스크롤</i>로 휘몰아쳐</div>
+  <div id="idx" class="ui"><b id="idxN">01</b> / 08</div>
+
+<script>
+(() => {
+  "use strict";
+  const cv = document.getElementById("stage");
+  const ctx = cv.getContext("2d", { alpha:false });
+  const idxN = document.getElementById("idxN");
+
+  let DPR = Math.min(2, window.devicePixelRatio || 1);
+  let W = 0, H = 0;
+  const isMobile = matchMedia("(max-width:560px)").matches;
+
+  // ---- 단어 시퀀스 + 색 앵커 ----
+  const WORDS = ["FABLE", "MYTHOS", "폭발", "KINETIC", "CHAOS", "질서", "RISE", "꿈"];
+  const BASEH = [265, 202, 8, 188, 332, 150, 44, 288];
+  let wi = 0;
+
+  // ---- 파티클 풀 ----
+  let N = isMobile ? 2700 : 6500;
+  let px, py, vx, vy, ph;        // 위치/속도/위상
+  let hx, hy;                    // 목표(home)
+  function allocate(n){
+    px=new Float32Array(n); py=new Float32Array(n);
+    vx=new Float32Array(n); vy=new Float32Array(n);
+    ph=new Float32Array(n);
+    hx=new Float32Array(n); hy=new Float32Array(n);
+  }
+
+  // ---- 오프스크린(텍스트 샘플링) ----
+  const off = document.createElement("canvas");
+  const octx = off.getContext("2d", { willReadFrequently:true });
+  const DS = 0.34; // 다운샘플 비율
+
+  function samplePoints(word){
+    const ow = Math.max(2, Math.round(W * DS));
+    const oh = Math.max(2, Math.round(H * DS));
+    off.width = ow; off.height = oh;
+    octx.clearRect(0,0,ow,oh);
+    octx.fillStyle = "#fff";
+    octx.textAlign = "center";
+    octx.textBaseline = "middle";
+
+    // 폭 78%에 맞게 폰트 크기 산정
+    let fs = Math.round(oh * 0.6);
+    const fam = '900 ' + fs + 'px "Arial Black","Arial",sans-serif';
+    octx.font = fam;
+    let m = octx.measureText(word).width || 1;
+    const targetW = ow * 0.80;
+    fs = Math.max(8, Math.min(fs * targetW / m, oh * 0.66));
+    octx.font = '900 ' + Math.round(fs) + 'px "Arial Black","Arial",sans-serif';
+    octx.fillText(word, ow/2, oh/2 + oh*0.02);
+
+    const data = octx.getImageData(0,0,ow,oh).data;
+    const pts = [];
+    const inv = 1 / DS;
+    for (let y=0; y<oh; y++){
+      for (let x=0; x<ow; x++){
+        if (data[(y*ow + x)*4 + 3] > 130){
+          pts.push(x*inv, y*inv);
+        }
+      }
+    }
+    return pts; // [x0,y0,x1,y1,...]
+  }
+
+  // 풀 크기를 첫 단어로 보정
+  function calibrate(){
+    const pts = samplePoints(WORDS[wi]);
+    const M = pts.length >> 1;
+    N = Math.max(isMobile?1800:3200, Math.min(isMobile?3400:9000, M));
+    allocate(N);
+    for (let i=0;i<N;i++){
+      px[i] = Math.random()*W; py[i] = Math.random()*H;
+      vx[i]=0; vy[i]=0; ph[i]=Math.random();
+    }
+    applyHomes(pts);
+  }
+
+  // 목표 좌표 배정(순환 / 서브샘플)
+  function applyHomes(pts){
+    const M = pts.length >> 1;
+    if (M === 0) return;
+    for (let i=0;i<N;i++){
+      const j = (i % M) * 2;        // 순환 배정 → 입자 수 보존
+      hx[i] = pts[j]; hy[i] = pts[j+1];
+    }
+    // M이 클 땐 다양성 위해 일부를 무작위 셔플 배정
+    if (M > N){
+      for (let i=0;i<N;i++){
+        const j = ((Math.random()*M)|0)*2;
+        hx[i]=pts[j]; hy[i]=pts[j+1];
+      }
+    }
+  }
+
+  // ---- 글로우 스프라이트(휴 버킷) ----
+  const BUCKETS = 36, sprites = [];
+  function buildSprites(){
+    sprites.length = 0;
+    const s = 64;
+    for (let b=0;b<BUCKETS;b++){
+      const hue = b*(360/BUCKETS);
+      const c = document.createElement("canvas");
+      c.width=c.height=s;
+      const g = c.getContext("2d");
+      const grad = g.createRadialGradient(s/2,s/2,0, s/2,s/2,s/2);
+      grad.addColorStop(0,   "hsla("+hue+",100%,72%,1)");
+      grad.addColorStop(0.28,"hsla("+hue+",100%,58%,0.55)");
+      grad.addColorStop(1,   "hsla("+hue+",100%,50%,0)");
+      g.fillStyle = grad;
+      g.fillRect(0,0,s,s);
+      sprites.push(c);
+    }
+  }
+
+  // ---- 입력 상태 ----
+  let mx=-9999, my=-9999, held=false, present=false;
+  let swirl=0, shake=0, scrollAcc=0, energy=0;
+  let baseHue = BASEH[wi], hueDrift=0;
+  let lastInteract = 0, lastAuto = 0;
+  let tnow = 0;
+
+  function explode(cx, cy, power){
+    const reach = W*0.62;
+    for (let i=0;i<N;i++){
+      let dx = px[i]-cx, dy = py[i]-cy;
+      let d = Math.sqrt(dx*dx+dy*dy) + 0.01;
+      let f = power * 19 * Math.max(0, 1 - d/reach);
+      const ix = dx/d, iy = dy/d;
+      vx[i] += ix*f + (Math.random()-0.5)*power*2.2;
+      vy[i] += iy*f + (Math.random()-0.5)*power*2.2;
+    }
+    shake = Math.min(22, shake + power*13);
+    energy = Math.min(1, energy + power*0.5);
+  }
+
+  function morph(dir){
+    wi = (wi + dir + WORDS.length) % WORDS.length;
+    applyHomes(samplePoints(WORDS[wi]));
+    baseHue = BASEH[wi];
+    idxN.textContent = String(wi+1).padStart(2,"0");
+    // 변형 시 가벼운 바깥 버스트로 생동감
+    explode(W*0.5, H*0.5, 0.55);
+  }
+
+  // ---- 리사이즈 ----
+  function resize(){
+    DPR = Math.min(2, window.devicePixelRatio || 1);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = Math.round(W*DPR); cv.height = Math.round(H*DPR);
+    cv.style.width = W+"px"; cv.style.height = H+"px";
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    if (!px) calibrate(); else applyHomes(samplePoints(WORDS[wi]));
+  }
+
+  // ---- 메인 루프 ----
+  const R = isMobile ? 92 : 132;     // 마우스 반경
+  const R2 = R*R;
+  const SPRING = 0.024, FRICTION = 0.87;
+
+  function frame(t){
+    if (!tnow) tnow = t;
+    tnow = t;
+
+    // 자동 순환(유휴 시) → 첫 페인트부터 살아있음
+    if (t - lastInteract > 6000 && t - lastAuto > 6000){
+      lastAuto = t; morph(1);
+    }
+
+    hueDrift += 0.04;
+    const cx = W*0.5, cy = H*0.5;
+    const heldF = held ? 1.85 : 1.0;
+    const heldR2 = held ? R2*1.6 : R2;
+
+    // 잔상 페이드(트레일)
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = "rgba(6,7,14,0.18)";
+    ctx.fillRect(0,0,W,H);
+
+    // 입자 가산 합성
+    ctx.globalCompositeOperation = "lighter";
+
+    const sx = (Math.random()-0.5)*shake;
+    const sy = (Math.random()-0.5)*shake;
+    let speedSum = 0;
+    const bh = (baseHue + hueDrift) ;
+
+    for (let i=0;i<N;i++){
+      let x=px[i], y=py[i], ax=0, ay=0;
+
+      // home 스프링
+      ax += (hx[i]-x)*SPRING;
+      ay += (hy[i]-y)*SPRING;
+
+      // 마우스 반발(글자 깎기)
+      if (present){
+        const dx = x-mx, dy = y-my, d2 = dx*dx+dy*dy;
+        if (d2 < heldR2 && d2 > 0.001){
+          const d = Math.sqrt(d2);
+          const f = (1 - d/(R*(held?1.27:1))) * 120 * heldF / d;
+          ax += dx*f; ay += dy*f;
+        }
+      }
+
+      // 스크롤 소용돌이(중심 기준 접선)
+      if (swirl){
+        ax += -(y-cy)*swirl;
+        ay +=  (x-cx)*swirl;
+      }
+
+      let nvx=(vx[i]+ax)*FRICTION;
+      let nvy=(vy[i]+ay)*FRICTION;
+      vx[i]=nvx; vy[i]=nvy;
+      x+=nvx; y+=nvy;
+      px[i]=x; py[i]=y;
+
+      const sp = Math.sqrt(nvx*nvx+nvy*nvy);
+      speedSum += sp;
+
+      // 색: 위치 그라데이션 + 속도 가열
+      let hue = bh + (x/W)*70 + (y/H)*46 + sp*3.2 + ph[i]*30;
+      hue %= 360; if (hue<0) hue+=360;
+      const b = (hue/(360/BUCKETS))|0;
+
+      // 크기: 속도에 따라 발광 확대(에너지감)
+      const s = (isMobile?3.0:3.6) + Math.min(sp*0.62, 10) + energy*2.2;
+      const sprite = sprites[b<BUCKETS?b:0];
+      ctx.drawImage(sprite, x+sx - s*0.5, y+sy - s*0.5, s, s);
+    }
+
+    // 감쇠
+    swirl *= 0.94; if (Math.abs(swirl) < 1e-5) swirl = 0;
+    shake *= 0.86;  if (shake < 0.3) shake = 0;
+    const avg = speedSum / N;
+    energy += ((Math.min(avg*0.12, 1)) - energy) * 0.08;
+
+    requestAnimationFrame(frame);
+  }
+
+  // ---- 이벤트 ----
+  function setPointer(x,y){ mx=x; my=y; present=true; lastInteract=performance.now(); }
+  cv.addEventListener("pointermove", e => setPointer(e.clientX, e.clientY));
+  cv.addEventListener("pointerdown", e => {
+    held = true; setPointer(e.clientX, e.clientY);
+    explode(e.clientX, e.clientY, 1.0);
+  });
+  window.addEventListener("pointerup", () => { held=false; });
+  cv.addEventListener("pointerleave", () => { present=false; });
+
+  // 스크롤: 단어 변형 + 소용돌이
+  window.addEventListener("wheel", e => {
+    e.preventDefault();
+    lastInteract = performance.now();
+    swirl += e.deltaY * 0.000045;
+    swirl = Math.max(-0.05, Math.min(0.05, swirl));
+    scrollAcc += e.deltaY;
+    if (Math.abs(scrollAcc) > 520){
+      morph(scrollAcc > 0 ? 1 : -1);
+      scrollAcc = 0;
+    }
+    energy = Math.min(1, energy + 0.12);
+  }, { passive:false });
+
+  // 모바일 보조: 두 번 탭 → 다음 단어
+  let lastTap = 0;
+  cv.addEventListener("pointerup", e => {
+    const now = performance.now();
+    if (now - lastTap < 320){ morph(1); }
+    lastTap = now;
+  });
+
+  window.addEventListener("resize", resize);
+
+  // ---- 부트 ----
+  buildSprites();
+  resize();      // calibrate 포함
+  idxN.textContent = String(wi+1).padStart(2,"0");
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,1060 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>RIFT ARENA — ASCII Rocket Jump</title>
+<style>
+  :root{
+    --bg:#05060a; --ink:#9fffd0; --dim:#2a6b52; --hot:#ff7a3c;
+    --rail:#7ad7ff; --warn:#ffd23c; --blood:#ff3b5c; --panel:#0b1018;
+  }
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;color:var(--ink);}
+  #wrap{position:fixed;inset:0;display:flex;align-items:stretch;justify-content:center;}
+  #view{
+    margin:0;flex:1;white-space:pre;overflow:hidden;
+    font-size:12px;line-height:12px;letter-spacing:0;
+    color:var(--ink);background:radial-gradient(120% 90% at 50% 38%,#0a141d 0%,#05060a 70%,#000 100%);
+    user-select:none;cursor:crosshair;
+  }
+  /* HUD overlay */
+  #hud{position:fixed;inset:0;pointer-events:none;z-index:5;}
+  .stat{position:absolute;font-size:13px;line-height:1.35;text-shadow:0 0 6px rgba(0,0,0,.9);}
+  #s-health{left:14px;bottom:12px;}
+  #s-ammo{right:14px;bottom:12px;text-align:right;}
+  #s-frags{left:50%;top:10px;transform:translateX(-50%);text-align:center;font-size:13px;}
+  .big{font-size:26px;font-weight:700;display:block;line-height:1;}
+  #s-health .big{color:var(--hot);}
+  #s-ammo .big{color:var(--rail);}
+  #s-armor{color:var(--warn);}
+  #credit{position:absolute;left:50%;bottom:6px;transform:translateX(-50%);
+    font-size:10px;color:#557;letter-spacing:.4px;white-space:nowrap;opacity:.85;}
+  #weaponbar{position:absolute;left:50%;bottom:48px;transform:translateX(-50%);
+    font-size:12px;color:#6fae93;letter-spacing:1px;}
+  #weaponbar b{color:var(--ink);border-bottom:2px solid var(--hot);padding:0 2px;}
+  /* minimap */
+  #mini{position:absolute;right:12px;top:10px;
+    font-size:9px;line-height:9px;white-space:pre;color:#4fae84;
+    background:rgba(5,10,16,.55);padding:6px 8px;border:1px solid #14352a;border-radius:4px;}
+  /* center crosshair handled in ascii; killfeed */
+  #feed{position:absolute;left:14px;top:10px;font-size:12px;line-height:1.5;
+    color:#8fd;max-width:42vw;}
+  #feed div{opacity:.92;}
+  .frag-flash{color:var(--hot);font-weight:700;}
+  /* damage vignette */
+  #dmg{position:fixed;inset:0;pointer-events:none;z-index:6;
+    box-shadow:inset 0 0 120px 30px rgba(255,30,60,0);transition:box-shadow .12s;}
+  /* overlays */
+  .screen{position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;text-align:center;padding:22px;
+    background:radial-gradient(120% 100% at 50% 30%,#0c1822 0%,#04060a 70%);}
+  .screen.hidden{display:none;}
+  #intro h1{font-size:clamp(30px,6vw,58px);margin:0 0 6px;letter-spacing:10px;
+    color:var(--ink);text-shadow:0 0 22px rgba(60,255,180,.35);}
+  #intro .sub{color:var(--hot);letter-spacing:6px;font-size:14px;margin-bottom:18px;}
+  .card{max-width:520px;color:#bfe;line-height:1.7;font-size:13px;}
+  .keys{margin-top:16px;color:#7fc;font-size:12px;line-height:1.9;}
+  .keys b{color:var(--ink);}
+  .btn{margin-top:22px;pointer-events:auto;cursor:pointer;
+    border:1px solid var(--hot);color:var(--hot);background:rgba(255,122,60,.08);
+    padding:12px 30px;font-family:inherit;font-size:15px;letter-spacing:3px;border-radius:3px;}
+  .btn:hover{background:rgba(255,122,60,.2);}
+  #intro .credit2{position:absolute;bottom:14px;font-size:11px;color:#567;letter-spacing:.5px;}
+  #pause .card,#over .card{font-size:14px;}
+  #over h2{font-size:34px;letter-spacing:6px;margin:0 0 4px;color:var(--hot);}
+  /* mobile touch controls */
+  #touch{position:fixed;inset:0;z-index:8;display:none;}
+  .tc{position:absolute;pointer-events:auto;border:1px solid rgba(120,255,200,.25);
+    border-radius:50%;color:#9fffd0;display:flex;align-items:center;justify-content:center;
+    font-size:18px;background:rgba(8,18,26,.4);user-select:none;}
+  #pad{left:18px;bottom:18px;width:150px;height:150px;border-radius:14px;
+    border:1px solid rgba(120,255,200,.2);background:rgba(8,18,26,.3);}
+  #stick{position:absolute;width:58px;height:58px;border-radius:50%;
+    background:rgba(120,255,200,.25);left:46px;top:46px;}
+  #t-fire{right:24px;bottom:30px;width:96px;height:96px;font-size:14px;color:var(--hot);
+    border-color:rgba(255,122,60,.5);}
+  #t-jump{right:130px;bottom:44px;width:74px;height:74px;font-size:13px;color:var(--rail);
+    border-color:rgba(122,215,255,.5);}
+  #t-wpn{right:30px;bottom:140px;width:64px;height:64px;font-size:12px;}
+  body.touch #touch{display:block;}
+</style>
+</head>
+<body>
+<div id="wrap"><pre id="view"></pre></div>
+
+<div id="hud">
+  <div id="feed"></div>
+  <pre id="mini"></pre>
+  <div id="weaponbar"></div>
+  <div class="stat" id="s-frags">FRAGS <span class="big" id="frag-n">0</span> / <span id="frag-goal">15</span></div>
+  <div class="stat" id="s-health">HEALTH<span class="big" id="hp-n">100</span><span id="s-armor">ARMOR 0</span></div>
+  <div class="stat" id="s-ammo"><span id="wpn-name">ROCKETEER</span><span class="big" id="ammo-n">20</span>AMMO</div>
+  <div id="credit">Quake (id Software)에서 영감 — © id Software. 오리지널 구현 · RIFT ARENA</div>
+</div>
+<div id="dmg"></div>
+
+<!-- mobile touch -->
+<div id="touch">
+  <div id="pad" class="tc" style="border-radius:14px"><div id="stick"></div></div>
+  <div id="t-fire" class="tc">FIRE</div>
+  <div id="t-jump" class="tc">JUMP</div>
+  <div id="t-wpn" class="tc">WPN</div>
+</div>
+
+<!-- intro -->
+<div id="intro" class="screen">
+  <div class="sub">ASCII RAYCAST DEATHMATCH</div>
+  <h1>RIFT ARENA</h1>
+  <div class="card">
+    균열(Rift)이 갈라진 폐허 격투장. 봇들과 함께 <b>로켓점프</b>로 솟구쳐
+    공중을 날며 프래그를 쌓아라. 점프패드에 올라타 고지대를 선점하고,
+    용암 구덩이를 피해라. 먼저 목표 프래그에 도달하면 승리.
+  </div>
+  <div class="keys">
+    <b>WASD</b> 이동 · <b>마우스</b> 조준(클릭=포인터락) · <b>←→</b> 회전 백업<br>
+    <b>좌클릭/SPACE</b> 발사 · <b>SHIFT/우클릭</b> 점프 · <b>점프+발사=로켓점프</b>(발밑 폭발로 솟구침)<br>
+    <b>1 2 3</b> 무기전환 · <b>R</b> 리스폰 · <b>ESC</b> 일시정지
+  </div>
+  <button class="btn" id="startBtn">ENTER ARENA</button>
+  <div class="credit2">Quake (id Software)에서 영감받은 오리지널 구현 — © id Software. 맵·적·무기 전부 오리지널.</div>
+</div>
+
+<!-- pause -->
+<div id="pause" class="screen hidden">
+  <h1 style="font-size:34px;letter-spacing:8px;color:var(--ink)">일시정지</h1>
+  <div class="card">ESC 또는 화면 클릭으로 복귀.</div>
+  <button class="btn" id="resumeBtn">RESUME</button>
+  <div class="credit2">Quake (id Software)에서 영감 — © id Software. 오리지널 구현</div>
+</div>
+
+<!-- gameover -->
+<div id="over" class="screen hidden">
+  <h2 id="over-title">VICTORY</h2>
+  <div class="card" id="over-text"></div>
+  <button class="btn" id="againBtn">REMATCH</button>
+  <div class="credit2">Quake (id Software)에서 영감 — © id Software. 오리지널 구현</div>
+</div>
+
+<script>
+(() => {
+"use strict";
+/* ============================================================
+   RIFT ARENA — original Quake-inspired ASCII raycast arena FPS
+   - DDA raycaster rendering walls as ASCII glyphs (inherited from
+     the "2_내부" reference renderer), extended with:
+       * vertical (Z) movement -> rocket jump / jump pads
+       * sprites (bots, pickups, rockets) depth-composited
+       * weapons w/ splash damage, bot AI, frags, respawns, HUD
+   - All maps/enemies/weapons/names are original. No Quake assets.
+   ============================================================ */
+
+  /* ---------- DOM ---------- */
+  const view = document.getElementById("view");
+  const mini = document.getElementById("mini");
+  const feed = document.getElementById("feed");
+  const dmgEl = document.getElementById("dmg");
+  const hpN = document.getElementById("hp-n");
+  const armorEl = document.getElementById("s-armor");
+  const ammoN = document.getElementById("ammo-n");
+  const wpnNameEl = document.getElementById("wpn-name");
+  const fragN = document.getElementById("frag-n");
+  const fragGoalEl = document.getElementById("frag-goal");
+  const wbar = document.getElementById("weaponbar");
+  const introEl = document.getElementById("intro");
+  const pauseEl = document.getElementById("pause");
+  const overEl = document.getElementById("over");
+  const overTitle = document.getElementById("over-title");
+  const overText = document.getElementById("over-text");
+
+  /* ---------- map: original arena ----------
+     1=wall, 0=floor, 2=lava(hurts), 3=jump pad
+     Designed as a symmetric rocket-jump arena with a raised
+     central spire reachable mainly by jump pads / rocket jumps. */
+  const RAW = [
+    "111111111111111111111111",
+    "100000000003100000000001",
+    "100111100000000001111001",
+    "100100000022220000010001",
+    "100100011022220110010001",
+    "100000010000000010000031",
+    "103000010001100010000001",
+    "100011110001100011110001",
+    "100010000001100000010001",
+    "100010001111111100010001",
+    "100000001000000100000001",
+    "100220001000000100022001",
+    "100220001000000100022001",
+    "100000001000000100000001",
+    "100010001111111100010001",
+    "100010000001100000010001",
+    "100011110001100011110001",
+    "130000010001100010000001",
+    "100000010000000010000001",
+    "100100011022220110010001",
+    "100100000022220000010001",
+    "100111100000000001111001",
+    "100000000013000000000001",
+    "111111111111111111111111",
+  ];
+  const MH = RAW.length, MW = RAW[0].length;
+  const map = RAW.map(r => r.split("").map(Number));
+  const cell = (x,y) => (x<0||y<0||x>=MW||y>=MH) ? 1 : map[y|0][x|0];
+  const isWall = (x,y) => cell(x,y) === 1;
+  const isLava = (x,y) => cell(x,y) === 2;
+  const isPad  = (x,y) => cell(x,y) === 3;
+
+  /* wall ascii texture pool — gives stone/grate look */
+  const TEX = "#@%&8BШ$=+*ENGINEROCKETRIFTABYSSCOREДLAVA01101001#=#=|||///\\\\\\".replace(/[^\x21-\x7E]/g,"");
+  const SHADE_FAR = "·:".split("");
+  function wallChar(side, tx, ty, d){
+    if (d > 16) return " ";
+    if (d > 11) return "·";
+    if (d > 8)  return side ? ":" : ".";
+    const seed = ((((tx*256)|0)*73856093) ^ (((ty*256)|0)*19349663)) >>> 0;
+    let ch = TEX[(seed) % TEX.length];
+    if (d > 5) ch = /[A-Za-z0-9]/.test(ch) ? ch.toLowerCase() : ":";
+    return ch;
+  }
+  const FLOOR = " .,'`-~".split("");
+
+  /* ---------- player ---------- */
+  const PR = 0.25; // collision radius
+  let P = freshPlayer();
+  function freshPlayer(){
+    return {
+      x: 2.5, y: 2.5, dir: 0.7,
+      z: 0, vz: 0,            // vertical (height) for rocket jump
+      hp: 100, armor: 0,
+      alive: true, respawnT: 0,
+      frags: 0, deaths: 0,
+      weapon: 0, ammo: [40, 80, 18], // rocketeer, stormcoil, lancebeam
+      cool: 0,                // weapon cooldown
+      hurtFlash: 0, bob: 0,
+    };
+  }
+
+  /* ---------- weapons (original names/feel) ---------- */
+  const WEAPONS = [
+    { name:"ROCKETEER",  glyph:"=>", rate:0.78, dmg:55, splash:2.1, speed:7.0, ammoMax:40, proj:true,  kick:0.85, self:0.45 },
+    { name:"STORMCOIL",  glyph:"::", rate:0.085,dmg:8,  splash:0,   speed:0,   ammoMax:160,proj:false, spread:0.05, range:13 },
+    { name:"LANCEBEAM",  glyph:"||", rate:1.25, dmg:80, splash:0,   speed:0,   ammoMax:30, proj:false, spread:0,    range:40 },
+  ];
+  const FRAG_GOAL = 15;
+  fragGoalEl.textContent = FRAG_GOAL;
+
+  /* ---------- entities ---------- */
+  let rockets = [];   // {x,y,z,vx,vy,vz,owner,dmg,splash,life}
+  let pickups = [];   // {x,y,z,type,respawn}
+  let bots = [];
+  let particles = []; // {x,y,z,life,ch} screen-space-ish via projection
+  const PICKUP_TYPES = {
+    health:{glyph:"+",amt:25,color:"#ff7a3c",label:"+HP"},
+    armor:{glyph:"&",amt:50,color:"#ffd23c",label:"+ARMOR"},
+    ammo0:{glyph:"=",amt:8, color:"#9fffd0",label:"ROCKETS"},
+    ammo2:{glyph:"!",amt:6, color:"#7ad7ff",label:"SLUGS"},
+    mega:{glyph:"O",amt:80,color:"#ff3b5c",label:"MEGA"},
+  };
+
+  /* find open floor cells for spawning */
+  const OPEN = [];
+  for (let y=0;y<MH;y++) for (let x=0;x<MW;x++) if (cell(x,y)===0) OPEN.push([x+0.5,y+0.5]);
+  function randOpenFar(fx,fy,minD){
+    for (let i=0;i<60;i++){
+      const [x,y]=OPEN[(Math.random()*OPEN.length)|0];
+      if (Math.hypot(x-fx,y-fy)>minD) return [x,y];
+    }
+    const [x,y]=OPEN[(Math.random()*OPEN.length)|0]; return [x,y];
+  }
+
+  /* place static pickups at hand-picked nice spots */
+  function seedPickups(){
+    pickups = [];
+    const spots = [
+      [11.5,11.5,"mega"], [12.5,12.5,"armor"],
+      [3.5,3.5,"ammo0"], [20.5,3.5,"ammo0"],
+      [3.5,20.5,"ammo2"], [20.5,20.5,"ammo2"],
+      [11.5,2.5,"health"], [12.5,21.5,"health"],
+      [2.5,11.5,"armor"], [21.5,12.5,"health"],
+    ];
+    for (const [x,y,t] of spots) pickups.push({x,y,z:0,type:t,respawn:0});
+  }
+
+  /* ---------- bots (original AI) ---------- */
+  const BOT_NAMES = ["VEX-9","NULLBYTE","ASHGRID","ORE-K7","SLAGBOT","RIFTWRAITH"];
+  function spawnBots(n){
+    bots = [];
+    for (let i=0;i<n;i++){
+      const [x,y]=randOpenFar(P.x,P.y,8);
+      bots.push(makeBot(BOT_NAMES[i%BOT_NAMES.length], x, y));
+    }
+  }
+  function makeBot(name,x,y){
+    return {
+      name, x, y, z:0, vz:0, dir:Math.random()*6.28,
+      hp:80, alive:true, respawnT:0,
+      cool: 0.4+Math.random(), think:0, tx:x, ty:y,
+      weapon:(Math.random()<0.5?0:1), frags:0,
+      strafe: Math.random()<0.5?1:-1, strafeT:0,
+    };
+  }
+
+  /* ---------- camera / projection ---------- */
+  let W=120, H=46, CW=7;
+  function fit(){
+    const probe=document.createElement("span");
+    probe.style.cssText="position:absolute;visibility:hidden;font:12px/12px ui-monospace,Menlo,monospace;white-space:pre";
+    probe.textContent="M".repeat(100); document.body.appendChild(probe);
+    CW=probe.getBoundingClientRect().width/100||7; probe.remove();
+    W=Math.max(70,Math.min(260,Math.floor(view.clientWidth/CW)-1));
+    H=Math.max(28,Math.floor(view.clientHeight/12));
+  }
+
+  const FOV=0.66;
+  const zbuf=new Float32Array(512); // per-column wall distance
+
+  /* ---------- input ---------- */
+  const keys={};
+  let mouseDX=0;
+  let pointerLocked=false;
+  let running=false, paused=false, started=false;
+
+  addEventListener("keydown",e=>{
+    const k=e.key.toLowerCase();
+    keys[k]=true;
+    if (["w","a","s","d","arrowup","arrowdown","arrowleft","arrowright"," ","shift"].includes(k)) e.preventDefault();
+    if (k==="1") selectWeapon(0);
+    if (k==="2") selectWeapon(1);
+    if (k==="3") selectWeapon(2);
+    if (k==="r" && started && !P.alive) respawnPlayer();
+    if (k==="escape" && started) togglePause();
+  });
+  addEventListener("keyup",e=>{ keys[e.key.toLowerCase()]=false; });
+
+  view.addEventListener("mousedown",e=>{
+    if (!started) return;
+    if (!pointerLocked){ view.requestPointerLock&&view.requestPointerLock(); return; }
+    if (e.button===0) keys["_fire"]=true;
+    if (e.button===2) keys["_jump"]=true;
+  });
+  addEventListener("mouseup",e=>{ if(e.button===0)keys["_fire"]=false; if(e.button===2)keys["_jump"]=false; });
+  view.addEventListener("contextmenu",e=>e.preventDefault());
+  document.addEventListener("pointerlockchange",()=>{
+    pointerLocked = (document.pointerLockElement===view);
+  });
+  addEventListener("mousemove",e=>{ if(pointerLocked) mouseDX+=e.movementX; });
+
+  function selectWeapon(i){
+    if (i<0||i>=WEAPONS.length) return;
+    P.weapon=i; updateHUD();
+  }
+
+  /* ---------- touch ---------- */
+  if (("ontouchstart" in window)|| navigator.maxTouchPoints>0){
+    document.body.classList.add("touch");
+  }
+  (function touchSetup(){
+    const pad=document.getElementById("pad"), stick=document.getElementById("stick");
+    let padId=null, base={x:0,y:0};
+    const padVec={x:0,y:0};
+    pad.addEventListener("touchstart",e=>{
+      const t=e.changedTouches[0]; padId=t.identifier;
+      const r=pad.getBoundingClientRect(); base.x=r.left+r.width/2; base.y=r.top+r.height/2;
+      moveStick(t);
+    },{passive:true});
+    pad.addEventListener("touchmove",e=>{
+      for(const t of e.changedTouches) if(t.identifier===padId) moveStick(t);
+    },{passive:true});
+    pad.addEventListener("touchend",e=>{
+      for(const t of e.changedTouches) if(t.identifier===padId){padId=null;padVec.x=padVec.y=0;
+        stick.style.left="46px";stick.style.top="46px";
+        keys["w"]=keys["s"]=keys["a"]=keys["d"]=false;}
+    },{passive:true});
+    function moveStick(t){
+      let dx=t.clientX-base.x, dy=t.clientY-base.y;
+      const m=Math.hypot(dx,dy)||1, max=55;
+      const cl=Math.min(m,max); dx=dx/m*cl; dy=dy/m*cl;
+      stick.style.left=(46+dx)+"px"; stick.style.top=(46+dy)+"px";
+      padVec.x=dx/max; padVec.y=dy/max;
+      keys["w"]=padVec.y<-0.3; keys["s"]=padVec.y>0.3;
+      keys["a"]=padVec.x<-0.35; keys["d"]=padVec.x>0.35;
+    }
+    // look: drag on right half of view
+    let lookId=null,lookX=0;
+    view.addEventListener("touchstart",e=>{
+      if(!started)return;
+      const t=e.changedTouches[0];
+      if(t.clientX>innerWidth*0.45){lookId=t.identifier;lookX=t.clientX;}
+    },{passive:true});
+    view.addEventListener("touchmove",e=>{
+      for(const t of e.changedTouches) if(t.identifier===lookId){
+        mouseDX += (t.clientX-lookX)*1.6; lookX=t.clientX;
+      }
+    },{passive:true});
+    view.addEventListener("touchend",e=>{
+      for(const t of e.changedTouches) if(t.identifier===lookId) lookId=null;
+    },{passive:true});
+    const bind=(id,key)=>{const el=document.getElementById(id);
+      el.addEventListener("touchstart",e=>{e.preventDefault();keys[key]=true;},{passive:false});
+      el.addEventListener("touchend",e=>{e.preventDefault();keys[key]=false;},{passive:false});};
+    bind("t-fire","_fire"); bind("t-jump","_jump");
+    document.getElementById("t-wpn").addEventListener("touchstart",e=>{
+      e.preventDefault(); selectWeapon((P.weapon+1)%WEAPONS.length);
+    },{passive:false});
+  })();
+
+  /* ---------- movement & physics ---------- */
+  function tryMovePlayer(nx,ny){
+    // separate axis collision against walls + lava treated as walkable but damaging
+    if (!isWall(nx + Math.sign(nx-P.x)*PR, P.y)) P.x=nx;
+    if (!isWall(P.x, ny + Math.sign(ny-P.y)*PR)) P.y=ny;
+  }
+
+  function fireWeapon(){
+    if (!P.alive) return;
+    const w=WEAPONS[P.weapon];
+    if (P.cool>0) return;
+    if (P.ammo[P.weapon]<=0){ flashFeed("탄약 부족 — 무기 전환(1/2/3)"); P.cool=0.25; return; }
+    P.cool=w.rate;
+    P.ammo[P.weapon]--;
+    const dx=Math.cos(P.dir), dy=Math.sin(P.dir);
+    if (w.proj){
+      const stomp = (keys["_jump"]||keys["shift"]) && P.z<0.6;
+      if (stomp){
+        // ROCKET JUMP: detonate at your own feet for a big controllable launch.
+        // Small capped self-damage; strong upward boost.
+        explode(P.x, P.y, 0.02, w.dmg, w.splash, -1);
+      } else {
+        // forward rocket projectile. armT = arming delay before it can
+        // splash its OWNER, so a shot into a near wall won't gib you.
+        rockets.push({
+          x:P.x+dx*0.45, y:P.y+dy*0.45, z:P.z+0.05,
+          vx:dx*w.speed, vy:dy*w.speed, vz:0,
+          owner:-1, dmg:w.dmg, splash:w.splash, speed:w.speed, life:3.0, armT:0.18
+        });
+      }
+      muzzle();
+    } else if (P.weapon===2){
+      // LANCEBEAM hitscan rail
+      railShot(P.x,P.y,P.dir, w.dmg, w.range, -1);
+      P.cool=w.rate;
+      beamTrail(P.x,P.y,P.dir,w.range,"|");
+    } else {
+      // STORMCOIL rapid hitscan
+      const ang=P.dir + (Math.random()-0.5)*w.spread;
+      hitscan(P.x,P.y,ang, w.dmg, w.range, -1, ":");
+    }
+    updateHUD();
+  }
+
+  function muzzle(){ /* tiny screen kick handled via bob */ P.bob=Math.min(P.bob+0.5,1.2); }
+
+  function railShot(ox,oy,ang,dmg,range,owner){
+    hitscan(ox,oy,ang,dmg,range,owner,"|");
+  }
+  function hitscan(ox,oy,ang,dmg,range,owner,glyph){
+    const dx=Math.cos(ang), dy=Math.sin(ang);
+    const step=0.05; let dist=0, hx=ox, hy=oy;
+    while(dist<range){
+      hx+=dx*step; hy+=dy*step; dist+=step;
+      if (isWall(hx,hy)) break;
+      // check targets
+      if (owner===-1){
+        for (const b of bots){
+          if (!b.alive) continue;
+          if (Math.hypot(b.x-hx,b.y-hy)<0.35){
+            damageBot(b,dmg,owner); spark(hx,hy,b.z+0.3); return;
+          }
+        }
+      } else {
+        if (P.alive && Math.hypot(P.x-hx,P.y-hy)<0.35){ damagePlayer(dmg,owner); return; }
+      }
+    }
+    spark(hx,hy,0.3);
+  }
+  function beamTrail(ox,oy,ang,range,ch){
+    const dx=Math.cos(ang),dy=Math.sin(ang);
+    let hx=ox,hy=oy,d=0;
+    while(d<range){ hx+=dx*0.4;hy+=dy*0.4;d+=0.4; if(isWall(hx,hy))break;
+      particles.push({x:hx,y:hy,z:0.25,life:0.18,ch:ch,col:"#7ad7ff"}); }
+  }
+
+  function explode(x,y,z,dmg,splash,owner,selfAllowed){
+    if (selfAllowed===undefined) selfAllowed=true;
+    for(let i=0;i<10;i++){
+      const a=Math.random()*6.28, r=Math.random()*splash;
+      particles.push({x:x+Math.cos(a)*r*0.4,y:y+Math.sin(a)*r*0.4,z:z+Math.random()*0.6,life:0.35+Math.random()*0.25,ch:["*","#","@","+","."][i%5],col:"#ff7a3c"});
+    }
+    // splash to bots
+    for (const b of bots){
+      if(!b.alive)continue;
+      const dd=Math.hypot(b.x-x,b.y-y);
+      if(dd<splash){ const f=1-dd/splash; damageBot(b,dmg*f,owner);
+        // knockback
+        const a=Math.atan2(b.y-y,b.x-x); b.vz+=1.5*f; b.x+=Math.cos(a)*0.2*f; b.y+=Math.sin(a)*0.2*f;
+      }
+    }
+    // splash to player (rocket jump!)
+    if (P.alive && (owner!==-1 || selfAllowed)){
+      const dd=Math.hypot(P.x-x,P.y-y);
+      if (dd<splash){
+        const f=1-dd/splash;
+        if (owner!==-1){
+          // hit by an ENEMY rocket — full-ish splash damage
+          damagePlayer(dmg*f*0.7,owner);
+        } else {
+          // SELF splash from your own rocket. Capped low so deliberate
+          // rocket-jumps cost only a little HP and never gib you from
+          // an accidental forward shot into a near wall.
+          const selfDmg = Math.min(14, dmg*f*WEAPONS[0].self);
+          if (selfDmg >= 1) damagePlayer(selfDmg, owner, true);
+        }
+        // launch — vertical + horizontal kick = ROCKET JUMP (always strong)
+        const a=Math.atan2(P.y-y,P.x-x);
+        P.vz += 4.6*f;
+        const kick=WEAPONS[0].kick*f;
+        const nx=P.x+Math.cos(a)*kick, ny=P.y+Math.sin(a)*kick;
+        tryMovePlayer(nx,ny);
+      }
+    }
+  }
+
+  function spark(x,y,z){ particles.push({x,y,z,life:0.15,ch:"*",col:"#fff"}); }
+
+  /* ---------- damage ---------- */
+  function damagePlayer(amt, owner, isSelf){
+    if (!P.alive) return;
+    amt=Math.max(1,Math.round(amt));
+    // armor absorbs 2/3
+    if (P.armor>0){
+      const ab=Math.min(P.armor, Math.round(amt*0.66));
+      P.armor-=ab; amt-=ab;
+    }
+    P.hp-=amt;
+    P.hurtFlash=1;
+    showDmg();
+    updateHUD();
+    if (P.hp<=0 && P.alive){
+      P.alive=false; P.deaths++; P.respawnT=1.8;
+      if (owner>=0 && bots[owner]){ bots[owner].frags++; flashFeed(`<span style="color:#ff3b5c">${bots[owner].name}</span> ▸ 당신`); }
+      else if (isSelf) flashFeed(`당신 ▸ <span style="color:#ff7a3c">자폭</span>`);
+      else flashFeed("당신 사망 — R로 리스폰");
+      deathBurst(P.x,P.y);
+    }
+  }
+  function damageBot(b, amt, owner){
+    if(!b.alive)return;
+    b.hp-=amt;
+    spark(b.x,b.y,b.z+0.3);
+    if (b.hp<=0){
+      b.alive=false; b.respawnT=2.2+Math.random();
+      deathBurst(b.x,b.y);
+      if (owner===-1){ P.frags++; flashFeed(`<span class="frag-flash">당신 ▸ ${b.name}</span>`);
+        checkWin();
+      } else flashFeed(`봇 ▸ ${b.name}`);
+      updateHUD();
+    }
+  }
+  function deathBurst(x,y){
+    for(let i=0;i<14;i++){const a=Math.random()*6.28,r=Math.random();
+      particles.push({x:x+Math.cos(a)*r*0.5,y:y+Math.sin(a)*r*0.5,z:0.2+Math.random()*0.7,life:0.4+Math.random()*0.3,ch:["x","X","+","%",".","o"][i%6],col:"#ff3b5c"});}
+  }
+
+  function respawnPlayer(){
+    const [x,y]=randOpenFar(11.5,11.5,3);
+    Object.assign(P,{x,y,z:0,vz:0,hp:100,armor:Math.max(0,P.armor),alive:true,respawnT:0,cool:0,hurtFlash:0});
+    flashFeed("리스폰");
+    updateHUD();
+  }
+  function respawnBot(b){
+    const [x,y]=randOpenFar(P.x,P.y,6);
+    Object.assign(b,{x,y,z:0,vz:0,hp:80,alive:true,respawnT:0,cool:0.5,weapon:(Math.random()<0.5?0:1)});
+  }
+
+  /* ---------- bot AI ---------- */
+  function updateBots(dt){
+    for (let bi=0; bi<bots.length; bi++){
+      const b=bots[bi];
+      if (!b.alive){ b.respawnT-=dt; if(b.respawnT<=0) respawnBot(b); continue; }
+      // vertical physics
+      b.vz-=9.5*dt; b.z+=b.vz*dt; if(b.z<0){b.z=0;b.vz=0;}
+      if (isPad(b.x,b.y) && b.z<0.05){ b.vz=5.5; }
+      if (isLava(b.x,b.y) && b.z<0.05){ b.hp-=18*dt; if(b.hp<=0){b.alive=false;b.respawnT=2.2;deathBurst(b.x,b.y);} }
+
+      const toP=Math.hypot(P.x-b.x,P.y-b.y);
+      const losP = P.alive && hasLOS(b.x,b.y,P.x,P.y);
+      b.think-=dt; b.strafeT-=dt;
+      if (b.strafeT<=0){ b.strafe=Math.random()<0.5?1:-1; b.strafeT=0.6+Math.random()*0.9; }
+
+      // pick target: chase player if visible & alive, else wander to pickups
+      let goalX, goalY;
+      if (losP && P.alive){
+        b.dir = Math.atan2(P.y-b.y, P.x-b.x);
+        // keep medium range
+        const desired = b.weapon===0?4.5:3.0;
+        if (toP>desired+1){ goalX=P.x; goalY=P.y; }
+        else if (toP<desired-1){ goalX=b.x-(P.x-b.x); goalY=b.y-(P.y-b.y); }
+        else { // strafe
+          goalX=b.x+Math.cos(b.dir+Math.PI/2)*b.strafe;
+          goalY=b.y+Math.sin(b.dir+Math.PI/2)*b.strafe;
+        }
+        // fire
+        b.cool-=dt;
+        if (b.cool<=0 && toP<13){
+          botFire(b);
+          b.cool = b.weapon===0 ? (0.9+Math.random()*0.5) : (0.5+Math.random()*0.4);
+        }
+      } else {
+        if (b.think<=0 || Math.hypot(b.tx-b.x,b.ty-b.y)<0.5){
+          // wander toward a pickup or random
+          const live=pickups.filter(p=>p.respawn<=0);
+          if (live.length && Math.random()<0.6){ const t=live[(Math.random()*live.length)|0]; b.tx=t.x;b.ty=t.y; }
+          else { const [rx,ry]=OPEN[(Math.random()*OPEN.length)|0]; b.tx=rx;b.ty=ry; }
+          b.think=1.5+Math.random();
+        }
+        goalX=b.tx; goalY=b.ty;
+        b.dir=Math.atan2(goalY-b.y,goalX-b.x);
+      }
+      // move toward goal (with simple wall slide)
+      const spd=2.4*dt;
+      const ga=Math.atan2(goalY-b.y, goalX-b.x);
+      const nx=b.x+Math.cos(ga)*spd, ny=b.y+Math.sin(ga)*spd;
+      if(!isWall(nx+Math.sign(Math.cos(ga))*0.2,b.y))b.x=nx;
+      if(!isWall(b.x,ny+Math.sign(Math.sin(ga))*0.2))b.y=ny;
+      // grab pickups
+      grabPickups(b,false);
+    }
+  }
+  function botFire(b){
+    if (b.weapon===0){
+      const dx=Math.cos(b.dir),dy=Math.sin(b.dir);
+      rockets.push({x:b.x+dx*0.4,y:b.y+dy*0.4,z:b.z+0.05,vx:dx*WEAPONS[0].speed*0.85,vy:dy*WEAPONS[0].speed*0.85,vz:0,owner:bots.indexOf(b),dmg:38,splash:1.8,speed:WEAPONS[0].speed,life:3});
+    } else {
+      const ang=b.dir+(Math.random()-0.5)*0.12;
+      hitscan(b.x,b.y,ang, 6, 13, bots.indexOf(b), ":");
+    }
+  }
+
+  function hasLOS(ax,ay,bx,by){
+    const dx=bx-ax,dy=by-ay,d=Math.hypot(dx,dy),steps=Math.ceil(d/0.25);
+    for(let i=1;i<steps;i++){const t=i/steps; if(isWall(ax+dx*t,ay+dy*t))return false;}
+    return true;
+  }
+
+  /* ---------- pickups ---------- */
+  function grabPickups(ent,isPlayer){
+    for (const p of pickups){
+      if (p.respawn>0) continue;
+      if (Math.hypot(ent.x-p.x,ent.y-p.y)<0.5 && Math.abs((ent.z||0))<0.8){
+        applyPickup(ent,p,isPlayer); p.respawn=8+Math.random()*4;
+      }
+    }
+  }
+  function applyPickup(ent,p,isPlayer){
+    const t=p.type;
+    if (t==="health"){ ent.hp=Math.min(isPlayer?100:80, ent.hp+25); }
+    else if (t==="mega"){ ent.hp=Math.min(200, ent.hp+80); }
+    else if (t==="armor"){ if(isPlayer) ent.armor=Math.min(150,(ent.armor||0)+50); else ent.hp=Math.min(120,ent.hp+30); }
+    else if (t==="ammo0"){ if(isPlayer) ent.ammo[0]=Math.min(WEAPONS[0].ammoMax,ent.ammo[0]+8); }
+    else if (t==="ammo2"){ if(isPlayer) ent.ammo[2]=Math.min(WEAPONS[2].ammoMax,ent.ammo[2]+6); }
+    if (isPlayer){ flashFeed(`획득: <span style="color:${PICKUP_TYPES[t].color}">${PICKUP_TYPES[t].label}</span>`); updateHUD(); }
+  }
+
+  /* ---------- rockets ---------- */
+  function updateRockets(dt){
+    for (let i=rockets.length-1;i>=0;i--){
+      const r=rockets[i];
+      r.life-=dt; if(r.life<=0){ rockets.splice(i,1); continue; }
+      if (r.armT>0) r.armT-=dt;
+      const armed = !(r.armT>0);            // can splash its owner only once armed
+      const nx=r.x+r.vx*dt, ny=r.y+r.vy*dt;
+      // trail
+      particles.push({x:r.x,y:r.y,z:r.z,life:0.12,ch:".",col:"#ff7a3c"});
+      if (isWall(nx,ny)){ explode(r.x,r.y,r.z,r.dmg,r.splash,r.owner,armed); rockets.splice(i,1); continue; }
+      r.x=nx; r.y=ny;
+      // hit player
+      if (r.owner!==-1 && P.alive && Math.hypot(P.x-r.x,P.y-r.y)<0.4){ explode(r.x,r.y,r.z,r.dmg,r.splash,r.owner,true); rockets.splice(i,1); continue; }
+      // hit bot
+      if (r.owner===-1){
+        let hitB=false;
+        for (const b of bots){ if(b.alive && Math.hypot(b.x-r.x,b.y-r.y)<0.4){ explode(r.x,r.y,r.z,r.dmg,r.splash,-1,armed); rockets.splice(i,1); hitB=true; break; } }
+        if (hitB) continue;
+      }
+    }
+  }
+
+  /* ---------- player update ---------- */
+  function updatePlayer(dt){
+    if (!P.alive){
+      P.respawnT-=dt;
+      return;
+    }
+    // turn from mouse
+    P.dir += mouseDX*0.0026; mouseDX=0;
+    if (keys["arrowleft"]) P.dir-=2.4*dt;
+    if (keys["arrowright"]) P.dir+=2.4*dt;
+
+    // vertical physics
+    P.vz-=10*dt; P.z+=P.vz*dt;
+    if (P.z<0){ P.z=0; P.vz=0; }
+    const grounded = P.z<0.04;
+    if (isPad(P.x,P.y) && grounded){ P.vz=6.2; flashFeed("점프패드!"); }
+    if (isLava(P.x,P.y) && grounded){ damagePlayer(20*dt,-1,true); }
+
+    // jump / rocket-jump trigger
+    if (keys["_jump"]||keys["shift"]||keys[" "]&&false){
+      if (grounded){ P.vz=3.6; }
+    }
+    if (keys[" "]) keys["_fire"]=true; // space fires
+
+    // move
+    const ms=3.0*dt;
+    const fx=Math.cos(P.dir), fy=Math.sin(P.dir);
+    let mvx=0,mvy=0;
+    if (keys["w"]){ mvx+=fx; mvy+=fy; }
+    if (keys["s"]){ mvx-=fx; mvy-=fy; }
+    if (keys["a"]){ mvx+=fy; mvy-=fx; }
+    if (keys["d"]){ mvx-=fy; mvy+=fx; }
+    const ml=Math.hypot(mvx,mvy);
+    if (ml>0){ mvx/=ml; mvy/=ml; tryMovePlayer(P.x+mvx*ms, P.y+mvy*ms); P.bob+=dt*8; }
+
+    // fire
+    if (keys["_fire"]) fireWeapon();
+    if (P.cool>0) P.cool-=dt;
+    if (P.hurtFlash>0) P.hurtFlash-=dt*3;
+    P.bob *= 0.92;
+
+    grabPickups(P,true);
+  }
+
+  /* ---------- pickups respawn timer ---------- */
+  function updatePickups(dt){ for(const p of pickups) if(p.respawn>0) p.respawn-=dt; }
+
+  /* ============================================================
+     RENDER — DDA raycaster with sprite compositing
+     ============================================================ */
+  let rowbuf=[];
+  function render(){
+    if (rowbuf.length!==H) rowbuf=new Array(H);
+    const horizon = (H>>1) + (P.z*H*0.32) + Math.sin(P.bob)*0.6; // z shifts horizon -> sense of height
+    const cosD=Math.cos(P.dir), sinD=Math.sin(P.dir);
+    const planeX=-sinD*FOV, planeY=cosD*FOV;
+    // char grid
+    const grid = [];
+    for (let y=0;y<H;y++) grid.push(new Array(W).fill(" "));
+
+    // walls + floor/ceiling
+    for (let x=0;x<W;x++){
+      const cam=(2*x)/W-1;
+      const rdx=cosD+planeX*cam, rdy=sinD+planeY*cam;
+      let mx=P.x|0,my=P.y|0;
+      const ddx=Math.abs(1/(rdx||1e-9)), ddy=Math.abs(1/(rdy||1e-9));
+      let sx,sy,sdx,sdy,side=0;
+      if(rdx<0){sx=-1;sdx=(P.x-mx)*ddx;}else{sx=1;sdx=(mx+1-P.x)*ddx;}
+      if(rdy<0){sy=-1;sdy=(P.y-my)*ddy;}else{sy=1;sdy=(my+1-P.y)*ddy;}
+      let hit=0,guard=0;
+      while(!hit&&guard++<80){
+        if(sdx<sdy){sdx+=ddx;mx+=sx;side=0;}else{sdy+=ddy;my+=sy;side=1;}
+        if(cell(mx,my)===1) hit=1;
+      }
+      const dist=Math.max(0.05, side===0? sdx-ddx : sdy-ddy);
+      zbuf[x]=dist;
+      const lh=(H/dist)|0;
+      const ds=Math.max(0,(horizon-lh/2)|0);
+      const de=Math.min(H-1,(horizon+lh/2)|0);
+      let wallX=side===0? P.y+dist*rdy : P.x+dist*rdx; wallX-=wallX|0;
+      const dShade=dist+(side?1.0:0);
+      for (let y=0;y<H;y++){
+        const g=grid[y];
+        if (y<ds){ // ceiling — dark vault, only faint haze near the horizon
+          const t=(horizon-y)/Math.max(1,horizon); // 0 at horizon -> 1 at top
+          if (t<0.12 && ((x+ (y<<1))&3)===0) g[x]="`";
+          else if (t<0.05) g[x]="·";
+          else g[x]=" ";
+        } else if (y>de){ // floor
+          const fd=(y-horizon)/Math.max(1,(H-horizon));
+          // sample floor cell for lava glow
+          let fch=FLOOR[Math.min(FLOOR.length-1,((1-fd)*FLOOR.length)|0)]||" ";
+          g[x]=fch;
+        } else {
+          const ty=(y-(horizon-lh/2))/Math.max(1,lh);
+          g[x]=wallChar(side, wallX, ty, dShade);
+        }
+      }
+    }
+
+    // ---- floor lava overlay (per-column raycast of floor cells for glow) ----
+    // cheap: for some floor pixels, project back to world to test lava/pad
+    for (let y=(horizon|0)+1; y<H; y++){
+      const p = (y-horizon);
+      if (p<=0) continue;
+      const rowDist = (0.5*H)/p; // distance of this floor row
+      if (rowDist>14) continue;
+      const fxStepX = (rowDist*(cosD-planeX))/1;
+      // compute left/right ray
+      const rxL=cosD - planeX, ryL=sinD - planeY;
+      const rxR=cosD + planeX, ryR=sinD + planeY;
+      const flX=P.x + rowDist*rxL, flY=P.y + rowDist*ryL;
+      const stepX=(rowDist*rxR - rowDist*rxL)/W;
+      const stepY=(rowDist*ryR - rowDist*ryL)/W;
+      let wx=flX, wy=flY;
+      const g=grid[y];
+      for (let x=0;x<W;x++){
+        if (g[x]===" "||g[x]==="·"||g[x]===":"||g[x]==="-"){ /* ceiling, skip */ }
+        else {
+          const c=cell(wx,wy);
+          if (c===2){ g[x]= (((x+ (Date.now()*0.004|0))&3)===0)?"§":"~"; }      // lava
+          else if (c===3){ g[x]= ((x+y)&1)?"^":"v"; }            // jump pad
+        }
+        wx+=stepX; wy+=stepY;
+      }
+    }
+
+    // ---- sprites: bots, pickups, rockets, particles ----
+    const sprites=[];
+    for (const b of bots){ if(b.alive) sprites.push({x:b.x,y:b.y,z:b.z,kind:"bot",ref:b}); }
+    for (const p of pickups){ if(p.respawn<=0) sprites.push({x:p.x,y:p.y,z:0.15+Math.sin(Date.now()*0.004)*0.05,kind:"pickup",ref:p}); }
+    for (const r of rockets){ sprites.push({x:r.x,y:r.y,z:r.z,kind:"rocket",ref:r}); }
+    for (const pa of particles){ sprites.push({x:pa.x,y:pa.y,z:pa.z,kind:"part",ref:pa}); }
+    // sort far->near
+    for (const s of sprites) s.d=(s.x-P.x)**2+(s.y-P.y)**2;
+    sprites.sort((a,b)=>b.d-a.d);
+
+    const invDet=1.0/(planeX*sinD - cosD*planeY);
+    for (const s of sprites){
+      const relx=s.x-P.x, rely=s.y-P.y;
+      const tx=invDet*(sinD*relx - cosD*rely);
+      const ty=invDet*(-planeY*relx + planeX*rely); // depth
+      if (ty<=0.15) continue;
+      const screenX=((W/2)*(1+tx/ty))|0;
+      const dist=ty;
+      if (dist>16) continue;
+      drawSprite(grid,s,screenX,dist,horizon);
+    }
+
+    // ---- crosshair ----
+    const cx=(W/2)|0, cy=(horizon)|0;
+    if (cy>0&&cy<H){ grid[cy][cx]="+"; if(cx-2>0)grid[cy][cx-2]="-"; if(cx+2<W)grid[cy][cx+2]="-";
+      if(cy-1>0)grid[cy-1][cx]="'"; if(cy+1<H)grid[cy+1][cx]=","; }
+
+    // weapon viewmodel (ascii) at bottom center
+    drawViewmodel(grid);
+
+    // build string
+    const out=new Array(H);
+    for (let y=0;y<H;y++) out[y]=grid[y].join("");
+    view.textContent=out.join("\n");
+  }
+
+  function drawSprite(grid,s,screenX,dist,horizon){
+    let size = Math.max(1, (H/dist)|0);
+    // z lifts sprite up the screen
+    const baseY = horizon + (H/dist)*0.5 - s.z*(H/dist)*0.55;
+    let glyphRows, col;
+    if (s.kind==="bot"){
+      const b=s.ref;
+      const hpFrac=b.hp/80;
+      size=Math.max(2,Math.min(14,(H/dist*0.9)|0));
+      glyphRows=botSprite(size, b===nearestAimBot()?true:false);
+      col = b.weapon===0?"#ff7a3c":"#9fffd0";
+    } else if (s.kind==="pickup"){
+      const g=PICKUP_TYPES[s.ref.type].glyph;
+      size=Math.max(1,Math.min(5,(H/dist*0.4)|0));
+      glyphRows=[g];
+      col=PICKUP_TYPES[s.ref.type].color;
+    } else if (s.kind==="rocket"){
+      glyphRows=["o"]; size=1; col="#ff7a3c";
+    } else { // particle
+      glyphRows=[s.ref.ch]; size=1; col=s.ref.col||"#fff";
+    }
+    const h=glyphRows.length;
+    const w=glyphRows[0].length;
+    const scale=Math.max(1,(size/h)|0);
+    const startY=(baseY - h*scale)|0;
+    for (let ry=0;ry<h*scale;ry++){
+      const gy=startY+ry; if(gy<0||gy>=H)continue;
+      const line=glyphRows[(ry/scale)|0];
+      for (let rx=0;rx<w*scale;rx++){
+        const gx=(screenX - (w*scale>>1) + rx)|0;
+        if(gx<0||gx>=W)continue;
+        if (zbuf[gx] && dist>zbuf[gx]+0.1) continue; // occluded by wall
+        const ch=line[(rx/scale)|0];
+        if(ch&&ch!==" ") grid[gy][gx]=ch;
+      }
+    }
+  }
+
+  // crude pixel sprites for bots (original "rift drone" look)
+  function botSprite(size, aimed){
+    if (size<=2) return aimed?["Å","Ï"]:["A","i"];
+    if (size<=4) return [" Ω ","/█\\","| |"];
+    if (size<=7) return ["  ╓╖  ","[░██░]"," /██\\ ","  ││  "];
+    return [
+      "   ╔══╗   ",
+      "  ╢ ◢◣ ╟  ",
+      " ◢██████◣ ",
+      " ██ ██ ██ ",
+      "  ║████║  ",
+      "  ╜    ╙  ",
+    ];
+  }
+
+  function nearestAimBot(){
+    // bot closest to crosshair direction (for highlight) — cheap
+    let best=null,bestA=0.25;
+    for(const b of bots){ if(!b.alive)continue;
+      const a=Math.atan2(b.y-P.y,b.x-P.x);
+      let da=Math.abs(((a-P.dir+Math.PI*3)%(Math.PI*2))-Math.PI);
+      if(da<bestA){bestA=da;best=b;}
+    }
+    return best;
+  }
+
+  function drawViewmodel(grid){
+    if(!P.alive) return;
+    const w=WEAPONS[P.weapon];
+    const cx=(W/2)|0;
+    const bobX=Math.round(Math.sin(P.bob)*1.2);
+    const kick = P.cool>w.rate*0.6 ? 1 : 0;
+    const baseY=H-3-kick;
+    let art;
+    if (P.weapon===0) art=["   ╔════╗","═══╣ ●● ┣═►"]; // rocketeer
+    else if (P.weapon===1) art=["  ╔═══╗","╞═╣:::┣══"]; // stormcoil
+    else art=[" ╔═══════╗","═╣│││││││┣"]; // lancebeam
+    for(let i=0;i<art.length;i++){
+      const gy=baseY+i; if(gy<0||gy>=H)continue;
+      const line=art[i];
+      const sx=cx - (line.length>>1) + bobX + 8;
+      for(let j=0;j<line.length;j++){
+        const gx=sx+j; if(gx<0||gx>=W)continue;
+        if(line[j]!==" ") grid[gy][gx]=line[j];
+      }
+    }
+  }
+
+  /* ---------- minimap ---------- */
+  function renderMini(){
+    const R=7; // radius cells
+    const rows=[];
+    for(let dy=-R;dy<=R;dy++){
+      let row="";
+      for(let dx=-R;dx<=R;dx++){
+        const mx=(P.x+dx)|0, my=(P.y+dy)|0;
+        if (dx===0&&dy===0){ row+="◉"; continue; }
+        const c=cell(mx,my);
+        // bots
+        let drew=false;
+        for(const b of bots){ if(b.alive && (b.x|0)===mx && (b.y|0)===my){ row+="✦"; drew=true; break; } }
+        if(drew)continue;
+        for(const p of pickups){ if(p.respawn<=0 && (p.x|0)===mx && (p.y|0)===my){ row+="◇"; drew=true; break; } }
+        if(drew)continue;
+        if(c===1)row+="█"; else if(c===2)row+="≈"; else if(c===3)row+="↑"; else row+=" ";
+      }
+      rows.push(row);
+    }
+    mini.textContent=rows.join("\n");
+  }
+
+  /* ---------- HUD ---------- */
+  function updateHUD(){
+    hpN.textContent=Math.max(0,Math.round(P.hp));
+    hpN.style.color = P.hp<30?"#ff3b5c":(P.hp>100?"#ff7a3c":"#ff7a3c");
+    armorEl.textContent="ARMOR "+Math.round(P.armor);
+    const w=WEAPONS[P.weapon];
+    wpnNameEl.textContent=w.name;
+    ammoN.textContent=P.ammo[P.weapon];
+    fragN.textContent=P.frags;
+    wbar.innerHTML = WEAPONS.map((ww,i)=> (i===P.weapon?`<b>${i+1}·${ww.name}</b>`:`${i+1}·${ww.name}`)).join("  ");
+  }
+  let feedItems=[];
+  function flashFeed(html){
+    feedItems.unshift({html,t:performance.now()});
+    feedItems=feedItems.slice(0,5);
+    renderFeed();
+  }
+  function renderFeed(){
+    const now=performance.now();
+    feedItems=feedItems.filter(f=>now-f.t<4000);
+    feed.innerHTML=feedItems.map(f=>`<div style="opacity:${Math.max(.3,1-(now-f.t)/4000)}">${f.html}</div>`).join("");
+  }
+  let dmgT=0;
+  function showDmg(){ dmgT=1; }
+
+  /* ---------- win/lose ---------- */
+  function checkWin(){
+    if (P.frags>=FRAG_GOAL){ endGame(true); }
+  }
+  function endGame(win){
+    running=false;
+    document.exitPointerLock&&document.exitPointerLock();
+    overTitle.textContent= win?"VICTORY":"DEFEAT";
+    overTitle.style.color= win?"#9fffd0":"#ff3b5c";
+    const botBest=Math.max(0,...bots.map(b=>b.frags));
+    overText.innerHTML= win
+      ? `RIFT ARENA 제압. <br>당신 프래그 <b style="color:#ff7a3c">${P.frags}</b> · 사망 ${P.deaths} · 최고 봇 ${botBest}<br><br>균열은 닫혔다.`
+      : `당신 프래그 ${P.frags} · 사망 ${P.deaths}<br>다시 균열로.`;
+    overEl.classList.remove("hidden");
+  }
+
+  /* ---------- pause ---------- */
+  function togglePause(){
+    if(!started)return;
+    paused=!paused;
+    if(paused){ pauseEl.classList.remove("hidden"); document.exitPointerLock&&document.exitPointerLock(); }
+    else { pauseEl.classList.add("hidden"); }
+  }
+
+  /* ---------- main loop ---------- */
+  let last=performance.now(), acc=0;
+  function loop(t){
+    const dt=Math.min(0.045,(t-last)/1000); last=t;
+    if (running && !paused){
+      updatePlayer(dt);
+      updateBots(dt);
+      updateRockets(dt);
+      updatePickups(dt);
+      // particles
+      for(let i=particles.length-1;i>=0;i--){const pa=particles[i];pa.life-=dt;pa.z+=(pa.vz||0)*dt;if(pa.life<=0)particles.splice(i,1);}
+    }
+    acc+=dt;
+    if (acc>1/45){ acc=0;
+      if (started){ render(); renderMini(); renderFeed();
+        // damage vignette decay
+        if(dmgT>0){ dmgT-=dt*2.2; dmgEl.style.boxShadow=`inset 0 0 120px 30px rgba(255,30,60,${Math.max(0,dmgT*0.6)})`; }
+      }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  /* ---------- boot ---------- */
+  function startGame(){
+    fit();
+    P=freshPlayer();
+    seedPickups();
+    spawnBots(4);
+    rockets=[];particles=[];feedItems=[];
+    started=true; running=true; paused=false;
+    introEl.classList.add("hidden");
+    overEl.classList.add("hidden");
+    pauseEl.classList.add("hidden");
+    updateHUD();
+    flashFeed("RIFT ARENA — 목표 "+FRAG_GOAL+" 프래그. 발밑에 로켓을 쏴 솟구쳐라.");
+    view.requestPointerLock&&view.requestPointerLock();
+  }
+
+  document.getElementById("startBtn").addEventListener("click",startGame);
+  document.getElementById("resumeBtn").addEventListener("click",togglePause);
+  document.getElementById("againBtn").addEventListener("click",startGame);
+
+  addEventListener("resize",()=>{ fit(); });
+
+  // first paint (menu visible, view shows a static frame)
+  fit();
+  // render a preview frame so the arena is visible behind nothing (intro covers it)
+  P=freshPlayer(); seedPickups(); spawnBots(4);
+  render(); renderMini(); updateHUD();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>VERTIGO — 무한 회전 착시</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #05060a; }
+  body {
+    font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+    -webkit-user-select: none; user-select: none;
+    touch-action: none;
+    cursor: crosshair;
+  }
+  #stage { position: fixed; inset: 0; display: block; }
+  .hud {
+    position: fixed; z-index: 5; pointer-events: none;
+    color: rgba(235,238,255,.82);
+    text-shadow: 0 1px 18px rgba(0,0,0,.9);
+    letter-spacing: .02em;
+  }
+  #title {
+    left: clamp(16px, 3vw, 42px); top: clamp(14px, 3vh, 34px);
+    font-weight: 800; font-size: clamp(22px, 4.6vw, 46px);
+    line-height: .92; letter-spacing: -.02em;
+    mix-blend-mode: difference; color: #fff;
+  }
+  #title small {
+    display: block; font-weight: 500;
+    font-size: clamp(10px, 1.5vw, 13px);
+    letter-spacing: .42em; opacity: .8; margin-top: .55em;
+    text-transform: uppercase;
+  }
+  #hint {
+    left: clamp(16px, 3vw, 42px); bottom: clamp(14px, 3vh, 30px);
+    font-size: clamp(10px, 1.4vw, 12.5px); font-weight: 500;
+    letter-spacing: .08em; opacity: .62; max-width: 80vw;
+  }
+  #hint b { color: #7df9e6; font-weight: 700; }
+  #readout {
+    right: clamp(16px, 3vw, 42px); top: clamp(14px, 3vh, 34px);
+    text-align: right; font-variant-numeric: tabular-nums;
+    font-size: clamp(9px, 1.2vw, 11px); letter-spacing: .14em;
+    opacity: .55; line-height: 1.7; font-weight: 600;
+  }
+  #readout span { color: #ffd36b; }
+  .vig { position: fixed; inset: 0; z-index: 4; pointer-events: none;
+    background: radial-gradient(ellipse 75% 75% at 50% 50%, transparent 52%, rgba(2,3,6,.55) 100%); }
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <div class="vig"></div>
+  <div id="title" class="hud">VERTIGO<small>infinite&nbsp;·&nbsp;rotation</small></div>
+  <div id="readout" class="hud">FPS <span id="rFps">–</span><br>RINGS <span id="rRings">–</span><br>SPIN <span id="rSpin">–</span></div>
+  <div id="hint" class="hud">움직여 — 소용돌이가 손끝을 따라온다 · <b>클릭/탭</b> 펄스 · <b>휠/드래그</b> 밀도 · <b>더블탭</b> 색 전환</div>
+
+<script>
+(() => {
+  "use strict";
+  const cv = document.getElementById('stage');
+  const ctx = cv.getContext('2d', { alpha: false });
+  const rFps = document.getElementById('rFps');
+  const rRings = document.getElementById('rRings');
+  const rSpin = document.getElementById('rSpin');
+
+  // ---- viewport / DPR ----
+  let W = 0, H = 0, CX = 0, CY = 0, DPR = 1, R = 0;
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+    cv.style.width = W + 'px'; cv.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    CX = W / 2; CY = H / 2;
+    R = Math.hypot(W, H) * 0.62;
+  }
+  window.addEventListener('resize', resize, { passive: true });
+  resize();
+
+  // ---- pointer ----
+  const P = { x: CX, y: CY, tx: CX, ty: CY, down: false, vx: 0, vy: 0, active: false };
+  function setP(x, y) { P.tx = x; P.ty = y; P.active = true; }
+  cv.addEventListener('pointermove', e => setP(e.clientX, e.clientY), { passive: true });
+  cv.addEventListener('pointerdown', e => {
+    P.down = true; setP(e.clientX, e.clientY); pulse(e.clientX, e.clientY, 1);
+    cv.setPointerCapture && cv.setPointerCapture(e.pointerId);
+  });
+  cv.addEventListener('pointerup', () => { P.down = false; });
+  cv.addEventListener('pointerleave', () => { P.active = false; });
+
+  // density via wheel
+  let densT = 1.0; // target multiplier
+  cv.addEventListener('wheel', e => {
+    e.preventDefault();
+    densT = Math.max(0.55, Math.min(2.4, densT * (e.deltaY > 0 ? 1.07 : 0.935)));
+  }, { passive: false });
+
+  // drag (down + move) also nudges density on vertical pull
+  let lastDragY = null;
+  cv.addEventListener('pointermove', e => {
+    if (P.down) {
+      if (lastDragY != null) {
+        const dy = e.clientY - lastDragY;
+        densT = Math.max(0.55, Math.min(2.4, densT * (1 + dy * 0.0009)));
+      }
+      lastDragY = e.clientY;
+    } else lastDragY = null;
+  }, { passive: true });
+
+  // double tap → palette
+  let lastTap = 0;
+  cv.addEventListener('pointerdown', () => {
+    const t = performance.now();
+    if (t - lastTap < 320) cyclePalette();
+    lastTap = t;
+  });
+
+  // ---- pulses (click ripples) ----
+  const pulses = [];
+  function pulse(x, y, strength) {
+    pulses.push({ x, y, r: 0, life: 1, str: strength });
+    if (pulses.length > 14) pulses.shift();
+  }
+
+  // ---- palettes ----
+  const palettes = [
+    // [bgHueShift, coreColor, hot, cold]  — we use HSL math directly
+    { name: 'NEON', a: [188, 92, 60], b: [318, 90, 60], c: [52, 100, 62], bg: 9 },
+    { name: 'INFRA', a: [16, 95, 58], b: [292, 85, 58], c: [44, 100, 60], bg: 8 },
+    { name: 'ABYSS', a: [205, 90, 56], b: [150, 80, 52], c: [275, 88, 64], bg: 10 },
+    { name: 'BONE', a: [40, 12, 80], b: [220, 18, 70], c: [10, 70, 60], bg: 7 },
+  ];
+  let palIdx = 0, palMix = 0; // palMix animates transition
+  function cyclePalette() { palIdx = (palIdx + 1) % palettes.length; palMix = 0; }
+
+  function lerp(a, b, t) { return a + (b - a) * t; }
+  function lerpHue(a, b, t) {
+    let d = ((b - a + 540) % 360) - 180;
+    return (a + d * t + 360) % 360;
+  }
+  function mixPal(p, q, t) {
+    return {
+      a: [lerpHue(p.a[0], q.a[0], t), lerp(p.a[1], q.a[1], t), lerp(p.a[2], q.a[2], t)],
+      b: [lerpHue(p.b[0], q.b[0], t), lerp(p.b[1], q.b[1], t), lerp(p.b[2], q.b[2], t)],
+      c: [lerpHue(p.c[0], q.c[0], t), lerp(p.c[1], q.c[1], t), lerp(p.c[2], q.c[2], t)],
+      bg: lerp(p.bg, q.bg, t),
+    };
+  }
+  function hsl(arr, l) { return `hsl(${arr[0].toFixed(1)} ${arr[1].toFixed(0)}% ${(l==null?arr[2]:l).toFixed(0)}%)`; }
+
+  // ---- state ----
+  let baseSpin = 0;     // global rotation phase (real rotation)
+  let moire = 0;        // counter phase
+  let dens = 1.0;       // smoothed density
+  let breathe = 0;
+  let spinVel = 0.22;   // rad/s baseline
+  let t0 = performance.now(), last = t0;
+  let fps = 60, fpsAcc = 0, fpsN = 0, fpsTimer = 0;
+  let perfScale = 1.0; // adaptive quality governor (0.4..1.0)
+
+  // arms config for the peripheral-drift wedges (scaled to viewport for fine grid)
+  let ARMS = 72; // angular segments
+  function recalcArms() { ARMS = Math.max(56, Math.min(120, Math.round(Math.hypot(W, H) / 24))); }
+  recalcArms();
+  window.addEventListener('resize', recalcArms, { passive: true });
+
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000); last = now;
+    const T = (now - t0) / 1000;
+
+    // fps + adaptive quality governor: keep ~60fps on any device by trimming budget
+    fpsAcc += 1 / Math.max(dt, 1e-4); fpsN++; fpsTimer += dt;
+    if (fpsTimer > 0.5) { fps = fpsAcc / fpsN; fpsAcc = 0; fpsN = 0; fpsTimer = 0;
+      rFps.textContent = fps.toFixed(0);
+      if (fps < 50) perfScale = Math.max(0.40, perfScale - 0.10);
+      else if (fps > 58 && perfScale < 1) perfScale = Math.min(1.0, perfScale + 0.06);
+    }
+
+    // ease pointer
+    P.x += (P.tx - P.x) * Math.min(1, dt * 9);
+    P.y += (P.ty - P.y) * Math.min(1, dt * 9);
+    dens += (densT - dens) * Math.min(1, dt * 4);
+    palMix = Math.min(1, palMix + dt * 1.6);
+
+    // pointer offset from center → drives spin direction & wobble
+    const ox = (P.x - CX), oy = (P.y - CY);
+    const odist = Math.hypot(ox, oy) / R;
+    const oang = Math.atan2(oy, ox);
+
+    // spin accelerates when pointer is active & off-center (you "push" the wheel)
+    const target = 0.22 + (P.active ? odist * 1.4 : 0) + (P.down ? 0.9 : 0);
+    spinVel += (target - spinVel) * Math.min(1, dt * 2.2);
+    baseSpin += spinVel * dt;
+    moire   -= (spinVel * 0.62 + 0.05) * dt;
+    breathe += dt * 0.7;
+
+    rSpin.textContent = (spinVel).toFixed(2);
+
+    const pal = mixPal(palettes[(palIdx + palettes.length - 1) % palettes.length], palettes[palIdx], palMix);
+
+    draw(T, dt, pal, ox, oy, odist, oang);
+    requestAnimationFrame(frame);
+  }
+
+  function draw(T, dt, pal, ox, oy, odist, oang) {
+    // ---- background ----
+    const bgL = pal.bg;
+    const g = ctx.createRadialGradient(CX + ox * 0.05, CY + oy * 0.05, 0, CX, CY, R);
+    g.addColorStop(0, `hsl(${pal.a[0]} 60% ${(bgL + 4).toFixed(0)}%)`);
+    g.addColorStop(0.5, `hsl(${pal.b[0]} 45% ${(bgL).toFixed(0)}%)`);
+    g.addColorStop(1, `hsl(230 50% ${Math.max(3, bgL - 6).toFixed(0)}%)`);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+
+    // ---- update + draw pulses (as expanding shockwaves that warp via additive rings) ----
+    for (let i = pulses.length - 1; i >= 0; i--) {
+      const p = pulses[i];
+      p.r += dt * 760 * (1 + p.str * 0.4);
+      p.life -= dt * 0.85;
+      if (p.life <= 0) { pulses.splice(i, 1); }
+    }
+
+    // RING COUNT scales with density, size, and the adaptive perf governor
+    const baseRings = Math.round((R / 34) * dens * perfScale);
+    const nRings = Math.max(12, Math.min(96, baseRings));
+    rRings.textContent = nRings;
+
+    // We draw concentric "rotating-snake" wedges. Each ring r has an angular
+    // sawtooth of bright→dark luminance steps; consecutive rings phase-shift,
+    // producing the classic peripheral-drift illusion of perpetual rotation.
+    ctx.save();
+    ctx.translate(CX + ox * 0.10, CY + oy * 0.10);
+
+    const maxR = R;
+    const ringStep = maxR / nRings;
+    // target wedge arc-length ~ ringStep so cells stay square; clamp per ring.
+    const TWO_PI = Math.PI * 2;
+
+    // global lensing: pointer creates a vortex that twists the angle of each segment
+    const lensStrength = (P.active ? 1 : 0.35) * (0.9 + odist * 1.6);
+    const swirlSign = 1;
+
+    for (let ri = nRings; ri >= 1; ri--) {
+      const r1 = ri * ringStep;
+      const r0 = (ri - 1) * ringStep;
+      if (r0 > maxR * 1.02) continue;
+      const rMid = (r0 + r1) * 0.5;
+      const rt = ri / nRings; // 0..1 outward
+
+      // per-ring rotation: real spin + alternating direction (moiré) → "infinite" twist
+      const dir = (ri % 2 === 0) ? 1 : -1;
+      // peripheral drift: phase advances with radius → spiral appearance
+      const drift = baseSpin * (0.5 + rt * 1.4) * dir
+                  + moire * (1 - rt) * 0.5
+                  + Math.sin(breathe + rt * 7) * 0.10;
+
+      // vortex twist from pointer (decays with distance from pointer ring radius)
+      const ptr = Math.atan2(P.y - CY, P.x - CX);
+      const twist = swirlSign * lensStrength * 0.55 * Math.exp(-Math.abs(rMid - odist * R) / (R * 0.45));
+
+      // pulse-induced extra rotation ripple
+      let pulseTw = 0, pulseBright = 0;
+      for (const p of pulses) {
+        const pr = Math.hypot(p.x - CX, p.y - CY); // pulse radius from center
+        const band = Math.exp(-Math.pow((rMid - (p.r)) / (ringStep * 6 + 30), 2));
+        pulseTw += band * p.life * 0.9 * p.str;
+        pulseBright += band * p.life * 0.6;
+      }
+
+      const ang0 = drift + twist + pulseTw;
+
+      // luminance base oscillates per ring to interleave light/dark bands (moiré core)
+      const ringBias = 0.5 + 0.5 * Math.sin(ri * 0.9 + breathe * 0.6);
+
+      // adaptive angular resolution: wedges ~square → far fewer fills on inner rings
+      const arms = Math.max(9, Math.min(ARMS, Math.round((TWO_PI * rMid) / Math.max(8, ringStep * 1.15) * perfScale)));
+      const armStep = TWO_PI / arms;
+
+      // rim fade is constant across a ring → set alpha once, not per wedge
+      const rimFade = rt > 0.92 ? (1 - (rt - 0.92) / 0.08) : 1;
+      ctx.globalAlpha = rimFade;
+
+      for (let ai = 0; ai < arms; ai++) {
+        const a = ang0 + ai * armStep;
+        const aN = ang0 + (ai + 1) * armStep + 0.006; // slight overlap to kill seams
+
+        // ASYMMETRIC luminance gradient per wedge = the drift engine:
+        // black → dark-color → bright → white in micro-steps. Phase is angle-based
+        // (+ ring offset) so the field stays coherent across adaptive ring resolutions.
+        const phase = a * 9.0 + ri * 0.5 + drift * 2.0;
+        // wedge tone: pick among the stops of the asymmetric snake
+        const sw = (Math.sin(phase) + 1) * 0.5; // 0..1
+
+        // color selection: mix between palette a (cool) and b (warm) along radius+angle
+        const hueT = (Math.sin(a * 1.0 + rt * 3 + breathe * 0.4) + 1) * 0.5;
+        const baseHue = lerpHue(pal.a[0], pal.b[0], hueT);
+        const sat = lerp(pal.a[1], pal.b[1], hueT);
+
+        // luminance: 4-band asymmetric profile (key to peripheral drift).
+        // The ordering black→dark→bright→white→(sharp)black is what makes the
+        // stationary field appear to rotate. Higher contrast = stronger illusion.
+        let lum;
+        const band4 = (sw + ringBias * 0.5) % 1;
+        if (band4 < 0.25)      lum = 4 + band4 * 22;                       // deep black
+        else if (band4 < 0.5)  lum = lerp(14, 50, (band4 - .25) / .25);   // dark→color
+        else if (band4 < 0.72) lum = lerp(74, 99, (band4 - .5) / .22);    // bright→white
+        else                   lum = lerp(99, 6, (band4 - .72) / .28);    // sharp cliff to black
+        lum += pulseBright * 22;
+        lum = Math.max(3, Math.min(97, lum));
+
+        ctx.beginPath();
+        ctx.arc(0, 0, r1, a, aN, false);
+        ctx.arc(0, 0, r0, aN, a, true);
+        ctx.closePath();
+        ctx.fillStyle = `hsl(${baseHue.toFixed(1)} ${sat.toFixed(0)}% ${lum.toFixed(1)}%)`;
+        ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+
+    // ---- MOIRÉ OVERLAY: a counter-rotating fine ring stroke layer for shimmer ----
+    ctx.save();
+    ctx.translate(CX, CY);
+    ctx.globalCompositeOperation = 'overlay';
+    const mRings = Math.round(nRings * 0.7);
+    const mStep = maxR / mRings;
+    ctx.lineWidth = Math.max(0.6, mStep * 0.16);
+    for (let i = 1; i <= mRings; i++) {
+      const rr = i * mStep + Math.sin(moire * 2 + i * 0.6) * mStep * 0.35;
+      const lt = (Math.sin(i * 0.8 - baseSpin * 2.5) + 1) * 0.5;
+      ctx.beginPath();
+      ctx.strokeStyle = lt > 0.5 ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.12)';
+      ctx.arc(0, 0, rr, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // ---- SPIRAL ARMS: a few bright logarithmic spirals reinforcing rotation ----
+    ctx.save();
+    ctx.translate(CX + ox * 0.06, CY + oy * 0.06);
+    ctx.globalCompositeOperation = 'screen';
+    const SPIR = 5;
+    for (let s = 0; s < SPIR; s++) {
+      ctx.beginPath();
+      const phase = baseSpin * 1.6 + (s / SPIR) * Math.PI * 2;
+      const col = (s % 2 === 0) ? pal.c : pal.a;
+      let started = false;
+      for (let th = 0; th < Math.PI * 7; th += 0.12) {
+        const rr = 8 * Math.exp(th * 0.205);
+        if (rr > maxR) break;
+        const aa = th + phase + Math.sin(breathe + th * 0.3) * 0.06;
+        const x = Math.cos(aa) * rr, y = Math.sin(aa) * rr;
+        if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+      }
+      const grad = ctx.createLinearGradient(-maxR, 0, maxR, 0);
+      grad.addColorStop(0, `hsla(${col[0]} ${col[1]}% 65% / 0)`);
+      grad.addColorStop(0.5, `hsla(${col[0]} ${col[1]}% 70% / 0.32)`);
+      grad.addColorStop(1, `hsla(${col[0]} ${col[1]}% 65% / 0)`);
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = 2.2;
+      if (perfScale > 0.7) { ctx.shadowColor = `hsl(${col[0]} ${col[1]}% 70%)`; ctx.shadowBlur = 14; }
+      else ctx.shadowBlur = 0;
+      ctx.stroke();
+    }
+    ctx.shadowBlur = 0;
+    ctx.restore();
+
+    // ---- CORE: a pulsing hypnotic eye that tracks pointer slightly ----
+    ctx.save();
+    ctx.translate(CX + ox * 0.14, CY + oy * 0.14);
+    const coreR = ringStep * 3.2 * (1 + Math.sin(breathe * 2.2) * 0.12);
+    const cg = ctx.createRadialGradient(0, 0, 0, 0, 0, coreR * 2.6);
+    cg.addColorStop(0, '#ffffff');
+    cg.addColorStop(0.18, hsl(pal.c, 78));
+    cg.addColorStop(0.5, hsl(pal.b, 42));
+    cg.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.globalCompositeOperation = 'screen';
+    ctx.fillStyle = cg;
+    ctx.beginPath(); ctx.arc(0, 0, coreR * 2.6, 0, Math.PI * 2); ctx.fill();
+
+    // thin rotating reticle inside core
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.rotate(-baseSpin * 3.0);
+    ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+    ctx.lineWidth = 1.2;
+    for (let k = 0; k < 3; k++) {
+      ctx.beginPath();
+      ctx.arc(0, 0, coreR * (0.45 + k * 0.28), 0, Math.PI * 1.5);
+      ctx.stroke();
+      ctx.rotate(Math.PI / 3);
+    }
+    ctx.restore();
+  }
+
+  requestAnimationFrame(frame);
+
+  // gentle idle drift of densT for life even without input
+  setInterval(() => {
+    if (!P.active && !P.down) densT = 1.0 + Math.sin(performance.now() / 6000) * 0.25;
+  }, 600);
+
+  // expose for screenshot warmup
+  window.__vertigoReady = true;
+})();
+</script>
+</body>
+</html>

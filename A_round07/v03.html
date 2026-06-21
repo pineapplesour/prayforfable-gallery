@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>CLEAVE — living glass membrane</title>
+<style>
+  :root{ color-scheme:dark; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ height:100%; width:100%; overflow:hidden; background:#04050a; }
+  body{
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    touch-action:none; -webkit-tap-highlight-color:transparent; cursor:none;
+  }
+  #stage{ position:fixed; inset:0; display:block; }
+  /* grain + vignette overlay */
+  #post{
+    position:fixed; inset:0; pointer-events:none; z-index:5;
+    background:radial-gradient(125% 95% at 50% 42%, transparent 48%, rgba(2,3,9,.62) 100%);
+    mix-blend-mode:multiply;
+  }
+  #grain{ position:fixed; inset:0; pointer-events:none; z-index:6; opacity:.05; mix-blend-mode:overlay; }
+  /* cursor */
+  #cur{
+    position:fixed; top:0; left:0; width:46px; height:46px; margin:-23px 0 0 -23px;
+    border-radius:50%; pointer-events:none; z-index:30;
+    border:1.4px solid rgba(180,225,255,.55);
+    box-shadow:0 0 24px rgba(120,190,255,.32), inset 0 0 14px rgba(120,190,255,.1);
+    mix-blend-mode:screen; transition:width .18s,height .18s,margin .18s,border-color .25s,box-shadow .25s;
+  }
+  #cur.hot{ width:26px; height:26px; margin:-13px 0 0 -13px; border-color:rgba(255,150,210,.95);
+    box-shadow:0 0 30px rgba(255,90,200,.55), inset 0 0 12px rgba(255,90,200,.25); }
+  #cur::after{ content:""; position:absolute; inset:43%; border-radius:50%;
+    background:rgba(225,240,255,.9); box-shadow:0 0 9px rgba(210,235,255,.9); }
+  /* HUD */
+  #hud{ position:fixed; left:22px; bottom:18px; z-index:20; pointer-events:none;
+    color:rgba(220,235,255,.82); user-select:none; }
+  #hud .ttl{ font-weight:700; letter-spacing:.42em; font-size:13px;
+    text-shadow:0 0 18px rgba(120,190,255,.5); }
+  #hud .sub{ margin-top:6px; font-size:10.5px; letter-spacing:.22em; color:rgba(150,180,215,.62); line-height:1.7; }
+  #hud b{ color:rgba(255,160,210,.9); font-weight:600; }
+  #count{ position:fixed; right:22px; bottom:18px; z-index:20; pointer-events:none;
+    font-size:10.5px; letter-spacing:.18em; color:rgba(140,170,205,.55); text-align:right; user-select:none; }
+  #count b{ color:rgba(190,225,255,.85); font-weight:600; font-variant-numeric:tabular-nums; }
+  @media (max-width:560px){
+    #hud .ttl{ font-size:11px; letter-spacing:.34em; }
+    #hud .sub{ font-size:9px; letter-spacing:.14em; }
+    #count{ font-size:9px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<canvas id="grain"></canvas>
+<div id="post"></div>
+<div id="cur"></div>
+<div id="hud">
+  <div class="ttl">C L E A V E</div>
+  <div class="sub">
+    움직여 — 막을 끌어당긴다 · <b>클릭/탭</b> — 유리를 깬다<br>
+    <b>휠/드래그(세로)</b> — 세포압 · <b>더블클릭</b> — 분열 발화
+  </div>
+</div>
+<div id="count">CELLS · <b id="cn">0</b> &nbsp;|&nbsp; FPS <b id="fp">0</b></div>
+
+<script>
+"use strict";
+/* ====================================================================
+   CLEAVE — living Voronoi glass membrane
+   - Exact polygon Voronoi via half-plane clipping (grid-pruned).
+   - Cells breathe, drift, and undergo mitosis (split into two).
+   - Mouse = attractor well; click = stress-crack glass shatter that
+     lifts & refracts shards; wheel/vertical-drag = cell pressure.
+   - All single-file, no deps.
+   ==================================================================== */
+
+const stage = document.getElementById('stage');
+const ctx   = stage.getContext('2d', { alpha:false });
+const cur   = document.getElementById('cur');
+const grainC= document.getElementById('grain');
+const cnEl  = document.getElementById('cn');
+const fpEl  = document.getElementById('fp');
+
+let W=0, H=0, DPR=1, DIAG=1;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  stage.width = Math.floor(W*DPR); stage.height = Math.floor(H*DPR);
+  stage.style.width = W+'px'; stage.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  DIAG = Math.hypot(W,H);
+  buildGrain();
+}
+window.addEventListener('resize', resize, {passive:true});
+
+/* ---- static film grain (cheap, drawn once, re-tiled) ---- */
+function buildGrain(){
+  const gw = 220, gh = 220;
+  grainC.width = gw; grainC.height = gh;
+  grainC.style.width = W+'px'; grainC.style.height = H+'px';
+  const g = grainC.getContext('2d');
+  const id = g.createImageData(gw,gh);
+  for(let i=0;i<id.data.length;i+=4){
+    const v = (Math.random()*255)|0;
+    id.data[i]=id.data[i+1]=id.data[i+2]=v; id.data[i+3]=255;
+  }
+  g.putImageData(id,0,0);
+  grainC.style.objectFit='cover';
+  if(!glowSprite) buildGlow();
+}
+
+/* ---- pre-rendered glow sprite (avoids per-frame gradient alloc) ---- */
+let glowSprite=null;
+function buildGlow(){
+  const S=64; const c=document.createElement('canvas'); c.width=S; c.height=S;
+  const g=c.getContext('2d');
+  const rg=g.createRadialGradient(S/2,S/2,0,S/2,S/2,S/2);
+  rg.addColorStop(0,'rgba(255,255,255,1)');
+  rg.addColorStop(0.25,'rgba(255,255,255,0.55)');
+  rg.addColorStop(1,'rgba(255,255,255,0)');
+  g.fillStyle=rg; g.fillRect(0,0,S,S);
+  glowSprite=c;
+}
+
+/* ---- palette: deep teal/indigo membrane with magenta+cyan caustics ---- */
+function cellColor(t, life, energy){
+  // t in [0,1] hue index, life 0..1 freshness, energy from proximity
+  const h = (200 + 120*t + energy*60) % 360;        // teal->violet->magenta sweep
+  const s = 55 + 30*life;
+  const l = 12 + 16*life + energy*22;
+  return `hsl(${h.toFixed(1)},${s.toFixed(0)}%,${l.toFixed(0)}%)`;
+}
+
+/* ====================== Cells / sites ====================== */
+let cells = [];          // {x,y,vx,vy,hue,age,split,maxAge,r,seed}
+let pressure = 0.62;     // 0..1 controls target count & division rate
+const MAX_CELLS = 112;   // hard cap (perf)
+let nextId = 1;
+
+function rand(a,b){ return a + Math.random()*(b-a); }
+
+function makeCell(x,y,hue){
+  return {
+    id: nextId++,
+    x, y,
+    vx: rand(-0.05,0.05)*DIAG/1200,
+    vy: rand(-0.05,0.05)*DIAG/1200,
+    hue: hue!==undefined ? hue : Math.random(),
+    age: 0,
+    maxAge: rand(8,18),       // seconds until it wants to divide
+    born: 0,                  // birth animation 0->1
+    r: rand(0.6,1.0),         // visual weight
+    nuc: rand(0,Math.PI*2),   // nucleus phase
+  };
+}
+
+function seedCells(){
+  cells = [];
+  const n = 38;
+  for(let i=0;i<n;i++){
+    makeCell; // noop guard
+    const c = makeCell(rand(W*0.12,W*0.88), rand(H*0.12,H*0.88));
+    c.born = 1;
+    cells.push(c);
+  }
+}
+
+function targetCount(){
+  return Math.round(30 + pressure*(86-30));   // ~30..86 cells
+}
+
+/* mitosis: split a cell into two offset daughters */
+function divide(c, now){
+  if(cells.length >= MAX_CELLS) { c.age = 0; return; }
+  const ang = Math.random()*Math.PI*2;
+  const off = rand(8,18)*DPR* (DIAG/1600);
+  const hue2 = (c.hue + rand(-0.04,0.04)+1)%1;
+  const d1 = makeCell(c.x+Math.cos(ang)*off, c.y+Math.sin(ang)*off, c.hue);
+  const d2 = makeCell(c.x-Math.cos(ang)*off, c.y-Math.sin(ang)*off, hue2);
+  d1.born = 0; d2.born = 0;
+  d1.maxAge = rand(9,18); d2.maxAge = rand(9,18);
+  // emit a small division ripple
+  ripples.push({x:c.x, y:c.y, r:0, max:off*4.2, t:0, life:0.6, kind:'div'});
+  // replace c with d1, push d2
+  const idx = cells.indexOf(c);
+  if(idx>=0) cells[idx] = d1; else cells.push(d1);
+  cells.push(d2);
+}
+
+/* ====================== Shatter (glass) ====================== */
+// shards: lifted Voronoi-cell polygons that fly off & fade after a click
+let shards = [];     // {pts:[{x,y}], vx,vy, rot, vr, life, t, cx,cy, hue, lift}
+let cracks = [];     // crack lines {x1,y1,x2,y2,t,life,w}
+let ripples = [];    // {x,y,r,max,t,life,kind}
+
+function shatterAt(px,py){
+  // find cells near impact; lift them as shards using their current voronoi poly
+  const polys = lastPolys.length ? lastPolys : computeVoronoi();
+  const reach = DIAG*0.30;
+  let made=0;
+  // crack web: from impact, radiate jagged lines
+  const spokes = 7 + (Math.random()*4|0);
+  for(let s=0;s<spokes;s++){
+    const a = (s/spokes)*Math.PI*2 + rand(-0.2,0.2);
+    let cx=px, cy=py, len = reach*rand(0.45,1.0);
+    const segs = 4;
+    for(let k=0;k<segs;k++){
+      const nx = cx + Math.cos(a+rand(-0.35,0.35))*(len/segs);
+      const ny = cy + Math.sin(a+rand(-0.35,0.35))*(len/segs);
+      cracks.push({x1:cx,y1:cy,x2:nx,y2:ny,t:0,life:0.9,delay:k*0.045,w:rand(0.6,1.6)});
+      cx=nx; cy=ny;
+    }
+  }
+  ripples.push({x:px,y:py,r:0,max:reach*1.4,t:0,life:0.75,kind:'shock'});
+  for(const p of polys){
+    const c = cells[p.idx];
+    if(!c) continue;
+    const dx = c.x-px, dy = c.y-py;
+    const dist = Math.hypot(dx,dy);
+    if(dist < reach && p.poly && p.poly.length>=3 && made<26){
+      const f = (1 - dist/reach);
+      const ang = Math.atan2(dy,dx);
+      const pts = p.poly.map(q=>({x:q.x, y:q.y}));
+      if(pts.length<3) continue;
+      shards.push({
+        pts,
+        cx:c.x, cy:c.y,
+        vx: Math.cos(ang)*rand(40,140)*f + rand(-20,20),
+        vy: Math.sin(ang)*rand(40,140)*f + rand(-20,20) - 30*f,
+        rot:0, vr: rand(-2.2,2.2)*f,
+        life: rand(0.9,1.5), t:0,
+        hue: c.hue, lift: f
+      });
+      made++;
+      // remove that cell from the living membrane (it shattered off)
+      const ci = cells.indexOf(c);
+      if(ci>=0 && cells.length>20) cells.splice(ci,1);
+    }
+  }
+}
+
+/* ====================== Voronoi (half-plane clipping) ====================== */
+// Clip the screen rectangle against half-planes between each site and its
+// near neighbors (found via a uniform grid) -> exact cell polygon.
+let gridCols=0, gridRows=0, cellSize=0, grid=null;
+function buildGrid(){
+  cellSize = Math.max(60, DIAG*0.085);
+  gridCols = Math.max(1, Math.ceil(W/cellSize));
+  gridRows = Math.max(1, Math.ceil(H/cellSize));
+  grid = new Array(gridCols*gridRows);
+  for(let i=0;i<grid.length;i++) grid[i]=[];
+  for(let i=0;i<cells.length;i++){
+    const c=cells[i];
+    const gx=Math.min(gridCols-1,Math.max(0,(c.x/cellSize)|0));
+    const gy=Math.min(gridRows-1,Math.max(0,(c.y/cellSize)|0));
+    grid[gy*gridCols+gx].push(i);
+  }
+}
+function neighbors(ci){
+  const c=cells[ci];
+  const gx=Math.min(gridCols-1,Math.max(0,(c.x/cellSize)|0));
+  const gy=Math.min(gridRows-1,Math.max(0,(c.y/cellSize)|0));
+  const out=[];
+  for(let yy=gy-2;yy<=gy+2;yy++){
+    if(yy<0||yy>=gridRows) continue;
+    for(let xx=gx-2;xx<=gx+2;xx++){
+      if(xx<0||xx>=gridCols) continue;
+      const bucket=grid[yy*gridCols+xx];
+      for(let k=0;k<bucket.length;k++) if(bucket[k]!==ci) out.push(bucket[k]);
+    }
+  }
+  return out;
+}
+// Sutherland–Hodgman clip of polygon by half-plane n·x <= d
+function clipHalf(poly, nx, ny, d){
+  const out=[];
+  const m=poly.length;
+  for(let i=0;i<m;i++){
+    const a=poly[i], b=poly[(i+1)%m];
+    const da = nx*a.x+ny*a.y - d;
+    const db = nx*b.x+ny*b.y - d;
+    const ina = da<=0, inb = db<=0;
+    if(ina) out.push(a);
+    if(ina!==inb){
+      const t = da/(da-db);
+      out.push({x:a.x+(b.x-a.x)*t, y:a.y+(b.y-a.y)*t});
+    }
+  }
+  return out;
+}
+let lastPolys = [];
+function computeVoronoi(){
+  buildGrid();
+  const polys=[];
+  for(let i=0;i<cells.length;i++){
+    const c=cells[i];
+    let poly=[{x:0,y:0},{x:W,y:0},{x:W,y:H},{x:0,y:H}];
+    const ns=neighbors(i);
+    for(let j=0;j<ns.length && poly.length;j++){
+      const o=cells[ns[j]];
+      const mx=(c.x+o.x)/2, my=(c.y+o.y)/2;
+      let nx=o.x-c.x, ny=o.y-c.y;
+      const len=Math.hypot(nx,ny)||1; nx/=len; ny/=len;
+      const d = nx*mx+ny*my;        // keep half-plane containing c (n·c <= d)
+      poly = clipHalf(poly, nx, ny, d);
+    }
+    if(poly.length>=3) polys.push({idx:i, poly, c});
+  }
+  lastPolys = polys;
+  return polys;
+}
+
+/* ====================== Input ====================== */
+const mouse = {x:W/2, y:H/2, px:W/2, py:H/2, down:false, active:false, vx:0, vy:0};
+function setCursor(x,y){
+  mouse.px=mouse.x; mouse.py=mouse.y;
+  mouse.x=x; mouse.y=y; mouse.active=true;
+  mouse.vx = mouse.x-mouse.px; mouse.vy = mouse.y-mouse.py;
+  cur.style.transform=`translate(${x}px,${y}px)`;
+}
+stage.addEventListener('mousemove', e=>setCursor(e.clientX,e.clientY));
+stage.addEventListener('mousedown', e=>{
+  mouse.down=true; cur.classList.add('hot'); setCursor(e.clientX,e.clientY);
+  shatterAt(e.clientX,e.clientY);
+});
+window.addEventListener('mouseup', ()=>{ mouse.down=false; cur.classList.remove('hot'); });
+stage.addEventListener('dblclick', e=>{
+  // fire a burst of divisions near the cursor (iterate a snapshot of cells)
+  const snap = cells.slice();
+  let fired=0;
+  for(const c of snap){
+    if(!c) continue;
+    if(Math.hypot(c.x-e.clientX,c.y-e.clientY)<DIAG*0.22 && fired<6){
+      divide(c, perfNow()); fired++;
+    }
+  }
+});
+// wheel -> pressure
+window.addEventListener('wheel', e=>{
+  pressure = Math.min(1, Math.max(0, pressure - e.deltaY*0.0008));
+  e.preventDefault();
+}, {passive:false});
+
+// touch
+let lastTouchY=null, touchMoved=false, touchStart=0;
+stage.addEventListener('touchstart', e=>{
+  const t=e.touches[0]; setCursor(t.clientX,t.clientY);
+  cur.classList.add('hot');
+  lastTouchY=t.clientY; touchMoved=false; touchStart=perfNow();
+}, {passive:true});
+stage.addEventListener('touchmove', e=>{
+  const t=e.touches[0]; setCursor(t.clientX,t.clientY);
+  if(lastTouchY!==null){
+    const dy=t.clientY-lastTouchY;
+    // two-finger? treat vertical drag as pressure when slow
+    pressure = Math.min(1,Math.max(0,pressure - dy*0.0015));
+    lastTouchY=t.clientY;
+  }
+  touchMoved=true;
+  e.preventDefault();
+}, {passive:false});
+stage.addEventListener('touchend', e=>{
+  cur.classList.remove('hot');
+  const dt=perfNow()-touchStart;
+  if(!touchMoved && dt<300){ shatterAt(mouse.x,mouse.y); }
+  lastTouchY=null;
+}, {passive:true});
+
+function perfNow(){ return performance.now()/1000; }
+
+/* ====================== Update ====================== */
+function update(dt, now){
+  // grow/shrink toward target count by aging division
+  const target = targetCount();
+
+  // attractor + neighbor relaxation (Lloyd-ish soft) — light pass
+  const ax = mouse.x, ay = mouse.y;
+  const attract = mouse.active ? 1 : 0;
+  const wellStrength = (mouse.down? 1.0 : 0.45);
+
+  for(let i=0;i<cells.length;i++){
+    const c=cells[i];
+    // born animation
+    if(c.born<1) c.born = Math.min(1, c.born + dt*2.2);
+    c.age += dt;
+    c.nuc += dt*1.3;
+
+    // gentle organic drift (curl-ish noise via layered sin)
+    const t = now*0.18;
+    c.vx += Math.sin(c.y*0.006 + t + c.id)*0.9*dt*60*0.016;
+    c.vy += Math.cos(c.x*0.006 + t*1.1 + c.id)*0.9*dt*60*0.016;
+
+    // attractor well: pull toward mouse, but crowd (repel if too close)
+    if(attract){
+      const dx=ax-c.x, dy=ay-c.y, d=Math.hypot(dx,dy)+1e-3;
+      const near = Math.min(1, DIAG*0.34/d);
+      const f = wellStrength * near * 28 * dt;
+      if(d>DIAG*0.06){ c.vx += (dx/d)*f; c.vy += (dy/d)*f; }
+      else { c.vx -= (dx/d)*f*1.6; c.vy -= (dy/d)*f*1.6; } // crowd repel core
+    }
+
+    // damping
+    c.vx*=0.90; c.vy*=0.90;
+    c.x += c.vx; c.y += c.vy;
+
+    // soft bounds
+    const m=12;
+    if(c.x<m){ c.x=m; c.vx*=-0.5; } if(c.x>W-m){ c.x=W-m; c.vx*=-0.5; }
+    if(c.y<m){ c.y=m; c.vy*=-0.5; } if(c.y>H-m){ c.y=H-m; c.vy*=-0.5; }
+
+    // division when matured & under target
+    if(c.age>c.maxAge && cells.length<target && Math.random()<0.5){
+      divide(c, now);
+    }
+  }
+
+  // if over target, gently merge (remove oldest small ones)
+  if(cells.length>target+4){
+    cells.sort((a,b)=>b.age-a.age);
+    cells.splice(target, cells.length-target);
+  }
+
+  // spawn divisions to climb toward target if too few
+  if(cells.length<target-6 && Math.random()<0.5){
+    const c=cells[(Math.random()*cells.length)|0];
+    if(c) divide(c, now);
+  }
+
+  // shards
+  for(let i=shards.length-1;i>=0;i--){
+    const s=shards[i];
+    s.t+=dt;
+    s.cx+=s.vx*dt; s.cy+=s.vy*dt;
+    s.vy += 60*dt;            // gravity
+    s.vx*=0.99;
+    s.rot += s.vr*dt;
+    if(s.t>=s.life) shards.splice(i,1);
+  }
+  // cracks
+  for(let i=cracks.length-1;i>=0;i--){
+    const k=cracks[i]; k.t+=dt;
+    if(k.t>=k.life+ (k.delay||0)) cracks.splice(i,1);
+  }
+  // ripples
+  for(let i=ripples.length-1;i>=0;i--){
+    const r=ripples[i]; r.t+=dt;
+    r.r = r.max*(1-Math.pow(1-r.t/r.life,2));
+    if(r.t>=r.life) ripples.splice(i,1);
+  }
+}
+
+/* ====================== Render ====================== */
+let bg=null;
+function paintBG(){
+  // deep gradient backdrop, repainted (cheap)
+  const g=ctx.createRadialGradient(W*0.5,H*0.42,0, W*0.5,H*0.5,DIAG*0.72);
+  g.addColorStop(0,'#0a1124');
+  g.addColorStop(0.5,'#070a18');
+  g.addColorStop(1,'#03040a');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+}
+
+let ambient=0;
+function energyAt(c){
+  // gentle ambient shimmer so the resting state still feels alive,
+  // plus a strong well around the cursor when active.
+  const amb = 0.10 + 0.07*Math.sin(c.nuc*0.7 + ambient);
+  if(!mouse.active) return amb;
+  const d=Math.hypot(mouse.x-c.x, mouse.y-c.y);
+  return Math.max(amb, 1 - d/(DIAG*0.22));   // tighter local well
+}
+
+function render(now){
+  paintBG();
+
+  const polys = computeVoronoi();
+  cnEl.textContent = cells.length;
+
+  // Build one Path2D per cell (reused for fill + 3 stroke passes).
+  for(const p of polys){
+    const c=p.poly;
+    const path=new Path2D();
+    path.moveTo(c[0].x,c[0].y);
+    for(let i=1;i<c.length;i++) path.lineTo(c[i].x,c[i].y);
+    path.closePath();
+    p.path=path;
+    p.e=energyAt(p.c);
+  }
+
+  // 1) filled cells (membrane)
+  ctx.lineJoin='round';
+  for(const p of polys){
+    const cell=p.c, life=cell.born;
+    ctx.fillStyle = cellColor(cell.hue, life*0.85+0.15, p.e);
+    ctx.globalAlpha = 0.55*life;
+    ctx.fill(p.path);
+  }
+  ctx.globalAlpha=1;
+
+  // 2) membrane edges. Base white edge for ALL cells (1 pass), then
+  //    chromatic-aberration offset passes ONLY on energized cells near
+  //    the cursor — where the fringing actually reads. Big perf win.
+  ctx.globalCompositeOperation='lighter';
+  // base edge (single pass, all cells)
+  for(const p of polys){
+    const cell=p.c, e=p.e;
+    const a=(0.12+0.5*e)*cell.born;
+    if(a<0.01) continue;
+    ctx.strokeStyle=`rgba(210,235,255,${a.toFixed(3)})`;
+    ctx.lineWidth=0.7+1.3*e;
+    ctx.stroke(p.path);
+  }
+  // chroma fringe only on the most-energized cells near the cursor.
+  // Cap the count so worst-case (cursor centered) stays bounded.
+  const FR_CAP=28;
+  let energized=polys.filter(p=>p.e>=0.22);
+  if(energized.length>FR_CAP){
+    energized.sort((a,b)=>b.e-a.e);
+    energized.length=FR_CAP;
+  }
+  const fringe=[
+    {ox:-0.9, oy:0.7,  col:'rgba(60,200,255,'},
+    {ox:0.9,  oy:-0.7, col:'rgba(255,80,200,'},
+  ];
+  for(const f of fringe){
+    ctx.save(); ctx.translate(f.ox,f.oy);
+    for(const p of energized){
+      const e=p.e;
+      const a=(0.10+0.40*e)*p.c.born;
+      ctx.strokeStyle=f.col+a.toFixed(3)+')';
+      ctx.lineWidth=0.7+1.0*e;
+      ctx.stroke(p.path);
+    }
+    ctx.restore();
+  }
+
+  // 3) nuclei (pulsing cores) — cheap: tinted sprite halo + colored core dot
+  for(const p of polys){
+    const cell=p.c;
+    const e=p.e;
+    const pulse = 0.6+0.4*Math.sin(cell.nuc);
+    const rr = (1.6 + 2.6*cell.r*pulse + e*4) * cell.born;
+    const hue=(200+120*cell.hue+e*60)%360;
+    // halo via sprite — small by default, larger only when energized.
+    const halo = rr*(3.0 + 5.0*e);
+    ctx.globalAlpha = (0.26+e*0.55)*cell.born;
+    ctx.drawImage(glowSprite, cell.x-halo/2, cell.y-halo/2, halo, halo);
+    // colored core
+    ctx.globalAlpha = (0.6+e*0.35)*cell.born;
+    ctx.fillStyle=`hsl(${hue.toFixed(0)},92%,${(66+e*20)|0}%)`;
+    ctx.beginPath(); ctx.arc(cell.x,cell.y,rr*1.05,0,Math.PI*2); ctx.fill();
+  }
+  ctx.globalAlpha=1;
+  ctx.globalCompositeOperation='source-over';
+
+  // 4) division ripples + shock
+  ctx.globalCompositeOperation='lighter';
+  for(const r of ripples){
+    const a=(1-r.t/r.life);
+    if(r.kind==='shock'){
+      ctx.strokeStyle=`rgba(200,235,255,${(a*0.5).toFixed(3)})`;
+      ctx.lineWidth=2.0*a+0.5;
+    } else {
+      ctx.strokeStyle=`rgba(255,150,220,${(a*0.45).toFixed(3)})`;
+      ctx.lineWidth=1.4*a+0.4;
+    }
+    ctx.beginPath(); ctx.arc(r.x,r.y,r.r,0,Math.PI*2); ctx.stroke();
+  }
+
+  // 5) cracks (bright glass fracture lines)
+  for(const k of cracks){
+    const tt = k.t - (k.delay||0);
+    if(tt<0) continue;
+    const grow = Math.min(1, tt/0.12);
+    const a = Math.max(0, 1 - tt/k.life);
+    const x2 = k.x1+(k.x2-k.x1)*grow, y2=k.y1+(k.y2-k.y1)*grow;
+    ctx.strokeStyle=`rgba(225,245,255,${(a*0.9).toFixed(3)})`;
+    ctx.lineWidth=k.w*a+0.3;
+    ctx.beginPath(); ctx.moveTo(k.x1,k.y1); ctx.lineTo(x2,y2); ctx.stroke();
+    // faint colored glow flank
+    ctx.strokeStyle=`rgba(120,200,255,${(a*0.3).toFixed(3)})`;
+    ctx.lineWidth=k.w*a*3+1;
+    ctx.beginPath(); ctx.moveTo(k.x1,k.y1); ctx.lineTo(x2,y2); ctx.stroke();
+  }
+  ctx.globalCompositeOperation='source-over';
+
+  // 6) flying shards (refracting glass)
+  for(const s of shards){
+    if(!s.pts || s.pts.length<3) continue;
+    const a = 1 - s.t/s.life;
+    ctx.save();
+    ctx.translate(s.cx,s.cy);
+    ctx.rotate(s.rot);
+    ctx.beginPath();
+    const p0=s.pts[0];
+    ctx.moveTo(p0.x-s.cx,p0.y-s.cy);
+    for(let i=1;i<s.pts.length;i++) ctx.lineTo(s.pts[i].x-s.cx,s.pts[i].y-s.cy);
+    ctx.closePath();
+    const hue=(200+120*s.hue)%360;
+    // glassy fill
+    const lg=ctx.createLinearGradient(-30,-30,30,30);
+    lg.addColorStop(0,`hsla(${hue},80%,70%,${0.30*a})`);
+    lg.addColorStop(0.5,`hsla(${(hue+40)%360},80%,55%,${0.12*a})`);
+    lg.addColorStop(1,`hsla(${(hue+80)%360},80%,75%,${0.28*a})`);
+    ctx.fillStyle=lg; ctx.fill();
+    ctx.strokeStyle=`rgba(230,245,255,${0.7*a})`;
+    ctx.lineWidth=0.9; ctx.stroke();
+    // chroma edge
+    ctx.strokeStyle=`rgba(80,200,255,${0.4*a})`; ctx.lineWidth=0.6;
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+/* ====================== Loop ====================== */
+let last=perfNow(), fpsAcc=0, fpsN=0, fpsT=0;
+seedCellsOnReady();
+function seedCellsOnReady(){ resize(); seedCells(); }
+
+function frame(){
+  const now=perfNow();
+  let dt=now-last; last=now;
+  if(dt>0.05) dt=0.05;     // clamp big gaps
+
+  // fps meter
+  fpsAcc += 1/(dt||1/60); fpsN++; fpsT+=dt;
+  if(fpsT>0.5){ fpEl.textContent=Math.round(fpsAcc/fpsN); fpsAcc=0; fpsN=0; fpsT=0; }
+
+  // decay mouse velocity / activity
+  mouse.vx*=0.9; mouse.vy*=0.9;
+  ambient += dt*1.4;
+
+  update(dt, now);
+  render(now);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

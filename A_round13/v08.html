@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>VITALS — 생체신호의 풍경</title>
+<style>
+  :root{
+    --bg0:#03060a; --bg1:#06121a;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:#03060a;}
+  body{
+    font-family:"SF Mono",ui-monospace,"Cascadia Mono",Menlo,Consolas,monospace;
+    color:#bfeede; cursor:crosshair;
+    -webkit-tap-highlight-color:transparent;
+    touch-action:none;
+  }
+  #stage{position:fixed;inset:0;display:block;}
+  /* vignette + subtle scanlines overlay drawn over canvas */
+  #grain{
+    position:fixed;inset:0;pointer-events:none;mix-blend-mode:overlay;opacity:.05;
+    background:repeating-linear-gradient(0deg, #fff 0px, #fff 1px, transparent 1px, transparent 3px);
+  }
+  #vig{
+    position:fixed;inset:0;pointer-events:none;
+    background:radial-gradient(120% 90% at 50% 42%, transparent 40%, rgba(0,0,0,.55) 100%);
+  }
+  /* HUD */
+  .hud{position:fixed;pointer-events:none;user-select:none;font-weight:500;}
+  #title{
+    left:clamp(16px,3.2vw,46px); top:clamp(14px,3vh,34px);
+    letter-spacing:.42em; font-size:clamp(13px,1.5vw,17px);
+    color:#eafff6; text-shadow:0 0 18px rgba(80,255,200,.45);
+  }
+  #title small{display:block;letter-spacing:.30em;font-size:clamp(9px,1vw,11px);
+    color:#5fae9c;margin-top:7px;font-weight:400;text-shadow:none;}
+  #bpm{
+    right:clamp(16px,3.2vw,46px); top:clamp(14px,3vh,34px); text-align:right;
+  }
+  #bpm b{font-size:clamp(30px,4.6vw,52px);font-weight:600;color:#eafff6;
+    letter-spacing:.02em; text-shadow:0 0 22px rgba(90,255,210,.5);
+    font-variant-numeric:tabular-nums; display:inline-block; min-width:2.4ch;}
+  #bpm span{font-size:clamp(9px,1vw,11px);letter-spacing:.34em;color:#5fae9c;display:block;margin-top:2px;}
+  #hint{
+    left:50%;transform:translateX(-50%);bottom:clamp(14px,3.2vh,30px);
+    text-align:center;letter-spacing:.26em;font-size:clamp(9px,1vw,11px);
+    color:#3f7d70; transition:opacity 1.4s ease; font-weight:400;
+  }
+  #legend{left:clamp(16px,3.2vw,46px); bottom:clamp(14px,3.2vh,30px);
+    font-size:clamp(8px,.85vw,10px); letter-spacing:.18em; line-height:1.9; color:#4d8a7c;}
+  #legend i{display:inline-block;width:18px;height:2px;vertical-align:middle;margin-right:9px;border-radius:2px;}
+  @media (max-width:560px){
+    #legend{display:none}
+    #title{letter-spacing:.30em}
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="grain"></div>
+<div id="vig"></div>
+
+<div id="title" class="hud">VITALS<small>SIGNAL · LANDSCAPE</small></div>
+<div id="bpm" class="hud"><b id="bpmv">72</b><span>BPM · SINUS</span></div>
+<div id="legend" class="hud"></div>
+<div id="hint" class="hud">MOVE — 박동을 끌어당긴다 · CLICK — 제세동 · SCROLL — 시간을 휜다</div>
+
+<script>
+(()=>{
+"use strict";
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', {alpha:false});
+const DPR = Math.min(2, window.devicePixelRatio||1);
+let W=0,H=0;
+
+/* ---------- pointer ---------- */
+const P = {x:0.5, y:0.5, px:0.5, py:0.5, down:false, vx:0, vy:0, active:false};
+let lastMove = -9999;
+
+/* ---------- color palette for the lanes (back->front) ---------- */
+// hue, base lightness, label, kind
+const LANES = [
+  {h:265, name:'EEG',  kind:'eeg',  amp:0.30},
+  {h:200, name:'RESP', kind:'resp', amp:0.55},
+  {h:175, name:'SpO2', kind:'pleth',amp:0.62},
+  {h:150, name:'ABP',  kind:'abp',  amp:0.78},
+  {h:158, name:'ECG II',kind:'ecg', amp:1.00}, // hero lane, frontmost
+];
+
+/* build legend */
+(function(){
+  const el=document.getElementById('legend');
+  el.innerHTML = LANES.slice().reverse().map(l=>{
+    const c=`hsl(${l.h} 90% 60%)`;
+    return `<div><i style="background:${c};box-shadow:0 0 8px ${c}"></i>${l.name}</div>`;
+  }).join('');
+})();
+
+/* ---------- heart engine ---------- */
+let bpm = 72;              // displayed / driving bpm
+let targetBpm = 72;
+let phase = 0;            // cardiac phase 0..1 advancing
+let lastBeat = 0;         // timestamp seconds of last R peak
+let timeWarp = 1.0;       // scroll bends time
+let targetWarp = 1.0;
+
+/* defib shockwaves */
+const shocks = [];
+/* roaming light particles riding the hero ECG */
+const sparks = [];
+
+/* the canonical single-beat ECG morphology as a function of cardiac phase t in [0,1) */
+function ecgMorph(t){
+  // gaussian helper
+  const g=(c,w,a)=>a*Math.exp(-Math.pow((t-c)/w,2));
+  let y=0;
+  y+=g(0.16,0.022,0.13);    // P
+  // QRS
+  y+=g(0.255,0.010,-0.18);  // Q
+  y+=g(0.285,0.0085,1.00);  // R  (tall spike)
+  y+=g(0.315,0.011,-0.30);  // S
+  y+=g(0.55,0.045,0.30);    // T
+  // tiny baseline wander
+  y+=Math.sin(t*6.283*2)*0.012;
+  return y;
+}
+function respMorph(t){ return Math.sin(t*6.283 - 0.4)*0.9 + Math.sin(t*6.283*2)*0.08; }
+function plethMorph(t){
+  // arterial pulse: sharp upstroke, dicrotic notch
+  const a=Math.exp(-Math.pow((t-0.18)/0.10,2));
+  const dn=0.42*Math.exp(-Math.pow((t-0.42)/0.10,2));
+  return (a+dn)*1.1-0.5;
+}
+function abpMorph(t){
+  const sys=Math.exp(-Math.pow((t-0.20)/0.085,2));
+  const dn=0.35*Math.exp(-Math.pow((t-0.46)/0.13,2));
+  return (sys+dn)*1.05-0.45;
+}
+function eegMorph(t, seedx){
+  // chaotic-ish layered sines, modulated by beat for liveliness
+  return Math.sin(t*6.283*7+seedx)*0.4 + Math.sin(t*6.283*13+seedx*1.7)*0.25
+       + Math.sin(t*6.283*23+seedx*0.6)*0.14;
+}
+
+function morphFor(kind, t, seedx){
+  switch(kind){
+    case 'ecg':  return ecgMorph(t);
+    case 'resp': return respMorph(t);
+    case 'pleth':return plethMorph(t);
+    case 'abp':  return abpMorph(t);
+    case 'eeg':  return eegMorph(t, seedx);
+  }
+  return 0;
+}
+
+/* ---------- resize ---------- */
+function resize(){
+  W = cv.width  = Math.round(innerWidth*DPR);
+  H = cv.height = Math.round(innerHeight*DPR);
+  cv.style.width = innerWidth+'px';
+  cv.style.height= innerHeight+'px';
+}
+window.addEventListener('resize', resize, {passive:true});
+resize();
+
+/* ---------- input ---------- */
+function setP(cx,cy){
+  P.px=P.x; P.py=P.y;
+  P.x = cx/innerWidth; P.y = cy/innerHeight;
+  P.vx = P.x-P.px; P.vy = P.y-P.py;
+  P.active=true;
+  lastMove = performance.now()/1000;
+  document.getElementById('hint').style.opacity = '0';
+}
+addEventListener('pointermove', e=>{ setP(e.clientX, e.clientY); }, {passive:true});
+addEventListener('pointerdown', e=>{
+  setP(e.clientX, e.clientY); P.down=true; fireShock(P.x, P.y);
+});
+addEventListener('pointerup',  ()=>{ P.down=false; }, {passive:true});
+addEventListener('pointerleave',()=>{ P.active=false; }, {passive:true});
+addEventListener('wheel', e=>{
+  targetWarp *= (e.deltaY>0 ? 1.10 : 0.91);
+  targetWarp = Math.max(0.25, Math.min(3.2, targetWarp));
+}, {passive:true});
+
+function fireShock(nx,ny){
+  shocks.push({x:nx, y:ny, r:0, life:1, born:performance.now()/1000});
+  // adrenaline: jolt the heart rate up briefly
+  targetBpm = Math.min(190, targetBpm + 26);
+  // emit a burst of sparks from the strike point on the hero lane
+  for(let i=0;i<22;i++){
+    sparks.push({
+      x:nx*W, y:ny*H,
+      vx:(Math.random()-0.5)*7*DPR, vy:(Math.random()-0.5)*7*DPR - 1.5*DPR,
+      life:1, max:0.6+Math.random()*0.7, h:158, size:(1+Math.random()*2)*DPR, free:true
+    });
+  }
+}
+
+/* ---------- helpers ---------- */
+const TAU=Math.PI*2;
+function lerp(a,b,t){return a+(b-a)*t;}
+function smoothstep(e0,e1,x){const t=Math.max(0,Math.min(1,(x-e0)/(e1-e0)));return t*t*(3-2*t);}
+
+/* a tiny scrolling buffer of recent phase so each lane scrolls horizontally like a monitor.
+   We render each lane as a horizontal trace where x maps to *time in the past*. */
+
+let t0 = performance.now()/1000;
+let prev = t0;
+let beatPulse = 0;        // 0..1 visual envelope right after an R peak
+let totalBeats = 0;
+
+function loop(now){
+  now/=1000;
+  let dt = now - prev; prev = now;
+  if(dt>0.05) dt=0.05;   // clamp after tab switch
+
+  /* ---- smooth driving params ---- */
+  // pointer height pulls bpm: high on screen -> faster (tachy), low -> slower (brady)
+  if(P.active){
+    const want = lerp(54, 150, 1 - P.y);   // y=0 top -> fast
+    targetBpm = lerp(targetBpm, want, 0.06);
+  } else {
+    targetBpm = lerp(targetBpm, 72, 0.01);
+  }
+  // pointer speed adds excitement
+  const speed = Math.hypot(P.vx,P.vy);
+  P.vx*=0.85; P.vy*=0.85;
+  targetBpm += speed*120;
+  targetBpm = Math.max(40, Math.min(195, targetBpm));
+  bpm = lerp(bpm, targetBpm, 0.05);
+
+  timeWarp = lerp(timeWarp, targetWarp, 0.08);
+
+  /* ---- advance cardiac phase ---- */
+  const beatDur = 60/bpm;                 // seconds per beat
+  const adv = (dt*timeWarp)/beatDur;
+  let newPhase = phase + adv;
+  if(newPhase>=1){ // R peak crossing (we treat phase wrap as the beat marker)
+    newPhase -= Math.floor(newPhase);
+    onBeat(now);
+  }
+  // detect the R spike near phase 0.285 to drive the glow even within a cycle
+  phase = newPhase;
+
+  beatPulse *= Math.pow(0.0008, dt);  // fast decay envelope
+
+  /* ---- draw ---- */
+  draw(now, dt, beatDur);
+
+  requestAnimationFrame(loop);
+}
+
+function onBeat(now){
+  totalBeats++;
+  beatPulse = 1;
+  document.getElementById('bpmv').textContent = Math.round(bpm);
+  // spawn a spark that rides along the hero lane from right to left
+  sparks.push({ride:true, prog:0, life:1, max:lerp(2.2,1.0, (bpm-50)/140),
+                h:158, size:2.4*DPR, free:false});
+}
+
+/* ---------- the renderer ---------- */
+// We draw lanes from back to front. Each lane occupies a vertical band; its baseline
+// sits along a gentle curve so the scene reads as a layered "landscape" of ridges.
+function draw(now, dt, beatDur){
+  // background gradient
+  const bg = ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#02050a');
+  bg.addColorStop(0.5,'#04101a');
+  bg.addColorStop(1,'#020608');
+  ctx.fillStyle=bg;
+  ctx.fillRect(0,0,W,H);
+
+  drawGrid();
+
+  const N = LANES.length;
+  // sample resolution capped for perf
+  const cols = Math.min(900, Math.floor(innerWidth/1.6));
+  // how many beats span the full screen width (time window)
+  const beatsOnScreen = 4.2;
+  const window_s = beatsOnScreen*beatDur;
+
+  const pxX = P.x*W, pxY = P.y*H;
+
+  for(let li=0; li<N; li++){
+    const lane = LANES[li];
+    const depth = li/(N-1);                 // 0 back .. 1 front
+    // vertical placement: back lanes higher & compressed, front lane dominant & lower
+    const baseY = lerp(H*0.30, H*0.74, depth*depth);
+    const laneAmp = lerp(H*0.045, H*0.20, depth) * lane.amp;
+    const sat = lerp(55, 92, depth);
+    const lig = lerp(46, 64, depth);
+    const alpha = lerp(0.42, 1.0, depth);
+    const lineW = lerp(1.0, 2.3, depth)*DPR;
+    const isHero = (lane.kind==='ecg');
+
+    // build points
+    const pts = new Float32Array((cols+1)*2);
+    for(let c=0;c<=cols;c++){
+      const fx = c/cols;            // 0..1 left..right
+      const x = fx*W;
+      // time at this column: right edge = now, going back to the left
+      const tBack = (1-fx)*window_s;
+      // phase at this column
+      let ph = phase - (tBack/beatDur);
+      ph = ph - Math.floor(ph);
+      let v = morphFor(lane.kind, ph, li*3.7 + (isHero?0:now*0.15));
+
+      // pointer "pacemaker" deformation: a soft bump pulling the trace toward cursor
+      const dx = (x - pxX);
+      const fall = Math.exp(-(dx*dx)/(2*Math.pow(W*0.06,2)));
+      if(P.active){
+        // pull this lane vertically toward pointer, strongest on near lanes
+        const pull = (pxY - baseY) * fall * 0.22 * (0.4+depth);
+        // also inject extra amplitude near cursor (excitation)
+        v *= 1 + fall*0.9*depth;
+        var yBase = baseY + pull;
+      } else var yBase = baseY;
+
+      // shock ripples warp every lane
+      let warpY=0;
+      for(const s of shocks){
+        const sd = Math.abs(x - s.x*W);
+        const ring = Math.exp(-Math.pow((sd - s.r)/(34*DPR),2));
+        warpY += ring * s.life * 26*DPR * Math.sin(s.r*0.05) * (0.3+depth);
+      }
+
+      const y = yBase - v*laneAmp + warpY;
+      pts[c*2]=x; pts[c*2+1]=y;
+    }
+
+    // glow underlay (filled gradient to baseline) for front lanes
+    if(depth>0.45){
+      ctx.beginPath();
+      ctx.moveTo(0, baseY+laneAmp*1.4);
+      for(let c=0;c<=cols;c++) ctx.lineTo(pts[c*2], pts[c*2+1]);
+      ctx.lineTo(W, baseY+laneAmp*1.4);
+      ctx.closePath();
+      const fg = ctx.createLinearGradient(0,baseY-laneAmp,0,baseY+laneAmp*1.4);
+      fg.addColorStop(0,`hsla(${lane.h} ${sat}% ${lig}% / ${0.10*depth})`);
+      fg.addColorStop(1,`hsla(${lane.h} ${sat}% 20% / 0)`);
+      ctx.fillStyle=fg;
+      ctx.fill();
+    }
+
+    // the trace, drawn twice: wide soft glow + crisp core
+    const beatGlow = isHero ? (1 + beatPulse*2.2) : (1 + beatPulse*0.5);
+    // soft glow pass
+    ctx.lineJoin='round'; ctx.lineCap='round';
+    ctx.shadowBlur = (isHero?22:10)*DPR*beatGlow;
+    ctx.shadowColor = `hsla(${lane.h} 100% 60% / ${0.55*alpha})`;
+    ctx.strokeStyle = `hsla(${lane.h} ${sat}% ${lig}% / ${alpha})`;
+    ctx.lineWidth = lineW;
+    strokePts(pts, cols);
+    // crisp bright core
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = `hsla(${lane.h} ${Math.min(100,sat+10)}% ${Math.min(90,lig+24)}% / ${alpha})`;
+    ctx.lineWidth = Math.max(0.7*DPR, lineW*0.45);
+    strokePts(pts, cols);
+
+    // moving R-peak head marker on hero lane (bright dot at the "now" R spike)
+    if(isHero){
+      // store hero geometry for sparks
+      heroGeom = {pts, cols, baseY, laneAmp};
+    }
+  }
+
+  drawSparks();
+  drawShocks(dt);
+  drawPointer(pxX, pxY);
+}
+
+let heroGeom=null;
+
+function strokePts(pts, cols){
+  ctx.beginPath();
+  ctx.moveTo(pts[0], pts[1]);
+  for(let c=1;c<=cols;c++) ctx.lineTo(pts[c*2], pts[c*2+1]);
+  ctx.stroke();
+}
+
+function drawGrid(){
+  // faint monitor grid
+  ctx.lineWidth=1;
+  ctx.strokeStyle='rgba(60,140,120,0.05)';
+  const step=Math.round(46*DPR);
+  ctx.beginPath();
+  for(let x=0;x<=W;x+=step){ ctx.moveTo(x,0); ctx.lineTo(x,H);}
+  for(let y=0;y<=H;y+=step){ ctx.moveTo(0,y); ctx.lineTo(W,y);}
+  ctx.stroke();
+  // brighter major lines
+  ctx.strokeStyle='rgba(60,160,140,0.08)';
+  const step5=step*5;
+  ctx.beginPath();
+  for(let x=0;x<=W;x+=step5){ ctx.moveTo(x,0); ctx.lineTo(x,H);}
+  for(let y=0;y<=H;y+=step5){ ctx.moveTo(0,y); ctx.lineTo(W,y);}
+  ctx.stroke();
+}
+
+function sampleHeroY(prog){
+  // prog 0..1 across screen; return {x,y}
+  if(!heroGeom) return {x:prog*W, y:H*0.6};
+  const {pts, cols} = heroGeom;
+  const c = Math.max(0,Math.min(cols, Math.round(prog*cols)));
+  return {x:pts[c*2], y:pts[c*2+1]};
+}
+
+function drawSparks(){
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  for(let i=sparks.length-1;i>=0;i--){
+    const s=sparks[i];
+    s.life -= 1/(60*s.max);
+    if(s.life<=0){ sparks.splice(i,1); continue; }
+    let x,y;
+    if(s.ride){
+      s.prog += 0.012;
+      if(s.prog>1){ sparks.splice(i,1); continue; }
+      const g=sampleHeroY(s.prog);
+      x=g.x; y=g.y;
+    } else {
+      s.vx*=0.96; s.vy=s.vy*0.96+0.10*DPR; // gravity
+      s.x+=s.vx; s.y+=s.vy; x=s.x; y=s.y;
+    }
+    const a = s.life;
+    const r = s.size*(0.6+a);
+    const gr=ctx.createRadialGradient(x,y,0,x,y,r*4);
+    gr.addColorStop(0,`hsla(${s.h} 100% 80% / ${a})`);
+    gr.addColorStop(0.4,`hsla(${s.h} 100% 60% / ${a*0.5})`);
+    gr.addColorStop(1,`hsla(${s.h} 100% 50% / 0)`);
+    ctx.fillStyle=gr;
+    ctx.beginPath(); ctx.arc(x,y,r*4,0,TAU); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawShocks(dt){
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  for(let i=shocks.length-1;i>=0;i--){
+    const s=shocks[i];
+    s.r += (520*DPR)*dt;
+    s.life -= dt*0.9;
+    if(s.life<=0){ shocks.splice(i,1); continue; }
+    const cx=s.x*W, cy=s.y*H;
+    ctx.lineWidth = 2.5*DPR*s.life;
+    ctx.strokeStyle=`hsla(160 100% 70% / ${s.life*0.55})`;
+    ctx.shadowBlur=20*DPR; ctx.shadowColor=`hsla(160 100% 60% / ${s.life})`;
+    ctx.beginPath(); ctx.arc(cx,cy,s.r,0,TAU); ctx.stroke();
+    // inner ring
+    ctx.lineWidth=1*DPR*s.life;
+    ctx.strokeStyle=`hsla(180 100% 85% / ${s.life*0.7})`;
+    ctx.beginPath(); ctx.arc(cx,cy,s.r*0.62,0,TAU); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawPointer(px,py){
+  if(!P.active) return;
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  const puls = 0.5+0.5*Math.sin(performance.now()/220);
+  const r = (10+beatPulse*22+puls*4)*DPR;
+  const gr=ctx.createRadialGradient(px,py,0,px,py,r*3.2);
+  gr.addColorStop(0,'hsla(158 100% 80% / 0.9)');
+  gr.addColorStop(0.3,'hsla(158 100% 60% / 0.28)');
+  gr.addColorStop(1,'hsla(158 100% 50% / 0)');
+  ctx.fillStyle=gr;
+  ctx.beginPath(); ctx.arc(px,py,r*3.2,0,TAU); ctx.fill();
+  // crosshair ticks
+  ctx.strokeStyle=`hsla(158 100% 80% / ${0.4+0.4*puls})`;
+  ctx.lineWidth=1*DPR;
+  const t=8*DPR;
+  ctx.beginPath();
+  ctx.moveTo(px-r-t,py); ctx.lineTo(px-r,py);
+  ctx.moveTo(px+r,py); ctx.lineTo(px+r+t,py);
+  ctx.moveTo(px,py-r-t); ctx.lineTo(px,py-r);
+  ctx.moveTo(px,py+r); ctx.lineTo(px,py+r+t);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/* kick a first beat so first paint already shows life */
+phase = 0.30;
+requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

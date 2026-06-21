@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>안개 들판 · 리퀴드 글래스 메일</title>
+<style>
+  :root{
+    --glass-bg: rgba(18,26,30,0.30);
+    --glass-bg2: rgba(22,32,38,0.22);
+    --glass-bd: rgba(255,255,255,0.22);
+    --glass-hi: rgba(255,255,255,0.34);
+    --txt: rgba(245,250,250,0.96);
+    --txt-dim: rgba(228,238,240,0.66);
+    --accent: #9fe6cf;
+    --accent-deep:#3d7a68;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;height:100%;overflow:hidden;background:#0a1216;}
+  body{
+    font-family:"Hiragino Kaku Gothic ProN","Yu Gothic","Apple SD Gothic Neo","Pretendard",
+      -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    color:var(--txt);
+  }
+  /* ---- ambient canvas base ---- */
+  #scene{position:fixed;inset:0;width:100%;height:100%;display:block;z-index:0;}
+  /* a parallax wrapper so glass drifts slightly vs scene */
+  #stage{position:fixed;inset:0;z-index:2;will-change:transform;}
+
+  /* ---- floating liquid-glass panels ---- */
+  .glass{
+    position:absolute;
+    background:linear-gradient(150deg,var(--glass-bg),var(--glass-bg2));
+    border:1px solid var(--glass-bd);
+    border-radius:26px;
+    box-shadow:
+      0 30px 70px rgba(0,0,0,0.40),
+      0 6px 18px rgba(0,0,0,0.22),
+      inset 0 1px 0 var(--glass-hi),
+      inset 0 -1px 1px rgba(0,0,0,0.25);
+    backdrop-filter:blur(20px) saturate(1.5) brightness(1.05);
+    -webkit-backdrop-filter:blur(20px) saturate(1.5) brightness(1.05);
+    overflow:hidden;
+    will-change:transform;
+  }
+  /* moving sheen across the top edge */
+  .glass::before{
+    content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+    background:
+      radial-gradient(120% 80% at 18% -10%, rgba(255,255,255,0.20), rgba(255,255,255,0) 55%),
+      radial-gradient(140% 120% at 110% 120%, rgba(120,200,180,0.12), rgba(0,0,0,0) 60%);
+    mix-blend-mode:screen;
+  }
+  /* subtle refraction edge */
+  .glass::after{
+    content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,0.06);
+  }
+  .grab{cursor:grab;}
+  .grab:active{cursor:grabbing;}
+
+  /* ---- main email widget ---- */
+  #card{
+    left:50%; top:50%;
+    transform:translate(-50%,-50%);
+    width:min(420px,86vw);
+    padding:30px 30px 26px;
+  }
+  .eyebrow{
+    display:inline-flex;align-items:center;gap:8px;
+    font-size:11px;letter-spacing:.26em;text-transform:uppercase;
+    color:var(--accent);font-weight:700;margin:0 0 14px;
+    padding:5px 12px;border-radius:999px;
+    background:rgba(159,230,207,0.10);
+    border:1px solid rgba(159,230,207,0.28);
+  }
+  .eyebrow .dot{width:6px;height:6px;border-radius:50%;background:var(--accent);
+    box-shadow:0 0 10px var(--accent);animation:pulse 2.6s ease-in-out infinite;}
+  @keyframes pulse{0%,100%{opacity:.45;transform:scale(.85);}50%{opacity:1;transform:scale(1.15);}}
+  #card h1{
+    margin:0 0 10px;font-size:clamp(22px,4.6vw,28px);font-weight:800;letter-spacing:-.2px;
+    line-height:1.18;
+  }
+  #card h1 em{font-style:normal;color:var(--accent);}
+  #card p.lead{
+    margin:0 0 22px;font-size:14px;line-height:1.55;color:var(--txt-dim);font-weight:500;
+  }
+  label.fl{display:block;font-size:12.5px;font-weight:700;margin:0 0 8px;letter-spacing:.02em;}
+  .input-row{display:flex;gap:10px;margin-bottom:14px;}
+  .glass-input{
+    flex:1;min-width:0;display:flex;align-items:center;gap:10px;
+    border:1px solid rgba(255,255,255,0.30);border-radius:999px;
+    padding:0 16px;height:48px;
+    background:rgba(255,255,255,0.06);
+    transition:border-color .2s ease, background .2s ease, box-shadow .2s ease;
+  }
+  .glass-input:focus-within{
+    border-color:rgba(159,230,207,0.7);
+    background:rgba(159,230,207,0.08);
+    box-shadow:0 0 0 4px rgba(159,230,207,0.12);
+  }
+  .glass-input svg{flex:0 0 auto;opacity:.85;}
+  .glass-input input{
+    flex:1;min-width:0;background:transparent;border:0;outline:none;
+    color:#fff;font-size:15px;font-family:inherit;font-weight:600;
+  }
+  .glass-input input::placeholder{color:rgba(235,242,242,0.55);font-weight:500;}
+  .btn{
+    border:0;border-radius:999px;height:48px;padding:0 20px;cursor:pointer;
+    font-family:inherit;font-size:14.5px;font-weight:800;letter-spacing:.01em;
+    color:#0b1814;
+    background:linear-gradient(180deg,#c6f4e2,#8fdcc2);
+    box-shadow:0 8px 22px rgba(60,122,104,0.45),inset 0 1px 0 rgba(255,255,255,0.6);
+    transition:transform .12s ease, box-shadow .12s ease, filter .12s ease;
+    white-space:nowrap;
+  }
+  .btn:hover{transform:translateY(-1px);filter:brightness(1.05);box-shadow:0 12px 26px rgba(60,122,104,0.55),inset 0 1px 0 rgba(255,255,255,0.7);}
+  .btn:active{transform:translateY(0);}
+  .meta-row{
+    display:flex;gap:10px;margin-top:18px;
+  }
+  .chip{
+    flex:1;text-align:center;border-radius:16px;padding:11px 8px;
+    border:1px solid rgba(255,255,255,0.16);
+    background:rgba(255,255,255,0.05);
+  }
+  .chip b{display:block;font-size:17px;font-weight:800;}
+  .chip span{display:block;font-size:10.5px;letter-spacing:.08em;color:var(--txt-dim);margin-top:2px;text-transform:uppercase;}
+  .fineprint{margin:16px 0 0;font-size:11px;color:rgba(228,238,240,0.5);line-height:1.5;}
+  .ok-msg{
+    margin-top:14px;font-size:13px;color:var(--accent);font-weight:700;
+    opacity:0;height:0;overflow:hidden;transition:opacity .35s ease, height .35s ease;
+  }
+  .ok-msg.show{opacity:1;height:20px;}
+
+  /* ---- secondary mini glass (top-left) ---- */
+  #clockpanel{
+    left:5.5vw;top:8vh;width:184px;padding:16px 18px;border-radius:22px;
+  }
+  #clockpanel .k{font-size:10.5px;letter-spacing:.22em;text-transform:uppercase;color:var(--txt-dim);}
+  #clockpanel .t{font-size:30px;font-weight:800;letter-spacing:.5px;margin:4px 0 2px;font-variant-numeric:tabular-nums;}
+  #clockpanel .d{font-size:11.5px;color:var(--txt-dim);}
+
+  /* ---- tertiary mini glass (bottom-right): weather of the field ---- */
+  #wxpanel{
+    right:5.5vw;bottom:9vh;width:210px;padding:16px 18px;border-radius:22px;
+  }
+  #wxpanel .row{display:flex;align-items:center;justify-content:space-between;}
+  #wxpanel .temp{font-size:30px;font-weight:800;}
+  #wxpanel .cond{font-size:12px;color:var(--txt-dim);margin-top:2px;}
+  #wxpanel .ic{font-size:30px;filter:drop-shadow(0 2px 6px rgba(0,0,0,.4));}
+  #wxpanel .bar{height:5px;border-radius:999px;background:rgba(255,255,255,0.12);margin-top:14px;overflow:hidden;}
+  #wxpanel .bar i{display:block;height:100%;width:62%;border-radius:999px;
+    background:linear-gradient(90deg,#8fdcc2,#5fb0d8);}
+  #wxpanel .hum{font-size:10.5px;color:var(--txt-dim);margin-top:7px;letter-spacing:.06em;}
+
+  .hint{
+    position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:3;
+    font-size:11.5px;letter-spacing:.14em;color:rgba(255,255,255,.6);
+    background:rgba(8,16,18,.34);padding:7px 16px;border-radius:999px;
+    backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);pointer-events:none;
+    transition:opacity 1.4s ease;white-space:nowrap;
+  }
+
+  /* responsive: 390 phone */
+  @media (max-width:520px){
+    #clockpanel{left:4vw;top:4vh;width:148px;padding:13px 14px;}
+    #clockpanel .t{font-size:25px;}
+    #wxpanel{right:4vw;bottom:5vh;width:172px;padding:13px 14px;}
+    #card{width:90vw;padding:24px 22px 22px;}
+    .meta-row{gap:8px;}
+    .chip{padding:9px 4px;}
+    .chip b{font-size:15px;}
+  }
+  @media (max-height:680px){
+    #clockpanel{top:3vh;}
+    #wxpanel{bottom:3vh;}
+  }
+</style>
+</head>
+<body>
+  <canvas id="scene"></canvas>
+
+  <div id="stage">
+    <!-- mini clock glass -->
+    <div class="glass grab" id="clockpanel" data-depth="0.5">
+      <div class="k">들판의 시간</div>
+      <div class="t" id="clock">--:--</div>
+      <div class="d" id="cdate">안개가 천천히 흐르는 중</div>
+    </div>
+
+    <!-- main email widget glass -->
+    <div class="glass grab" id="card" data-depth="1">
+      <span class="eyebrow"><span class="dot"></span>MORNING&nbsp;FOG&nbsp;LETTER</span>
+      <h1>안개 들판에서<br><em>편지</em>를 보내드려요.</h1>
+      <p class="lead">매주 한 통. 느린 새벽 들판의 사진과 짧은 글을 메일로 보냅니다. 광고 없이, 조용하게.</p>
+
+      <label class="fl" for="email">이메일 주소</label>
+      <form id="form" autocomplete="off">
+        <div class="input-row">
+          <div class="glass-input">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.85)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m4 7 8 6 8-6"/></svg>
+            <input id="email" type="email" inputmode="email" placeholder="you@example.com" required>
+          </div>
+          <button class="btn" type="submit">구독</button>
+        </div>
+      </form>
+      <div class="ok-msg" id="ok">고마워요. 다음 새벽 들판에서 만나요.</div>
+
+      <div class="meta-row">
+        <div class="chip"><b id="subN">2,418</b><span>구독자</span></div>
+        <div class="chip"><b>주 1회</b><span>발송</span></div>
+        <div class="chip"><b>0</b><span>광고</span></div>
+      </div>
+
+      <p class="fineprint">언제든 한 번의 클릭으로 해지할 수 있어요. 주소는 발송 외 어디에도 쓰지 않습니다.</p>
+    </div>
+
+    <!-- mini weather glass -->
+    <div class="glass grab" id="wxpanel" data-depth="0.6">
+      <div class="row">
+        <div>
+          <div class="temp">11°</div>
+          <div class="cond">안개 · 무풍</div>
+        </div>
+        <div class="ic">🌫️</div>
+      </div>
+      <div class="bar"><i></i></div>
+      <div class="hum">습도 94% · 가시거리 낮음</div>
+    </div>
+  </div>
+
+  <div class="hint" id="hint">패널을 끌어 옮겨보세요 · 마우스를 움직이면 들판이 따라옵니다</div>
+
+<script>
+'use strict';
+(()=>{
+const TAU=Math.PI*2;
+const cv=document.getElementById('scene');
+const ctx=cv.getContext('2d');
+let W=0,H=0,dpr=1;
+
+/* ---------------- foggy field scene ----------------
+   layered parallax hills + slow drifting fog banks +
+   floating dust motes / fireflies + soft sun glow.
+   pure 2D canvas so first paint is instant + reliable. */
+
+let hills=[];      // ridge layers back->front
+let fogBanks=[];   // soft moving blobs
+let motes=[];      // floating particles
+let birds=[];      // tiny far birds drifting
+
+function rnd(a,b){return a+Math.random()*(b-a);}
+
+function buildHills(){
+  hills=[];
+  const layers=[
+    {y:0.50, amp:0.045, col1:'#2c4a4e', col2:'#22383c', n:5, sp:0.5},
+    {y:0.60, amp:0.060, col1:'#274045', col2:'#1c3034', n:6, sp:0.9},
+    {y:0.71, amp:0.075, col1:'#21363a', col2:'#16282b', n:7, sp:1.5},
+    {y:0.84, amp:0.090, col1:'#19292c', col2:'#0f1d20', n:8, sp:2.4},
+  ];
+  for(const L of layers){
+    const pts=[];
+    const seedY=L.y;
+    for(let i=0;i<=L.n;i++){
+      pts.push({px:i/L.n, off:rnd(-1,1), spd:rnd(0.6,1.4)});
+    }
+    hills.push({...L, pts, seedY, phase:rnd(0,TAU)});
+  }
+}
+
+function buildFog(){
+  fogBanks=[];
+  const n=10;
+  for(let i=0;i<n;i++){
+    fogBanks.push({
+      x:rnd(-0.1,1.1), y:rnd(0.30,0.92),
+      r:rnd(0.18,0.42),
+      vx:rnd(0.004,0.018)*(Math.random()<0.5?-1:1),
+      a:rnd(0.05,0.16),
+      drift:rnd(0,TAU),
+    });
+  }
+}
+
+function buildMotes(){
+  motes=[];
+  const n=Math.round((W*H)/26000);
+  for(let i=0;i<n;i++){
+    motes.push({
+      x:Math.random(), y:Math.random(),
+      r:rnd(0.4,2.1),
+      vx:rnd(-0.012,0.012), vy:rnd(-0.006,0.004),
+      a:rnd(0.10,0.55),
+      tw:rnd(0,TAU), tws:rnd(0.4,1.4),
+      glow:Math.random()<0.18, // a few are firefly-ish
+    });
+  }
+}
+
+function buildBirds(){
+  birds=[];
+  const n=4;
+  for(let i=0;i<n;i++){
+    birds.push({x:rnd(0,1),y:rnd(0.18,0.34),s:rnd(0.4,0.9),
+      vx:rnd(0.006,0.014)*(Math.random()<0.5?-1:1),flap:rnd(0,TAU)});
+  }
+}
+
+function resize(){
+  W=window.innerWidth; H=window.innerHeight;
+  dpr=Math.min(window.devicePixelRatio||1,2);
+  cv.width=Math.round(W*dpr); cv.height=Math.round(H*dpr);
+  cv.style.width=W+'px'; cv.style.height=H+'px';
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  buildHills(); buildMotes(); // hills/motes scale with size
+  if(!fogBanks.length) buildFog();
+  if(!birds.length) buildBirds();
+}
+window.addEventListener('resize',resize);
+
+/* sky / depth gradient */
+function paintSky(t){
+  // slow dawn color drift
+  const k=(Math.sin(t*0.04)*0.5+0.5);
+  const topR=Math.round(18+10*k), topG=Math.round(30+14*k), topB=Math.round(36+14*k);
+  const g=ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,`rgb(${topR},${topG},${topB})`);
+  g.addColorStop(0.42,`rgb(${28+8*k},${46+10*k},${50+10*k})`);
+  g.addColorStop(0.62,`rgb(${44+18*k},${66+18*k},${64+14*k})`); // foggy band where sun sits
+  g.addColorStop(1,'#0c1a1c');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+
+  // soft sun glow that breathes & slides a touch
+  const sx=W*(0.50+Math.sin(t*0.03)*0.06);
+  const sy=H*(0.40+Math.sin(t*0.05)*0.02);
+  const sr=Math.max(W,H)*(0.42+0.04*Math.sin(t*0.6));
+  const sg=ctx.createRadialGradient(sx,sy,0,sx,sy,sr);
+  const sa=0.22+0.05*Math.sin(t*0.5);
+  sg.addColorStop(0,`rgba(225,236,222,${sa})`);
+  sg.addColorStop(0.35,`rgba(180,210,196,${sa*0.45})`);
+  sg.addColorStop(1,'rgba(180,210,196,0)');
+  ctx.fillStyle=sg; ctx.fillRect(0,0,W,H);
+}
+
+function paintHills(t){
+  for(let li=0;li<hills.length;li++){
+    const L=hills[li];
+    const baseY=H*L.seedY;
+    const amp=H*L.amp;
+    ctx.beginPath();
+    ctx.moveTo(0,H);
+    const drift=t*L.sp*6; // slow horizontal life
+    const segs=L.pts;
+    // build smooth ridge
+    let first=true;
+    const steps=segs.length-1;
+    for(let i=0;i<=steps;i++){
+      const p=segs[i];
+      const x=p.px*W;
+      const wob=Math.sin(t*0.25*p.spd + i*1.3 + L.phase + drift*0.0008)*amp*0.5;
+      const y=baseY + p.off*amp + wob;
+      if(first){ctx.lineTo(x,y);first=false;}
+      else{
+        const pp=segs[i-1];
+        const px=pp.px*W;
+        const pw=Math.sin(t*0.25*pp.spd + (i-1)*1.3 + L.phase + drift*0.0008)*amp*0.5;
+        const py=baseY+pp.off*amp+pw;
+        const cx=(px+x)/2, cy=(py+y)/2;
+        ctx.quadraticCurveTo(px,py,cx,cy);
+      }
+    }
+    ctx.lineTo(W,H); ctx.closePath();
+    const gg=ctx.createLinearGradient(0,baseY-amp,0,H);
+    gg.addColorStop(0,L.col1);
+    gg.addColorStop(1,L.col2);
+    ctx.fillStyle=gg; ctx.fill();
+
+    // a thin misty separation glow on top of each ridge (atmosphere)
+    ctx.save();
+    ctx.globalCompositeOperation='lighter';
+    const mistA=0.04+li*0.012;
+    const mg=ctx.createLinearGradient(0,baseY-amp*1.3,0,baseY+amp*0.6);
+    mg.addColorStop(0,`rgba(170,200,190,0)`);
+    mg.addColorStop(1,`rgba(170,200,190,${mistA})`);
+    ctx.fillStyle=mg;
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function paintFog(t){
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  for(const f of fogBanks){
+    f.x+=f.vx*0.016*60/ (1000/16); // frame-rate-ish; small
+    if(f.x>1.25) f.x=-0.25;
+    if(f.x<-0.25) f.x=1.25;
+    const cx=(f.x + Math.sin(t*0.1+f.drift)*0.01)*W;
+    const cy=(f.y + Math.sin(t*0.07+f.drift)*0.012)*H;
+    const r=f.r*Math.max(W,H)*(0.9+0.1*Math.sin(t*0.3+f.drift));
+    const a=f.a*(0.8+0.2*Math.sin(t*0.4+f.drift));
+    const g=ctx.createRadialGradient(cx,cy,0,cx,cy,r);
+    g.addColorStop(0,`rgba(196,214,208,${a})`);
+    g.addColorStop(0.5,`rgba(180,204,198,${a*0.45})`);
+    g.addColorStop(1,'rgba(180,204,198,0)');
+    ctx.fillStyle=g;
+    ctx.beginPath(); ctx.arc(cx,cy,r,0,TAU); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function paintBirds(t){
+  ctx.save();
+  ctx.strokeStyle='rgba(20,30,32,0.5)';
+  for(const b of birds){
+    b.x+=b.vx*0.004;
+    if(b.x>1.1)b.x=-0.1; if(b.x<-0.1)b.x=1.1;
+    const x=b.x*W, y=b.y*H;
+    const f=Math.sin(t*4+b.flap)*0.4+0.5;
+    const s=6*b.s;
+    ctx.lineWidth=1.1*b.s;
+    ctx.beginPath();
+    ctx.moveTo(x-s, y+ f*s*0.5);
+    ctx.quadraticCurveTo(x, y- s*0.4, x+0, y);
+    ctx.quadraticCurveTo(x, y- s*0.4, x+s, y+f*s*0.5);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function paintMotes(t){
+  for(const m of motes){
+    m.x+=m.vx*0.0016; m.y+=m.vy*0.0016;
+    if(m.x>1.02)m.x=-0.02; if(m.x<-0.02)m.x=1.02;
+    if(m.y<-0.02)m.y=1.02; if(m.y>1.02)m.y=-0.02;
+    const tw=0.5+0.5*Math.sin(t*m.tws+m.tw);
+    const x=m.x*W, y=m.y*H;
+    if(m.glow){
+      const a=m.a*tw;
+      const g=ctx.createRadialGradient(x,y,0,x,y,m.r*6);
+      g.addColorStop(0,`rgba(190,238,205,${a})`);
+      g.addColorStop(1,'rgba(190,238,205,0)');
+      ctx.fillStyle=g;
+      ctx.beginPath();ctx.arc(x,y,m.r*6,0,TAU);ctx.fill();
+      ctx.fillStyle=`rgba(225,255,235,${a})`;
+      ctx.beginPath();ctx.arc(x,y,m.r,0,TAU);ctx.fill();
+    }else{
+      ctx.fillStyle=`rgba(225,238,234,${m.a*tw*0.6})`;
+      ctx.beginPath();ctx.arc(x,y,m.r,0,TAU);ctx.fill();
+    }
+  }
+}
+
+/* a final soft fog veil over the whole bottom for depth-of-field feel */
+function paintVeil(t){
+  const g=ctx.createLinearGradient(0,H*0.55,0,H);
+  g.addColorStop(0,'rgba(176,200,194,0)');
+  g.addColorStop(1,`rgba(176,200,194,${0.10+0.03*Math.sin(t*0.3)})`);
+  ctx.fillStyle=g; ctx.fillRect(0,H*0.5,W,H*0.5);
+  // vignette
+  const v=ctx.createRadialGradient(W*0.5,H*0.5,Math.min(W,H)*0.2,W*0.5,H*0.5,Math.max(W,H)*0.75);
+  v.addColorStop(0,'rgba(0,0,0,0)');
+  v.addColorStop(1,'rgba(0,0,0,0.42)');
+  ctx.fillStyle=v; ctx.fillRect(0,0,W,H);
+}
+
+let last=0;
+function frame(ts){
+  requestAnimationFrame(frame);
+  const t=ts/1000;
+  // clear (sky repaints fully anyway)
+  paintSky(t);
+  paintHills(t);
+  paintFog(t);
+  paintBirds(t);
+  paintMotes(t);
+  paintVeil(t);
+}
+
+/* ---------------- mouse parallax of glass stage ---------------- */
+const stage=document.getElementById('stage');
+let tmx=0,tmy=0,mx=0,my=0;
+window.addEventListener('pointermove',e=>{
+  // skip while dragging a panel
+  if(dragging) return;
+  tmx=(e.clientX/window.innerWidth-0.5);
+  tmy=(e.clientY/window.innerHeight-0.5);
+});
+function parallaxLoop(){
+  requestAnimationFrame(parallaxLoop);
+  mx+=(tmx-mx)*0.06; my+=(tmy-my)*0.06;
+  // base stage shift (opposite-ish to mouse for depth)
+  stage.style.transform=`translate(${-mx*22}px,${-my*16}px)`;
+  // per-panel extra depth + keep their own drag offset
+  for(const p of panels){
+    const d=parseFloat(p.el.dataset.depth||'1');
+    const ex=-mx*18*d, ey=-my*14*d;
+    p.el.style.transform=`translate(${p.bx+ex}px,${p.by+ey}px)${p.center?' ':''}`;
+  }
+}
+
+/* ---------------- draggable glass panels ---------------- */
+const panelEls=[...document.querySelectorAll('.glass')];
+const panels=panelEls.map(el=>{
+  const center = el.id==='card';
+  return {el, bx:0, by:0, center};
+});
+// card is centered via translate(-50%,-50%); to keep that working while
+// also offsetting, we wrap its offset into a CSS var approach:
+// simplest: give card its own absolute positioning baseline.
+(function fixCard(){
+  const card=document.getElementById('card');
+  // convert centered position to absolute left/top so drag math is uniform
+  const r=card.getBoundingClientRect();
+  card.style.left=r.left+'px';
+  card.style.top=r.top+'px';
+  card.style.transform='translate(0px,0px)';
+  const p=panels.find(p=>p.el===card);
+  if(p){p.center=false;}
+})();
+
+let dragging=null, dgx=0, dgy=0;
+panelEls.forEach(el=>{
+  el.addEventListener('pointerdown',e=>{
+    // don't start drag from interactive form elements
+    if(e.target.closest('input,button,a')) return;
+    dragging=panels.find(p=>p.el===el);
+    el.setPointerCapture(e.pointerId);
+    dgx=e.clientX-dragging.bx;
+    dgy=e.clientY-dragging.by;
+    el.style.zIndex=50;
+    hideHint();
+  });
+  el.addEventListener('pointermove',e=>{
+    if(dragging&&dragging.el===el){
+      dragging.bx=e.clientX-dgx;
+      dragging.by=e.clientY-dgy;
+    }
+  });
+  const end=e=>{ if(dragging&&dragging.el===el){dragging=null;} };
+  el.addEventListener('pointerup',end);
+  el.addEventListener('pointercancel',end);
+});
+
+/* ---------------- clock widget ---------------- */
+const clock=document.getElementById('clock');
+const cdate=document.getElementById('cdate');
+function tick(){
+  const d=new Date();
+  const hh=String(d.getHours()).padStart(2,'0');
+  const mm=String(d.getMinutes()).padStart(2,'0');
+  clock.textContent=hh+':'+mm;
+  const opt={month:'long',day:'numeric',weekday:'short'};
+  try{cdate.textContent=d.toLocaleDateString('ko-KR',opt)+' · 새벽 안개';}catch(_){}
+}
+tick(); setInterval(tick,15000);
+
+/* ---------------- email form ---------------- */
+const form=document.getElementById('form');
+const ok=document.getElementById('ok');
+const subN=document.getElementById('subN');
+const emailIn=document.getElementById('email');
+form.addEventListener('submit',e=>{
+  e.preventDefault();
+  if(!emailIn.value || !/.+@.+\..+/.test(emailIn.value)){
+    emailIn.focus(); return;
+  }
+  ok.classList.add('show');
+  // bump subscriber count for a little life
+  let n=parseInt(subN.textContent.replace(/,/g,''),10)+1;
+  subN.textContent=n.toLocaleString('en-US');
+  emailIn.value='';
+});
+
+/* ---------------- hint fade ---------------- */
+const hint=document.getElementById('hint');
+function hideHint(){hint.style.opacity=0;}
+setTimeout(hideHint,8000);
+
+/* ---------------- boot ---------------- */
+resize();
+requestAnimationFrame(frame);
+requestAnimationFrame(parallaxLoop);
+})();
+</script>
+</body>
+</html>

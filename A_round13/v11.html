@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>AURELIA — 광섬유 빛다발</title>
+<style>
+  :root{ color-scheme:dark; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#03040a; }
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    -webkit-tap-highlight-color:transparent; cursor:crosshair;
+    touch-action:none;
+  }
+  #stage{ position:fixed; inset:0; display:block; }
+  /* additive glow layer */
+  #glow{ position:fixed; inset:0; display:block; mix-blend-mode:screen; }
+
+  .hud{
+    position:fixed; left:0; right:0; pointer-events:none;
+    color:#cfe3ff; user-select:none; z-index:5;
+  }
+  #title{
+    top:clamp(18px,3.4vh,40px); padding:0 clamp(18px,4vw,56px);
+    display:flex; align-items:flex-end; gap:14px; flex-wrap:wrap;
+  }
+  #title h1{
+    font-weight:300; letter-spacing:.42em;
+    font-size:clamp(20px,3.4vw,40px);
+    text-transform:uppercase;
+    text-shadow:0 0 22px rgba(120,180,255,.55), 0 0 60px rgba(90,140,255,.25);
+    background:linear-gradient(92deg,#9fd0ff,#dcb6ff 38%,#ffd2a8 70%,#8ffbe0);
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+  }
+  #title .sub{
+    font-weight:300; letter-spacing:.34em; font-size:clamp(8px,1.05vw,11px);
+    color:#7e96c4; padding-bottom:.42em; text-transform:uppercase;
+  }
+  #foot{
+    bottom:clamp(14px,2.8vh,30px); padding:0 clamp(18px,4vw,56px);
+    display:flex; justify-content:space-between; align-items:flex-end; gap:12px;
+    font-size:clamp(8px,1vw,11px); letter-spacing:.18em; color:#6f88b6;
+    text-transform:uppercase; flex-wrap:wrap;
+  }
+  #foot .hint{ display:flex; gap:18px; flex-wrap:wrap; }
+  #foot .hint b{ color:#bcd2ff; font-weight:500; }
+  #fps{ font-variant-numeric:tabular-nums; opacity:.7; }
+  @media (max-width:560px){
+    #title h1{ letter-spacing:.3em; }
+    #foot{ justify-content:center; text-align:center; }
+    #foot .meta{ display:none; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<canvas id="glow"></canvas>
+
+<div class="hud" id="title">
+  <h1>Aurelia</h1>
+  <span class="sub">fiber-optic light bundle</span>
+</div>
+<div class="hud" id="foot">
+  <div class="hint">
+    <span><b>이동</b> 빛다발 빗질</span>
+    <span><b>클릭/탭</b> 광펄스 분사</span>
+    <span><b>드래그</b> 다발 휘기</span>
+    <span><b>스페이스</b> 색상 전환</span>
+  </div>
+  <div class="meta"><span id="fps">—</span></div>
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   AURELIA — a living bundle of fiber-optic strands.
+   Pure canvas2D, additive screen-blend glow, no libraries.
+   - Hundreds of strands stream from a source core, follow a
+     drifting flow field, braid + fan, and carry light pulses.
+   - Cursor = comb/lens: strands bend toward it, pulses bloom.
+   - Click = chromatic photon burst down every fiber.
+   - Drag  = bow the whole bundle.
+   ============================================================ */
+(function(){
+  const stage = document.getElementById('stage');
+  const glow  = document.getElementById('glow');
+  const sx = stage.getContext('2d', { alpha:false });
+  const gx = glow.getContext('2d',  { alpha:true  });
+
+  let W=0,H=0,DPR=1, RW=0,RH=0; // RW/RH = render (backing) px
+  let MID=0; // px scale baseline
+
+  // ---- palette (4 moods, space cycles) ----
+  const PALETTES = [
+    { name:'aurora',  bg:[3,5,12],
+      hubs:[[150,220,255],[170,140,255],[120,255,220],[255,180,230]] },
+    { name:'ember',   bg:[10,4,6],
+      hubs:[[255,170,90],[255,90,120],[255,225,140],[255,120,200]] },
+    { name:'abyss',   bg:[2,6,12],
+      hubs:[[80,200,255],[110,130,255],[60,255,200],[180,220,255]] },
+    { name:'spectra', bg:[5,4,10],
+      hubs:[[120,200,255],[200,120,255],[255,150,120],[150,255,160]] },
+  ];
+  let pal = 0;
+
+  function lerp(a,b,t){ return a+(b-a)*t; }
+  function clamp(v,a,b){ return v<a?a:v>b?b:v; }
+  function rnd(a,b){ return a+Math.random()*(b-a); }
+
+  // ---- pre-rendered glow sprites (drawImage is ~10x cheaper than
+  //      building a radialGradient per particle every frame) ----
+  const SPR = 96;            // sprite size in px
+  const spriteCache = {};    // key "r,g,b" -> canvas
+  function glowSprite(r,g,b){
+    const key=r+','+g+','+b;
+    if(spriteCache[key]) return spriteCache[key];
+    const c=document.createElement('canvas'); c.width=c.height=SPR;
+    const x=c.getContext('2d');
+    const gr=x.createRadialGradient(SPR/2,SPR/2,0, SPR/2,SPR/2,SPR/2);
+    gr.addColorStop(0,   `rgba(255,255,255,1)`);
+    gr.addColorStop(0.18,`rgba(${Math.min(255,r+90)},${Math.min(255,g+90)},${Math.min(255,b+90)},0.95)`);
+    gr.addColorStop(0.45,`rgba(${r},${g},${b},0.45)`);
+    gr.addColorStop(1,   `rgba(${r},${g},${b},0)`);
+    x.fillStyle=gr; x.fillRect(0,0,SPR,SPR);
+    spriteCache[key]=c; return c;
+  }
+  // white-hot core sprite (for the source flare)
+  let coreSprite=null;
+  function buildCoreSprite(){
+    const S=256; const c=document.createElement('canvas'); c.width=c.height=S;
+    const x=c.getContext('2d');
+    const gr=x.createRadialGradient(S/2,S/2,0,S/2,S/2,S/2);
+    gr.addColorStop(0,'rgba(255,255,255,1)');
+    gr.addColorStop(0.12,'rgba(255,255,255,0.9)');
+    gr.addColorStop(0.5,'rgba(200,225,255,0.25)');
+    gr.addColorStop(1,'rgba(180,210,255,0)');
+    x.fillStyle=gr; x.fillRect(0,0,S,S);
+    coreSprite=c;
+  }
+  buildCoreSprite();
+
+  // ---- pointer ----
+  const ptr = { x:0,y:0, tx:0,ty:0, down:false, active:false,
+                vx:0,vy:0, lx:0,ly:0, bow:0, tbow:0 };
+
+  // ---- flow field (cheap pseudo-curl noise via stacked sines) ----
+  function flowAngle(x,y,t){
+    // x,y in normalized-ish render space
+    const s = 0.0016;
+    let a = Math.sin(x*s*1.0 + t*0.18) * 1.7
+          + Math.sin(y*s*1.3 - t*0.13) * 1.4
+          + Math.sin((x+y)*s*0.7 + t*0.09) * 1.1
+          + Math.cos((x-y)*s*1.1 - t*0.21) * 0.9;
+    return a;
+  }
+
+  // ---- strands ----
+  let strands = [];
+  let SEG = 0;        // segments per strand
+  let COUNT = 0;      // strand count
+  let core = { x:0, y:0 };  // emission origin
+
+  function makeStrand(i, n){
+    // spread fibers in a fan / sheaf around an emission axis
+    const u = i/(n-1||1);
+    const groupCount = 4;
+    // hue varies smoothly across the sheaf so the bundle has a gradient,
+    // not 4 stripes — but stays grouped for coherent ribbons.
+    const grp = Math.floor(clamp(u + rnd(-0.06,0.06),0,0.999)*groupCount);
+    const phase = rnd(0, Math.PI*2);
+    // lateral seat in the sheaf (-1..1): gives the bundle real thickness
+    const seat = (u*2-1);
+    return {
+      grp,
+      hue: grp,
+      seat,
+      baseAng: seat*0.95 + rnd(-0.10,0.10),  // initial direction spread (wide fan)
+      stiff: rnd(0.45, 1.05),         // how strongly it follows flow vs straight
+      thick: rnd(0.5, 2.0),
+      bright: rnd(0.45, 1.0),
+      wob: rnd(0.5, 1.7),             // personal wobble freq
+      braid: rnd(0.7, 1.5),           // braiding amplitude
+      phase,
+      len: rnd(0.80, 1.0),            // fraction of full length (fibers reach across)
+      pts: new Float32Array(SEG*2),   // x,y per segment
+      // photons travelling along the strand (0..1 position)
+      photons: [
+        { p: Math.random(), sp: rnd(0.16,0.40), bk: rnd(0.8,1.6) },
+        { p: Math.random(), sp: rnd(0.10,0.28), bk: rnd(0.7,1.3) },
+      ],
+      seed: Math.random()*1000,
+    };
+  }
+
+  function resize(){
+    // glow art is soft; cap backing resolution for fill-rate headroom (60fps)
+    DPR = Math.min(window.devicePixelRatio||1, 1.4);
+    W = window.innerWidth; H = window.innerHeight;
+    RW = Math.round(W*DPR); RH = Math.round(H*DPR);
+    stage.width=RW; stage.height=RH; stage.style.width=W+'px'; stage.style.height=H+'px';
+    glow.width=RW;  glow.height=RH;  glow.style.width=W+'px';  glow.style.height=H+'px';
+    MID = Math.min(RW,RH);
+
+    // emission core: lower-left on wide, top-center on tall, so the
+    // bundle sweeps diagonally across the whole frame.
+    const tall = H > W*1.15;
+    core.x = tall ? RW*0.5  : RW*0.10;
+    core.y = tall ? RH*0.12 : RH*0.62;
+
+    // density scaled to area but capped for 60fps
+    const area = RW*RH;
+    SEG   = tall ? 28 : 30;
+    COUNT = clamp(Math.round(area/10500), 140, 320);
+    if (W<560) COUNT = clamp(Math.round(area/12000), 95, 210);
+
+    strands = [];
+    for(let i=0;i<COUNT;i++) strands.push(makeStrand(i, COUNT));
+
+    ptr.x = ptr.tx = RW*0.62; ptr.y = ptr.ty = RH*0.5;
+    ptr.lx = ptr.x; ptr.ly = ptr.y;
+
+    // paint bg once on both for instant first paint
+    paintBg(1);
+  }
+
+  function paintBg(alpha){
+    const b = PALETTES[pal].bg;
+    sx.globalCompositeOperation='source-over';
+    // vignette gradient backdrop
+    const g = sx.createRadialGradient(core.x, core.y, MID*0.02, RW*0.5, RH*0.5, MID*0.95);
+    g.addColorStop(0, `rgba(${b[0]+10},${b[1]+14},${b[2]+26},${alpha})`);
+    g.addColorStop(0.55,`rgba(${b[0]+3},${b[1]+5},${b[2]+12},${alpha})`);
+    g.addColorStop(1, `rgba(${b[0]},${b[1]},${b[2]},${alpha})`);
+    sx.fillStyle=g; sx.fillRect(0,0,RW,RH);
+  }
+
+  // ---- shock bursts (clicks) ----
+  let bursts = []; // {t, x, y, hue}
+  function fireBurst(x,y){
+    bursts.push({ t:0, x, y, hue:(pal) });
+    // inject fresh photons at core on a chunk of strands
+    for(let i=0;i<strands.length;i++){
+      if(Math.random()<0.7){
+        strands[i].photons.push({ p:0, sp:rnd(0.5,0.95), bk:rnd(1.4,2.6) });
+        if(strands[i].photons.length>5) strands[i].photons.shift();
+      }
+    }
+    flashLevel = Math.min(1.4, flashLevel+0.9);
+  }
+  let flashLevel = 0;
+
+  // ---- main animation ----
+  let t = 0, last = performance.now(), fps=60, fpsAcc=0, fpsN=0, fpsT=0;
+
+  function step(now){
+    let dt = (now-last)/1000; last=now;
+    if(dt>0.05) dt=0.05;        // clamp big gaps
+    t += dt;
+
+    // fps meter
+    fpsAcc += 1/Math.max(dt,1e-4); fpsN++; fpsT+=dt;
+    if(fpsT>0.5){ fps = fpsAcc/fpsN; fpsAcc=0; fpsN=0; fpsT=0;
+      const el=document.getElementById('fps'); if(el) el.textContent = Math.round(fps)+' fps · '+COUNT+' fibers'; }
+
+    // pointer easing + velocity
+    ptr.x = lerp(ptr.x, ptr.tx, 0.18);
+    ptr.y = lerp(ptr.y, ptr.ty, 0.18);
+    ptr.vx = ptr.x-ptr.lx; ptr.vy = ptr.y-ptr.ly;
+    ptr.lx = ptr.x; ptr.ly = ptr.y;
+    ptr.bow = lerp(ptr.bow, ptr.tbow, 0.12);
+    if(!ptr.down) ptr.tbow *= 0.92;
+
+    flashLevel *= 0.90;
+
+    // --- backdrop: fade trail on stage for motion smear ---
+    const b = PALETTES[pal].bg;
+    sx.globalCompositeOperation='source-over';
+    sx.fillStyle = `rgba(${b[0]},${b[1]},${b[2]},0.22)`;
+    sx.fillRect(0,0,RW,RH);
+
+    // subtle core glow on stage
+    const cg = sx.createRadialGradient(core.x,core.y,0, core.x,core.y, MID*0.22);
+    const hub0 = PALETTES[pal].hubs[0];
+    cg.addColorStop(0,`rgba(${hub0[0]},${hub0[1]},${hub0[2]},${0.10+flashLevel*0.10})`);
+    cg.addColorStop(1,'rgba(0,0,0,0)');
+    sx.globalCompositeOperation='lighter';
+    sx.fillStyle=cg; sx.beginPath(); sx.arc(core.x,core.y,MID*0.22,0,7); sx.fill();
+
+    // --- clear glow layer (fully transparent each frame) ---
+    gx.clearRect(0,0,RW,RH);
+    gx.globalCompositeOperation='lighter';
+
+    const hubs = PALETTES[pal].hubs;
+    const tall = H > W*1.15;
+    // fibers must reach right across the frame from the corner core
+    const fullLen = tall ? (RH*1.05) : (RW*1.12);
+    const dwidth = (W<560)?1.0:1.0;
+
+    // pre-compute drag bow vector
+    const bowAmp = ptr.bow;
+
+    // breathing
+    const breath = 0.5 + 0.5*Math.sin(t*0.4);
+
+    // overall flow axis: sweeps diagonally up-right on wide, down on tall
+    const axis = tall ? Math.PI*0.5 : -0.18;
+    const perpx = Math.cos(axis+Math.PI*0.5), perpy = Math.sin(axis+Math.PI*0.5);
+
+    for(let i=0;i<strands.length;i++){
+      const s = strands[i];
+      const col = hubs[s.hue % hubs.length];
+
+      // ---- integrate strand path through flow field ----
+      // seat the start point across the sheaf so the bundle has thickness
+      let x = core.x + perpx*s.seat*MID*0.05;
+      let y = core.y + perpy*s.seat*MID*0.05;
+      const segLen = (fullLen*s.len)/SEG;
+      const pts = s.pts;
+
+      for(let k=0;k<SEG;k++){
+        pts[k*2]   = x;
+        pts[k*2+1] = y;
+
+        // base direction: starts along the fan spread, relaxes onto the axis
+        const kk = k/SEG;
+        let dirA = axis + s.baseAng*(1-kk)*(1-kk)*1.4;
+
+        // flow field contribution (grows downstream so the tail flows freely)
+        const fa = flowAngle(x, y, t + s.seed*0.01);
+        dirA += fa*s.stiff*0.42*(0.3+kk);
+
+        // ---- braiding: neighbouring fibers wind around the bundle core ----
+        // coherent twist keyed to seat -> fibers cross over each other
+        const twist = Math.sin(kk*5.3*s.braid + t*1.1 - s.seat*3.0 + s.phase);
+        dirA += twist * 0.30 * Math.sin(kk*Math.PI) * s.braid;
+        // personal high-freq shimmer
+        dirA += Math.sin(kk*9.0*s.wob + t*1.6 + s.phase)*0.10*(0.3+kk);
+
+        // ---- pointer comb: bend around cursor like a lens / comb ----
+        const dx = ptr.x - x, dy = ptr.y - y;
+        const d2 = dx*dx+dy*dy;
+        const R = MID*0.36;
+        if(d2 < R*R){
+          const d = Math.sqrt(d2)+1e-3;
+          const fall = (1 - d/R);
+          const ang = Math.atan2(dy,dx);
+          const swirl = 0.92*fall*fall;
+          dirA = dirA*(1-swirl) + (ang+Math.PI*0.5)*swirl;
+        }
+
+        // ---- drag bow: push midsection sideways ----
+        const bowK = Math.sin(kk*Math.PI); // 0 at ends, 1 mid
+
+        x += Math.cos(dirA)*segLen;
+        y += Math.sin(dirA)*segLen;
+        x += perpx*bowAmp*bowK*0.7;
+        y += perpy*bowAmp*bowK*0.7;
+      }
+
+      // ---- render strand as glowing polyline (3 stacked passes) ----
+      const baseAlpha = (0.085 + 0.05*breath) * s.bright;
+      const tw = (s.thick) * (DPR) * dwidth;
+      gx.lineCap='round'; gx.lineJoin='round';
+
+      // build the path once, reuse for all passes (cheaper)
+      gx.beginPath();
+      gx.moveTo(pts[0],pts[1]);
+      for(let k=1;k<SEG;k++) gx.lineTo(pts[k*2],pts[k*2+1]);
+
+      // pass 1: wide cladding bloom (the collective haze of the bundle)
+      gx.lineWidth = tw*2.3;
+      gx.strokeStyle = `rgba(${col[0]},${col[1]},${col[2]},${baseAlpha*0.36})`;
+      gx.stroke();
+
+      // pass 2: bright thin core line
+      gx.lineWidth = tw*0.85;
+      gx.strokeStyle = `rgba(${Math.min(255,col[0]+55)},${Math.min(255,col[1]+55)},${Math.min(255,col[2]+55)},${baseAlpha*1.9})`;
+      gx.stroke();
+
+      // ---- photons travelling along strand (cached sprite, drawImage) ----
+      const sprite = glowSprite(col[0],col[1],col[2]);
+      for(let pi=0; pi<s.photons.length; pi++){
+        const ph = s.photons[pi];
+        ph.p += ph.sp*dt;
+        if(ph.p>1){ ph.p -= 1; ph.bk = rnd(0.6,1.5); }
+        const fk = ph.p*(SEG-1);
+        const k0 = fk|0, k1=Math.min(SEG-1,k0+1), fr=fk-k0;
+        const px = lerp(pts[k0*2],   pts[k1*2],   fr);
+        const py = lerp(pts[k0*2+1], pts[k1*2+1], fr);
+
+        // brighten near cursor (lensing)
+        const ddx=ptr.x-px, ddy=ptr.y-py;
+        const near = clamp(1 - Math.sqrt(ddx*ddx+ddy*ddy)/(MID*0.3), 0, 1);
+        const intensity = ph.bk*(0.55 + near*1.7) * (0.7+0.6*breath);
+
+        const size = ((6 + near*16) * DPR * (0.55+intensity*0.5)) + 5*DPR;
+        gx.globalAlpha = clamp(0.55*intensity, 0, 1);
+        gx.drawImage(sprite, px-size, py-size, size*2, size*2);
+      }
+      gx.globalAlpha = 1;
+    }
+
+    // ---- shock burst rings ----
+    for(let i=bursts.length-1;i>=0;i--){
+      const bu=bursts[i]; bu.t += dt;
+      const life=1.1;
+      if(bu.t>life){ bursts.splice(i,1); continue; }
+      const k=bu.t/life;
+      const rad = k*MID*0.6;
+      const a = (1-k)*(1-k)*0.5;
+      const c = hubs[(bu.hue) % hubs.length];
+      gx.lineWidth = (1-k)*8*DPR+1;
+      gx.strokeStyle=`rgba(${c[0]},${c[1]},${c[2]},${a})`;
+      gx.beginPath(); gx.arc(bu.x,bu.y,rad,0,7); gx.stroke();
+      // second chromatic ring
+      const c2=hubs[(bu.hue+1)%hubs.length];
+      gx.lineWidth=(1-k)*4*DPR+1;
+      gx.strokeStyle=`rgba(${c2[0]},${c2[1]},${c2[2]},${a*0.6})`;
+      gx.beginPath(); gx.arc(bu.x,bu.y,rad*0.82,0,7); gx.stroke();
+    }
+
+    // ---- core flare on glow layer (sprite) ----
+    {
+      const r = MID*(0.13 + 0.035*breath + flashLevel*0.08);
+      gx.globalAlpha = clamp(0.8+flashLevel*0.3, 0, 1);
+      gx.drawImage(coreSprite, core.x-r, core.y-r, r*2, r*2);
+      // colored under-halo
+      const c = hubs[0];
+      const sp = glowSprite(c[0],c[1],c[2]);
+      const r2 = r*1.5;
+      gx.globalAlpha = 0.4;
+      gx.drawImage(sp, core.x-r2, core.y-r2, r2*2, r2*2);
+      gx.globalAlpha = 1;
+    }
+
+    // ---- cursor lens halo (sprite) ----
+    if(ptr.active){
+      const c = hubs[2];
+      const sp = glowSprite(c[0],c[1],c[2]);
+      const r = MID*0.085;
+      gx.globalAlpha = 0.22;
+      gx.drawImage(sp, ptr.x-r, ptr.y-r, r*2, r*2);
+      gx.globalAlpha = 1;
+    }
+
+    requestAnimationFrame(step);
+  }
+
+  // ============ input ============
+  function setPtr(cx,cy){
+    ptr.tx = cx*DPR; ptr.ty = cy*DPR; ptr.active=true;
+  }
+  window.addEventListener('mousemove', e=>{ setPtr(e.clientX,e.clientY);
+    if(ptr.down){ ptr.tbow = clamp(ptr.tbow + (e.movementY||0)*0.5*DPR + (e.movementX||0)*0.3*DPR, -MID*0.4, MID*0.4); }
+  });
+  window.addEventListener('mouseleave', ()=>{ ptr.active=false; });
+  window.addEventListener('mousedown', e=>{ ptr.down=true; fireBurst(e.clientX*DPR,e.clientY*DPR); });
+  window.addEventListener('mouseup',   ()=>{ ptr.down=false; });
+
+  window.addEventListener('touchstart', e=>{
+    const tch=e.changedTouches[0]; ptr.down=true; setPtr(tch.clientX,tch.clientY);
+    ptr.x=ptr.tx; ptr.y=ptr.ty;
+    fireBurst(tch.clientX*DPR,tch.clientY*DPR);
+  }, {passive:true});
+  window.addEventListener('touchmove', e=>{
+    const tch=e.changedTouches[0];
+    const dx=(tch.clientX*DPR-ptr.tx), dy=(tch.clientY*DPR-ptr.ty);
+    setPtr(tch.clientX,tch.clientY);
+    ptr.tbow = clamp(ptr.tbow + dy*0.4 + dx*0.2, -MID*0.4, MID*0.4);
+  }, {passive:true});
+  window.addEventListener('touchend', ()=>{ ptr.down=false; }, {passive:true});
+
+  window.addEventListener('keydown', e=>{
+    if(e.code==='Space'){ e.preventDefault(); cyclePalette(); }
+  });
+  function cyclePalette(){
+    pal = (pal+1)%PALETTES.length;
+    // refresh strand hue mapping subtly
+    fireBurst(core.x, core.y);
+  }
+  // double-tap-ish: clicking title not needed; space handled.
+
+  // expose minimal state for verification
+  window.__aurelia = {
+    state(){ return {
+      count:COUNT, seg:SEG, pal:PALETTES[pal].name,
+      bursts:bursts.length, fps:Math.round(fps),
+      ptrx:ptr.tx, ptry:ptr.ty, bow:Math.round(ptr.tbow),
+      strands:strands.length,
+    };},
+    burst(x,y){ fireBurst((x||W/2)*DPR,(y||H/2)*DPR); },
+    move(x,y){ setPtr(x,y); ptr.x=ptr.tx; ptr.y=ptr.ty; },
+    drag(dy){ ptr.down=true; ptr.tbow=clamp(ptr.tbow+dy,-MID*0.4,MID*0.4); ptr.down=false; },
+    cycle(){ cyclePalette(); },
+    paletteCount: PALETTES.length,
+  };
+
+  window.addEventListener('resize', resize);
+  resize();
+  // instant first paint: one full frame before rAF loop visuals settle
+  paintBg(1);
+  requestAnimationFrame(step);
+})();
+</script>
+</body>
+</html>

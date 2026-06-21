@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>비, 유리, 그리고 도시</title>
+<style>
+  html,body{margin:0;height:100%;background:#05070d;overflow:hidden;cursor:none;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}
+  #c{display:block;width:100vw;height:100vh;touch-action:none;}
+  #ui{position:fixed;left:18px;bottom:16px;color:rgba(220,228,245,.55);
+    font-size:11px;letter-spacing:.08em;line-height:1.6;pointer-events:none;
+    text-shadow:0 1px 8px rgba(0,0,0,.8);mix-blend-mode:screen;user-select:none;}
+  #ui b{color:rgba(255,255,255,.85);font-weight:600;}
+  #title{position:fixed;right:22px;top:18px;text-align:right;pointer-events:none;
+    user-select:none;mix-blend-mode:screen;}
+  #title .k{color:rgba(235,240,255,.92);font-size:15px;letter-spacing:.32em;
+    font-weight:300;text-shadow:0 2px 14px rgba(0,0,0,.9);}
+  #title .s{color:rgba(160,180,220,.5);font-size:10px;letter-spacing:.5em;margin-top:5px;}
+  #cur{position:fixed;width:34px;height:34px;margin:-17px 0 0 -17px;border-radius:50%;
+    border:1px solid rgba(190,210,255,.5);pointer-events:none;mix-blend-mode:screen;
+    transition:transform .12s ease,opacity .3s;will-change:transform;}
+  #cur::after{content:"";position:absolute;inset:14px;border-radius:50%;
+    background:rgba(210,225,255,.8);}
+  @media (max-width:480px){#title .k{font-size:13px;letter-spacing:.22em;}#ui{font-size:10px;}}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="cur"></div>
+<div id="title"><div class="k">P E T R I C H O R</div><div class="s">RAIN · GLASS · CITY</div></div>
+<div id="ui">
+  <b>움직이면</b> 유리를 닦습니다 · <b>누르면</b> 비가 쏟아집니다<br>
+  <b>휠/스크롤</b> 안개와 시간을 바꿉니다 · <b>더블탭</b> 색을 바꿉니다
+</div>
+<script>
+"use strict";
+(function(){
+const cv = document.getElementById('c');
+const gl = cv.getContext('webgl', {antialias:false, alpha:false, premultipliedAlpha:false, powerPreference:'high-performance'});
+if(!gl){ document.body.innerHTML='<div style="color:#9ab;font:14px sans-serif;padding:40px">WebGL을 사용할 수 없습니다.</div>'; return; }
+
+/* ---------- shader sources ---------- */
+const VERT = `
+attribute vec2 p;
+void main(){ gl_Position = vec4(p,0.0,1.0); }
+`;
+
+const FRAG = `
+precision highp float;
+uniform vec2  iRes;
+uniform float iTime;
+uniform vec2  iMouse;      // normalized 0..1, y up
+uniform vec2  iMVel;       // mouse velocity
+uniform float iWipe;       // wipe energy (0..1) accumulator
+uniform float iBurst;      // pour intensity (0..1)
+uniform float iFog;        // fog amount 0..1
+uniform float iHue;        // palette rotation
+uniform vec2  iTilt;       // parallax tilt
+
+#define PI 3.14159265359
+
+/* --- hash / noise --- */
+float h21(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
+vec2  h22(vec2 p){ vec3 a=fract(vec3(p.xyx)*vec3(123.34,234.34,345.65)); a+=dot(a,a+34.45); return fract(vec2(a.x*a.y,a.y*a.z)); }
+float vnoise(vec2 p){
+  vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+  float a=h21(i), b=h21(i+vec2(1,0)), c=h21(i+vec2(0,1)), d=h21(i+vec2(1,1));
+  return mix(mix(a,b,f.x),mix(c,d,f.x),f.y);
+}
+float fbm(vec2 p){ float s=0.0,a=0.5; for(int i=0;i<5;i++){ s+=a*vnoise(p); p*=2.02; a*=0.5; } return s; }
+
+/* --- palette --- */
+vec3 pal(float t){
+  // warm city night gradient, hue-rotatable
+  t = fract(t);
+  vec3 a=vec3(0.50,0.42,0.38);
+  vec3 b=vec3(0.48,0.40,0.42);
+  vec3 c=vec3(1.0,1.0,1.0);
+  vec3 d=vec3(0.00,0.18,0.42)+iHue;
+  return a+b*cos(6.28318*(c*t+d));
+}
+
+/* aspect-corrected, centered world coords so bokeh stay round & same size
+   on any aspect ratio. one "world unit" ~ screen height. */
+vec2 toWorld(vec2 uv){
+  float ar = iRes.x/iRes.y;
+  vec2 w = (uv-0.5);
+  w.x *= ar;            // x stretched by aspect -> circles stay round
+  return w;             // roughly -ar/2..ar/2  ,  -0.5..0.5
+}
+
+/* --- the city / bokeh scene (sampled by drops as the SHARP image) --- */
+vec3 city(vec2 uv){
+  vec2 p = toWorld(uv);
+  p += iTilt*0.04;
+  vec3 col = vec3(0.0);
+
+  // far sky glow + deep blue base
+  float sky = smoothstep(0.6,-0.2,uv.y);
+  col += pal(0.62)*0.10*sky;
+  col += vec3(0.015,0.025,0.05)*(1.0-uv.y*0.3);
+
+  // city light grid -> bokeh discs (multiple layers for depth)
+  for(int L=0;L<3;L++){
+    float fl=float(L);
+    float scale = 6.5 + fl*6.0;                  // cells per world-unit
+    float depth = 1.0 - fl*0.26;
+    vec2 g = p*scale;
+    g.x += iTime*(0.05+fl*0.035) + fl*7.3;       // slow horizontal drift = passing city
+    g.y += sin(iTime*0.1+fl)*0.18;
+    vec2 id = floor(g);
+    vec2 lf = fract(g)-0.5;
+    vec2 rnd = h22(id+fl*31.7);
+    float on = step(0.40, rnd.x);                // a bit sparser -> distinct bokeh
+    // verticality: lights cluster in lower 2/3 (skyline)
+    float yy = (id.y/scale);
+    float band = smoothstep(0.55,-0.55,yy);
+    on *= step(0.10, band);
+    float flick = 0.72+0.28*sin(iTime*(1.0+rnd.y*4.0)+rnd.x*30.0);
+    float jitterR = 0.30+0.18*rnd.y;
+    float d = length(lf - (rnd-0.5)*0.45);
+    float disc = smoothstep(jitterR,jitterR*0.25,d);
+    float core = smoothstep(jitterR*0.5,0.0,d);
+    vec3 lc = pal(rnd.x*0.55+0.02+fl*0.05);
+    lc = mix(lc, vec3(1.0,0.9,0.72), 0.30);      // warm tungsten bias
+    col += (disc*0.5 + core*1.1)*on*flick*lc*depth;
+  }
+
+  // wet-street reflections (bottom)
+  float refl = smoothstep(0.1,-0.5,uv.y);
+  col += refl*pal(0.08)*0.20*fbm(vec2(p.x*3.5, iTime*0.3));
+
+  // big out-of-focus headlight bokeh sweeping across (the hero accents)
+  for(int b=0;b<3;b++){
+    float fb=float(b);
+    float spd = 0.13+fb*0.05;
+    float t = iTime*spd + fb*2.1;
+    float ar = iRes.x/iRes.y;
+    vec2 hp = vec2((mod(t,2.0)-1.0)*ar*0.6, -0.18-fb*0.12);
+    float d = length((p-hp)*vec2(1.0,1.35));
+    vec3 hc = (fb<0.5)? vec3(1.0,0.82,0.55) : (fb<1.5? vec3(1.0,0.6,0.45):vec3(0.6,0.8,1.0));
+    col += hc*smoothstep(0.32,0.0,d)*0.55;
+  }
+
+  return col;
+}
+
+/* --- blurred backdrop (the defocused glass) via cheap poisson taps --- */
+vec3 cityBlur(vec2 uv, float rad){
+  vec3 s=vec3(0.0);
+  const int N=12;
+  float ga=2.39996;
+  for(int i=0;i<N;i++){
+    float fi=float(i);
+    float a=fi*ga;
+    float r=sqrt(fi/float(N))*rad;
+    vec2 o=vec2(cos(a),sin(a))*r;
+    o.x/= iRes.x/iRes.y;
+    s+=city(uv+o);
+  }
+  return s/float(N);
+}
+
+/* ---------- droplet field ----------
+   A drop is a small circular lens that:
+   - refracts -> samples sharp city, flipped & magnified
+   - has a bright specular rim
+   We build several layers of drops + trickling streaks. */
+
+// returns: rgb refracted color contribution, and alpha-ish mask in .a-like via separate
+// We'll compute a normal perturbation field instead, then sample sharp city through it.
+
+// static drops on a grid layer. works in WORLD space (square cells on any aspect).
+// writes displacement back in UV units (x divided by aspect).
+void dropLayer(vec2 w, float invAr, float scale, float t, float seed,
+               inout vec2 disp, inout float spec, inout float wet, inout float mask){
+  vec2 g = w*scale;
+  g.y -= t;                                    // gravity drift of the whole field (subtle)
+  vec2 id = floor(g);
+  for(int j=-1;j<=1;j++)
+  for(int i=-1;i<=1;i++){
+    vec2 cid = id+vec2(float(i),float(j));
+    vec2 rnd = h22(cid+seed*17.0);
+    if(rnd.x<0.34) continue;                   // sparsity
+    vec2 c = cid + 0.5 + (rnd-0.5)*0.7;
+    c.x += 0.06*sin(t*0.5+rnd.y*22.0);
+    vec2 d2 = (g - c);                          // square cells already
+    float dist = length(d2);
+    float rad = (0.20+0.30*rnd.y);
+    if(dist<rad){
+      float nz = sqrt(max(0.0,1.0-(dist/rad)*(dist/rad)));
+      vec2 n = (d2/max(dist,1e-4))*(1.0-nz);
+      // refraction displacement in world units -> convert x to uv
+      vec2 dd = -n*0.16*rad/scale;             // back to world-uv magnitude
+      dd.x *= invAr;                           // world x -> uv x
+      disp += dd;
+      vec2 ld = normalize(vec2(-0.5,0.8));
+      float sp = pow(max(0.0,dot(normalize(d2+1e-4), ld)),3.0);
+      spec += sp*smoothstep(rad,rad*0.6,dist)*nz;
+      wet  = max(wet, smoothstep(rad,rad*0.2,dist));
+      mask = max(mask, smoothstep(rad,rad*0.85,dist));
+    }
+  }
+}
+
+/* trickling streaks: vertical sliding droplets that leave a wet trail */
+void streaks(vec2 uv, vec2 asp, float t, float burst,
+             inout vec2 disp, inout float spec, inout float wet){
+  float cols = max(8.0, floor(14.0*asp.x));   // ~density per width, fewer on narrow
+  vec2 g = vec2(uv.x*cols, uv.y);
+  float col = floor(g.x);
+  float fx = fract(g.x)-0.5;
+  vec2 rnd = h22(vec2(col, 3.7));
+  // each column may host a falling streak
+  float speed = (0.18+rnd.y*0.5)*(1.0+burst*2.5);
+  float spawn = rnd.x;
+  // head position travels from top(1) to bottom(0)
+  float life = fract(rnd.x*5.0 + t*speed);
+  float headY = 1.0 - life;                       // 1->0
+  // wobble of the column
+  fx += 0.18*sin(uv.y*8.0+rnd.y*30.0+t)*rnd.x;
+  float xw = fx/cols;
+  float dx = xw*asp.x;                            // horizontal dist to streak line
+  // trail: from head down to spawn top, fades
+  float trail = smoothstep(0.020,0.0,abs(dx)) * smoothstep(headY-0.02, headY+0.25, uv.y) * smoothstep(1.05,headY,uv.y);
+  // also gate so streaks only where probable
+  float gate = step(0.45, rnd.x);
+  trail *= gate*(0.5+burst);
+  wet = max(wet, trail*0.7);
+  // the head droplet (a bright moving lens)
+  float dh = length(vec2(dx, (uv.y-headY))*1.0);
+  float hrad = (0.012+0.02*rnd.y)*(1.0+burst);
+  if(dh<hrad){
+    float nz=sqrt(max(0.0,1.0-(dh/hrad)*(dh/hrad)));
+    vec2 nn = normalize(vec2(dx, uv.y-headY)+1e-5)*(1.0-nz);
+    disp += -nn*0.10;
+    spec += pow(max(0.0,nz),2.0)*0.9*gate;
+  }
+  disp += vec2(0.0, 1.0)*trail*0.004;            // slight pull along trail
+}
+
+void main(){
+  vec2 frag = gl_FragCoord.xy;
+  vec2 uv = frag/iRes.xy;                          // 0..1
+  vec2 asp = vec2(iRes.x/iRes.y, 1.0);
+  float t = iTime;
+
+  // ---- glass condensation / wipe field ----
+  // base fog covers glass; mouse movement wipes a clear lens that slowly re-fogs.
+  vec2 m = iMouse;
+  float md = length((uv-m)*asp);
+  float wipeClear = smoothstep(0.34,0.0,md) * clamp(iWipe,0.0,1.0);
+
+  // accumulate drop displacement + specular
+  vec2 disp = vec2(0.0);
+  float spec=0.0, wet=0.0, mask=0.0;
+
+  // world coords (square cells) for drops -> consistent size across aspect
+  float ar = iRes.x/iRes.y;
+  float invAr = 1.0/ar;
+  vec2 w = toWorld(uv);
+
+  dropLayer(w, invAr,  7.0, t*0.02, 1.0,  disp, spec, wet, mask);
+  dropLayer(w, invAr, 12.0, t*0.015, 7.0, disp, spec, wet, mask);
+  dropLayer(w, invAr, 20.0, t*0.01, 19.0, disp, spec, wet, mask);
+
+  streaks(uv, asp, t, iBurst, disp, spec, wet);
+  streaks(uv*vec2(1.07,1.0)+vec2(0.013,0.0), asp, t*1.13+5.0, iBurst, disp, spec, wet);
+
+  // extra rain on burst: many fast tiny streaks
+  if(iBurst>0.01){
+    streaks(uv*vec2(1.9,1.0), asp, t*2.2+11.0, iBurst, disp, spec, wet);
+    streaks(uv*vec2(2.7,1.0)+0.3, asp, t*3.0+2.0, iBurst, disp, spec, wet);
+  }
+
+  // micro condensation droplets everywhere (very fine), modulated by fog
+  float fine = fbm(uv*asp.x*90.0 + vec2(0.0,t*0.04));
+  float fineDrops = smoothstep(0.62,0.78,fine)*iFog;
+  disp += (vec2(fbm(uv*120.0+9.0),fbm(uv*120.0+21.0))-0.5)*0.01*fineDrops;
+  wet = max(wet, fineDrops*0.4);
+
+  // wiped region removes fine fog + reduces displacement softness
+  float fog = iFog*(1.0-wipeClear);
+
+  // ---- sample the scene ----
+  // sharp city seen THROUGH the drop lenses (refraction)
+  vec2 ruv = uv + disp;
+  vec3 sharp = city(ruv);
+
+  // blurred backdrop (defocused), blur radius grows with fog
+  float blurRad = mix(0.012, 0.05, fog) + 0.01;
+  vec3 blur = cityBlur(uv, blurRad);
+
+  // where there is a drop/wet lens -> show sharp refracted city; else show blur(+fog)
+  float lens = clamp(wet*1.2 + mask, 0.0, 1.0);
+  // wiped area also reveals sharper image
+  lens = max(lens, wipeClear*0.9);
+
+  vec3 col = mix(blur, sharp, lens);
+
+  // fog veil (cool, milky) over un-wiped, un-dropped glass
+  vec3 fogCol = mix(vec3(0.10,0.13,0.18), vec3(0.16,0.18,0.22), uv.y);
+  col = mix(col, fogCol, fog*(1.0-lens)*0.85);
+
+  // chromatic fringe at drop edges (refraction dispersion)
+  if(mask>0.001 || wet>0.05){
+    vec2 cd = disp*1.6;
+    float r = city(uv+disp - cd*0.5).r;
+    float b = city(uv+disp + cd*0.5).b;
+    col.r = mix(col.r, r, 0.5*lens);
+    col.b = mix(col.b, b, 0.5*lens);
+  }
+
+  // specular rim highlights on drops
+  col += spec*vec3(1.0,1.0,1.0)*0.9*(0.4+lens);
+
+  // soft inner shadow at drop bottoms (volume)
+  col *= 1.0 - 0.18*smoothstep(0.0,1.0,wet)*(1.0-spec);
+
+  // wipe leaves a faint smear ring (squeegee feel)
+  float ring = smoothstep(0.34,0.30,md)-smoothstep(0.30,0.24,md);
+  col += ring*iWipe*vec3(0.5,0.6,0.8)*0.25;
+
+  // subtle vignette + glass grime
+  float vig = smoothstep(1.25,0.25,length((uv-0.5)*vec2(1.1,1.0)));
+  col *= 0.55+0.55*vig;
+  col += (h21(frag+t)-0.5)*0.012;                 // film grain
+
+  // gentle filmic tonemap
+  col = (col*(2.51*col+0.03))/(col*(2.43*col+0.59)+0.14);
+  col = pow(clamp(col,0.0,1.0), vec3(0.92));
+
+  gl_FragColor = vec4(col,1.0);
+}
+`;
+
+/* ---------- GL boilerplate ---------- */
+function sh(type,src){ const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){ console.error(gl.getShaderInfoLog(s)); throw new Error('shader'); } return s; }
+const prog=gl.createProgram();
+gl.attachShader(prog,sh(gl.VERTEX_SHADER,VERT));
+gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,FRAG));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog,gl.LINK_STATUS)){ console.error(gl.getProgramInfoLog(prog)); }
+gl.useProgram(prog);
+
+const buf=gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 3,-1, -1,3]),gl.STATIC_DRAW);
+const pl=gl.getAttribLocation(prog,'p');
+gl.enableVertexAttribArray(pl);
+gl.vertexAttribPointer(pl,2,gl.FLOAT,false,0,0);
+
+const U={};
+['iRes','iTime','iMouse','iMVel','iWipe','iBurst','iFog','iHue','iTilt'].forEach(n=>U[n]=gl.getUniformLocation(prog,n));
+
+/* ---------- state + interaction ---------- */
+let DPR=1, W=1, H=1;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2.0);          // resolution cap for perf
+  const cap = (window.innerWidth*window.innerHeight > 2200000) ? 1.5 : DPR; // extra cap on huge screens
+  DPR = Math.min(DPR, cap);
+  W = Math.floor(window.innerWidth*DPR);
+  H = Math.floor(window.innerHeight*DPR);
+  cv.width=W; cv.height=H;
+  cv.style.width=window.innerWidth+'px';
+  cv.style.height=window.innerHeight+'px';
+  gl.viewport(0,0,W,H);
+}
+window.addEventListener('resize',resize); resize();
+
+const state={
+  mx:0.5, my:0.5, tmx:0.5, tmy:0.5,
+  vel:0, wipe:0, burst:0, fog:0.55, hue:0.0, thue:0.0,
+  tiltX:0, tiltY:0, ttiltX:0, ttiltY:0,
+  last:performance.now(), lastX:0.5, lastY:0.5
+};
+
+const curEl=document.getElementById('cur');
+function setPointer(px,py,active){
+  const nx = px/window.innerWidth;
+  const ny = 1.0 - py/window.innerHeight;
+  state.tmx=nx; state.tmy=ny;
+  // velocity for wipe
+  const dx=nx-state.lastX, dy=ny-state.lastY;
+  const v=Math.sqrt(dx*dx+dy*dy);
+  state.vel=Math.min(1.0, state.vel*0.6 + v*14.0);
+  state.lastX=nx; state.lastY=ny;
+  // parallax tilt target
+  state.ttiltX=(nx-0.5)*2.0; state.ttiltY=(ny-0.5)*2.0;
+  curEl.style.transform=`translate(${px}px,${py}px) scale(${active?1.5:1})`;
+}
+window.addEventListener('pointermove',e=>{ setPointer(e.clientX,e.clientY,false); }, {passive:true});
+window.addEventListener('pointerdown',e=>{ setPointer(e.clientX,e.clientY,true); state.burst=Math.min(1.0,state.burst+0.6); }, {passive:true});
+window.addEventListener('pointerup',()=>{ curEl.style.transform=curEl.style.transform.replace(/scale\([^)]+\)/,'scale(1)'); }, {passive:true});
+window.addEventListener('pointerleave',()=>{ curEl.style.opacity='0'; });
+window.addEventListener('pointerenter',()=>{ curEl.style.opacity='1'; });
+window.addEventListener('wheel',e=>{
+  state.fog = Math.max(0.05, Math.min(1.0, state.fog + (e.deltaY>0? 0.06 : -0.06)));
+}, {passive:true});
+
+// double tap / dblclick -> palette shift
+let lastTap=0;
+function cyclePalette(){ state.thue += 0.5 + Math.random()*1.5; }
+window.addEventListener('dblclick', cyclePalette);
+window.addEventListener('pointerdown', e=>{
+  const now=performance.now();
+  if(now-lastTap < 320) cyclePalette();
+  lastTap=now;
+});
+
+// device orientation tilt (mobile)
+window.addEventListener('deviceorientation', e=>{
+  if(e.gamma==null) return;
+  state.ttiltX = Math.max(-2,Math.min(2, e.gamma/25));
+  state.ttiltY = Math.max(-2,Math.min(2, (e.beta-45)/25));
+}, true);
+
+/* ---------- render loop ---------- */
+let t0=performance.now();
+function frame(now){
+  const dt=Math.min(0.05,(now-state.last)/1000); state.last=now;
+  const T=(now-t0)/1000;
+
+  // smoothing
+  state.mx += (state.tmx-state.mx)*0.18;
+  state.my += (state.tmy-state.my)*0.18;
+  state.tiltX += (state.ttiltX-state.tiltX)*0.04;
+  state.tiltY += (state.ttiltY-state.tiltY)*0.04;
+  state.hue += (state.thue-state.hue)*0.05;
+
+  // wipe energy: rises with velocity, decays (glass re-fogs)
+  state.wipe += (Math.min(1.0,state.vel*1.4) - state.wipe)*0.20;
+  state.vel *= 0.90;
+  state.wipe *= 0.985;
+  // burst decays
+  state.burst *= 0.985;
+
+  gl.uniform2f(U.iRes,W,H);
+  gl.uniform1f(U.iTime,T);
+  gl.uniform2f(U.iMouse,state.mx,state.my);
+  gl.uniform2f(U.iMVel,0,0);
+  gl.uniform1f(U.iWipe,state.wipe);
+  gl.uniform1f(U.iBurst,state.burst);
+  gl.uniform1f(U.iFog,state.fog);
+  gl.uniform1f(U.iHue,state.hue);
+  gl.uniform2f(U.iTilt,state.tiltX,state.tiltY);
+
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// idle auto-pour rhythm so it's alive even untouched
+setInterval(()=>{ if(state.burst<0.05 && Math.random()<0.35) state.burst=Math.min(1,state.burst+0.25); }, 4200);
+})();
+</script>
+</body>
+</html>

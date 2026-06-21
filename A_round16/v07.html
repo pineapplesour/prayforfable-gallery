@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>切り絵 — Papercut Shadow City</title>
+<style>
+  :root{ color-scheme: dark; }
+  html,body{ margin:0; padding:0; height:100%; overflow:hidden; background:#0a0a12; }
+  body{ font-family: ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", sans-serif; -webkit-tap-highlight-color:transparent; cursor:none; }
+  #stage{ position:fixed; inset:0; display:block; touch-action:none; }
+  /* custom cursor: the sun/moon handle hint */
+  #cur{ position:fixed; left:0; top:0; width:14px; height:14px; margin:-7px 0 0 -7px; border-radius:50%;
+        border:1.5px solid rgba(255,255,255,.55); pointer-events:none; z-index:40; mix-blend-mode:difference;
+        transition:transform .12s ease, opacity .3s; }
+  #cur::after{ content:""; position:absolute; inset:-7px; border-radius:50%; border:1px solid rgba(255,255,255,.18); }
+  #ui{ position:fixed; left:18px; bottom:16px; z-index:30; pointer-events:none;
+       color:rgba(255,255,255,.82); text-shadow:0 1px 6px rgba(0,0,0,.6); }
+  #ui .ttl{ font-weight:700; letter-spacing:.32em; font-size:13px; opacity:.92; }
+  #ui .ttl small{ letter-spacing:.18em; font-weight:600; opacity:.6; }
+  #ui .sub{ margin-top:5px; font-size:10.5px; letter-spacing:.06em; opacity:.55; line-height:1.5; max-width:60ch; }
+  #clock{ position:fixed; right:18px; top:16px; z-index:30; pointer-events:none;
+          color:rgba(255,255,255,.7); font-size:11px; letter-spacing:.22em; text-shadow:0 1px 6px rgba(0,0,0,.6);
+          font-variant-numeric:tabular-nums; }
+  #hint{ position:fixed; left:50%; top:50%; transform:translate(-50%,-50%); z-index:25; pointer-events:none;
+         color:rgba(255,255,255,.0); font-size:12px; letter-spacing:.18em; transition:color 1.1s; text-align:center; }
+  .vignette{ position:fixed; inset:0; z-index:20; pointer-events:none;
+             box-shadow: inset 0 0 200px 40px rgba(0,0,0,.55), inset 0 -120px 160px -40px rgba(0,0,0,.5); }
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <div class="vignette"></div>
+  <div id="cur"></div>
+  <div id="ui">
+    <div class="ttl">切り絵 <small>· PAPERCUT SHADOW CITY</small></div>
+    <div class="sub">움직여 해를 끌어 시간을 바꾸고 · 클릭으로 종이를 접고 · 스크롤로 도시 속을 거닐다</div>
+  </div>
+  <div id="clock">— : —</div>
+  <div id="hint">해를 끌어 시간을 옮겨보세요</div>
+
+<script>
+(()=>{
+"use strict";
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', { alpha:false });
+const curEl = document.getElementById('cur');
+const clockEl = document.getElementById('clock');
+const hintEl = document.getElementById('hint');
+
+let W=0,H=0,DPR=1;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = Math.floor(W*DPR); cv.height = Math.floor(H*DPR);
+  cv.style.width=W+'px'; cv.style.height=H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  buildCity();
+}
+window.addEventListener('resize', resize);
+
+// ---------- deterministic RNG ----------
+function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+
+// ---------- sun position: t in [0,1) day cycle. 0 = midnight ----------
+// We let the pointer control "sunX" horizontally; sun height follows an arc.
+let sunU = 0.32;          // 0..1 horizontal param of the light along its arc (user-driven)
+let sunUTarget = 0.32;
+let autoDrift = true;
+let lastInteract = -9999;
+
+// time-of-day color stops keyed by sun elevation e in [-0.25..1]
+// Returns sky top/bottom + light color + ambient + starAlpha
+function palette(e){
+  // e: -0.25 (deep night) .. 0 horizon .. 1 zenith
+  // Build by interpolating named keys.
+  const keys = [
+    { e:-0.30, top:[6,8,20],   bot:[14,16,34],  light:[90,110,180],  amb:0.05, star:1.0,  sunCol:[150,170,235], glow:0.10 },
+    { e:-0.02, top:[24,18,46], bot:[120,70,82], light:[255,150,110], amb:0.14, star:0.55, sunCol:[255,150,90],  glow:0.55 }, // dawn/dusk horizon
+    { e: 0.10, top:[58,70,140],bot:[238,150,120],light:[255,196,150], amb:0.30, star:0.10, sunCol:[255,210,150], glow:0.45 },
+    { e: 0.38, top:[86,134,198],bot:[228,222,214],light:[255,244,226],amb:0.58, star:0.0,  sunCol:[255,248,235], glow:0.30 },
+    { e: 1.00, top:[104,166,224],bot:[238,238,232],light:[255,255,250],amb:0.72, star:0.0,  sunCol:[255,255,252], glow:0.22 }
+  ];
+  let a=keys[0], b=keys[keys.length-1];
+  for(let i=0;i<keys.length-1;i++){ if(e>=keys[i].e && e<=keys[i+1].e){ a=keys[i]; b=keys[i+1]; break; } }
+  if(e< keys[0].e){ a=b=keys[0]; }
+  if(e> keys[keys.length-1].e){ a=b=keys[keys.length-1]; }
+  const span=(b.e-a.e)||1; let k=(e-a.e)/span; k=Math.max(0,Math.min(1,k));
+  const ks=k*k*(3-2*k);
+  const lp=(p,q)=>[p[0]+(q[0]-p[0])*ks, p[1]+(q[1]-p[1])*ks, p[2]+(q[2]-p[2])*ks];
+  return {
+    top:lp(a.top,b.top), bot:lp(a.bot,b.bot), light:lp(a.light,b.light), sunCol:lp(a.sunCol,b.sunCol),
+    amb:a.amb+(b.amb-a.amb)*ks, star:a.star+(b.star-a.star)*ks, glow:a.glow+(b.glow-a.glow)*ks
+  };
+}
+const rgb=(c,al)=> al===undefined? `rgb(${c[0]|0},${c[1]|0},${c[2]|0})` : `rgba(${c[0]|0},${c[1]|0},${c[2]|0},${al})`;
+
+// ---------- paper layers ----------
+// Each layer = a row of buildings forming a silhouette path, with a base paper tone (gets darker toward front),
+// parallax factor, and window data for night glow.
+const LAYERS = [];
+const STARS = [];
+const BIRDS = [];
+const PARTS = [];   // drifting dust/firefly particles
+const RIPPLES = []; // click fold ripples
+
+function buildCity(){
+  LAYERS.length=0; STARS.length=0; BIRDS.length=0; PARTS.length=0;
+  const horizon = H*0.74;
+  // paper tones from far (pale) to near (dark) — warm grey-violet paper
+  const layerDefs = [
+    { tone:[150,150,178], par:0.012, h:0.30, dens:0.74, win:0,   tex:0.10, name:'far' },
+    { tone:[122,124,156], par:0.024, h:0.40, dens:0.66, win:0,   tex:0.12, name:'mid-far' },
+    { tone:[ 92, 96,128], par:0.045, h:0.55, dens:0.60, win:0.5, tex:0.16, name:'mid' },
+    { tone:[ 60, 64, 92], par:0.078, h:0.74, dens:0.55, win:0.9, tex:0.20, name:'mid-near' },
+    { tone:[ 32, 34, 52], par:0.125, h:0.98, dens:0.50, win:1.0, tex:0.26, name:'near' }
+  ];
+  layerDefs.forEach((d,li)=>{
+    const rnd = mulberry32(9173 + li*7919 + Math.floor(W));
+    const baseY = horizon + (li-2)*8;                 // slight vertical stagger
+    const maxH = H * d.h * 0.62;
+    const cols = [];
+    const winList = [];
+    let x = -W*0.15;
+    const unit = (28 + d.h*40) * (W/1440 < 0.6 ? 0.62 : 1);
+    while(x < W*1.15){
+      const wdt = unit*(0.7 + rnd()*1.5);
+      // building height with skyline variety
+      let hh = maxH * (0.18 + Math.pow(rnd(),1.6)*0.95);
+      if(rnd()<0.10) hh = maxH*(0.9+rnd()*0.5);        // occasional tower
+      const top = baseY - hh;
+      // roof style
+      const style = rnd();
+      cols.push({ x, w:wdt, top, h:hh, style, seed:rnd()*999 });
+      // windows for nearer layers
+      if(d.win>0 && hh>maxH*0.22){
+        const wr = mulberry32(li*31+Math.floor(x*7.3)+777);
+        const cw = Math.max(4, wdt*0.16), gap = cw*1.7;
+        const rows = Math.floor((hh-12)/(cw*2.0));
+        const colsN = Math.max(1, Math.floor((wdt-gap)/(gap)));
+        for(let r=0;r<rows;r++){
+          for(let c=0;c<colsN;c++){
+            if(wr()>d.win*0.85) continue;
+            const wx = x + gap*0.6 + c*gap;
+            const wy = top + 10 + r*cw*2.0;
+            if(wx > x+wdt-cw) continue;
+            winList.push({ x:wx, y:wy, w:cw*0.78, h:cw*1.1, on:wr()<0.5, phase:wr()*Math.PI*2, flick:0.4+wr()*0.6 });
+          }
+        }
+      }
+      x += wdt - wdt*(0.04+rnd()*0.05); // slight overlap so silhouettes read as one paper
+    }
+    LAYERS.push({ ...d, baseY, maxH, cols, win:winList, horizon });
+  });
+  // stars
+  const sr = mulberry32(424242 + Math.floor(W));
+  for(let i=0;i<160;i++){ STARS.push({ x:sr()*W, y:sr()*horizon*0.95, r:sr()*1.2+0.2, tw:sr()*Math.PI*2, sp:0.6+sr()*1.4 }); }
+  // birds (rare, far)
+  const br = mulberry32(515151);
+  for(let i=0;i<5;i++){ BIRDS.push({ x:br()*W, y:horizon*0.18+br()*horizon*0.4, sp:(0.2+br()*0.5)*(br()<0.5?-1:1), ph:br()*6.28, sc:0.6+br()*0.7 }); }
+  // particles (dust/firefly) — concentrated near mid
+  const pr = mulberry32(606060 + Math.floor(W));
+  const N = Math.min(110, Math.floor(W/14));
+  for(let i=0;i<N;i++){
+    PARTS.push({ x:pr()*W, y:pr()*H, r:pr()*1.6+0.4, vx:(pr()-0.5)*0.15, vy:-(0.04+pr()*0.18), ph:pr()*6.28, dep:pr() });
+  }
+}
+
+// ---------- input ----------
+let pointer={ x:0.5, y:0.4, has:false, px:0.5, py:0.4 };
+let scrollOff = 0, scrollTarget = 0;
+function setPointer(cx,cy){
+  pointer.x = cx/W; pointer.y = cy/H; pointer.has=true;
+  sunUTarget = Math.max(0, Math.min(1, cx/W));
+  autoDrift = false; lastInteract = performance.now();
+  curEl.style.left=cx+'px'; curEl.style.top=cy+'px'; curEl.style.opacity='1';
+}
+cv.addEventListener('pointermove', e=> setPointer(e.clientX, e.clientY));
+cv.addEventListener('pointerdown', e=>{ setPointer(e.clientX,e.clientY); addRipple(e.clientX,e.clientY); });
+cv.addEventListener('pointerleave', ()=>{ pointer.has=false; curEl.style.opacity='0'; });
+window.addEventListener('wheel', e=>{ scrollTarget += e.deltaY*0.0016; scrollTarget=Math.max(-1.2,Math.min(1.2,scrollTarget)); autoDrift=false; lastInteract=performance.now(); }, {passive:true});
+// touch scroll via vertical drag handled by pointermove diff
+let lastTouchY=null;
+cv.addEventListener('touchmove', e=>{ if(e.touches.length){ const y=e.touches[0].clientY; if(lastTouchY!=null){ scrollTarget+= (lastTouchY-y)*0.003; scrollTarget=Math.max(-1.2,Math.min(1.2,scrollTarget)); } lastTouchY=y; } }, {passive:true});
+cv.addEventListener('touchend', ()=> lastTouchY=null);
+// device tilt parallax
+window.addEventListener('deviceorientation', e=>{ if(e.gamma!=null){ pointer.x = Math.max(0,Math.min(1, 0.5 + e.gamma/45)); pointer.y = Math.max(0,Math.min(1, 0.5 + (e.beta-45)/60)); } }, true);
+
+function addRipple(cx,cy){ RIPPLES.push({ x:cx, y:cy, t:0 }); if(RIPPLES.length>14) RIPPLES.shift(); }
+
+// expose for tests / introspection
+window.__papercut = {
+  state(){ return { sunU, e:lastE, hour:lastHour, scroll:scrollOff, layers:LAYERS.length, parts:PARTS.length }; },
+  setSun(u){ sunUTarget=Math.max(0,Math.min(1,u)); autoDrift=false; lastInteract=performance.now(); },
+  ripple(x,y){ addRipple(x*W, y*H); },
+  scrollBy(d){ scrollTarget=Math.max(-1.2,Math.min(1.2,scrollTarget+d)); autoDrift=false; lastInteract=performance.now(); }
+};
+
+// ---------- light geometry ----------
+let lastE=0.3, lastHour=12;
+function sunPos(){
+  // map sunU 0..1 across screen; elevation = sine arc, peaking mid.
+  const sx = sunU * W;
+  const arc = Math.sin(sunU*Math.PI);            // 0 at edges, 1 at center
+  const e = arc*1.0 - (1-arc)*0.30 - 0.30 + arc*0.30; // gives ~ -0.30 (edge) .. 1.0 (center)
+  const elev = arc*1.0 - 0.30*(1-arc);           // simpler: -0.30..1.0
+  const sy = (H*0.80) - elev*(H*0.80);           // high when elev high
+  return { sx, sy, elev };
+}
+
+// ---------- drawing helpers ----------
+function deckle(seed, x0, x1, y, amp){
+  // torn-paper edge: returns small jitter; used along top edges subtly
+  return 0; // (kept subtle via per-building roof variety instead, for perf)
+}
+
+let prevT = performance.now();
+let acc=0;
+
+function draw(now){
+  const dt = Math.min(0.05, (now-prevT)/1000); prevT=now;
+  // ease sun + scroll
+  if(autoDrift){
+    sunUTarget += dt*0.012; if(sunUTarget>1) sunUTarget=0;
+  } else if(now - lastInteract > 6000){ autoDrift=true; }
+  sunU += (sunUTarget - sunU) * Math.min(1, dt*4.5);
+  scrollOff += (scrollTarget - scrollOff) * Math.min(1, dt*3.2);
+  pointer.px += (pointer.x - pointer.px) * Math.min(1, dt*5);
+  pointer.py += (pointer.y - pointer.py) * Math.min(1, dt*5);
+
+  const {sx, sy, elev} = sunPos();
+  lastE = elev;
+  const pal = palette(elev);
+  // hour for clock: sunU 0 -> 0:00 ... 0.5 noon ... 1 -> 24:00 (we treat noon center)
+  let hour = ((sunU*24) + 6) % 24;  // shift so center≈ noon
+  lastHour = hour;
+
+  // ---- SKY ----
+  const sky = ctx.createLinearGradient(0,0,0,H);
+  sky.addColorStop(0, rgb(pal.top));
+  sky.addColorStop(0.62, rgb(pal.bot));
+  sky.addColorStop(1, rgb([pal.bot[0]*0.85, pal.bot[1]*0.85, pal.bot[2]*0.9]));
+  ctx.fillStyle = sky; ctx.fillRect(0,0,W,H);
+
+  // soft sky color band around horizon (warm scatter near sun)
+  if(pal.glow>0.05){
+    const gx = sx, gy = sy;
+    const halo = ctx.createRadialGradient(gx,gy,0, gx,gy, Math.max(W,H)*0.7);
+    halo.addColorStop(0, rgb(pal.sunCol, 0.42*pal.glow*2));
+    halo.addColorStop(0.18, rgb(pal.light, 0.18*pal.glow*2));
+    halo.addColorStop(0.5, rgb(pal.light, 0.04));
+    halo.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle=halo; ctx.fillRect(0,0,W,H);
+  }
+
+  // ---- STARS ----
+  if(pal.star>0.01){
+    for(const s of STARS){
+      const tw = 0.5+0.5*Math.sin(now*0.001*s.sp + s.tw);
+      ctx.globalAlpha = pal.star*tw*0.9;
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, 6.283); ctx.fill();
+    }
+    ctx.globalAlpha=1;
+  }
+
+  // ---- SUN / MOON ----
+  const isMoon = elev<0.02;
+  const bodyR = (isMoon? 26: 34) * (W/1440<0.6?0.7:1);
+  // glow disc
+  const g2 = ctx.createRadialGradient(sx,sy,0, sx,sy, bodyR*4.5);
+  g2.addColorStop(0, rgb(pal.sunCol, isMoon?0.5:0.9));
+  g2.addColorStop(0.5, rgb(pal.sunCol, 0.12));
+  g2.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle=g2; ctx.beginPath(); ctx.arc(sx,sy,bodyR*4.5,0,6.283); ctx.fill();
+  // body
+  ctx.fillStyle = rgb(pal.sunCol, isMoon?0.92:1);
+  ctx.beginPath(); ctx.arc(sx,sy,bodyR,0,6.283); ctx.fill();
+  if(isMoon){ // moon crescent shadow
+    ctx.fillStyle = rgb(pal.top, 0.9);
+    ctx.beginPath(); ctx.arc(sx+bodyR*0.42, sy-bodyR*0.2, bodyR*0.92, 0,6.283); ctx.fill();
+  }
+
+  // ---- BIRDS ----
+  for(const b of BIRDS){
+    b.x += b.sp*dt*60; if(b.x> W+40) b.x=-40; if(b.x<-40) b.x=W+40;
+    b.ph += dt*6;
+    const flap = Math.sin(b.ph)*4*b.sc;
+    ctx.strokeStyle = rgb([pal.top[0]*0.4,pal.top[1]*0.4,pal.top[2]*0.45], 0.5);
+    ctx.lineWidth = 1.4*b.sc; ctx.lineCap='round';
+    const yy = b.y + scrollOff*8;
+    ctx.beginPath();
+    ctx.moveTo(b.x-6*b.sc, yy+flap); ctx.lineTo(b.x, yy-2*b.sc); ctx.lineTo(b.x+6*b.sc, yy+flap);
+    ctx.stroke();
+  }
+
+  // ---- CITY LAYERS (far -> near) ----
+  const px = (pointer.px-0.5);     // -0.5..0.5
+  const sun01 = sx/W;
+  for(let li=0; li<LAYERS.length; li++){
+    const L = LAYERS[li];
+    const par = L.par;
+    // horizontal parallax from pointer + scroll (scroll pushes near layers more)
+    const ox = -px * par * W * 2.2 - scrollOff * par * W * 3.0;
+    const oy = scrollOff * (li*6+4) * 0.6;  // subtle vertical drift "walking in"
+    // depth shading: layers darken toward front; lit by sun side
+    // base paper color modulated by ambient light & sun direction
+    const amb = pal.amb;
+    const litMix = 0.35 + 0.65*amb;
+    // shadow length & direction depend on sun horizontal pos vs layer
+    const shadowDir = (sun01 - 0.5); // + sun on right -> shadows cast left
+    const shadowLen = (elev>0? (1.1-elev) : 1.2) * (40 + li*14);
+    const layerLight = elev>0.02 ? 1 : 0.6;
+
+    // ---- cast shadow of THIS layer onto the layer behind (drawn before fills as a soft dark band)
+    // Render building bodies
+    ctx.save();
+    ctx.translate(ox, oy);
+
+    // 1) long ground shadows cast by THIS layer onto the layer behind.
+    //    Low sun -> long shadows lying along the ground, strongly skewed away from the sun.
+    //    High noon -> shadows shrink toward zero. They hug the baseline, never rise as slabs.
+    const sunStrength = Math.max(0, Math.min(1, elev*1.3));        // 0 at/below horizon .. 1 high
+    const lowSun = Math.max(0, 1 - elev*1.8);                       // 1 near horizon, 0 high noon
+    if(sunStrength>0.02 && lowSun>0.02){
+      ctx.save();
+      // shadow runs OPPOSITE the sun, length grows as sun lowers
+      const dirSign = shadowDir>=0 ? -1 : 1;                        // sun right -> shadow left
+      const len = (24 + li*10) * (0.25 + lowSun*1.9);              // long when low
+      const drop = 3 + li*2;                                        // shadow sits just below base
+      ctx.globalAlpha = (0.05 + 0.16*lowSun) * (0.5+0.5*sunStrength);
+      ctx.fillStyle = 'rgba(14,12,26,1)';
+      for(const c of L.cols){
+        const bx = c.x, ex = c.x + c.w;
+        const tip = dirSign * len;
+        ctx.beginPath();
+        ctx.moveTo(bx, L.baseY);
+        ctx.lineTo(ex, L.baseY);
+        ctx.lineTo(ex + tip, L.baseY + drop);
+        ctx.lineTo(bx + tip, L.baseY + drop);
+        ctx.closePath(); ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    // 2) the paper silhouette body (with gradient: top slightly lit, bottom darker — paper thickness)
+    const tone = L.tone;
+    const lit = [ tone[0]*litMix + pal.light[0]*amb*0.18, tone[1]*litMix + pal.light[1]*amb*0.18, tone[2]*litMix + pal.light[2]*amb*0.18 ];
+    const dark = [ lit[0]*0.62, lit[1]*0.62, lit[2]*0.72 ];
+    const grad = ctx.createLinearGradient(0, L.baseY - L.maxH, 0, L.baseY);
+    grad.addColorStop(0, rgb(lit));
+    grad.addColorStop(1, rgb(dark));
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(L.cols[0].x, L.baseY+H);
+    for(const c of L.cols){
+      // roof silhouette variety
+      const rx=c.x, rw=c.w, rt=c.top;
+      ctx.lineTo(rx, L.baseY);
+      if(c.style<0.55){ // flat with parapet
+        ctx.lineTo(rx, rt); ctx.lineTo(rx+rw, rt);
+      } else if(c.style<0.78){ // stepped
+        ctx.lineTo(rx, rt+rw*0.18); ctx.lineTo(rx+rw*0.22, rt+rw*0.18);
+        ctx.lineTo(rx+rw*0.22, rt); ctx.lineTo(rx+rw*0.78, rt);
+        ctx.lineTo(rx+rw*0.78, rt+rw*0.18); ctx.lineTo(rx+rw, rt+rw*0.18);
+      } else if(c.style<0.92){ // peaked roof
+        ctx.lineTo(rx, rt+rw*0.3); ctx.lineTo(rx+rw*0.5, rt); ctx.lineTo(rx+rw, rt+rw*0.3);
+      } else { // tower w/ antenna nub
+        ctx.lineTo(rx, rt); ctx.lineTo(rx+rw*0.42, rt);
+        ctx.lineTo(rx+rw*0.42, rt-rw*0.5); ctx.lineTo(rx+rw*0.5, rt-rw*0.5);
+        ctx.lineTo(rx+rw*0.5, rt); ctx.lineTo(rx+rw, rt);
+      }
+      ctx.lineTo(rx+rw, L.baseY);
+    }
+    ctx.lineTo(L.cols[L.cols.length-1].x+L.cols[L.cols.length-1].w, L.baseY+H);
+    ctx.closePath();
+    ctx.fill();
+
+    // 3) sun-side rim light along vertical building edges (paper edge catches light)
+    if(elev>0.03){
+      ctx.save();
+      ctx.lineWidth = 1.4;
+      const rimSide = shadowDir<0 ? 'L':'R'; // light from left -> left edges lit
+      ctx.strokeStyle = rgb(pal.light, 0.10 + 0.18*Math.min(1,elev*1.4));
+      ctx.beginPath();
+      for(const c of L.cols){
+        const ex = rimSide==='L'? c.x : c.x+c.w;
+        ctx.moveTo(ex, c.top); ctx.lineTo(ex, L.baseY);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // 4) paper grain / fiber texture (very subtle), denser on near layers
+    if(L.tex>0.12){
+      ctx.save();
+      ctx.globalAlpha = L.tex*0.10;
+      ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+      ctx.lineWidth=0.5;
+      const tr = mulberry32(li*97+13);
+      ctx.beginPath();
+      for(let i=0;i<24;i++){ const yy=L.baseY-L.maxH*tr(); ctx.moveTo(0,yy); ctx.lineTo(W,yy); }
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // 5) WINDOWS glow at night (and warm reflection at dusk)
+    const night = elev<0.12;
+    if(L.win && L.win.length && (night || elev<0.2)){
+      const nightK = Math.max(0, Math.min(1, (0.12-elev)/0.4 + 0.2));
+      for(const w of L.win){
+        let lifeOn = w.on;
+        // gentle stochastic flicker / turn-on over the evening
+        const fl = 0.5+0.5*Math.sin(now*0.001*w.flick + w.phase);
+        if(!lifeOn && fl>0.85 && elev<0.0) lifeOn=true;
+        if(!lifeOn) continue;
+        const a = nightK * (0.55 + 0.45*fl) * (0.6+0.4*L.win.length>0?1:1);
+        // window light: warm
+        ctx.fillStyle = `rgba(255,210,140,${a*0.95})`;
+        ctx.fillRect(w.x, w.y, w.w, w.h);
+        // tiny bloom
+        ctx.fillStyle = `rgba(255,200,130,${a*0.18})`;
+        ctx.fillRect(w.x-w.w*0.6, w.y-w.h*0.4, w.w*2.2, w.h*1.8);
+      }
+    }
+
+    ctx.restore();
+  }
+
+  // ---- GROUND reflection sheen (water-ish foreground) ----
+  const grndY = LAYERS[LAYERS.length-1].baseY + 2;
+  const refl = ctx.createLinearGradient(0,grndY,0,H);
+  refl.addColorStop(0, rgb([pal.bot[0]*0.3,pal.bot[1]*0.3,pal.bot[2]*0.4], 0.0));
+  refl.addColorStop(1, rgb([pal.sunCol[0],pal.sunCol[1],pal.sunCol[2]], 0.05*pal.glow*3));
+  ctx.fillStyle=refl; ctx.fillRect(0,grndY,W,H-grndY);
+
+  // ---- PARTICLES (dust by day, fireflies by night) ----
+  const night = elev<0.10;
+  for(const p of PARTS){
+    p.x += (p.vx + Math.sin(now*0.0006+p.ph)*0.12 + px*0.4*p.dep)*dt*60;
+    p.y += p.vy*dt*60*(0.5+p.dep);
+    p.ph += dt;
+    if(p.y< -10){ p.y=H+10; p.x=Math.random()*W; }
+    if(p.x< -10) p.x=W+10; if(p.x>W+10) p.x=-10;
+    const tw = 0.5+0.5*Math.sin(now*0.003*(0.5+p.dep)+p.ph*3);
+    if(night){
+      ctx.fillStyle = `rgba(255,224,150,${0.18+0.55*tw})`;
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.r*(1+tw*0.6),0,6.283); ctx.fill();
+      ctx.fillStyle = `rgba(255,210,120,${0.06*tw})`;
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.r*4,0,6.283); ctx.fill();
+    } else {
+      ctx.fillStyle = `rgba(255,255,255,${0.05+0.10*tw})`;
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.r*0.8,0,6.283); ctx.fill();
+    }
+  }
+
+  // ---- CLICK FOLD RIPPLES (concentric paper-fold rings) ----
+  for(let i=RIPPLES.length-1;i>=0;i--){
+    const r=RIPPLES[i]; r.t += dt;
+    const life = r.t/1.4;
+    if(life>=1){ RIPPLES.splice(i,1); continue; }
+    const rad = life*Math.min(W,H)*0.5;
+    const a = (1-life)*0.5;
+    ctx.strokeStyle = rgb(pal.light, a);
+    ctx.lineWidth = 2*(1-life)+0.5;
+    ctx.beginPath(); ctx.arc(r.x, r.y, rad, 0, 6.283); ctx.stroke();
+    ctx.strokeStyle = rgb(pal.sunCol, a*0.5);
+    ctx.beginPath(); ctx.arc(r.x, r.y, rad*0.7, 0, 6.283); ctx.stroke();
+  }
+
+  // ---- CLOCK ----
+  const hh = Math.floor(hour).toString().padStart(2,'0');
+  const mm = Math.floor((hour%1)*60).toString().padStart(2,'0');
+  const phase = elev>0.45?'正午': elev>0.12?(sunU<0.5?'朝':'夕'): elev>-0.02?(sunU<0.5?'黎明':'黄昏'):'夜';
+  clockEl.textContent = `${hh}:${mm}  ·  ${phase}`;
+
+  // hint visibility
+  if(now < 4200){ hintEl.style.color='rgba(255,255,255,.5)'; }
+  else { hintEl.style.color='rgba(255,255,255,0)'; }
+  if(lastInteract>0 && now-lastInteract<6000){ hintEl.style.color='rgba(255,255,255,0)'; }
+
+  requestAnimationFrame(draw);
+}
+
+// custom cursor follows pointer even when idle on desktop
+window.addEventListener('pointermove', e=>{ curEl.style.left=e.clientX+'px'; curEl.style.top=e.clientY+'px'; });
+
+resize();
+// place initial cursor center
+curEl.style.left=(window.innerWidth*0.32)+'px'; curEl.style.top=(window.innerHeight*0.3)+'px';
+requestAnimationFrame(draw);
+})();
+</script>
+</body>
+</html>

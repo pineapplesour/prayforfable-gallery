@@ -1,0 +1,1462 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>FERROMON: 폐공장의 강철 정령</title>
+<style>
+  :root{
+    --bg:#0d1014; --panel:#161c24; --panel2:#1e2630; --ink:#e8f0f5; --dim:#8aa0b0;
+    --gold:#ffcc44; --hp:#5ee08a; --hp-mid:#ffd24a; --hp-low:#ff5b6e;
+    --steel:#9fb2c4; --volt:#ffd83d; --rust:#d97b3a; --steam:#7fd6e0; --synth:#c07bff; --scrap:#8a9a6a;
+    --line:#33404d;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
+    font-family:"Courier New",ui-monospace,monospace; overflow:hidden; user-select:none;}
+  #app{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;}
+  canvas{image-rendering:pixelated;image-rendering:crisp-edges;}
+  #game{background:#000;border:3px solid var(--line);box-shadow:0 0 0 3px #000,0 8px 30px rgba(0,0,0,.6);}
+  /* HUD / overlays */
+  .overlay{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+    flex-direction:column;background:rgba(6,9,12,.92);text-align:center;padding:16px;z-index:30;}
+  .overlay.show{display:flex;}
+  h1{font-size:clamp(22px,6vw,40px);margin:.2em 0;color:var(--gold);letter-spacing:1px;
+    text-shadow:2px 2px 0 #000,0 0 14px rgba(255,204,68,.35);}
+  .sub{color:var(--dim);font-size:13px;margin:.2em 0 1em;line-height:1.5;}
+  .credit{color:#6f8190;font-size:10px;line-height:1.5;margin-top:14px;max-width:340px;}
+  button.menu{font:inherit;background:var(--panel2);color:var(--ink);border:2px solid var(--line);
+    padding:10px 22px;margin:5px;cursor:pointer;border-radius:4px;font-size:15px;min-width:180px;}
+  button.menu:hover,button.menu:focus{background:#27313d;border-color:var(--gold);color:var(--gold);outline:none;}
+  .hint{color:var(--dim);font-size:11px;margin-top:10px;}
+  /* touch controls */
+  #touch{position:absolute;inset:0;pointer-events:none;z-index:20;display:none;}
+  .pad{position:absolute;left:14px;bottom:18px;width:150px;height:150px;pointer-events:auto;}
+  .pad b{position:absolute;width:50px;height:50px;background:rgba(40,52,66,.85);border:2px solid #4a5a6a;
+    color:#cdd9e2;font-size:22px;display:flex;align-items:center;justify-content:center;border-radius:8px;}
+  .pad b:active{background:#3a4a5a;}
+  .pad .u{left:50px;top:0;} .pad .d{left:50px;top:100px;} .pad .l{left:0;top:50px;} .pad .r{left:100px;top:50px;}
+  #btns{position:absolute;right:14px;bottom:18px;pointer-events:auto;display:flex;gap:12px;align-items:flex-end;}
+  .ab{width:62px;height:62px;border-radius:50%;border:2px solid #4a5a6a;background:rgba(40,52,66,.9);
+    color:var(--gold);font-size:18px;display:flex;align-items:center;justify-content:center;font-weight:bold;}
+  .ab:active{background:#3a4a5a;}
+  .ab.b{width:50px;height:50px;color:#cdd9e2;font-size:14px;}
+  .toast{position:absolute;top:8px;left:50%;transform:translateX(-50%);background:rgba(10,14,18,.9);
+    border:1px solid var(--line);padding:5px 12px;font-size:12px;border-radius:4px;z-index:40;display:none;color:var(--gold);}
+  @media (pointer:coarse){.hint.kb{display:none;}}
+</style>
+</head>
+<body>
+<div id="app">
+  <canvas id="game" width="320" height="288"></canvas>
+  <div id="touch">
+    <div class="pad">
+      <b class="u" data-k="ArrowUp">▲</b><b class="d" data-k="ArrowDown">▼</b>
+      <b class="l" data-k="ArrowLeft">◀</b><b class="r" data-k="ArrowRight">▶</b>
+    </div>
+    <div id="btns">
+      <div class="ab b" data-k="x">B</div>
+      <div class="ab" data-k="z">A</div>
+    </div>
+  </div>
+  <div class="toast" id="toast"></div>
+
+  <!-- TITLE -->
+  <div class="overlay show" id="ovTitle">
+    <h1>FERROMON</h1>
+    <div class="sub">폐공장의 강철 정령<br>버려진 제철소에 깃든 기계 생명체를 잡고, 키우고, 겨루어라.</div>
+    <button class="menu" id="btnStart">새 탐험 시작</button>
+    <button class="menu" id="btnHow">조작법</button>
+    <div class="credit">
+      포켓몬에서 영감 — © Nintendo / Game Freak / The Pokémon Company.<br>
+      본 게임은 그 어떤 자산도 사용하지 않은 <b>완전 오리지널 구현</b>입니다.
+    </div>
+    <div class="hint kb">키보드: 방향키 이동 · Z=확인/A · X=취소/B · ENTER 시작</div>
+  </div>
+
+  <!-- HOWTO -->
+  <div class="overlay" id="ovHow">
+    <h1 style="font-size:24px">조작법</h1>
+    <div class="sub" style="text-align:left;max-width:330px">
+      <b>이동</b> : 방향키 / 왼쪽 D패드<br>
+      <b>조사·대화·확인</b> : Z 또는 A 버튼<br>
+      <b>취소·메뉴 닫기</b> : X 또는 B 버튼<br>
+      <b>메뉴 열기</b> : 멈춰서 Z<br><br>
+      회색 바닥 <b>수풀(스크랩 더미)</b>을 걸으면 야생 크리처가 나타난다.<br>
+      전투에서 <b>포획볼</b>을 던져 약해진 야생 크리처를 잡아라.<br>
+      파란 패널 <b>회복기</b>는 파티를 완전 회복, 상자 <b>상점</b>은 볼을 판다.<br>
+      빨간 작업복 <b>관리인</b>은 트레이너 전투를 건다.
+    </div>
+    <button class="menu" id="btnBack">뒤로</button>
+  </div>
+
+  <!-- DEX -->
+  <div class="overlay" id="ovDex">
+    <h1 style="font-size:22px">도감 (FERRODEX)</h1>
+    <div class="sub" id="dexBody" style="max-width:340px;font-size:11px;line-height:1.6;text-align:left;max-height:55vh;overflow:auto;"></div>
+    <button class="menu" id="btnDexClose">닫기</button>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* =========================================================================
+   FERROMON — 단일 HTML 픽셀 몬스터 수집 JRPG
+   완전 오리지널: 크리처/타입/지역/진화/이름 전부 자체 제작.
+   장르·메커니즘만 포켓몬에서 영감.
+   ========================================================================= */
+
+const TILE = 16;          // logical tile px
+const VW = 20, VH = 18;   // viewport tiles (320x288)
+const cv = document.getElementById('game');
+const ctx = cv.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+
+/* ---- responsive scale: fill, keep aspect, integer-ish ---- */
+function fit(){
+  const pad = 8;
+  const availW = window.innerWidth - pad, availH = window.innerHeight - pad;
+  const base = 320/288;
+  let w = availW, h = w/base;
+  if(h > availH){ h = availH; w = h*base; }
+  cv.style.width = Math.floor(w)+'px';
+  cv.style.height = Math.floor(h)+'px';
+}
+window.addEventListener('resize', fit); fit();
+
+/* ===================== TYPE SYSTEM (original) ===================== */
+// 6 original elemental types of a derelict steelworks.
+const TYPES = {
+  STEEL:{n:'강철', c:'#9fb2c4'},   // 단단한 금속
+  VOLT :{n:'전류', c:'#ffd83d'},   // 전기/방전
+  RUST :{n:'녹',   c:'#d97b3a'},   // 부식/산
+  STEAM:{n:'증기', c:'#7fd6e0'},   // 열/수증기
+  SYNTH:{n:'합성', c:'#c07bff'},   // 인공물질/화학
+  SCRAP:{n:'잔류', c:'#9aaa6a'},   // 고철/잔해
+};
+// effectiveness[atk][def] = multiplier
+const EFF = {
+  STEEL:{VOLT:.5, RUST:.5, STEAM:2,  SYNTH:1,  SCRAP:2,  STEEL:1},
+  VOLT :{STEEL:2,  STEAM:2,  RUST:1,  SYNTH:.5, SCRAP:.5, VOLT:1},
+  RUST :{STEEL:2,  VOLT:1,   STEAM:.5,SYNTH:2,  SCRAP:1,  RUST:1},
+  STEAM:{RUST:2,   VOLT:.5,  STEEL:.5,SYNTH:1,  SCRAP:2,  STEAM:1},
+  SYNTH:{SCRAP:2,  STEEL:1,  VOLT:2,  STEAM:1,  RUST:.5,  SYNTH:1},
+  SCRAP:{SYNTH:.5, STEAM:.5, RUST:1,  VOLT:2,   STEEL:1,  SCRAP:1},
+};
+function eff(atk,def){ return (EFF[atk] && EFF[atk][def]!=null)?EFF[atk][def]:1; }
+
+/* ===================== MOVES ===================== */
+const MOVES = {
+  tackle :{n:'몸통박치기', t:'SCRAP', p:35},
+  bolt   :{n:'스파크',     t:'VOLT',  p:38},
+  shock  :{n:'과전압',     t:'VOLT',  p:55},
+  ironfst:{n:'강철펀치',   t:'STEEL', p:42},
+  guard  :{n:'장갑전개',   t:'STEEL', p:0, buff:'def'},
+  corrode:{n:'부식분사',   t:'RUST',  p:40},
+  acid   :{n:'산성침식',   t:'RUST',  p:58},
+  vent   :{n:'증기분출',   t:'STEAM', p:44},
+  scald  :{n:'고온증기',   t:'STEAM', p:60},
+  inject :{n:'화학주입',   t:'SYNTH', p:46},
+  toxin  :{n:'합성독',     t:'SYNTH', p:62},
+  scrapth:{n:'파편난사',   t:'SCRAP', p:48},
+  drain  :{n:'에너지흡수', t:'VOLT',  p:34, drain:true},
+  overld :{n:'과부하',     t:'VOLT',  p:80, recoil:true},
+};
+
+/* ===================== SPECIES (original creatures) ===================== *
+   id, name, type, base stats(hp,atk,def,spd), learnset[{lv,move}], evolves
+   sprite: 12x12 pixel grid using a palette key
+ *--------------------------------------------------------------------------*/
+// palette letters -> color
+const PAL = {
+  '.':null,
+  'k':'#11161c', // outline / dark
+  's':'#9fb2c4', // steel
+  'S':'#c9d6e2', // steel light
+  'd':'#5a6c7a', // steel dark
+  'y':'#ffd83d', // volt
+  'Y':'#fff19a', // volt light
+  'o':'#d97b3a', // rust
+  'O':'#f0a45e', // rust light
+  'c':'#7fd6e0', // steam
+  'C':'#c5f0f5', // steam light
+  'p':'#c07bff', // synth
+  'P':'#e3c4ff', // synth light
+  'g':'#9aaa6a', // scrap
+  'G':'#c4d199', // scrap light
+  'r':'#ff5b6e', // red eye / detail
+  'w':'#1a2128', // body shadow
+  'b':'#3a4a5a', // bolt blue
+  'e':'#ffffff', // white glint
+};
+// each sprite 12 rows x 12 cols
+const SPRITES = {
+  voltik:[ // 전류 기본 — 작은 전구형
+    "....kkkk....",
+    "...kyyyyk...",
+    "..kyYYYYyk..",
+    "..kyYeeYyk..",
+    "..kyYkkYyk..",
+    "..kyYYYYyk..",
+    "...kysykk...",
+    "...ksSSsk...",
+    "...kdSSdk...",
+    "..k.kssk.k..",
+    "..ky.kk.yk..",
+    "...k....k...",
+  ],
+  voltcore:[ // voltik 진화 — 전류 코어
+    "...kyyyyk...",
+    "..kyYYYYyk..",
+    ".kyYbbbbYyk.",
+    ".kyYbeebYy k",
+    "kyYbeYYebYyk",
+    "kyYbeYYebYyk",
+    ".kyYbeebYyk.",
+    ".kyYbbbbYyk.",
+    "..kssyyssk..",
+    ".kdSSyySSdk.",
+    "k.kssyyssk.k",
+    "..ky.kk.yk..",
+  ],
+  coglet:[ // 강철 기본 — 톱니 새끼
+    "....kkkk....",
+    "...kssssk...",
+    "..ksSSSSsk..",
+    ".ksSkkkkSsk.",
+    ".ksSkrrkSsk.",
+    ".ksSSrrSSsk.",
+    "..ksSSSSsk..",
+    ".kdkssssddk.",
+    "kdSdssssdSdk",
+    "kskkddddkksk",
+    ".k.k.dd.k.k.",
+    "...kk..kk...",
+  ],
+  cogtitan:[ // coglet 진화 — 거대 기어
+    "..kkkkkkkk..",
+    ".kssSSSSssk.",
+    "ksSdsssddSsk",
+    "ksSkrkkrkSsk",
+    "ksSSrrrrSSsk",
+    "ksSSSSSSSSsk",
+    "kdSSdddSSdk.",
+    ".kdSdwwdSdk.",
+    "kdkssssddkdk",
+    "kSdssssddSk.",
+    ".kkddddkkk..",
+    "..kk..kk....",
+  ],
+  rustmite:[ // 녹 기본 — 부식 진드기
+    "............",
+    "...koooo k..",
+    "..koOOOOok..",
+    ".koOkrrkOok.",
+    ".koOOrrOOok.",
+    ".koOOOOOOok.",
+    ".koOOwwOOok.",
+    "k.koOOOOok.k",
+    "kok.koo k.kok",
+    ".k.k.oo.k.k.",
+    "...kk..kk...",
+    "............",
+  ],
+  rustfiend:[ // rustmite 진화 — 부식 괴물
+    "..kk....kk..",
+    ".kook..kook.",
+    "kooOok kooOok",
+    "kooOoooooOok",
+    "koOOrrrrOOok",
+    "koOOrkkr OOok",
+    "koOOOwwOOOok",
+    "kooOOOOOO ok",
+    ".kooOwwOook.",
+    "k.kooOOook.k",
+    ".k.kk..kk.k.",
+    "....k..k....",
+  ],
+  steambug:[ // 증기 기본
+    "....kkkk....",
+    "...kcccck...",
+    "..kcCCCCck..",
+    "..kcCrrCck..",
+    "..kcCCCCck..",
+    "...kcccck...",
+    "..k.kcck.k..",
+    ".kc.kCCk.ck.",
+    "kcCk.cc.kCck",
+    ".k.kkcc-kk.k",
+    "....kcck....",
+    "...kk..kk...",
+  ],
+  steamwraith:[ // steambug 진화
+    "...kk..kk...",
+    "..kcck kcck.",
+    ".kcCCk kCCck",
+    "kcCCCkkCCCck",
+    "kcCrCCCCrCck",
+    "kcCCCCCCCCck",
+    "kcCCCwwCCCck",
+    ".kcCCCCCCck.",
+    "k.kcCCCCck.k",
+    ".k.kcccck.k.",
+    "...kcccck...",
+    "..kk.cc.kk..",
+  ],
+  synthpod:[ // 합성 기본
+    ".....kk.....",
+    "....kppk....",
+    "...kpPPpk...",
+    "..kpPPPPpk..",
+    ".kpPPrrPPpk.",
+    ".kpPrPPrPpk.",
+    ".kpPPPPPP pk",
+    ".kpPPwwPPpk.",
+    "..kpPPPPpk..",
+    "...kppppk...",
+    "..k.k..k.k..",
+    "...kk..kk...",
+  ],
+  synthbeast:[ // synthpod 진화
+    "..kk....kk..",
+    ".kppk..kppk.",
+    "kpPPk..kPPpk",
+    "kpPPpkkpPPpk",
+    "kpPrPPPPrPpk",
+    "kpPPPPPPPPpk",
+    "kpPPwwwwPPpk",
+    "kpPPPPPPPPpk",
+    ".kpPPPPPPpk.",
+    "k.kppppppk.k",
+    ".kk.kkkk.kk.",
+    "...kk..kk...",
+  ],
+  scrapling:[ // 잔류 기본
+    "....kkk.....",
+    "...kggg k...",
+    "..kgGGGgk...",
+    "..kgGrGgk...",
+    "..kgGGGgkk..",
+    ".kkgGGGggk..",
+    "kgkgGGGgkgk.",
+    "kgk.kggk.k..",
+    ".k.k.gg.k.k.",
+    "...kk..kk...",
+    "...k....k...",
+    "............",
+  ],
+  scraphulk:[ // scrapling 진화 — 보스급 고철 골렘
+    "..kkkkkkk...",
+    ".kgGGGGGgk..",
+    "kgGdgggdGgk.",
+    "kgGkrgrkGgkk",
+    "kgGGgggGGggk",
+    "kgGGGGGGGGgk",
+    "kgGGwwwwGGgk",
+    "kgkGGGGGGkgk",
+    "kgkkgggkk gk",
+    ".kgk.kk.kgk.",
+    ".k.kk..kk.k.",
+    "...k....k...",
+  ],
+  ferromaw:[ // 전설급 (도감 채움용 보스) — 강철 포식자
+    "..kk...kk...",
+    ".kSsk.kSsk..",
+    "kSSskkkSSsk.",
+    "kSskrkrkSsk.",
+    "kSSSkrkSSSkk",
+    "kSSSSSSSSSsk",
+    "kSrSrrrrSrSk",
+    "kSSdwwwwdSSk",
+    ".kSdsssdSk..",
+    "k.kkddddkk.k",
+    ".kSk.kk.kSk.",
+    "..kk....kk..",
+  ],
+};
+
+const SPECIES = {
+  voltik:   {name:'볼티크',  type:'VOLT',  sprite:'voltik',   base:{hp:42,atk:48,def:34,spd:55},
+    learn:[{lv:1,m:'tackle'},{lv:1,m:'bolt'},{lv:8,m:'drain'},{lv:14,m:'shock'}],
+    evo:{into:'voltcore',lv:16}, desc:'끊긴 배전반에서 깨어난 전류 정령. 손대면 짜릿하다.'},
+  voltcore: {name:'볼트코어',type:'VOLT',  sprite:'voltcore', base:{hp:62,atk:72,def:50,spd:78},
+    learn:[{lv:1,m:'bolt'},{lv:1,m:'shock'},{lv:18,m:'drain'},{lv:24,m:'overld'}],
+    evo:null, desc:'스스로 충전하는 발전 코어. 과부하 한 방이 무섭다.'},
+
+  coglet:   {name:'코글릿',  type:'STEEL', sprite:'coglet',   base:{hp:50,atk:46,def:55,spd:30},
+    learn:[{lv:1,m:'tackle'},{lv:1,m:'ironfst'},{lv:7,m:'guard'},{lv:13,m:'scrapth'}],
+    evo:{into:'cogtitan',lv:18}, desc:'컨베이어에서 굴러다니던 톱니 새끼. 단단하다.'},
+  cogtitan: {name:'코그타이탄',type:'STEEL',sprite:'cogtitan',base:{hp:80,atk:70,def:88,spd:34},
+    learn:[{lv:1,m:'ironfst'},{lv:1,m:'guard'},{lv:20,m:'scrapth'},{lv:26,m:'shock'}],
+    evo:null, desc:'맞물린 기어가 거대해진 중장갑 골렘. 방어가 철벽.'},
+
+  rustmite: {name:'러스마이트',type:'RUST', sprite:'rustmite', base:{hp:46,atk:50,def:40,spd:42},
+    learn:[{lv:1,m:'tackle'},{lv:1,m:'corrode'},{lv:9,m:'guard'},{lv:15,m:'acid'}],
+    evo:{into:'rustfiend',lv:17}, desc:'습한 구석에서 번식한 부식 진드기. 닿는 금속을 삭힌다.'},
+  rustfiend:{name:'러스피엔드',type:'RUST',sprite:'rustfiend',base:{hp:70,atk:78,def:58,spd:50},
+    learn:[{lv:1,m:'corrode'},{lv:1,m:'acid'},{lv:22,m:'inject'},{lv:28,m:'scrapth'}],
+    evo:null, desc:'부식이 폭주한 산성 포식자. 강철도 녹여버린다.'},
+
+  steambug: {name:'스팀버그',type:'STEAM', sprite:'steambug',  base:{hp:44,atk:44,def:38,spd:58},
+    learn:[{lv:1,m:'tackle'},{lv:1,m:'vent'},{lv:8,m:'drain'},{lv:14,m:'scald'}],
+    evo:{into:'steamwraith',lv:16}, desc:'터진 배관에서 응결한 증기 벌레. 잡기 힘들다.'},
+  steamwraith:{name:'스팀레이스',type:'STEAM',sprite:'steamwraith',base:{hp:64,atk:66,def:54,spd:82},
+    learn:[{lv:1,m:'vent'},{lv:1,m:'scald'},{lv:20,m:'corrode'},{lv:25,m:'overld'}],
+    evo:null, desc:'보일러실을 떠도는 증기 망령. 빠르고 뜨겁다.'},
+
+  synthpod: {name:'신스포드',type:'SYNTH', sprite:'synthpod',  base:{hp:48,atk:52,def:44,spd:40},
+    learn:[{lv:1,m:'tackle'},{lv:1,m:'inject'},{lv:9,m:'guard'},{lv:15,m:'toxin'}],
+    evo:{into:'synthbeast',lv:18}, desc:'폐약품 통에서 자란 합성 생물. 화학 공격이 주특기.'},
+  synthbeast:{name:'신스비스트',type:'SYNTH',sprite:'synthbeast',base:{hp:76,atk:74,def:62,spd:46},
+    learn:[{lv:1,m:'inject'},{lv:1,m:'toxin'},{lv:22,m:'acid'},{lv:28,m:'scrapth'}],
+    evo:null, desc:'합성 물질이 거대화한 괴수. 독성 주입이 치명적.'},
+
+  scrapling:{name:'스크랩링',type:'SCRAP', sprite:'scrapling', base:{hp:52,atk:44,def:48,spd:36},
+    learn:[{lv:1,m:'tackle'},{lv:1,m:'scrapth'},{lv:8,m:'guard'},{lv:14,m:'ironfst'}],
+    evo:{into:'scraphulk',lv:19}, desc:'잡동사니가 뭉쳐 생긴 고철 정령. 어디에나 있다.'},
+  scraphulk:{name:'스크랩헐크',type:'SCRAP',sprite:'scraphulk',base:{hp:88,atk:72,def:74,spd:32},
+    learn:[{lv:1,m:'scrapth'},{lv:1,m:'ironfst'},{lv:24,m:'shock'},{lv:30,m:'acid'}],
+    evo:null, desc:'폐기물이 산처럼 뭉친 고철 골렘. 체력이 어마어마하다.'},
+
+  ferromaw: {name:'페로마우',type:'STEEL', sprite:'ferromaw',  base:{hp:95,atk:90,def:80,spd:60},
+    learn:[{lv:1,m:'ironfst'},{lv:1,m:'overld'},{lv:1,m:'acid'},{lv:1,m:'scald'}],
+    evo:null, desc:'폐공장 가장 깊은 곳의 강철 포식자. 공장의 주인이라 불린다.'},
+};
+const STARTERS = ['voltik','coglet','steambug'];
+const WILD_POOL = ['voltik','coglet','rustmite','steambug','synthpod','scrapling'];
+
+/* ===================== STAT / LEVELING ===================== */
+function statAt(base, lv){
+  return {
+    maxhp: Math.floor(base.hp*2*lv/100)+lv+10,
+    atk:   Math.floor(base.atk*2*lv/100)+5,
+    def:   Math.floor(base.def*2*lv/100)+5,
+    spd:   Math.floor(base.spd*2*lv/100)+5,
+  };
+}
+function xpToNext(lv){ return Math.floor(0.8*lv*lv*lv)+12; } // simple cubic-ish
+function makeMon(speciesId, lv){
+  const sp = SPECIES[speciesId];
+  const s = statAt(sp.base, lv);
+  // learnset: take up to last 4 moves learnable at <= lv
+  let pool = sp.learn.filter(L=>L.lv<=lv).map(L=>L.m);
+  pool = [...new Set(pool)];
+  const moves = pool.slice(-4);
+  if(moves.length===0) moves.push('tackle');
+  return {
+    id: speciesId, name: sp.name, lv, type: sp.type,
+    maxhp: s.maxhp, hp: s.maxhp, atk:s.atk, def:s.def, spd:s.spd,
+    moves, xp:0, next: xpToNext(lv), defBuff:0,
+  };
+}
+function recompute(mon){
+  const sp = SPECIES[mon.id];
+  const s = statAt(sp.base, mon.lv);
+  const ratio = mon.hp/mon.maxhp;
+  mon.maxhp=s.maxhp; mon.atk=s.atk; mon.def=s.def; mon.spd=s.spd;
+  mon.hp = Math.max(1, Math.round(s.maxhp*ratio));
+  mon.next = xpToNext(mon.lv);
+}
+
+/* ===================== GAME STATE ===================== */
+const G = {
+  scene:'title',         // title | overworld | battle
+  party:[],              // array of mons
+  box:[],                // overflow storage
+  bag:{ball:5, potion:3},
+  dex:{},                // seen/caught
+  px:9, py:13, dir:'down',// player tile pos + facing
+  steps:0,
+  trainersBeaten:{},
+  msg:[], msgIdx:0, msgCb:null,
+};
+
+/* ===================== MAP ===================== *
+   Tiles:
+   0 floor(concrete) 1 wall 2 grass(scrap pile) 3 healer 4 shop
+   5 machine deco 6 door/path 7 pit(impassable) 8 trainer-tile(deco)
+ *-----------------------------------------------------------*/
+const MAP_W=20, MAP_H=18;
+const MAPROW = [
+ "11111111111111111111",
+ "10000000000000000051",
+ "10222200011100022201",
+ "10222200010100022201",
+ "10222200010100000001",
+ "10000000010100050001",
+ "11110100010100010111",
+ "10000100000000010001",
+ "10500100222200010051",
+ "10000000222200000001",
+ "10000000222200000001",
+ "11101110000001110111",
+ "10000000000000000001",
+ "10030000000000000401",
+ "10000000005000000001",
+ "10222200000000022201",
+ "10222200050000022201",
+ "11111111111111111111",
+];
+const MAP = MAPROW.map(r=>r.split('').map(Number));
+function tileAt(x,y){ if(x<0||y<0||x>=MAP_W||y>=MAP_H) return 1; return MAP[y][x]; }
+function solid(t){ return t===1||t===5||t===7; }
+
+// NPC trainer
+const TRAINERS = [
+  { id:'warden', x:14, y:7, dir:'left', name:'관리인 헬가',
+    team:[['coglet',12],['rustmite',13]],
+    pre:'이 공장은 내 구역이야. 네 정령들… 실력을 보자!',
+    post:'…좋군. 더 깊이 들어가도 좋다. 주인을 조심해라.',
+    reward:'볼' },
+  { id:'foreman', x:5, y:5, dir:'right', name:'작업반장 도르',
+    team:[['scrapling',14],['steambug',13],['voltik',14]],
+    pre:'야생만 잡았다고? 사람과 붙어봐야 진짜지!',
+    post:'녹슬지 않았군. 인정한다.',
+    reward:'볼' },
+];
+
+/* ===================== INPUT ===================== */
+const keys = {};
+const KEYMAP = {ArrowUp:'up',ArrowDown:'down',ArrowLeft:'left',ArrowRight:'right',
+  w:'up',s:'down',a:'left',d:'right',W:'up',S:'down',A:'left',D:'right',
+  z:'A',Z:'A',Enter:'A',' ':'A', x:'B',X:'B',Escape:'B', q:'DEX',Q:'DEX'};
+let pressedQueue=[];
+function pressKey(logical){
+  pressedQueue.push(logical);
+}
+window.addEventListener('keydown', e=>{
+  const lk = KEYMAP[e.key];
+  if(!lk) return;
+  e.preventDefault();
+  if(['up','down','left','right'].includes(lk)){ keys[lk]=true; }
+  else pressKey(lk);
+});
+window.addEventListener('keyup', e=>{
+  const lk = KEYMAP[e.key];
+  if(lk && ['up','down','left','right'].includes(lk)) keys[lk]=false;
+});
+// touch
+document.querySelectorAll('[data-k]').forEach(el=>{
+  const k = el.getAttribute('data-k');
+  const lk = KEYMAP[k]||k;
+  const dir = ['up','down','left','right'].includes(lk);
+  const start = ev=>{ ev.preventDefault(); if(dir) keys[lk]=true; else pressKey(lk); };
+  const end = ev=>{ ev.preventDefault(); if(dir) keys[lk]=false; };
+  el.addEventListener('touchstart', start,{passive:false});
+  el.addEventListener('touchend', end,{passive:false});
+  el.addEventListener('touchcancel', end,{passive:false});
+  el.addEventListener('mousedown', start);
+  el.addEventListener('mouseup', end);
+  el.addEventListener('mouseleave', ()=>{ if(dir) keys[lk]=false; });
+});
+// show touch controls on coarse pointer
+if(window.matchMedia('(pointer:coarse)').matches){ document.getElementById('touch').style.display='block'; }
+
+function toast(t){ const el=document.getElementById('toast'); el.textContent=t; el.style.display='block';
+  clearTimeout(el._t); el._t=setTimeout(()=>el.style.display='none',1400); }
+
+/* ===================== MESSAGES (overworld + generic) ===================== */
+function say(lines, cb){ // lines: string or array
+  G.msg = Array.isArray(lines)?lines:[lines]; G.msgIdx=0; G.msgCb=cb||null;
+}
+function msgActive(){ return G.msg.length>0; }
+function advanceMsg(){
+  G.msgIdx++;
+  if(G.msgIdx>=G.msg.length){ G.msg=[]; const cb=G.msgCb; G.msgCb=null; if(cb) cb(); }
+}
+
+/* ===================== SPRITE DRAW ===================== */
+function drawSprite(grid, ox, oy, scale){
+  for(let r=0;r<grid.length;r++){
+    const row = grid[r];
+    for(let c=0;c<row.length;c++){
+      const col = PAL[row[c]];
+      if(!col) continue;
+      ctx.fillStyle = col;
+      ctx.fillRect(ox+c*scale, oy+r*scale, scale, scale);
+    }
+  }
+}
+
+/* ===================== OVERWORLD RENDER ===================== */
+function drawTile(t,x,y){
+  const px=x*TILE, py=y*TILE;
+  switch(t){
+    case 0: // concrete floor
+      ctx.fillStyle='#2a3038'; ctx.fillRect(px,py,TILE,TILE);
+      ctx.fillStyle='#222831'; ctx.fillRect(px,py,TILE,1); ctx.fillRect(px,py,1,TILE);
+      break;
+    case 1: // wall (steel girder)
+      ctx.fillStyle='#454f5a'; ctx.fillRect(px,py,TILE,TILE);
+      ctx.fillStyle='#5a6672'; ctx.fillRect(px+1,py+1,TILE-2,3);
+      ctx.fillStyle='#333b44'; ctx.fillRect(px,py+TILE-3,TILE,3);
+      ctx.fillStyle='#2b333b'; ctx.fillRect(px+3,py+5,2,2); ctx.fillRect(px+11,py+9,2,2);
+      break;
+    case 2: // grass = scrap pile
+      ctx.fillStyle='#2a3038'; ctx.fillRect(px,py,TILE,TILE);
+      ctx.fillStyle='#3d4a35'; ctx.fillRect(px+2,py+8,12,6);
+      ctx.fillStyle='#52613f'; ctx.fillRect(px+3,py+9,3,4); ctx.fillRect(px+8,py+8,3,5); ctx.fillRect(px+12,py+10,2,3);
+      ctx.fillStyle='#6d7d4f'; ctx.fillRect(px+4,py+10,1,2); ctx.fillRect(px+9,py+9,1,2);
+      ctx.fillStyle='#8a9a6a'; ctx.fillRect(px+6,py+11,1,1); ctx.fillRect(px+11,py+12,1,1);
+      break;
+    case 3: // healer (blue panel)
+      ctx.fillStyle='#1c2a3a'; ctx.fillRect(px,py,TILE,TILE);
+      ctx.fillStyle='#2f5d8a'; ctx.fillRect(px+2,py+2,12,12);
+      ctx.fillStyle='#7fd6e0'; ctx.fillRect(px+4,py+6,8,2); ctx.fillRect(px+7,py+4,2,8);
+      ctx.fillStyle='#c5f0f5'; ctx.fillRect(px+7,py+6,2,2);
+      break;
+    case 4: // shop (box)
+      ctx.fillStyle='#2a2418'; ctx.fillRect(px,py,TILE,TILE);
+      ctx.fillStyle='#7a5a2a'; ctx.fillRect(px+2,py+4,12,10);
+      ctx.fillStyle='#a07b3a'; ctx.fillRect(px+2,py+4,12,2);
+      ctx.fillStyle='#3a2c14'; ctx.fillRect(px+7,py+4,2,10);
+      ctx.fillStyle='#ffcc44'; ctx.fillRect(px+5,py+8,1,2); ctx.fillRect(px+10,py+8,1,2);
+      break;
+    case 5: // machine deco (solid)
+      ctx.fillStyle='#3a3038'; ctx.fillRect(px,py,TILE,TILE);
+      ctx.fillStyle='#555f6a'; ctx.fillRect(px+2,py+2,12,12);
+      ctx.fillStyle='#222'; ctx.fillRect(px+4,py+4,8,8);
+      ctx.fillStyle='#ffd83d'; ctx.fillRect(px+6,py+6,4,4);
+      ctx.fillStyle='#d97b3a'; ctx.fillRect(px+3,py+3,2,2);
+      break;
+    default:
+      ctx.fillStyle='#2a3038'; ctx.fillRect(px,py,TILE,TILE);
+  }
+}
+// player sprite (simple 12x12-ish drawn directly), facing
+function drawPlayer(px,py,dir){
+  const x=px*TILE+2, y=py*TILE+1;
+  // body (orange jumpsuit + steel helmet)
+  ctx.fillStyle='#11161c';
+  ctx.fillRect(x+2,y+1,8,10); // outline base
+  ctx.fillStyle='#d97b3a'; ctx.fillRect(x+3,y+5,6,6); // suit
+  ctx.fillStyle='#f0a45e'; ctx.fillRect(x+3,y+5,6,1);
+  ctx.fillStyle='#9fb2c4'; ctx.fillRect(x+3,y+1,6,4); // helmet
+  ctx.fillStyle='#c9d6e2'; ctx.fillRect(x+3,y+1,6,1);
+  ctx.fillStyle='#ffd83d'; ctx.fillRect(x+5,y+2,2,1); // lamp
+  // face direction hint (eyes)
+  ctx.fillStyle='#11161c';
+  if(dir==='down'){ ctx.fillRect(x+4,y+4,1,1); ctx.fillRect(x+7,y+4,1,1); }
+  else if(dir==='up'){ /* back of helmet */ ctx.fillStyle='#5a6c7a'; ctx.fillRect(x+4,y+3,4,1); }
+  else if(dir==='left'){ ctx.fillRect(x+4,y+4,1,1); }
+  else { ctx.fillRect(x+7,y+4,1,1); }
+  // legs
+  ctx.fillStyle='#3a4a5a'; ctx.fillRect(x+3,y+10,2,2); ctx.fillRect(x+7,y+10,2,2);
+}
+function drawNPC(t){
+  const x=t.x*TILE+2, y=t.y*TILE+1;
+  ctx.fillStyle='#11161c'; ctx.fillRect(x+2,y+1,8,11);
+  ctx.fillStyle='#b03040'; ctx.fillRect(x+3,y+5,6,6); // red worksuit
+  ctx.fillStyle='#d04a5a'; ctx.fillRect(x+3,y+5,6,1);
+  ctx.fillStyle='#6b4a2a'; ctx.fillRect(x+3,y+1,6,4); // hair/cap
+  ctx.fillStyle='#e8c8a0'; ctx.fillRect(x+4,y+4,4,2); // face
+  ctx.fillStyle='#11161c'; ctx.fillRect(x+4,y+4,1,1); ctx.fillRect(x+7,y+4,1,1);
+  ctx.fillStyle='#3a4a5a'; ctx.fillRect(x+3,y+10,2,2); ctx.fillRect(x+7,y+10,2,2);
+}
+
+function renderOverworld(){
+  // map (full map fits 20x18 = view)
+  for(let y=0;y<MAP_H;y++) for(let x=0;x<MAP_W;x++) drawTile(MAP[y][x],x,y);
+  // trainers not yet beaten
+  for(const t of TRAINERS){ if(!G.trainersBeaten[t.id]) drawNPC(t); }
+  drawPlayer(G.px,G.py,G.dir);
+  // HUD bar
+  ctx.fillStyle='rgba(8,12,16,.82)'; ctx.fillRect(0,0,320,12);
+  ctx.fillStyle='#ffcc44'; ctx.font='8px "Courier New"'; ctx.textBaseline='top';
+  const lead=G.party[0];
+  ctx.fillText('볼:'+G.bag.ball+'  포션:'+G.bag.potion+'  파티:'+G.party.length+'  도감:'+Object.keys(G.dex).length+'/12', 4,3);
+  // message box
+  if(msgActive()) drawMsgBox(G.msg[G.msgIdx]);
+  else {
+    // small hint
+  }
+}
+function drawMsgBox(text){
+  const bh=46;
+  ctx.fillStyle='#0a0e12'; ctx.fillRect(6,288-bh-6,308,bh);
+  ctx.strokeStyle='#33404d'; ctx.lineWidth=2; ctx.strokeRect(7,288-bh-5,306,bh-2);
+  ctx.fillStyle='#e8f0f5'; ctx.font='9px "Courier New"';
+  wrapText(text,14,288-bh+2,294,11);
+  ctx.fillStyle='#ffcc44'; ctx.fillText('▼ A', 290,288-14);
+}
+function wrapText(text,x,y,maxw,lh){
+  const chars=[...text]; let line=''; let yy=y;
+  for(let i=0;i<chars.length;i++){
+    const test=line+chars[i];
+    if(ctx.measureText(test).width>maxw && line){ ctx.fillText(line,x,yy); line=chars[i]; yy+=lh; }
+    else line=test;
+    if(chars[i]==='\n'){ ctx.fillText(line.replace('\n',''),x,yy); line=''; yy+=lh; }
+  }
+  if(line) ctx.fillText(line,x,yy);
+}
+
+/* ===================== OVERWORLD LOGIC ===================== */
+let moveCooldown=0;
+function facingTile(){
+  let fx=G.px, fy=G.py;
+  if(G.dir==='up')fy--; else if(G.dir==='down')fy++; else if(G.dir==='left')fx--; else fx++;
+  return {fx,fy};
+}
+function npcAt(x,y){ return TRAINERS.find(t=>!G.trainersBeaten[t.id] && t.x===x && t.y===y); }
+
+function overworldUpdate(){
+  // handle queued action keys
+  while(pressedQueue.length){
+    const k=pressedQueue.shift();
+    if(msgActive()){ if(k==='A'||k==='B') advanceMsg(); continue; }
+    if(menu.open){ menuKey(k); continue; }
+    if(k==='A'){ interact(); }
+    else if(k==='B'){ openMenu(); }
+    else if(k==='DEX'){ showDex(); }
+  }
+  if(msgActive()||menu.open) return;
+  // movement
+  if(moveCooldown>0){ moveCooldown--; return; }
+  let nd=null;
+  if(keys.up)nd='up'; else if(keys.down)nd='down'; else if(keys.left)nd='left'; else if(keys.right)nd='right';
+  if(!nd) return;
+  G.dir=nd;
+  let nx=G.px, ny=G.py;
+  if(nd==='up')ny--; else if(nd==='down')ny++; else if(nd==='left')nx--; else nx++;
+  const t=tileAt(nx,ny);
+  if(solid(t) || npcAt(nx,ny)){ moveCooldown=6; return; }
+  // healer / shop are interactables -> block movement onto them, must press A facing
+  if(t===3||t===4){ moveCooldown=8; return; }
+  G.px=nx; G.py=ny; moveCooldown=7; G.steps++;
+  // wild encounter on grass
+  if(t===2){
+    if(Math.random()<0.18){ startWild(); }
+  }
+  // trainer line-of-sight (simple: trainer facing you within 4 tiles straight)
+  checkTrainerSight();
+}
+function checkTrainerSight(){
+  for(const t of TRAINERS){
+    if(G.trainersBeaten[t.id]) continue;
+    let dx=0,dy=0;
+    if(t.dir==='left')dx=-1; else if(t.dir==='right')dx=1; else if(t.dir==='up')dy=-1; else dy=1;
+    for(let i=1;i<=4;i++){
+      const cx=t.x+dx*i, cy=t.y+dy*i;
+      if(solid(tileAt(cx,cy))) break;
+      if(cx===G.px && cy===G.py){ triggerTrainer(t); return; }
+    }
+  }
+}
+function interact(){
+  const {fx,fy}=facingTile();
+  const t=tileAt(fx,fy);
+  const npc=npcAt(fx,fy);
+  if(npc){ triggerTrainer(npc); return; }
+  if(t===3){ // healer
+    for(const m of G.party){ m.hp=m.maxhp; }
+    say(['치익— 회복기가 작동한다.','파티 전원이 완전히 회복됐다!']);
+    return;
+  }
+  if(t===4){ // shop
+    openShop(); return;
+  }
+  if(t===5){ say('낡은 기계가 윙윙거린다. 만지지 않는 게 좋겠다.'); return; }
+}
+
+/* ===================== MENU (party / bag / dex) ===================== */
+const menu = { open:false, page:'main', idx:0 };
+function openMenu(){ menu.open=true; menu.page='main'; menu.idx=0; }
+function closeMenu(){ menu.open=false; }
+const MAIN_ITEMS=['파티','가방','도감','닫기'];
+function menuKey(k){
+  if(menu.page==='main'){
+    if(k==='up') menu.idx=(menu.idx+MAIN_ITEMS.length-1)%MAIN_ITEMS.length;
+    else if(k==='down') menu.idx=(menu.idx+1)%MAIN_ITEMS.length;
+    else if(k==='A'){
+      const sel=MAIN_ITEMS[menu.idx];
+      if(sel==='닫기') closeMenu();
+      else if(sel==='파티'){ menu.page='party'; menu.idx=0; }
+      else if(sel==='가방'){ menu.page='bag'; menu.idx=0; }
+      else if(sel==='도감'){ showDex(); closeMenu(); }
+    } else if(k==='B') closeMenu();
+  } else if(menu.page==='party'){
+    if(k==='up') menu.idx=(menu.idx+G.party.length-1)%G.party.length;
+    else if(k==='down') menu.idx=(menu.idx+1)%G.party.length;
+    else if(k==='B'){ menu.page='main'; menu.idx=0; }
+  } else if(menu.page==='bag'){
+    if(k==='B'){ menu.page='main'; menu.idx=0; }
+  }
+}
+function renderMenu(){
+  if(menu.page==='main'){
+    const w=120,h=18+MAIN_ITEMS.length*14;
+    panel(320-w-8,16,w,h,'메뉴');
+    ctx.font='9px "Courier New"';
+    MAIN_ITEMS.forEach((it,i)=>{
+      ctx.fillStyle = i===menu.idx?'#ffcc44':'#e8f0f5';
+      ctx.fillText((i===menu.idx?'▶ ':'  ')+it, 320-w+2, 16+18+i*14-4);
+    });
+  } else if(menu.page==='party'){
+    panel(16,20,288,250,'파티');
+    ctx.font='9px "Courier New"';
+    G.party.forEach((m,i)=>{
+      const y=20+24+i*38;
+      ctx.fillStyle = i===menu.idx?'#27313d':'#161c24';
+      ctx.fillRect(22,y-12,276,34);
+      drawSprite(SPRITES[SPECIES[m.id].sprite], 24,y-12, 2);
+      ctx.fillStyle = i===menu.idx?'#ffcc44':'#e8f0f5';
+      ctx.fillText(m.name+'  Lv'+m.lv, 52,y-8);
+      ctx.fillStyle=TYPES[m.type].c; ctx.fillText('['+TYPES[m.type].n+']', 52,y+4);
+      // hp bar
+      hpBar(150,y-6,120,10,m.hp,m.maxhp);
+      ctx.fillStyle='#8aa0b0'; ctx.fillText('HP '+m.hp+'/'+m.maxhp, 150,y+6);
+    });
+    ctx.fillStyle='#8aa0b0'; ctx.fillText('B: 뒤로', 22,256);
+  } else if(menu.page==='bag'){
+    panel(16,40,288,140,'가방');
+    ctx.font='10px "Courier New"';
+    ctx.fillStyle='#e8f0f5';
+    ctx.fillText('포획볼  x'+G.bag.ball, 32,86);
+    ctx.fillText('회복포션 x'+G.bag.potion, 32,108);
+    ctx.fillStyle='#8aa0b0'; ctx.font='9px "Courier New"';
+    ctx.fillText('전투 중에만 사용할 수 있습니다.', 32,134);
+    ctx.fillText('B: 뒤로', 32,156);
+  }
+}
+function panel(x,y,w,h,title){
+  ctx.fillStyle='#0c1116'; ctx.fillRect(x,y,w,h);
+  ctx.strokeStyle='#33404d'; ctx.lineWidth=2; ctx.strokeRect(x+1,y+1,w-2,h-2);
+  ctx.fillStyle='#161c24'; ctx.fillRect(x+4,y+4,w-8,16);
+  ctx.fillStyle='#ffcc44'; ctx.font='9px "Courier New"'; ctx.textBaseline='top';
+  ctx.fillText(title, x+8,y+7);
+}
+function hpBar(x,y,w,h,hp,max){
+  ctx.fillStyle='#11161c'; ctx.fillRect(x-1,y-1,w+2,h+2);
+  ctx.fillStyle='#2a3038'; ctx.fillRect(x,y,w,h);
+  const r=Math.max(0,hp/max);
+  ctx.fillStyle = r>.5?'#5ee08a':(r>.2?'#ffd24a':'#ff5b6e');
+  ctx.fillRect(x,y,Math.ceil(w*r),h);
+}
+
+/* ===================== SHOP ===================== */
+function openShop(){
+  // simple: spend "steps" as currency? Use a scrap currency = G.steps? Keep simple: free-ish via fixed give.
+  // We'll model "고철 G.scrap" implicitly: give items, limited by a soft economy using steps.
+  shop.open=true; shop.idx=0;
+}
+const shop={open:false,idx:0,items:[
+  {n:'포획볼 x3 (스크랩 20)', cost:20, give:()=>{G.bag.ball+=3;}},
+  {n:'회복포션 x2 (스크랩 15)', cost:15, give:()=>{G.bag.potion+=2;}},
+  {n:'나가기', cost:0, give:null},
+]};
+function shopKey(k){
+  if(k==='up') shop.idx=(shop.idx+shop.items.length-1)%shop.items.length;
+  else if(k==='down') shop.idx=(shop.idx+1)%shop.items.length;
+  else if(k==='B') shop.open=false;
+  else if(k==='A'){
+    const it=shop.items[shop.idx];
+    if(!it.give){ shop.open=false; return; }
+    if(G.scrap>=it.cost){ G.scrap-=it.cost; it.give(); toast('구매 완료!'); }
+    else toast('스크랩이 부족하다');
+  }
+}
+function renderShop(){
+  panel(28,60,264,150,'고철 상점  (스크랩 '+G.scrap+')');
+  ctx.font='10px "Courier New"';
+  shop.items.forEach((it,i)=>{
+    ctx.fillStyle = i===shop.idx?'#ffcc44':'#e8f0f5';
+    ctx.fillText((i===shop.idx?'▶ ':'  ')+it.n, 44,96+i*22);
+  });
+  ctx.fillStyle='#8aa0b0'; ctx.font='9px "Courier New"';
+  ctx.fillText('야생/트레이너를 이기면 스크랩을 얻는다. B:나가기', 44,180);
+}
+G.scrap = 0;
+
+/* ===================== DEX overlay ===================== */
+function showDex(){
+  const body=document.getElementById('dexBody');
+  let html='';
+  const all=Object.keys(SPECIES);
+  let num=0;
+  for(const id of all){
+    num++;
+    const sp=SPECIES[id]; const seen=G.dex[id];
+    if(seen){
+      html+=`<div style="margin-bottom:6px"><b style="color:${TYPES[sp.type].c}">#${String(num).padStart(2,'0')} ${sp.name}</b> <span style="color:#8aa0b0">[${TYPES[sp.type].n}]</span> ${G.dex[id]==='caught'?'<span style="color:#5ee08a">● 포획</span>':'<span style="color:#ffd24a">○ 목격</span>'}<br><span style="color:#aab8c4">${sp.desc}</span></div>`;
+    } else {
+      html+=`<div style="margin-bottom:6px;color:#55606a"><b>#${String(num).padStart(2,'0')} ??????</b> 미발견</div>`;
+    }
+  }
+  body.innerHTML=html;
+  document.getElementById('ovDex').classList.add('show');
+}
+document.getElementById('btnDexClose').onclick=()=>document.getElementById('ovDex').classList.remove('show');
+
+/* ===================== BATTLE ===================== */
+const B = {
+  active:false, wild:null, player:null, isTrainer:false, trainer:null,
+  enemyTeam:[], enemyIdx:0,
+  state:'intro',   // intro | menu | move | item | switch | run | anim | end
+  menuIdx:0, moveIdx:0, itemIdx:0, switchIdx:0,
+  log:[], logIdx:0, logCb:null,
+  shakeT:0, flashT:0, ballAnim:0, capturing:false, capResult:null,
+  enemyHpShown:0, playerHpShown:0,
+};
+function blog(lines, cb){ B.log=Array.isArray(lines)?lines:[lines]; B.logIdx=0; B.logCb=cb||null; B.state='anim'; }
+function blogNext(){
+  B.logIdx++;
+  if(B.logIdx>=B.log.length){ B.log=[]; const cb=B.logCb; B.logCb=null; if(cb) cb(); }
+}
+
+function firstAlive(){ return G.party.find(m=>m.hp>0); }
+function startWild(){
+  const id=WILD_POOL[Math.floor(Math.random()*WILD_POOL.length)];
+  // level scales loosely with party progress
+  const top=Math.max(...G.party.map(m=>m.lv),3);
+  const lv=Math.max(3, top-2+Math.floor(Math.random()*4));
+  const wild=makeMon(id, Math.min(lv,15));
+  enterBattle(wild, false, null);
+}
+function triggerTrainer(t){
+  // approach
+  say([t.name+': '+t.pre], ()=>{
+    const team=t.team.map(([id,lv])=>makeMon(id,lv));
+    enterBattle(team[0], true, {def:t, team, idx:0});
+  });
+}
+function enterBattle(enemy, isTrainer, trainerInfo){
+  const p=firstAlive();
+  if(!p){ return; }
+  B.active=true; G.scene='battle';
+  B.wild=enemy; B.player=p; B.isTrainer=isTrainer;
+  B.trainer = isTrainer? trainerInfo.def : null;
+  B.enemyTeam = isTrainer? trainerInfo.team : [enemy];
+  B.enemyIdx = isTrainer? 0 : 0;
+  B.state='intro'; B.menuIdx=0; B.moveIdx=0;
+  B.shakeT=0; B.flashT=0; B.ballAnim=0; B.capturing=false; B.capResult=null;
+  B.enemyHpShown=enemy.hp; B.playerHpShown=p.hp;
+  // mark dex seen
+  if(!G.dex[enemy.id]) G.dex[enemy.id]='seen';
+  const who = isTrainer? (B.trainer.name+'의 '+enemy.name) : ('야생 '+enemy.name);
+  blog([who+'(이)가 나타났다!', '가라, '+p.name+'!'], ()=>{ B.state='menu'; });
+}
+const BMENU=['싸운다','포획볼','가방','교체','도망'];
+function battleInput(){
+  while(pressedQueue.length){
+    const k=pressedQueue.shift();
+    if(B.state==='anim'){ if(k==='A'||k==='B') blogNext(); continue; }
+    if(B.state==='end'){ if(k==='A'||k==='B') endBattle(); continue; }
+    if(B.state==='menu') bMenuKey(k);
+    else if(B.state==='move') bMoveKey(k);
+    else if(B.state==='item') bItemKey(k);
+    else if(B.state==='switch') bSwitchKey(k);
+  }
+}
+function bMenuKey(k){
+  if(k==='up') B.menuIdx=(B.menuIdx+3)%5; // grid-ish but linear ok
+  else if(k==='down') B.menuIdx=(B.menuIdx+1)%5;
+  else if(k==='left'&&B.menuIdx>0) B.menuIdx--;
+  else if(k==='right'&&B.menuIdx<4) B.menuIdx++;
+  else if(k==='A'){
+    const sel=BMENU[B.menuIdx];
+    if(sel==='싸운다'){ B.state='move'; B.moveIdx=0; }
+    else if(sel==='포획볼'){ throwBall(); }
+    else if(sel==='가방'){ B.state='item'; B.itemIdx=0; }
+    else if(sel==='교체'){ openSwitch(false); }
+    else if(sel==='도망'){ tryRun(); }
+  }
+}
+function bMoveKey(k){
+  const mv=B.player.moves;
+  if(k==='up'&&B.moveIdx>=2)B.moveIdx-=2;
+  else if(k==='down'&&B.moveIdx+2<mv.length)B.moveIdx+=2;
+  else if(k==='left'&&B.moveIdx%2===1)B.moveIdx--;
+  else if(k==='right'&&B.moveIdx%2===0&&B.moveIdx+1<mv.length)B.moveIdx++;
+  else if(k==='B'){ B.state='menu'; }
+  else if(k==='A'){ playerMove(mv[B.moveIdx]); }
+}
+function bItemKey(k){
+  // 0 potion, 1 ball, 2 back
+  const opts=['회복포션 x'+G.bag.potion,'포획볼 x'+G.bag.ball,'뒤로'];
+  if(k==='up')B.itemIdx=(B.itemIdx+opts.length-1)%opts.length;
+  else if(k==='down')B.itemIdx=(B.itemIdx+1)%opts.length;
+  else if(k==='B')B.state='menu';
+  else if(k==='A'){
+    if(B.itemIdx===0){ usePotion(); }
+    else if(B.itemIdx===1){ throwBall(); }
+    else B.state='menu';
+  }
+}
+function bSwitchKey(k){
+  const alive=G.party;
+  if(k==='up')B.switchIdx=(B.switchIdx+alive.length-1)%alive.length;
+  else if(k==='down')B.switchIdx=(B.switchIdx+1)%alive.length;
+  else if(k==='B'){ if(!B.forcedSwitch) B.state='menu'; }
+  else if(k==='A'){
+    const m=G.party[B.switchIdx];
+    if(m.hp<=0){ toast('쓰러져서 낼 수 없다'); return; }
+    if(m===B.player){ toast('이미 나와 있다'); return; }
+    doSwitch(m);
+  }
+}
+function openSwitch(forced){
+  B.forcedSwitch=forced; B.state='switch';
+  B.switchIdx=G.party.findIndex(m=>m.hp>0&&m!==B.player); if(B.switchIdx<0)B.switchIdx=0;
+}
+function doSwitch(m){
+  const old=B.player; B.player=m; B.playerHpShown=m.hp;
+  if(B.forcedSwitch){ B.forcedSwitch=false; blog(['가라, '+m.name+'!'],()=>{B.state='menu';}); }
+  else blog([old.name+', 돌아와! 가라, '+m.name+'!'],()=>{ enemyTurn(()=>{B.state='menu';}); });
+}
+
+/* ----- damage calc ----- */
+function calcDmg(att, atkMon, defMon){
+  const mv=MOVES[att];
+  if(mv.p===0) return {dmg:0, eff:1, buff:mv.buff};
+  const e=eff(mv.t, defMon.type);
+  const stab = (mv.t===atkMon.type)?1.5:1.0;
+  // level-scaled formula so battles last several turns at every level
+  const lv=atkMon.lv;
+  const base = ((2*lv/5 + 2) * mv.p * atkMon.atk / Math.max(1,defMon.def)) / 50 + 2;
+  const rand = 0.85+Math.random()*0.3;
+  let dmg = Math.max(1, Math.floor(base*stab*e*rand));
+  const crit = Math.random()<0.0625; if(crit) dmg=Math.floor(dmg*1.5);
+  return {dmg, eff:e, crit, drain:mv.drain, recoil:mv.recoil};
+}
+function effText(e){ return e>1?'효과가 굉장하다!':(e<1?'효과가 별로다…':''); }
+
+function playerMove(att){
+  const mv=MOVES[att];
+  B.state='anim';
+  const lines=[B.player.name+'의 '+mv.n+'!'];
+  if(mv.buff){
+    B.player.defBuff=(B.player.defBuff||0)+1; B.player.def=Math.floor(B.player.def*1.3);
+    lines.push(B.player.name+'의 방어가 올랐다!');
+    blog(lines, ()=> enemyTurn(()=>{ B.state='menu'; }));
+    return;
+  }
+  const r=calcDmg(att,B.player,B.wild);
+  B.flashT=8; B.shakeT=10;
+  B.wild.hp=Math.max(0,B.wild.hp-r.dmg);
+  if(r.crit) lines.push('급소에 맞았다!');
+  const et=effText(r.eff); if(et) lines.push(et);
+  if(r.drain){ const heal=Math.max(1,Math.floor(r.dmg/2)); B.player.hp=Math.min(B.player.maxhp,B.player.hp+heal); lines.push(B.player.name+'(이)가 에너지를 흡수했다!'); }
+  if(r.recoil){ const rc=Math.max(1,Math.floor(r.dmg/4)); B.player.hp=Math.max(1,B.player.hp-rc); lines.push(B.player.name+'(이)가 반동을 입었다!'); }
+  animateHp(()=>{
+    if(B.wild.hp<=0){ enemyFainted(); }
+    else enemyTurn(()=>{ B.state='menu'; });
+  });
+  blog(lines, ()=>{});
+  // chain: when log done, animation handled by animateHp via flag
+  B._afterLog = null;
+}
+// Because blog cb and animateHp need coordination, use a simpler sequential model:
+function animateHp(done){ B._hpAnimDone=done; }
+
+function enemyTurn(done){
+  if(B.wild.hp<=0){ done&&done(); return; }
+  const att=B.wild.moves[Math.floor(Math.random()*B.wild.moves.length)];
+  const mv=MOVES[att];
+  const lines=['적 '+B.wild.name+'의 '+mv.n+'!'];
+  if(mv.buff){ B.wild.def=Math.floor(B.wild.def*1.3); lines.push('적의 방어가 올랐다!');
+    blog(lines, ()=> done&&done()); return; }
+  const r=calcDmg(att,B.wild,B.player);
+  B.player.hp=Math.max(0,B.player.hp-r.dmg);
+  if(r.crit) lines.push('급소에 맞았다!');
+  const et=effText(r.eff); if(et) lines.push(et);
+  if(r.drain){ const heal=Math.max(1,Math.floor(r.dmg/2)); B.wild.hp=Math.min(B.wild.maxhp,B.wild.hp+heal); }
+  B.shakeT=10; B.flashPlayer=8;
+  blog(lines, ()=>{
+    syncHpThen(()=>{
+      if(B.player.hp<=0){ playerFainted(done); }
+      else done&&done();
+    });
+  });
+}
+function syncHpThen(cb){ B._hpAnimDone=cb; }
+
+function playerFainted(done){
+  blog([B.player.name+'(이)가 쓰러졌다…'], ()=>{
+    const alive=G.party.filter(m=>m.hp>0);
+    if(alive.length===0){ whiteout(); }
+    else { openSwitch(true); }
+  });
+}
+function whiteout(){
+  blog(['눈앞이 깜깜해졌다…','정신을 차리니 회복기 앞이었다.'], ()=>{
+    for(const m of G.party) m.hp=m.maxhp;
+    G.px=2; G.py=13; B.active=false; G.scene='overworld';
+  });
+  B.state='anim';
+}
+
+function enemyFainted(){
+  const xpGain=Math.floor(SPECIES[B.wild.id].base.hp*0.6 + B.wild.lv*6);
+  const scrapGain=8+B.wild.lv*2;
+  G.scrap+=scrapGain;
+  blog(['적 '+B.wild.name+'(을)를 쓰러뜨렸다!', B.player.name+'(은)는 '+xpGain+' 경험치 획득! (스크랩 +'+scrapGain+')'], ()=>{
+    gainXp(B.player, xpGain, ()=>{
+      // trainer: next mon?
+      if(B.isTrainer){
+        if(B.enemyIdx+1 < B.enemyTeam.length){
+          B.enemyIdx++; B.wild=B.enemyTeam[B.enemyIdx]; B.enemyHpShown=B.wild.hp;
+          if(!G.dex[B.wild.id]) G.dex[B.wild.id]='seen';
+          blog([B.trainer.name+'(은)는 '+B.wild.name+'(을)를 내보냈다!'], ()=>{ B.state='menu'; });
+        } else {
+          winTrainer();
+        }
+      } else {
+        B.state='end'; B.endReason='win';
+      }
+    });
+  });
+}
+function winTrainer(){
+  G.trainersBeaten[B.trainer.id]=true;
+  G.scrap+=40; G.bag.ball+=3;
+  blog([B.trainer.name+'(을)를 이겼다!', B.trainer.post, '보상: 포획볼 x3, 스크랩 +40'], ()=>{
+    B.state='end'; B.endReason='win';
+  });
+}
+
+function gainXp(mon, amount, done){
+  let remaining=amount;
+  function step(){
+    if(remaining<=0){ done&&done(); return; }
+    const need=mon.next - mon.xp;
+    if(remaining>=need){
+      remaining-=need; mon.xp=0; mon.lv++; recompute(mon);
+      // learn new move?
+      const sp=SPECIES[mon.id];
+      const newMoves=sp.learn.filter(L=>L.lv===mon.lv).map(L=>L.m);
+      const evo = sp.evo && mon.lv>=sp.evo.lv ? sp.evo : null;
+      const lines=[mon.name+'(은)는 레벨 '+mon.lv+'(이)가 되었다!'];
+      for(const nm of newMoves){
+        if(!mon.moves.includes(nm)){
+          if(mon.moves.length<4){ mon.moves.push(nm); lines.push(mon.name+'(은)는 '+MOVES[nm].n+'(을)를 배웠다!'); }
+          else { mon.moves[mon.moves.length-1]=nm; lines.push(mon.name+'(은)는 '+MOVES[nm].n+'(을)를 배웠다! (마지막 기술 교체)'); }
+        }
+      }
+      blog(lines, ()=>{
+        if(evo){ doEvolve(mon, ()=>step()); }
+        else step();
+      });
+    } else {
+      mon.xp+=remaining; remaining=0; done&&done();
+    }
+  }
+  step();
+}
+function doEvolve(mon, done){
+  const into=SPECIES[mon.id].evo.into;
+  blog(['응…? '+mon.name+'의 모습이…!'], ()=>{
+    const oldName=mon.name;
+    mon.id=into; mon.name=SPECIES[into].name; mon.type=SPECIES[into].type;
+    recompute(mon);
+    // learn level-up moves of new species available at current lv that it doesn't have
+    G.dex[into]='caught';
+    blog([oldName+'(은)는 '+mon.name+'(으)로 진화했다!'], ()=> done&&done());
+  });
+}
+
+/* ----- capture ----- */
+function throwBall(){
+  if(B.isTrainer){ blog(['남의 정령에게 볼을 던질 수 없다!'], ()=>{B.state='menu';}); return; }
+  if(G.bag.ball<=0){ toast('포획볼이 없다'); return; }
+  G.bag.ball--;
+  B.capturing=true; B.ballAnim=0;
+  B.state='anim'; B.log=[]; B.logIdx=0;
+  // capture chance: lower enemy hp -> higher
+  const hpFactor = 1 - (B.wild.hp/B.wild.maxhp); // 0..1
+  const lvFactor = Math.max(0, 1 - B.wild.lv/30);
+  const chance = Math.min(0.95, 0.15 + hpFactor*0.65 + lvFactor*0.2);
+  B.capResult = Math.random()<chance;
+  // run ball animation ~ then resolve in update loop
+  B._ballResolve = ()=>{
+    B.capturing=false;
+    if(B.capResult){ captureSuccess(); }
+    else { blog(['아깝다! 크리처가 볼을 부수고 나왔다!'], ()=> enemyTurn(()=>{B.state='menu';})); }
+  };
+}
+function captureSuccess(){
+  const id=B.wild.id;
+  G.dex[id]='caught';
+  blog(['좋았어! 야생 '+B.wild.name+'(을)를 잡았다!'], ()=>{
+    const mon=B.wild;
+    if(G.party.length<6){ G.party.push(mon); blog([mon.name+'(을)를 파티에 넣었다.'], ()=>{B.state='end';B.endReason='caught';}); }
+    else { G.box.push(mon); blog([mon.name+'(을)를 보관함에 보냈다.'], ()=>{B.state='end';B.endReason='caught';}); }
+  });
+}
+
+function usePotion(){
+  if(G.bag.potion<=0){ toast('포션이 없다'); return; }
+  if(B.player.hp>=B.player.maxhp){ toast('이미 가득 찼다'); return; }
+  G.bag.potion--;
+  const heal=Math.min(B.player.maxhp-B.player.hp, 40);
+  B.player.hp+=heal;
+  blog([B.player.name+'(이)가 '+heal+' 회복했다!'], ()=> enemyTurn(()=>{B.state='menu';}));
+}
+function tryRun(){
+  if(B.isTrainer){ blog(['트레이너 전투에서는 도망칠 수 없다!'], ()=>{B.state='menu';}); return; }
+  const chance = B.player.spd>=B.wild.spd?0.85:0.55;
+  if(Math.random()<chance){ blog(['무사히 도망쳤다!'], ()=>{B.state='end';B.endReason='run';}); }
+  else blog(['도망치지 못했다!'], ()=> enemyTurn(()=>{B.state='menu';}));
+}
+function endBattle(){
+  B.active=false; G.scene='overworld';
+}
+
+/* ----- battle render ----- */
+function renderBattle(){
+  // background
+  const sx = B.shakeT>0? (Math.random()*4-2):0;
+  ctx.save(); ctx.translate(sx,0);
+  // arena
+  const g=ctx.createLinearGradient(0,0,0,288);
+  g.addColorStop(0,'#1a222c'); g.addColorStop(1,'#0e1318');
+  ctx.fillStyle=g; ctx.fillRect(0,0,320,288);
+  // floor grid lines (factory)
+  ctx.strokeStyle='#222a33'; ctx.lineWidth=1;
+  for(let i=0;i<8;i++){ const y=150+i*16; ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(320,y); ctx.stroke(); }
+  // enemy platform + sprite (top right)
+  drawPlatform(200,90);
+  const wsc=8;
+  const wf = B.flashT>0 && (B.flashT%4<2);
+  if(!B.capturing || B.ballAnim<14){
+    ctx.save(); if(wf){ ctx.globalAlpha=0.4; }
+    drawSprite(SPRITES[SPECIES[B.wild.id].sprite], 200,40, wsc);
+    ctx.restore();
+  }
+  // player mon (bottom left, back-ish — just front sprite scaled)
+  drawPlatform(40,210);
+  const pf = B.flashPlayer>0 && (B.flashPlayer%4<2);
+  ctx.save(); if(pf){ctx.globalAlpha=0.4;}
+  drawSprite(SPRITES[SPECIES[B.player.id].sprite], 36,150, 9);
+  ctx.restore();
+  // enemy info box
+  infoBox(8,16,150,B.wild,false);
+  // player info box
+  infoBox(170,120,142,B.player,true);
+  // capture ball animation
+  if(B.capturing) drawBallAnim();
+  ctx.restore();
+  // decay effects
+  if(B.shakeT>0)B.shakeT--; if(B.flashT>0)B.flashT--; if(B.flashPlayer>0)B.flashPlayer--;
+
+  // bottom UI
+  if(B.state==='anim'||B.state==='end'){ drawBattleLog(); }
+  else if(B.state==='menu') drawBattleMenu();
+  else if(B.state==='move') drawMoveMenu();
+  else if(B.state==='item') drawItemMenu();
+  else if(B.state==='switch') drawSwitchMenu();
+}
+function drawPlatform(cx,cy){
+  ctx.fillStyle='#2a333d'; ctx.beginPath(); ctx.ellipse(cx,cy,46,12,0,0,7); ctx.fill();
+  ctx.fillStyle='#1d242c'; ctx.beginPath(); ctx.ellipse(cx,cy+3,40,8,0,0,7); ctx.fill();
+}
+function infoBox(x,y,w,mon,isPlayer){
+  const h=isPlayer?40:34;
+  ctx.fillStyle='#0c1116'; ctx.fillRect(x,y,w,h);
+  ctx.strokeStyle='#33404d'; ctx.lineWidth=2; ctx.strokeRect(x+1,y+1,w-2,h-2);
+  ctx.fillStyle='#e8f0f5'; ctx.font='9px "Courier New"'; ctx.textBaseline='top';
+  ctx.fillText(mon.name+'  Lv'+mon.lv, x+6,y+5);
+  ctx.fillStyle=TYPES[mon.type].c; ctx.font='8px "Courier New"';
+  ctx.fillText(TYPES[mon.type].n, x+w-26,y+5);
+  hpBar(x+6,y+18,w-12,7, mon.hp, mon.maxhp);
+  if(isPlayer){ ctx.fillStyle='#8aa0b0'; ctx.font='8px "Courier New"'; ctx.fillText(mon.hp+'/'+mon.maxhp, x+6,y+28);
+    // xp bar
+    ctx.fillStyle='#2a3038'; ctx.fillRect(x+60,y+30,w-66,3);
+    ctx.fillStyle='#7fd6e0'; ctx.fillRect(x+60,y+30,Math.floor((w-66)*(mon.xp/mon.next)),3);
+  }
+}
+function drawBallAnim(){
+  // ball flies from bottom-left to enemy, then shakes
+  const t=B.ballAnim;
+  let bx,by;
+  if(t<14){ const p=t/14; bx=60+(200-60)*p; by=200-Math.sin(p*Math.PI)*90 -(40-(40))*0; by=200+(60-200)*p - Math.sin(p*Math.PI)*60; }
+  else { bx=200; by=60; }
+  ctx.fillStyle='#d97b3a'; ctx.beginPath(); ctx.arc(bx+12,by+12,7,0,7); ctx.fill();
+  ctx.fillStyle='#e8f0f5'; ctx.beginPath(); ctx.arc(bx+12,by+12,7,Math.PI,2*Math.PI); ctx.fill();
+  ctx.fillStyle='#11161c'; ctx.fillRect(bx+5,by+11,14,2);
+  ctx.fillStyle='#ffcc44'; ctx.beginPath(); ctx.arc(bx+12,by+12,2,0,7); ctx.fill();
+}
+function drawBattleLog(){
+  const bh=56;
+  ctx.fillStyle='#0a0e12'; ctx.fillRect(6,288-bh-6,308,bh);
+  ctx.strokeStyle='#33404d'; ctx.lineWidth=2; ctx.strokeRect(7,288-bh-5,306,bh-2);
+  ctx.fillStyle='#e8f0f5'; ctx.font='10px "Courier New"'; ctx.textBaseline='top';
+  const line=B.log[B.logIdx]||'';
+  wrapText(line,16,288-bh+2,290,13);
+  ctx.fillStyle='#ffcc44'; ctx.font='9px "Courier New"'; ctx.fillText('▼ A', 290,288-14);
+}
+function battleMenuPanel(){
+  const bh=56;
+  ctx.fillStyle='#0a0e12'; ctx.fillRect(6,288-bh-6,308,bh);
+  ctx.strokeStyle='#33404d'; ctx.lineWidth=2; ctx.strokeRect(7,288-bh-5,306,bh-2);
+  return bh;
+}
+function drawBattleMenu(){
+  const bh=battleMenuPanel();
+  ctx.fillStyle='#e8f0f5'; ctx.font='10px "Courier New"'; ctx.textBaseline='top';
+  ctx.fillText('어떻게 할까?', 16,288-bh+2);
+  // 5 options in 2 columns
+  const cols=[[0,1,2],[3,4]];
+  BMENU.forEach((it,i)=>{
+    const col=i<3?0:1; const row=i<3?i:i-3;
+    const x= col===0?120:225; const y=288-bh+2+row*14;
+    ctx.fillStyle = i===B.menuIdx?'#ffcc44':'#e8f0f5';
+    ctx.fillText((i===B.menuIdx?'▶':' ')+it, x,y);
+  });
+}
+function drawMoveMenu(){
+  const bh=battleMenuPanel();
+  const mv=B.player.moves;
+  ctx.font='10px "Courier New"'; ctx.textBaseline='top';
+  mv.forEach((m,i)=>{
+    const col=i%2, row=Math.floor(i/2);
+    const x=16+col*150, y=288-bh+2+row*16;
+    ctx.fillStyle = i===B.moveIdx?'#ffcc44':'#e8f0f5';
+    ctx.fillText((i===B.moveIdx?'▶':' ')+MOVES[m].n, x,y);
+  });
+  // selected move type/power
+  const sel=MOVES[mv[B.moveIdx]];
+  ctx.fillStyle=TYPES[sel.t].c; ctx.font='8px "Courier New"';
+  ctx.fillText('['+TYPES[sel.t].n+']'+(sel.p>0?' 위력 '+sel.p:' 보조'), 200,288-16);
+  ctx.fillStyle='#8aa0b0'; ctx.fillText('B:뒤로', 270,288-16);
+}
+function drawItemMenu(){
+  const bh=battleMenuPanel();
+  const opts=['회복포션 x'+G.bag.potion,'포획볼 x'+G.bag.ball,'뒤로'];
+  ctx.font='10px "Courier New"'; ctx.textBaseline='top';
+  opts.forEach((o,i)=>{
+    ctx.fillStyle=i===B.itemIdx?'#ffcc44':'#e8f0f5';
+    ctx.fillText((i===B.itemIdx?'▶':' ')+o, 20,288-bh+4+i*15);
+  });
+}
+function drawSwitchMenu(){
+  panel(16,20,288,250,'정령 교체');
+  ctx.font='9px "Courier New"';
+  G.party.forEach((m,i)=>{
+    const y=20+24+i*36;
+    ctx.fillStyle = i===B.switchIdx?'#27313d':'#161c24'; ctx.fillRect(22,y-12,276,32);
+    drawSprite(SPRITES[SPECIES[m.id].sprite],24,y-12,2);
+    ctx.fillStyle = m.hp<=0?'#ff5b6e':(i===B.switchIdx?'#ffcc44':'#e8f0f5');
+    ctx.fillText(m.name+' Lv'+m.lv+(m===B.player?' (출전중)':''), 52,y-8);
+    hpBar(150,y-6,120,9,m.hp,m.maxhp);
+    ctx.fillStyle='#8aa0b0'; ctx.fillText(m.hp+'/'+m.maxhp, 150,y+5);
+  });
+  ctx.fillStyle='#8aa0b0'; ctx.fillText(B.forcedSwitch?'쓰러졌다! 교체할 정령을 골라라':'B:뒤로  A:교체', 22,256);
+}
+
+/* ===================== BATTLE ANIMATION TICK ===================== */
+function battleTick(){
+  // hp animation: lerp shown -> actual
+  if(Math.abs(B.enemyHpShown-B.wild.hp)>0.5){ B.enemyHpShown += (B.wild.hp-B.enemyHpShown)*0.3; }
+  else B.enemyHpShown=B.wild.hp;
+  if(B.player){
+    if(Math.abs(B.playerHpShown-B.player.hp)>0.5){ B.playerHpShown += (B.player.hp-B.playerHpShown)*0.3; }
+    else B.playerHpShown=B.player.hp;
+  }
+  // resolve pending hp-anim callbacks (after log advances and hp settles)
+  if(B._hpAnimDone && B.log.length===0){
+    if(B.enemyHpShown===B.wild.hp && (!B.player||B.playerHpShown===B.player.hp)){
+      const cb=B._hpAnimDone; B._hpAnimDone=null; cb();
+    }
+  }
+  // capture animation progression
+  if(B.capturing){
+    B.ballAnim++;
+    if(B.ballAnim===40){ if(B._ballResolve){ const r=B._ballResolve; B._ballResolve=null; r(); } }
+  }
+}
+
+/* ===================== MAIN LOOP ===================== */
+let last=0;
+function loop(ts){
+  requestAnimationFrame(loop);
+  ctx.clearRect(0,0,320,288);
+  if(G.scene==='title'){ /* DOM overlay handles it; draw bg */ drawTitleBg(); }
+  else if(G.scene==='overworld'){
+    if(shop.open){
+      // process shop input
+      while(pressedQueue.length){ shopKey(pressedQueue.shift()); }
+      renderOverworld(); renderShop();
+    } else {
+      overworldUpdate(); renderOverworld();
+      if(menu.open) renderMenu();
+    }
+  }
+  else if(G.scene==='battle'){
+    battleTick(); battleInput(); renderBattle();
+  }
+}
+function drawTitleBg(){
+  ctx.fillStyle='#0d1014'; ctx.fillRect(0,0,320,288);
+  // faint factory silhouette
+  ctx.fillStyle='#161c24';
+  for(let i=0;i<6;i++){ ctx.fillRect(20+i*48,180,30,90); }
+  ctx.fillStyle='#1e2630'; ctx.fillRect(0,260,320,28);
+  // a couple of creatures peeking
+  drawSprite(SPRITES.cogtitan, 30,120, 6);
+  drawSprite(SPRITES.voltcore, 210,130, 6);
+}
+
+/* ===================== TITLE / FLOW WIRING ===================== */
+function startGame(starterId){
+  G.scene='overworld';
+  G.party=[ makeMon(starterId,5) ];
+  G.box=[]; G.bag={ball:5,potion:3}; G.scrap=30; G.dex={};
+  G.dex[starterId]='caught';
+  G.px=9; G.py=13; G.dir='down'; G.steps=0; G.trainersBeaten={};
+  document.querySelectorAll('.overlay').forEach(o=>o.classList.remove('show'));
+  say(['폐공장에 온 걸 환영한다, 신참 정령술사.','파트너 '+SPECIES[starterId].name+'(와)과 함께 강철 정령들을 잡아라!','수풀(스크랩 더미)을 걸으면 야생이 나온다. 파란 회복기로 회복하고, 관리인에게 도전해라.']);
+}
+
+// starter pick overlay (built dynamically)
+function showStarterPick(){
+  const ov=document.getElementById('ovTitle');
+  ov.classList.remove('show');
+  const pick=document.createElement('div');
+  pick.className='overlay show'; pick.id='ovPick';
+  pick.innerHTML=`<h1 style="font-size:22px">파트너를 골라라</h1>
+   <div class="sub">함께 폐공장을 누빌 첫 정령을 선택하세요.</div>
+   <div id="pickRow" style="display:flex;gap:14px;flex-wrap:wrap;justify-content:center"></div>
+   <div class="hint">방향키/탭 후 클릭 · Z 확인</div>`;
+  document.getElementById('app').appendChild(pick);
+  const row=pick.querySelector('#pickRow');
+  STARTERS.forEach((id,i)=>{
+    const sp=SPECIES[id];
+    const cell=document.createElement('div');
+    cell.style.cssText='border:2px solid #33404d;border-radius:6px;padding:10px;width:150px;cursor:pointer;background:#161c24';
+    cell.innerHTML=`<canvas width="72" height="72" style="image-rendering:pixelated;width:72px;height:72px"></canvas>
+      <div style="color:${TYPES[sp.type].c};font-weight:bold;margin-top:6px">${sp.name}</div>
+      <div style="color:#8aa0b0;font-size:10px">[${TYPES[sp.type].n}]</div>
+      <div style="color:#aab8c4;font-size:9px;margin-top:4px;line-height:1.4">${sp.desc}</div>`;
+    const c=cell.querySelector('canvas'); const cc=c.getContext('2d'); cc.imageSmoothingEnabled=false;
+    // draw sprite scaled 6x
+    const grid=SPRITES[sp.sprite];
+    for(let r=0;r<grid.length;r++)for(let col=0;col<grid[r].length;col++){const p=PAL[grid[r][col]];if(!p)continue;cc.fillStyle=p;cc.fillRect(col*6,r*6,6,6);}
+    cell.onmouseenter=()=>cell.style.borderColor=TYPES[sp.type].c;
+    cell.onmouseleave=()=>cell.style.borderColor='#33404d';
+    cell.onclick=()=>{ pick.remove(); startGame(id); };
+    row.appendChild(cell);
+  });
+}
+
+document.getElementById('btnStart').onclick=showStarterPick;
+document.getElementById('btnHow').onclick=()=>{document.getElementById('ovTitle').classList.remove('show');document.getElementById('ovHow').classList.add('show');};
+document.getElementById('btnBack').onclick=()=>{document.getElementById('ovHow').classList.remove('show');document.getElementById('ovTitle').classList.add('show');};
+// allow ENTER on title to start
+window.addEventListener('keydown',e=>{
+  if(G.scene==='title' && document.getElementById('ovTitle').classList.contains('show')){
+    if(e.key==='Enter'){ showStarterPick(); }
+  }
+});
+
+/* expose minimal hooks for self-test */
+window.__FERRO = {
+  G, B, startGame, makeMon, calcDmg, eff, SPECIES, MOVES,
+  forceWild:(id,lv)=>{ const w=makeMon(id||'rustmite',lv||5); enterBattle(w,false,null); },
+  press:(k)=>pressKey(k),
+  state:()=>({scene:G.scene, bstate:B.state, party:G.party.length, dex:Object.keys(G.dex).length, ball:G.bag.ball}),
+};
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

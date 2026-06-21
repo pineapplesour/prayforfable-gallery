@@ -1,0 +1,786 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>DITHER//DECK — 486 lo-fi player</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<style>
+  :root{
+    /* restricted ~12-color 486 sunset palette */
+    --c-void:#1a0f14;
+    --c-maroon:#3a1721;
+    --c-deep:#5e2330;
+    --c-rust:#8c3a2b;
+    --c-orange:#c25a2e;
+    --c-amber:#e0823a;
+    --c-salmon:#e89a6a;
+    --c-peach:#f2c69a;
+    --c-cream:#f6e3c5;
+    --c-teal:#1f8a7a;
+    --c-teal-dk:#0e5a52;
+    --c-green:#2f5d3a;
+    --ink:#f6e3c5;
+    --ink-dim:#c79a6f;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:#120a0e;
+    color:var(--ink);
+    font-family:'VT323',monospace;
+    font-size:20px;
+    -webkit-font-smoothing:none;
+    image-rendering:pixelated;
+    overflow:hidden;
+    letter-spacing:.5px;
+  }
+  /* center stage */
+  #stage{
+    position:fixed;inset:0;
+    display:flex;align-items:center;justify-content:center;
+    padding:24px;
+    background:
+      radial-gradient(120% 90% at 50% 0%, #2a141b 0%, #160c10 60%, #0d070a 100%);
+  }
+  /* the player chassis = beige/maroon winamp-ish window */
+  #deck{
+    position:relative;
+    width:min(960px, 100%);
+    background:linear-gradient(180deg,#4a2029,#33161e);
+    border:3px solid #1a0d12;
+    box-shadow:
+      0 0 0 2px #6e3340 inset,
+      0 22px 60px rgba(0,0,0,.6),
+      0 2px 0 #7a3a47 inset;
+    border-radius:4px;
+    padding:14px;
+    display:grid;
+    grid-template-columns: 1.15fr .85fr;
+    grid-template-rows:auto auto auto;
+    gap:14px;
+    image-rendering:pixelated;
+  }
+  /* title bar */
+  #titlebar{
+    grid-column:1 / -1;
+    display:flex;align-items:center;gap:10px;
+    background:repeating-linear-gradient(90deg,#7a3a47 0 4px,#69313d 4px 8px);
+    border:2px solid #1a0d12;
+    padding:6px 10px;
+    box-shadow:0 1px 0 #93475a inset;
+  }
+  #titlebar .dot{width:12px;height:12px;border:2px solid #1a0d12;background:var(--c-amber)}
+  #titlebar .dot.b{background:var(--c-teal)}
+  #titlebar .dot.c{background:var(--c-salmon)}
+  #titlebar h1{
+    font-family:'Press Start 2P';font-size:11px;color:var(--c-peach);
+    text-shadow:1px 1px 0 #1a0d12;letter-spacing:1px;margin-left:4px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  #titlebar .ver{margin-left:auto;font-family:'Press Start 2P';font-size:8px;color:var(--ink-dim)}
+
+  /* album art / dithered hero scene */
+  #artwrap{
+    grid-column:1;grid-row:2;
+    position:relative;
+    border:3px solid #1a0d12;
+    background:#0d070a;
+    box-shadow:0 0 0 2px #6e3340 inset;
+    aspect-ratio: 4/3;
+    overflow:hidden;
+  }
+  #art{display:block;width:100%;height:100%;image-rendering:pixelated}
+  /* scanlines + grain overlay on art */
+  #artwrap .crt{
+    position:absolute;inset:0;pointer-events:none;mix-blend-mode:multiply;opacity:.55;
+    background:repeating-linear-gradient(0deg, rgba(0,0,0,.45) 0 1px, transparent 1px 3px);
+  }
+  #artwrap .crt.off{display:none}
+  #artwrap .nowtag{
+    position:absolute;left:8px;bottom:8px;
+    background:rgba(20,9,12,.78);border:2px solid var(--c-rust);
+    padding:3px 8px;font-size:16px;color:var(--c-peach);
+    text-shadow:1px 1px 0 #1a0d12;max-width:80%;
+  }
+  #artwrap .badge{
+    position:absolute;right:8px;top:8px;
+    font-family:'Press Start 2P';font-size:7px;color:#0d070a;
+    background:var(--c-teal);border:2px solid #073f39;padding:4px 6px;
+    box-shadow:2px 2px 0 #073f39;
+  }
+
+  /* visualizer panel (right) */
+  #vizwrap{
+    grid-column:2;grid-row:2;
+    position:relative;
+    border:3px solid #1a0d12;
+    background:#0a1413;
+    box-shadow:0 0 0 2px #0e5a52 inset;
+    overflow:hidden;
+    display:flex;flex-direction:column;
+  }
+  #vizhead{
+    font-family:'Press Start 2P';font-size:7px;color:var(--c-peach);
+    background:var(--c-teal-dk);padding:6px 8px;border-bottom:2px solid #073f39;
+    display:flex;justify-content:space-between;align-items:center;letter-spacing:1px;
+  }
+  #viz{display:block;width:100%;flex:1;image-rendering:pixelated;background:#081110}
+  #vizfoot{
+    font-size:15px;color:var(--c-teal);background:#06100f;padding:4px 8px;
+    border-top:2px solid #073f39;display:flex;justify-content:space-between;
+  }
+
+  /* control panel chip row */
+  #controls{
+    grid-column:1 / -1;grid-row:3;
+    display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;
+  }
+  .chip{
+    background:var(--c-teal);border:2px solid #073f39;border-radius:14px;
+    box-shadow:2px 2px 0 #073f39, 0 0 0 2px #14b09c inset;
+    padding:8px 12px;color:#06201d;
+    display:flex;align-items:center;gap:10px;
+  }
+  .chip .lbl{font-family:'Press Start 2P';font-size:8px;color:#06201d;letter-spacing:1px}
+  .btns{display:flex;gap:8px}
+  button{
+    font-family:'VT323',monospace;cursor:pointer;
+    background:#0d3e38;color:var(--c-peach);
+    border:2px solid #052b27;
+    box-shadow:2px 2px 0 #052b27, 0 0 0 1px #14b09c inset;
+    width:42px;height:34px;font-size:18px;line-height:1;
+    display:flex;align-items:center;justify-content:center;
+    transition:transform .04s, box-shadow .04s;
+    image-rendering:pixelated;
+  }
+  button:hover{background:#11534b}
+  button:active{transform:translate(2px,2px);box-shadow:0 0 0 #052b27,0 0 0 1px #14b09c inset}
+  button.play{width:54px;background:var(--c-orange);color:#1a0d12;border-color:#5e2330;box-shadow:2px 2px 0 #5e2330,0 0 0 1px #f2c69a inset}
+  button.play:hover{background:var(--c-amber)}
+  button.on{background:var(--c-amber);color:#1a0d12}
+
+  /* progress + time + track meta middle */
+  .midbar{
+    background:#221016;border:2px solid #1a0d12;box-shadow:0 0 0 1px #6e3340 inset;
+    padding:8px 12px;display:flex;flex-direction:column;gap:6px;min-width:0;
+  }
+  .trackline{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+  .trackline .t{color:var(--c-peach);font-size:19px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .trackline .a{color:var(--ink-dim);font-size:16px;white-space:nowrap}
+  .seek{position:relative;height:16px;background:#160a0e;border:2px solid #1a0d12;cursor:pointer;overflow:hidden}
+  .seek .fill{position:absolute;left:0;top:0;bottom:0;width:30%;
+    background:repeating-linear-gradient(90deg,var(--c-amber) 0 4px,var(--c-orange) 4px 8px)}
+  .seek .knob{position:absolute;top:-2px;width:6px;height:18px;background:var(--c-cream);border:2px solid #1a0d12;left:30%}
+  .timeline{display:flex;justify-content:space-between;font-size:16px;color:var(--c-salmon)}
+
+  /* playlist (full width bottom of deck via row1 col2? -> place in right under viz) */
+  #playlist{
+    grid-column:1 / -1;grid-row:4;
+    border:3px solid #1a0d12;background:#1c0e13;box-shadow:0 0 0 2px #6e3340 inset;
+    max-height:150px;overflow:auto;
+  }
+  #playlist .ph{
+    font-family:'Press Start 2P';font-size:7px;color:var(--ink-dim);
+    padding:6px 10px;border-bottom:2px solid #2c151c;background:#160a0e;
+    position:sticky;top:0;display:flex;justify-content:space-between;
+  }
+  .row{display:grid;grid-template-columns:34px 1fr auto;gap:8px;align-items:center;
+    padding:5px 10px;border-bottom:1px solid #2c151c;cursor:pointer;font-size:18px}
+  .row:hover{background:#2a141b}
+  .row.active{background:#3a1721;color:var(--c-peach)}
+  .row .n{color:var(--ink-dim);font-size:15px}
+  .row.active .n{color:var(--c-amber)}
+  .row .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row .ln{color:var(--c-salmon);font-size:15px}
+
+  /* eq / extra chip */
+  .switches{display:flex;gap:8px;flex-wrap:wrap}
+
+  /* scrollbar lo-fi */
+  ::-webkit-scrollbar{width:12px;height:12px}
+  ::-webkit-scrollbar-track{background:#160a0e}
+  ::-webkit-scrollbar-thumb{background:#5e2330;border:2px solid #160a0e}
+
+  /* responsive deck reflow */
+  @media (max-width: 760px){
+    body{font-size:18px}
+    #stage{padding:10px;align-items:flex-start}
+    #deck{grid-template-columns:1fr;gap:10px;padding:10px}
+    #artwrap{grid-column:1;grid-row:auto}
+    #vizwrap{grid-column:1;grid-row:auto;min-height:120px}
+    #controls{grid-column:1;grid-row:auto;grid-template-columns:1fr;gap:8px}
+    #controls .chip{justify-content:center}
+    #controls .midbar{order:-1}
+    #playlist{grid-column:1;grid-row:auto;max-height:130px}
+    #titlebar h1{font-size:9px}
+  }
+</style>
+</head>
+<body>
+  <div id="stage">
+    <div id="deck">
+      <!-- title bar -->
+      <div id="titlebar">
+        <span class="dot"></span><span class="dot b"></span><span class="dot c"></span>
+        <h1>DITHER//DECK</h1>
+        <span class="ver">v4.86</span>
+      </div>
+
+      <!-- album art dithered scene -->
+      <div id="artwrap">
+        <canvas id="art" width="320" height="240"></canvas>
+        <div class="crt" id="crtLayer"></div>
+        <span class="badge">DITHER&nbsp;ON</span>
+        <span class="nowtag" id="nowtag">SUNSET DRIVE</span>
+      </div>
+
+      <!-- visualizer -->
+      <div id="vizwrap">
+        <div id="vizhead"><span>SPECTRUM // 8x8 BAYER</span><span id="vizMode">BARS</span></div>
+        <canvas id="viz" width="180" height="200"></canvas>
+        <div id="vizfoot"><span id="vizPeak">PK -00</span><span id="vizFps">~~~</span></div>
+      </div>
+
+      <!-- controls -->
+      <div id="controls">
+        <div class="chip">
+          <span class="lbl">CONTROL</span>
+          <div class="btns">
+            <button id="prev" title="prev">|◀</button>
+            <button id="play" class="play" title="play/pause">▶</button>
+            <button id="next" title="next">▶|</button>
+          </div>
+        </div>
+
+        <div class="midbar">
+          <div class="trackline">
+            <span class="t" id="tTitle">SUNSET DRIVE</span>
+            <span class="a" id="tArtist">— PROC.SYNTH</span>
+          </div>
+          <div class="seek" id="seek">
+            <div class="fill" id="seekFill"></div>
+            <div class="knob" id="seekKnob"></div>
+          </div>
+          <div class="timeline"><span id="tCur">0:00</span><span id="tDur">0:48</span></div>
+        </div>
+
+        <div class="chip" style="background:#5e2330;border-color:#2c0f16;box-shadow:2px 2px 0 #2c0f16,0 0 0 2px #8c3a2b inset">
+          <span class="lbl" style="color:var(--c-peach)">FX</span>
+          <div class="switches">
+            <button id="crtBtn" class="on" title="scanlines">CRT</button>
+            <button id="vizBtn" title="viz mode">VIZ</button>
+            <button id="ditBtn" class="on" title="dither toggle">DTH</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- playlist -->
+      <div id="playlist">
+        <div class="ph"><span>PLAYLIST</span><span>486.MOD</span></div>
+        <div id="rows"></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* =====================================================================
+   DITHER//DECK — lo-fi 486 music player
+   - Real ordered (Bayer 8x8) dithering with restricted palette
+   - Procedural canvas scenes (one per track)
+   - WebAudio procedural synth + dithered spectrum visualizer
+   ===================================================================== */
+
+/* ---------- restricted 486 sunset palette (RGB) ---------- */
+const PAL = [
+  [26,15,20],   // void
+  [58,23,33],   // maroon
+  [94,35,48],   // deep
+  [140,58,43],  // rust
+  [194,90,46],  // orange
+  [224,130,58], // amber
+  [232,154,106],// salmon
+  [242,198,154],// peach
+  [246,227,197],// cream
+  [31,138,122], // teal
+  [14,90,82],   // teal dk
+  [47,93,58]    // green
+];
+/* precompute nearest-palette lookup via simple distance (cached) */
+function nearestPal(r,g,b){
+  let bi=0,bd=1e9;
+  for(let i=0;i<PAL.length;i++){
+    const p=PAL[i];
+    const dr=r-p[0],dg=g-p[1],db=b-p[2];
+    const d=dr*dr+dg*dg+db*db;
+    if(d<bd){bd=d;bi=i;}
+  }
+  return PAL[bi];
+}
+
+/* Bayer 8x8 matrix (values 0..63) normalized later */
+const BAYER8 = [
+  [ 0,32, 8,40, 2,34,10,42],
+  [48,16,56,24,50,18,58,26],
+  [12,44, 4,36,14,46, 6,38],
+  [60,28,52,20,62,30,54,22],
+  [ 3,35,11,43, 1,33, 9,41],
+  [51,19,59,27,49,17,57,25],
+  [15,47, 7,39,13,45, 5,37],
+  [63,31,55,23,61,29,53,21]
+];
+const BAYER_N = 64;
+
+/* apply ordered dithering in-place to an ImageData using palette.
+   spread = how much the threshold perturbs color before quantization. */
+function ditherImage(img, spread){
+  const d=img.data, w=img.width, h=img.height;
+  for(let y=0;y<h;y++){
+    const brow = BAYER8[y & 7];
+    for(let x=0;x<w;x++){
+      const i=(y*w+x)*4;
+      // bayer threshold centered around 0: (-0.5..0.5)
+      const t = (brow[x & 7] / BAYER_N) - 0.5;
+      const add = t * spread;
+      let r=d[i]+add, g=d[i+1]+add, b=d[i+2]+add;
+      const p=nearestPal(r,g,b);
+      d[i]=p[0]; d[i+1]=p[1]; d[i+2]=p[2]; d[i+3]=255;
+    }
+  }
+  return img;
+}
+
+/* =====================================================================
+   PROCEDURAL SCENES (drawn small, then dithered, then scaled by canvas px)
+   Each scene paints into an offscreen low-res buffer.
+   ===================================================================== */
+const art = document.getElementById('art');
+const aw = art.width, ah = art.height;            // 320x240 low-res
+const actx = art.getContext('2d', {willReadFrequently:true});
+const off = document.createElement('canvas'); off.width=aw; off.height=ah;
+const octx = off.getContext('2d', {willReadFrequently:true});
+
+let DITHER_ON = true;
+let DITHER_SPREAD = 64; // strength of the bayer perturbation
+
+/* shared sky gradient helper */
+function sky(ctx, c0,c1,c2){
+  const g=ctx.createLinearGradient(0,0,0,ah);
+  g.addColorStop(0,c0); g.addColorStop(0.55,c1); g.addColorStop(1,c2);
+  ctx.fillStyle=g; ctx.fillRect(0,0,aw,ah);
+}
+function sun(ctx,cx,cy,r,col){
+  const g=ctx.createRadialGradient(cx,cy,2,cx,cy,r);
+  g.addColorStop(0,'#fff2d8'); g.addColorStop(.35,col); g.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=g; ctx.beginPath(); ctx.arc(cx,cy,r,0,7); ctx.fill();
+}
+
+/* SCENE 0 — Golden bridge over warm water (the reference look) */
+function sceneBridge(ctx){
+  sky(ctx,'#e0823a','#c25a2e','#5e2330');
+  sun(ctx, aw*0.5, ah*0.30, 64, '#f2c69a');
+  // hills back
+  ctx.fillStyle='#8c3a2b';
+  ctx.beginPath();ctx.moveTo(0,ah*0.55);
+  ctx.quadraticCurveTo(aw*0.25,ah*0.46,aw*0.5,ah*0.55);
+  ctx.quadraticCurveTo(aw*0.75,ah*0.62,aw,ah*0.54);ctx.lineTo(aw,ah*0.6);ctx.lineTo(0,ah*0.6);ctx.fill();
+  // water
+  const wg=ctx.createLinearGradient(0,ah*0.58,0,ah);
+  wg.addColorStop(0,'#c25a2e');wg.addColorStop(1,'#3a1721');
+  ctx.fillStyle=wg; ctx.fillRect(0,ah*0.58,aw,ah*0.42);
+  // bridge towers
+  ctx.fillStyle='#5e2330';
+  const tx1=aw*0.30,tx2=aw*0.68, top=ah*0.18, deck=ah*0.60;
+  ctx.fillRect(tx1-4,top,8,deck-top);
+  ctx.fillRect(tx2-4,top,8,deck-top);
+  // tower crossbars
+  ctx.fillRect(tx1-7,top+6,14,4); ctx.fillRect(tx1-7,top+22,14,4);
+  ctx.fillRect(tx2-7,top+6,14,4); ctx.fillRect(tx2-7,top+22,14,4);
+  // suspension cables
+  ctx.strokeStyle='#3a1721';ctx.lineWidth=2;
+  ctx.beginPath();ctx.moveTo(0,deck-8);
+  ctx.quadraticCurveTo(tx1,deck-44,tx1,top);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(tx1,top);ctx.quadraticCurveTo((tx1+tx2)/2,deck-44,tx2,top);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(tx2,top);ctx.quadraticCurveTo(aw,deck-44,aw,deck-8);ctx.stroke();
+  // vertical hangers
+  ctx.lineWidth=1;
+  for(let x=10;x<aw;x+=12){
+    // approximate cable height at x (simple parabola near deck)
+    let cy;
+    if(x<tx1){const tt=x/tx1; cy=(deck-8)+(top-(deck-8))*(tt*tt);}
+    else if(x<tx2){const tt=(x-tx1)/(tx2-tx1); cy=top+(deck-44-top)*4*tt*(1-tt);}
+    else {const tt=(x-tx2)/(aw-tx2); cy=top+((deck-8)-top)*(tt*tt);}
+    ctx.beginPath();ctx.moveTo(x,cy);ctx.lineTo(x,deck);ctx.stroke();
+  }
+  // deck
+  ctx.fillStyle='#5e2330';ctx.fillRect(0,deck,aw,5);
+  ctx.fillStyle='#8c3a2b';ctx.fillRect(0,deck+5,aw,2);
+  // shimmering reflections (will dither into mosaic)
+  ctx.globalAlpha=0.5;ctx.fillStyle='#f2c69a';
+  for(let i=0;i<26;i++){
+    const yy=ah*0.62+Math.random()*ah*0.36;
+    ctx.fillRect(Math.random()*aw, yy, 8+Math.random()*30, 1);
+  }
+  ctx.globalAlpha=1;
+}
+
+/* SCENE 1 — Desert highway vanishing into sun */
+function sceneHighway(ctx){
+  sky(ctx,'#e89a6a','#c25a2e','#3a1721');
+  sun(ctx, aw*0.5, ah*0.34, 50, '#e0823a');
+  const hor=ah*0.55;
+  // mesas
+  ctx.fillStyle='#5e2330';
+  ctx.fillRect(aw*0.05,hor-26,30,26);
+  ctx.fillRect(aw*0.78,hor-40,38,40);
+  ctx.fillStyle='#8c3a2b';
+  ctx.fillRect(aw*0.62,hor-18,22,18);
+  // ground
+  ctx.fillStyle='#3a1721';ctx.fillRect(0,hor,aw,ah-hor);
+  // road perspective
+  ctx.fillStyle='#160a0e';
+  ctx.beginPath();ctx.moveTo(aw*0.46,hor);ctx.lineTo(aw*0.54,hor);
+  ctx.lineTo(aw*0.95,ah);ctx.lineTo(aw*0.05,ah);ctx.fill();
+  // dashes
+  ctx.fillStyle='#e0823a';
+  for(let i=0;i<8;i++){
+    const t=i/8; const y=hor+(ah-hor)*t*t;
+    const w=1+t*7; ctx.fillRect(aw*0.5-w/2,y,w,2+t*6);
+  }
+  // sun haze bands
+  ctx.globalAlpha=.4;ctx.fillStyle='#1a0d12';
+  for(let i=0;i<5;i++)ctx.fillRect(aw*0.5-60, ah*0.18+i*7, 120, 3);
+  ctx.globalAlpha=1;
+}
+
+/* SCENE 2 — City skyline dusk */
+function sceneCity(ctx){
+  sky(ctx,'#c25a2e','#8c3a2b','#1a0f14');
+  sun(ctx, aw*0.74, ah*0.26, 42, '#e0823a');
+  const base=ah*0.78;
+  // far buildings
+  ctx.fillStyle='#5e2330';
+  let x=0; let seed=7;
+  function rnd(){seed=(seed*9301+49297)%233280;return seed/233280;}
+  while(x<aw){const w=14+rnd()*26;const h=40+rnd()*80;ctx.fillRect(x,base-h,w,h);x+=w+2;}
+  // near buildings darker
+  ctx.fillStyle='#2c0f16';x=0;seed=42;
+  while(x<aw){const w=20+rnd()*30;const h=60+rnd()*100;ctx.fillRect(x,base-h+20,w,h);x+=w-4;}
+  // ground
+  ctx.fillStyle='#160a0e';ctx.fillRect(0,base,aw,ah-base);
+  // lit windows
+  ctx.fillStyle='#f2c69a';seed=99;
+  for(let i=0;i<140;i++){
+    const wx=rnd()*aw, wy= base- rnd()*150;
+    if(wy>base-6)continue;
+    ctx.globalAlpha=.7; ctx.fillRect(wx,wy,2,2);
+  }
+  ctx.globalAlpha=1;
+}
+
+/* SCENE 3 — Ocean palms / vaporwave */
+function sceneOcean(ctx){
+  sky(ctx,'#e0823a','#e89a6a','#5e2330');
+  sun(ctx, aw*0.5, ah*0.32, 58, '#f2c69a');
+  // grid sun stripes
+  ctx.globalAlpha=.5;ctx.fillStyle='#1a0d12';
+  for(let i=0;i<6;i++)ctx.fillRect(aw*0.5-58,ah*0.22+i*8,116,4);
+  ctx.globalAlpha=1;
+  const hor=ah*0.6;
+  // sea
+  const sg=ctx.createLinearGradient(0,hor,0,ah);sg.addColorStop(0,'#1f8a7a');sg.addColorStop(1,'#0e5a52');
+  ctx.fillStyle=sg;ctx.fillRect(0,hor,aw,ah-hor);
+  // perspective grid
+  ctx.strokeStyle='#2f5d3a';ctx.lineWidth=1;
+  for(let i=1;i<10;i++){const t=i/10;const y=hor+(ah-hor)*t*t;ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(aw,y);ctx.stroke();}
+  for(let i=-6;i<=6;i++){ctx.beginPath();ctx.moveTo(aw/2,hor);ctx.lineTo(aw/2+i*40,ah);ctx.stroke();}
+  // palms
+  function palm(px){
+    ctx.strokeStyle='#2c0f16';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(px,hor);ctx.lineTo(px-3,hor-44);ctx.stroke();
+    ctx.strokeStyle='#3a1721';ctx.lineWidth=2;
+    for(let a=-3;a<=3;a++){ctx.beginPath();ctx.moveTo(px-3,hor-44);ctx.quadraticCurveTo(px-3+a*8,hor-54,px-3+a*16,hor-40);ctx.stroke();}
+  }
+  palm(aw*0.16);palm(aw*0.86);
+  ctx.fillStyle='#3a1721';ctx.fillRect(0,hor-1,aw,2);
+}
+
+const SCENES = [
+  {fn:sceneBridge, title:'SUNSET DRIVE',   artist:'PROC.SYNTH', dur:48},
+  {fn:sceneHighway,title:'DESERT MODEM',   artist:'486 CORE',   dur:62},
+  {fn:sceneCity,   title:'DUSK ROUTINE',   artist:'NIGHT BUS',  dur:55},
+  {fn:sceneOcean,  title:'TEAL LAGOON',    artist:'WAVE.EXE',   dur:71}
+];
+
+function renderArt(idx){
+  octx.clearRect(0,0,aw,ah);
+  SCENES[idx].fn(octx);
+  if(DITHER_ON){
+    const img=octx.getImageData(0,0,aw,ah);
+    ditherImage(img, DITHER_SPREAD);
+    actx.putImageData(img,0,0);
+  } else {
+    actx.clearRect(0,0,aw,ah);
+    actx.drawImage(off,0,0);
+  }
+}
+
+/* =====================================================================
+   WEBAUDIO — procedural lo-fi synth (no external audio files)
+   Builds a simple chord/arp pad + bass + hat with an analyser.
+   ===================================================================== */
+let AC=null, analyser=null, freqData=null, master=null;
+let voices=[]; let seqTimer=null; let step=0; let playing=false;
+let startTime=0, elapsedBase=0;
+
+function ensureAudio(){
+  if(AC) return;
+  AC = new (window.AudioContext||window.webkitAudioContext)();
+  master = AC.createGain(); master.gain.value=0.0;
+  // gentle lowpass for warmth
+  const lp = AC.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=2600; lp.Q.value=0.7;
+  analyser = AC.createAnalyser(); analyser.fftSize=128; analyser.smoothingTimeConstant=0.78;
+  freqData = new Uint8Array(analyser.frequencyBinCount);
+  master.connect(lp); lp.connect(analyser); analyser.connect(AC.destination);
+}
+
+/* per-track musical params */
+const SCALES = [
+  [0,3,5,7,10],   // minor pent
+  [0,2,4,7,9],    // major pent
+  [0,2,3,5,7],    // dorian-ish
+  [0,4,7,11,14]   // open maj7 spread
+];
+const ROOTS = [110, 98, 123.47, 130.81];
+function noteFreq(root, semis){ return root * Math.pow(2, semis/12); }
+
+function blip(freq, t, dur, type, gain){
+  const o=AC.createOscillator(); const g=AC.createGain();
+  o.type=type; o.frequency.value=freq;
+  g.gain.setValueAtTime(0,t);
+  g.gain.linearRampToValueAtTime(gain,t+0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  o.connect(g); g.connect(master);
+  o.start(t); o.stop(t+dur+0.02);
+}
+function hat(t){
+  const bufSize=AC.sampleRate*0.05;
+  const buf=AC.createBuffer(1,bufSize,AC.sampleRate);
+  const dd=buf.getChannelData(0);
+  for(let i=0;i<bufSize;i++) dd[i]=(Math.random()*2-1)*Math.pow(1-i/bufSize,3);
+  const src=AC.createBufferSource();src.buffer=buf;
+  const hp=AC.createBiquadFilter();hp.type='highpass';hp.frequency.value=6000;
+  const g=AC.createGain();g.gain.value=0.18;
+  src.connect(hp);hp.connect(g);g.connect(master);src.start(t);
+}
+
+function scheduleStep(){
+  if(!playing) return;
+  const idx=cur;
+  const scale=SCALES[idx], root=ROOTS[idx];
+  const t=AC.currentTime+0.02;
+  const bpmStep=0.26; // seconds per step
+  // bass every 4
+  if(step%4===0){ blip(noteFreq(root,scale[0])/2, t, 0.5,'triangle',0.32); }
+  // arp
+  const n=scale[(step*3)%scale.length] + (step%8<4?0:12);
+  blip(noteFreq(root,n), t, 0.32, (step%2?'square':'sawtooth'), 0.10);
+  // pad chord on bar
+  if(step%8===0){
+    blip(noteFreq(root,scale[2]), t, 1.4,'sine',0.09);
+    blip(noteFreq(root,scale[4]), t, 1.4,'sine',0.07);
+  }
+  // hats
+  if(step%2===1) hat(t);
+  step++;
+  seqTimer=setTimeout(scheduleStep, bpmStep*1000);
+}
+
+function play(){
+  ensureAudio();
+  if(AC.state==='suspended') AC.resume();
+  playing=true;
+  master.gain.cancelScheduledValues(AC.currentTime);
+  master.gain.linearRampToValueAtTime(0.5, AC.currentTime+0.3);
+  startTime=performance.now();
+  scheduleStep();
+  document.getElementById('play').textContent='❚❚';
+  if(!rafOn){rafOn=true; loop();}
+}
+function pause(){
+  playing=false;
+  if(seqTimer)clearTimeout(seqTimer);
+  if(master){master.gain.cancelScheduledValues(AC.currentTime);master.gain.linearRampToValueAtTime(0.0,AC.currentTime+0.2);}
+  elapsedBase += (performance.now()-startTime)/1000;
+  document.getElementById('play').textContent='▶';
+}
+
+/* =====================================================================
+   VISUALIZER — dithered spectrum bars / oscilloscope
+   ===================================================================== */
+const viz=document.getElementById('viz');
+const vctx=viz.getContext('2d',{willReadFrequently:true});
+let VW=180, VH=200;
+function fitViz(){
+  const r=viz.getBoundingClientRect();
+  VW=Math.max(120,Math.floor(r.width)); VH=Math.max(120,Math.floor(r.height));
+  viz.width=Math.floor(VW/2); viz.height=Math.floor(VH/2); // low-res buffer -> pixelated
+}
+let vizMode=0; const VIZ_MODES=['BARS','SCOPE','RINGS'];
+
+const voff=document.createElement('canvas'); const vo=voff.getContext('2d',{willReadFrequently:true});
+
+function drawViz(){
+  const w=viz.width,h=viz.height;
+  voff.width=w; voff.height=h;
+  // bg gradient warm/teal
+  const g=vo.createLinearGradient(0,0,0,h);
+  g.addColorStop(0,'#0a1413');g.addColorStop(1,'#06100f');
+  vo.fillStyle=g;vo.fillRect(0,0,w,h);
+
+  let data=freqData;
+  let peak=0;
+  if(analyser){ analyser.getByteFrequencyData(freqData); }
+  else { // idle shimmer when no audio
+    if(!freqData)freqData=new Uint8Array(64);
+    const tt=performance.now()/300;
+    for(let i=0;i<freqData.length;i++) freqData[i]= playing?0: 40+Math.floor(35*Math.abs(Math.sin(tt+i*0.4))*(1-i/freqData.length));
+    data=freqData;
+  }
+
+  if(vizMode===0){ // BARS
+    const bins=Math.min(20,data.length);
+    const bw=w/bins;
+    for(let i=0;i<bins;i++){
+      const v=data[i]/255; if(v>peak)peak=v;
+      const bh=Math.max(2, v*h*0.92);
+      // color by height
+      const col = v>0.75?'#f2c69a': v>0.5?'#e0823a': v>0.28?'#c25a2e':'#1f8a7a';
+      vo.fillStyle=col;
+      vo.fillRect(i*bw+1, h-bh, bw-2, bh);
+      // top cap
+      vo.fillStyle='#f6e3c5'; vo.fillRect(i*bw+1, h-bh, bw-2, 2);
+    }
+  } else if(vizMode===1){ // SCOPE
+    vo.strokeStyle='#1f8a7a';vo.lineWidth=1.5;vo.beginPath();
+    const N=data.length;
+    for(let i=0;i<N;i++){
+      const v=data[i]/255; if(v>peak)peak=v;
+      const x=(i/(N-1))*w; const y=h/2 + Math.sin(i*0.6+performance.now()/120)*(v*h*0.4);
+      i?vo.lineTo(x,y):vo.moveTo(x,y);
+    }
+    vo.stroke();
+    vo.strokeStyle='#e0823a';vo.beginPath();
+    for(let i=0;i<N;i++){const v=data[i]/255;const x=(i/(N-1))*w;const y=h/2 - v*h*0.42;i?vo.lineTo(x,y):vo.moveTo(x,y);}
+    vo.stroke();
+  } else { // RINGS
+    const cx=w/2,cy=h/2;
+    const bins=Math.min(16,data.length);
+    for(let i=bins-1;i>=0;i--){
+      const v=data[i]/255; if(v>peak)peak=v;
+      const r=6+i*(Math.min(w,h)/2.2/bins)+v*10;
+      vo.strokeStyle= i%2?'#c25a2e':'#1f8a7a'; vo.lineWidth=2;
+      vo.globalAlpha=0.5+v*0.5;
+      vo.beginPath();vo.arc(cx,cy,r,0,7);vo.stroke();
+    }
+    vo.globalAlpha=1;
+  }
+
+  // dither the viz buffer too
+  if(DITHER_ON){
+    const img=vo.getImageData(0,0,w,h);
+    ditherImage(img, 50);
+    vctx.putImageData(img,0,0);
+  } else {
+    vctx.clearRect(0,0,w,h); vctx.drawImage(voff,0,0);
+  }
+  document.getElementById('vizPeak').textContent='PK '+(peak>0?('-'+String(Math.round((1-peak)*40)).padStart(2,'0')):'-40');
+}
+
+/* =====================================================================
+   MAIN RAF LOOP + UI
+   ===================================================================== */
+let rafOn=false, lastFps=performance.now(), frames=0;
+function loop(){
+  drawViz();
+  // progress
+  let el=elapsedBase + (playing?(performance.now()-startTime)/1000:0);
+  const dur=SCENES[cur].dur;
+  if(el>=dur){ el=0; elapsedBase=0; startTime=performance.now(); nextTrack(); }
+  const frac=Math.min(1,el/dur);
+  document.getElementById('seekFill').style.width=(frac*100)+'%';
+  document.getElementById('seekKnob').style.left=(frac*100)+'%';
+  document.getElementById('tCur').textContent=fmt(el);
+  // fps
+  frames++; const now=performance.now();
+  if(now-lastFps>500){ document.getElementById('vizFps').textContent=Math.round(frames*1000/(now-lastFps))+'FPS'; frames=0; lastFps=now; }
+  requestAnimationFrame(loop);
+}
+function fmt(s){s=Math.max(0,Math.floor(s));return Math.floor(s/60)+':'+String(s%60).padStart(2,'0');}
+
+/* track state */
+let cur=0;
+function loadTrack(i){
+  cur=(i+SCENES.length)%SCENES.length;
+  elapsedBase=0; startTime=performance.now(); step=0;
+  renderArt(cur);
+  const s=SCENES[cur];
+  document.getElementById('tTitle').textContent=s.title;
+  document.getElementById('tArtist').textContent='— '+s.artist;
+  document.getElementById('nowtag').textContent=s.title;
+  document.getElementById('tDur').textContent=fmt(s.dur);
+  document.querySelectorAll('.row').forEach((r,idx)=>r.classList.toggle('active',idx===cur));
+}
+function nextTrack(){ const wasPlaying=playing; if(seqTimer)clearTimeout(seqTimer); loadTrack(cur+1); if(wasPlaying){playing=false;play();} }
+function prevTrack(){ const wasPlaying=playing; if(seqTimer)clearTimeout(seqTimer); loadTrack(cur-1); if(wasPlaying){playing=false;play();} }
+
+/* build playlist rows */
+const rows=document.getElementById('rows');
+SCENES.forEach((s,i)=>{
+  const d=document.createElement('div');d.className='row'+(i===0?' active':'');
+  d.innerHTML='<span class="n">'+String(i+1).padStart(2,'0')+'</span>'+
+              '<span class="nm">'+s.title+' <span style="color:#c79a6f">'+s.artist+'</span></span>'+
+              '<span class="ln">'+fmt(s.dur)+'</span>';
+  d.addEventListener('click',()=>{const wp=playing;if(seqTimer)clearTimeout(seqTimer);loadTrack(i);if(wp){playing=false;play();}});
+  rows.appendChild(d);
+});
+
+/* controls wiring */
+document.getElementById('play').addEventListener('click',()=>{ playing?pause():play(); });
+document.getElementById('next').addEventListener('click',nextTrack);
+document.getElementById('prev').addEventListener('click',prevTrack);
+document.getElementById('seek').addEventListener('click',(e)=>{
+  const r=e.currentTarget.getBoundingClientRect();
+  const frac=Math.min(1,Math.max(0,(e.clientX-r.left)/r.width));
+  elapsedBase=frac*SCENES[cur].dur; startTime=performance.now();
+});
+
+/* FX toggles */
+const crtBtn=document.getElementById('crtBtn'), crtLayer=document.getElementById('crtLayer');
+crtBtn.addEventListener('click',()=>{ crtLayer.classList.toggle('off'); crtBtn.classList.toggle('on'); });
+const vizBtn=document.getElementById('vizBtn');
+vizBtn.addEventListener('click',()=>{ vizMode=(vizMode+1)%VIZ_MODES.length; document.getElementById('vizMode').textContent=VIZ_MODES[vizMode]; });
+const ditBtn=document.getElementById('ditBtn');
+ditBtn.addEventListener('click',()=>{ DITHER_ON=!DITHER_ON; ditBtn.classList.toggle('on',DITHER_ON);
+  document.querySelector('.badge').textContent=DITHER_ON?'DITHER ON':'DITHER OFF'; renderArt(cur); });
+
+/* keyboard */
+window.addEventListener('keydown',e=>{
+  if(e.code==='Space'){e.preventDefault();playing?pause():play();}
+  if(e.code==='ArrowRight')nextTrack();
+  if(e.code==='ArrowLeft')prevTrack();
+});
+
+/* resize handling */
+function resizeAll(){ fitViz(); }
+window.addEventListener('resize',resizeAll);
+
+/* ---- BOOT: scene is the first paint, no loading gate ---- */
+fitViz();
+loadTrack(0);
+drawViz();
+rafOn=true; loop();
+</script>
+</body>
+</html>

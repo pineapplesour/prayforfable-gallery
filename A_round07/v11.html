@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>NEON DRIFT // 무한 비행</title>
+<style>
+  :root{ color-scheme: dark; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#05000c; }
+  body{
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    cursor: crosshair;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+  }
+  #scene{ position:fixed; inset:0; display:block; }
+  /* HUD */
+  .hud{
+    position:fixed; pointer-events:none; z-index:10;
+    color:#ff5bd8; text-shadow:0 0 8px rgba(255,91,216,.7);
+    letter-spacing:.18em; user-select:none;
+    font-size: clamp(9px, 1.1vw, 13px);
+    mix-blend-mode: screen;
+  }
+  #title{ top:22px; left:26px; line-height:1.5; }
+  #title b{ color:#7df9ff; text-shadow:0 0 10px rgba(125,249,255,.8); font-size:1.5em; letter-spacing:.32em; }
+  #title .sub{ color:#c9a3ff; opacity:.8; }
+  #stats{ bottom:20px; left:26px; color:#7df9ff; text-shadow:0 0 8px rgba(125,249,255,.6); line-height:1.6; }
+  #stats span{ color:#ffd34d; text-shadow:0 0 8px rgba(255,211,77,.7); }
+  #hint{ bottom:20px; right:26px; text-align:right; color:#9d7bff; line-height:1.7; opacity:.92; }
+  #hint kbd{
+    display:inline-block; padding:1px 6px; margin:0 1px;
+    border:1px solid rgba(157,123,255,.55); border-radius:4px;
+    color:#e9dcff; text-shadow:none; font-size:.92em;
+  }
+  #boost{
+    position:fixed; top:0; left:0; width:100%; height:100%;
+    pointer-events:none; z-index:5; opacity:0;
+    background: radial-gradient(circle at 50% 62%, transparent 30%, rgba(255,91,216,.10) 75%, rgba(125,249,255,.18) 100%);
+    transition: opacity .25s ease;
+  }
+  @media (max-width:520px){
+    #title{ top:14px; left:14px; }
+    #stats{ bottom:14px; left:14px; }
+    #hint{ display:none; }
+  }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<div id="boost"></div>
+<div class="hud" id="title"><b>NEON&nbsp;DRIFT</b><br><span class="sub">무한 와이어프레임 시티 — 신스웨이브 비행</span></div>
+<div class="hud" id="stats">SPD <span id="spd">0</span> &nbsp; ALT <span id="alt">0</span> &nbsp; DIST <span id="dist">0</span> km</div>
+<div class="hud" id="hint">
+  마우스 <kbd>이동</kbd> 조향 &nbsp;·&nbsp; <kbd>스크롤</kbd> 속도<br>
+  <kbd>클릭/SPACE</kbd> 부스트 &nbsp;·&nbsp; <kbd>S</kbd> 사운드 &nbsp;·&nbsp; <kbd>P</kbd> 팔레트
+</div>
+
+<script>
+"use strict";
+(() => {
+  const cv = document.getElementById('scene');
+  const ctx = cv.getContext('2d', { alpha: false });
+  const boostEl = document.getElementById('boost');
+  const spdEl = document.getElementById('spd');
+  const altEl = document.getElementById('alt');
+  const distEl = document.getElementById('dist');
+
+  let W = 0, H = 0, DPR = 1, CX = 0, HORIZON = 0;
+
+  // ---- palettes (synthwave) ----
+  const PALETTES = [
+    { name:'MAGENTA', sky:['#1a0033','#3b0a52','#7a0f56','#ff2d75'], sun:['#ffd84d','#ff5fae','#ff2d75'],
+      grid:'#ff3ea5', gridFar:'#7a2bff', building:'#19f0ff', building2:'#ff5bd8', star:'#cdb6ff' },
+    { name:'CYANFIRE', sky:['#001028','#062a4a','#0a5e6e','#13e0c8'], sun:['#fff1a8','#3df9ff','#13e0c8'],
+      grid:'#19f0ff', gridFar:'#0a6cff', building:'#ffe14d', building2:'#19f0ff', star:'#aef7ff' },
+    { name:'BLOODORANGE', sky:['#1a0008','#4a0a1a','#82132a','#ff5a2d'], sun:['#fff2b0','#ffae3d','#ff3d2d'],
+      grid:'#ff7b2d', gridFar:'#b81f6a', building:'#ffd34d', building2:'#ff4d6d', star:'#ffd0b6' },
+    { name:'VAPOR', sky:['#10002a','#2a1257','#5a2a9a','#b86bff'], sun:['#bafcff','#9d7bff','#ff8be0'],
+      grid:'#b86bff', gridFar:'#2dc7ff', building:'#7df9ff', building2:'#ff9be8', star:'#e6d6ff' }
+  ];
+  let pIdx = 0;
+  let PAL = PALETTES[pIdx];
+
+  // ---- world state ----
+  const state = {
+    speed: 14,          // base forward speed (world units / s)
+    targetSpeed: 14,
+    boost: 0,           // 0..1
+    z: 0,               // distance traveled (for grid scroll)
+    steer: 0,           // -1..1 lateral lean from mouse
+    targetSteer: 0,
+    pitch: 0,           // vertical look
+    targetPitch: 0,
+    bank: 0,            // visual roll
+    dist: 0,            // km counter
+    t: 0,
+    audioPulse: 0
+  };
+
+  // grid config
+  const ROAD_HALF = 26;     // half width of the central corridor
+  const GRID_SPACING = 7;   // distance between grid lines along Z
+  const GRID_ROWS = 46;     // how many depth lines
+  const FOV = 320;          // focal length-ish
+
+  // ---- buildings: procedural, recycled in a ring buffer ----
+  const NUM_BUILDINGS = 0; // computed below
+  let buildings = [];
+  let starfield = [];
+
+  function rand(seed){ // deterministic-ish but we just use Math.random for variety
+    return Math.random();
+  }
+
+  function makeBuilding(zBase){
+    const side = Math.random() < 0.5 ? -1 : 1;
+    const lane = 1 + Math.floor(Math.random()*3); // distance from road
+    const x = side * (ROAD_HALF + 6 + lane*16 + Math.random()*22);
+    const w = 8 + Math.random()*16;
+    const d = 8 + Math.random()*16;
+    const h = 18 + Math.random()*90 * (0.4 + Math.random());
+    return {
+      x, z: zBase, w, d, h, side,
+      floors: 2 + Math.floor(Math.random()*7),
+      lit: Math.random() < 0.75,
+      hue: Math.random() < 0.5 ? 0 : 1,
+      flick: Math.random()*Math.PI*2,
+      pulse: 0.4 + Math.random()*0.6
+    };
+  }
+
+  function buildWorld(){
+    buildings = [];
+    const span = GRID_ROWS * GRID_SPACING;
+    const count = Math.round(span / 5.5);
+    for (let i=0;i<count;i++){
+      buildings.push(makeBuilding(2 + Math.random()*span));
+    }
+    starfield = [];
+    const sc = 140;
+    for (let i=0;i<sc;i++){
+      starfield.push({ x: Math.random(), y: Math.random()*0.5, s: Math.random()*1.6+0.3, tw: Math.random()*Math.PI*2 });
+    }
+  }
+
+  // ---- projection ----
+  // camera at origin looking +Z. world point (x,y,z) -> screen.
+  function project(x, y, z){
+    if (z <= 0.6) return null;
+    const scale = FOV / z;
+    // steer shifts world sideways (parallax), pitch shifts horizon
+    const sx = CX + (x - state.steer * 34) * scale + state.bank * (y) * 0.0;
+    const sy = HORIZON - (y + state.pitch * 60) * scale;
+    return { x: sx, y: sy, scale };
+  }
+
+  // ---- resize ----
+  function resize(){
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = Math.floor(W * DPR);
+    cv.height = Math.floor(H * DPR);
+    cv.style.width = W + 'px';
+    cv.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    CX = W / 2;
+    HORIZON = H * 0.52;
+  }
+  window.addEventListener('resize', resize);
+
+  // ---- input ----
+  let pointerActive = false;
+  function setSteerFromXY(clientX, clientY){
+    const nx = (clientX / W) * 2 - 1;   // -1..1
+    const ny = (clientY / H) * 2 - 1;
+    state.targetSteer = nx;
+    state.targetPitch = -ny * 0.8;
+  }
+  window.addEventListener('mousemove', e => setSteerFromXY(e.clientX, e.clientY));
+  window.addEventListener('touchmove', e => {
+    if (e.touches[0]){ setSteerFromXY(e.touches[0].clientX, e.touches[0].clientY); }
+    e.preventDefault();
+  }, { passive:false });
+
+  // scroll -> speed
+  window.addEventListener('wheel', e => {
+    state.targetSpeed = clamp(state.targetSpeed - e.deltaY * 0.03, 4, 70);
+    e.preventDefault();
+  }, { passive:false });
+
+  // boost
+  let boosting = false;
+  function startBoost(){ boosting = true; boostEl.style.opacity = '1'; }
+  function endBoost(){ boosting = false; boostEl.style.opacity = '0'; }
+  window.addEventListener('mousedown', e => { startBoost(); });
+  window.addEventListener('mouseup', endBoost);
+  window.addEventListener('touchstart', e => { startBoost(); }, { passive:true });
+  window.addEventListener('touchend', endBoost);
+  window.addEventListener('keydown', e => {
+    if (e.code === 'Space'){ startBoost(); e.preventDefault(); }
+    else if (e.key === 's' || e.key === 'S'){ toggleAudio(); }
+    else if (e.key === 'p' || e.key === 'P'){ cyclePalette(); }
+  });
+  window.addEventListener('keyup', e => { if (e.code === 'Space') endBoost(); });
+
+  function cyclePalette(){
+    pIdx = (pIdx + 1) % PALETTES.length;
+    PAL = PALETTES[pIdx];
+  }
+  // expose for verification harness
+  window.__neon = {
+    state,
+    cyclePalette,
+    boost: (on)=>{ on ? startBoost() : endBoost(); },
+    setSteer: (nx, ny)=>{ state.targetSteer = nx; state.targetPitch = -ny*0.8; },
+    setSpeed: (s)=>{ state.targetSpeed = clamp(s,4,70); },
+    snapshot: ()=>({ z: state.z, dist: state.dist, speed: state.speed, steer: state.steer, palette: PAL.name, boost: state.boost })
+  };
+
+  function clamp(v,a,b){ return v<a?a:v>b?b:v; }
+  function lerp(a,b,t){ return a + (b-a)*t; }
+
+  // ---- WebAudio (optional pulse synth) ----
+  let actx = null, audioOn = false, masterGain = null, oscBass = null, oscPad = null, lfo = null, analyser = null, freqData = null;
+  function toggleAudio(){
+    if (!audioOn){ startAudio(); } else { stopAudio(); }
+  }
+  function startAudio(){
+    try {
+      actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+      if (actx.state === 'suspended') actx.resume();
+      masterGain = actx.createGain();
+      masterGain.gain.value = 0.0;
+      masterGain.gain.linearRampToValueAtTime(0.18, actx.currentTime + 1.2);
+      masterGain.connect(actx.destination);
+
+      // bass drone
+      oscBass = actx.createOscillator();
+      oscBass.type = 'sawtooth';
+      oscBass.frequency.value = 55;
+      const bf = actx.createBiquadFilter();
+      bf.type = 'lowpass'; bf.frequency.value = 380; bf.Q.value = 8;
+      const bg = actx.createGain(); bg.gain.value = 0.5;
+      oscBass.connect(bf); bf.connect(bg); bg.connect(masterGain);
+
+      // pad
+      oscPad = actx.createOscillator();
+      oscPad.type = 'triangle';
+      oscPad.frequency.value = 220;
+      const pg = actx.createGain(); pg.gain.value = 0.16;
+      oscPad.connect(pg); pg.connect(masterGain);
+
+      // slow filter LFO on pad
+      lfo = actx.createOscillator(); lfo.frequency.value = 0.08;
+      const lg = actx.createGain(); lg.gain.value = 60;
+      lfo.connect(lg); lg.connect(oscPad.frequency);
+
+      analyser = actx.createAnalyser();
+      analyser.fftSize = 64;
+      freqData = new Uint8Array(analyser.frequencyBinCount);
+      masterGain.connect(analyser);
+
+      oscBass.start(); oscPad.start(); lfo.start();
+      audioOn = true;
+    } catch(err){ audioOn = false; }
+  }
+  function stopAudio(){
+    if (!actx) return;
+    try {
+      masterGain.gain.linearRampToValueAtTime(0.0001, actx.currentTime + 0.4);
+      const t = actx.currentTime + 0.5;
+      oscBass.stop(t); oscPad.stop(t); lfo.stop(t);
+    } catch(e){}
+    audioOn = false;
+  }
+
+  // ---- drawing ----
+  function drawSky(){
+    const g = ctx.createLinearGradient(0,0,0,HORIZON + H*0.12);
+    g.addColorStop(0, PAL.sky[0]);
+    g.addColorStop(0.45, PAL.sky[1]);
+    g.addColorStop(0.78, PAL.sky[2]);
+    g.addColorStop(1, PAL.sky[3]);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, HORIZON + 2);
+
+    // ground gradient
+    const gg = ctx.createLinearGradient(0, HORIZON, 0, H);
+    gg.addColorStop(0, '#0a0118');
+    gg.addColorStop(1, '#05000c');
+    ctx.fillStyle = gg;
+    ctx.fillRect(0, HORIZON, W, H - HORIZON);
+  }
+
+  function drawStars(){
+    ctx.save();
+    for (const s of starfield){
+      const tw = 0.5 + 0.5*Math.sin(state.t*2 + s.tw);
+      // stars drift slightly with steer for parallax
+      let sx = (s.x - state.steer*0.04) * W;
+      sx = ((sx % W) + W) % W;
+      const sy = s.y * (HORIZON - 8);
+      ctx.globalAlpha = 0.25 + 0.65*tw;
+      ctx.fillStyle = PAL.star;
+      ctx.fillRect(sx, sy, s.s, s.s);
+    }
+    ctx.restore();
+  }
+
+  function drawSun(){
+    const sunR = Math.min(W,H) * 0.18;
+    const cx = CX - state.steer * 34 * (FOV / 400); // sun roughly at center, slight parallax
+    const cy = HORIZON - sunR*0.18 - state.pitch * 26;
+    ctx.save();
+    // glow
+    const glow = ctx.createRadialGradient(cx, cy, sunR*0.2, cx, cy, sunR*2.4);
+    glow.addColorStop(0, 'rgba(255,120,200,0.45)');
+    glow.addColorStop(1, 'rgba(255,120,200,0)');
+    ctx.fillStyle = glow;
+    ctx.fillRect(cx - sunR*2.6, cy - sunR*2.6, sunR*5.2, sunR*5.2);
+
+    // sun disc gradient
+    ctx.beginPath();
+    ctx.arc(cx, cy, sunR, 0, Math.PI*2);
+    ctx.clip();
+    const sg = ctx.createLinearGradient(cx, cy - sunR, cx, cy + sunR);
+    sg.addColorStop(0, PAL.sun[0]);
+    sg.addColorStop(0.5, PAL.sun[1]);
+    sg.addColorStop(1, PAL.sun[2]);
+    ctx.fillStyle = sg;
+    ctx.fillRect(cx - sunR, cy - sunR, sunR*2, sunR*2);
+
+    // retro scan lines across the sun (classic synthwave)
+    ctx.globalCompositeOperation = 'destination-out';
+    const lines = 9;
+    for (let i=0;i<lines;i++){
+      const ly = cy + sunR*0.1 + (i/lines)*sunR*1.1;
+      const lh = 2 + i*0.9;
+      ctx.fillStyle = 'rgba(0,0,0,1)';
+      ctx.fillRect(cx - sunR, ly, sunR*2, lh);
+    }
+    ctx.restore();
+  }
+
+  // mountains on the horizon (jagged wireframe silhouette)
+  let mountainPath = null;
+  function buildMountains(){
+    mountainPath = [];
+    const n = 60;
+    for (let i=0;i<=n;i++){
+      mountainPath.push(0.35 + 0.65*Math.abs(Math.sin(i*0.7)*Math.cos(i*0.31)) * (0.4+Math.random()*0.6));
+    }
+  }
+  function drawMountains(){
+    if (!mountainPath) buildMountains();
+    ctx.save();
+    ctx.beginPath();
+    const n = mountainPath.length - 1;
+    const maxH = H*0.16;
+    const off = (state.steer) * 26;
+    ctx.moveTo(-20, HORIZON);
+    for (let i=0;i<=n;i++){
+      const x = -20 + (i/n)*(W+40) - off;
+      const y = HORIZON - mountainPath[i]*maxH;
+      ctx.lineTo(x, y);
+    }
+    ctx.lineTo(W+20, HORIZON);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(8,2,20,0.92)';
+    ctx.fill();
+    ctx.lineWidth = 1.2;
+    ctx.strokeStyle = PAL.gridFar;
+    ctx.globalAlpha = 0.55;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawGrid(){
+    ctx.save();
+    ctx.lineWidth = 1;
+    // depth lines (horizontal, receding)
+    const phase = (state.z % GRID_SPACING);
+    for (let r=0;r<GRID_ROWS;r++){
+      const z = (r+1)*GRID_SPACING - phase;
+      if (z <= 0.6) continue;
+      const pL = project(-ROAD_HALF*6, 0, z);
+      const pR = project( ROAD_HALF*6, 0, z);
+      if (!pL || !pR) continue;
+      const fade = clamp(1 - z/(GRID_ROWS*GRID_SPACING), 0, 1);
+      const a = fade*fade*0.9 + 0.05;
+      // color blends near->far
+      ctx.strokeStyle = mix(PAL.grid, PAL.gridFar, 1-fade);
+      ctx.globalAlpha = a;
+      ctx.shadowColor = PAL.grid;
+      ctx.shadowBlur = 6 * fade;
+      ctx.beginPath();
+      ctx.moveTo(pL.x, pL.y);
+      ctx.lineTo(pR.x, pR.y);
+      ctx.stroke();
+    }
+    // longitudinal lines (vertical, converging)
+    ctx.shadowBlur = 0;
+    const near = 0.8, far = GRID_ROWS*GRID_SPACING;
+    for (let i=-8;i<=8;i++){
+      const wx = i * GRID_SPACING;
+      const pN = project(wx, 0, near);
+      const pF = project(wx, 0, far);
+      if (!pN || !pF) continue;
+      ctx.globalAlpha = 0.5;
+      ctx.strokeStyle = mix(PAL.grid, PAL.gridFar, 0.4);
+      ctx.beginPath();
+      ctx.moveTo(pN.x, pN.y);
+      ctx.lineTo(pF.x, pF.y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // draw a wireframe box building
+  function drawBuilding(b){
+    const audioBoost = 1 + state.audioPulse * b.pulse * 0.6;
+    const h = b.h * audioBoost;
+    const x0 = b.x - b.w/2, x1 = b.x + b.w/2;
+    const z0 = b.z, z1 = b.z + b.d;
+    // 8 corners
+    const c = [
+      project(x0,0,z0), project(x1,0,z0), project(x1,0,z1), project(x0,0,z1),
+      project(x0,h,z0), project(x1,h,z0), project(x1,h,z1), project(x0,h,z1)
+    ];
+    // require at least front face visible
+    if (!c[0] || !c[1] || !c[4] || !c[5]) return;
+
+    const fade = clamp(1 - b.z/(GRID_ROWS*GRID_SPACING*0.92), 0, 1);
+    if (fade <= 0.02) return;
+    const col = b.hue ? PAL.building2 : PAL.building;
+    ctx.save();
+    ctx.lineWidth = clamp(c[0].scale*0.9, 0.6, 2.4);
+    ctx.globalAlpha = fade*fade*0.95 + 0.04;
+    ctx.strokeStyle = col;
+    ctx.shadowColor = col;
+    ctx.shadowBlur = 8 * fade;
+
+    function edge(a,bb){ if(!c[a]||!c[bb])return; ctx.moveTo(c[a].x,c[a].y); ctx.lineTo(c[bb].x,c[bb].y); }
+    ctx.beginPath();
+    // verticals
+    edge(0,4); edge(1,5); edge(2,6); edge(3,7);
+    // top ring
+    edge(4,5); edge(5,6); edge(6,7); edge(7,4);
+    // bottom ring
+    edge(0,1); edge(1,2); edge(2,3); edge(3,0);
+    ctx.stroke();
+
+    // lit windows: horizontal floor lines on the front face, flickering
+    if (b.lit && fade > 0.25 && c[0] && c[1] && c[4] && c[5]){
+      const flick = 0.55 + 0.45*Math.sin(state.t*3 + b.flick) * (audioOn? (0.6+state.audioPulse):1);
+      ctx.globalAlpha = fade * flick * 0.55;
+      ctx.shadowBlur = 4*fade;
+      ctx.beginPath();
+      for (let f=1; f<=b.floors; f++){
+        const t = f/(b.floors+1);
+        const lx0 = lerp(c[0].x, c[4].x, t), ly0 = lerp(c[0].y, c[4].y, t);
+        const lx1 = lerp(c[1].x, c[5].x, t), ly1 = lerp(c[1].y, c[5].y, t);
+        ctx.moveTo(lx0, ly0); ctx.lineTo(lx1, ly1);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // hex->rgb mix
+  const _hexCache = {};
+  function hex(h){
+    if (_hexCache[h]) return _hexCache[h];
+    const v = parseInt(h.slice(1),16);
+    const o = [(v>>16)&255,(v>>8)&255,v&255];
+    _hexCache[h]=o; return o;
+  }
+  function mix(a,b,t){
+    const A=hex(a), B=hex(b);
+    const r=Math.round(A[0]+(B[0]-A[0])*t);
+    const g=Math.round(A[1]+(B[1]-A[1])*t);
+    const bl=Math.round(A[2]+(B[2]-A[2])*t);
+    return `rgb(${r},${g},${bl})`;
+  }
+
+  // ---- main loop ----
+  let last = performance.now();
+  let frameCount = 0;
+  function frame(now){
+    const dtRaw = (now - last) / 1000;
+    last = now;
+    const dt = Math.min(dtRaw, 0.05); // clamp big gaps
+    state.t += dt;
+    frameCount++;
+
+    // audio reactivity
+    if (audioOn && analyser){
+      analyser.getByteFrequencyData(freqData);
+      let sum=0; for (let i=0;i<8;i++) sum += freqData[i];
+      const lvl = sum/(8*255);
+      state.audioPulse = lerp(state.audioPulse, lvl, 0.2);
+    } else {
+      // gentle synthetic pulse so buildings breathe even without audio
+      state.audioPulse = lerp(state.audioPulse, 0.12 + 0.12*Math.sin(state.t*1.3), 0.1);
+    }
+
+    // boost dynamics
+    state.boost = lerp(state.boost, boosting ? 1 : 0, boosting ? 0.12 : 0.06);
+    const boostMul = 1 + state.boost * 1.6;
+
+    // ease speed & steering
+    state.speed = lerp(state.speed, state.targetSpeed, 0.05);
+    const effSpeed = state.speed * boostMul;
+    state.steer = lerp(state.steer, state.targetSteer, 0.06);
+    state.pitch = lerp(state.pitch, state.targetPitch, 0.06);
+    state.bank = lerp(state.bank, -state.targetSteer*0.4, 0.05);
+
+    // advance
+    const dz = effSpeed * dt;
+    state.z += dz;
+    state.dist += dz * 0.001 * 3.2;
+
+    // move buildings toward camera; recycle past ones
+    const far = GRID_ROWS*GRID_SPACING;
+    for (const b of buildings){
+      b.z -= dz;
+      if (b.z < 0.8){
+        Object.assign(b, makeBuilding(far + Math.random()*GRID_SPACING*2));
+      }
+    }
+
+    // ---- render ----
+    drawSky();
+    drawStars();
+    drawSun();
+    drawMountains();
+    drawGrid();
+
+    // buildings far -> near (painter's order)
+    buildings.sort((a,b)=> b.z - a.z);
+    for (const b of buildings) drawBuilding(b);
+
+    // central road glow streak (motion lines)
+    drawSpeedLines(effSpeed);
+
+    // bank roll subtle: apply a slight skew via re-draw is costly; skip — bank already used in projection feel.
+
+    // vignette + scanlines overlay
+    drawOverlay();
+
+    // HUD update (throttled)
+    if (frameCount % 6 === 0){
+      spdEl.textContent = Math.round(effSpeed*7);
+      altEl.textContent = Math.round(120 + state.pitch*40);
+      distEl.textContent = state.dist.toFixed(1);
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  function drawSpeedLines(effSpeed){
+    if (state.boost < 0.05) return;
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    const n = Math.round(18 * state.boost);
+    for (let i=0;i<n;i++){
+      const ang = (i/n)*Math.PI*2 + state.t*0.5;
+      const r0 = 60 + (i%5)*30;
+      const len = 40 + state.boost*120;
+      const x0 = CX + Math.cos(ang)*r0;
+      const y0 = HORIZON + Math.sin(ang)*r0*0.5;
+      const x1 = CX + Math.cos(ang)*(r0+len);
+      const y1 = HORIZON + Math.sin(ang)*(r0+len)*0.5;
+      const grd = ctx.createLinearGradient(x0,y0,x1,y1);
+      grd.addColorStop(0,'rgba(125,249,255,0)');
+      grd.addColorStop(1,`rgba(255,91,216,${0.25*state.boost})`);
+      ctx.strokeStyle = grd; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawOverlay(){
+    // vignette
+    const vg = ctx.createRadialGradient(CX, H*0.5, Math.min(W,H)*0.3, CX, H*0.5, Math.max(W,H)*0.75);
+    vg.addColorStop(0,'rgba(0,0,0,0)');
+    vg.addColorStop(1,'rgba(2,0,8,0.6)');
+    ctx.fillStyle = vg;
+    ctx.fillRect(0,0,W,H);
+    // faint scanlines
+    ctx.globalAlpha = 0.05;
+    ctx.fillStyle = '#000';
+    for (let y=0;y<H;y+=3){ ctx.fillRect(0,y,W,1); }
+    ctx.globalAlpha = 1;
+  }
+
+  // ---- init ----
+  resize();
+  buildWorld();
+  buildMountains();
+  // start immediately — first paint IS the artwork
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>GEODE — 결정 동굴</title>
+<style>
+  html,body{margin:0;height:100%;background:#04050b;overflow:hidden;
+    font-family:"Helvetica Neue",-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;
+    -webkit-tap-highlight-color:transparent;cursor:crosshair;}
+  #c{position:fixed;inset:0;width:100%;height:100%;display:block;}
+  body{background:
+    radial-gradient(120% 95% at 60% 30%, #20184a 0%, #0a0c28 38%, #04050b 80%),
+    radial-gradient(70% 60% at 22% 88%, #3a1240 0%, rgba(4,5,11,0) 60%);}
+  .ui{position:fixed;left:0;right:0;pointer-events:none;z-index:5;color:#d4e6ff;mix-blend-mode:screen;}
+  .top{top:18px;left:24px;right:24px;display:flex;justify-content:space-between;align-items:flex-start;}
+  .ttl{font-weight:200;letter-spacing:.42em;font-size:13px;text-transform:uppercase;opacity:.9;
+    text-shadow:0 0 20px rgba(130,190,255,.55);}
+  .ttl b{font-weight:600;letter-spacing:.30em;}
+  .sub{font-size:10px;letter-spacing:.30em;opacity:.45;margin-top:7px;font-weight:300;}
+  .hint{position:fixed;bottom:16px;left:24px;font-size:10px;letter-spacing:.24em;opacity:.42;
+    font-weight:300;text-transform:uppercase;color:#c4dcff;mix-blend-mode:screen;z-index:5;}
+  .badge{font-size:10px;letter-spacing:.22em;opacity:.6;text-align:right;font-weight:300;
+    text-transform:uppercase;color:#a9caff;}
+  .badge .dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:#7fffd8;
+    box-shadow:0 0 12px #7fffd8;vertical-align:middle;margin-left:7px;animation:p 2.6s ease-in-out infinite;}
+  @keyframes p{0%,100%{opacity:.35}50%{opacity:1}}
+  @media(max-width:520px){
+    .ttl{font-size:11px;letter-spacing:.30em;} .sub{font-size:9px;letter-spacing:.18em;}
+    .top{left:16px;right:16px;top:14px;} .badge{font-size:9px;letter-spacing:.16em;}
+    .hint{left:16px;font-size:9px;letter-spacing:.15em;}
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="ui top">
+  <div>
+    <div class="ttl"><b>GEODE</b> · 결정 동굴</div>
+    <div class="sub">VOLUMETRIC&nbsp;LIGHT&nbsp;&nbsp;/&nbsp;&nbsp;LIVE&nbsp;CRYSTAL&nbsp;FIELD</div>
+  </div>
+  <div class="badge">움직여 빛을 끌고 · 눌러 균열<span class="dot"></span></div>
+</div>
+<div class="hint">MOVE&nbsp;빛&nbsp;·&nbsp;DRAG&nbsp;회전&nbsp;·&nbsp;SCROLL&nbsp;심도&nbsp;·&nbsp;CLICK/TAP&nbsp;섬광</div>
+
+<script>
+(function(){
+"use strict";
+const cv = document.getElementById('c');
+const gl = cv.getContext('webgl2',{antialias:false,alpha:false,powerPreference:'high-performance'})
+        || cv.getContext('webgl',{antialias:false,alpha:false,powerPreference:'high-performance'});
+if(!gl){ document.body.insertAdjacentHTML('beforeend',
+   '<div style="position:fixed;inset:0;display:grid;place-items:center;color:#a9caff;font:300 13px sans-serif;letter-spacing:.2em">WebGL을 사용할 수 없습니다</div>'); return; }
+const isWebGL2 = (typeof WebGL2RenderingContext!=='undefined') && (gl instanceof WebGL2RenderingContext);
+
+const VERT = isWebGL2 ? `#version 300 es
+in vec2 p; void main(){ gl_Position=vec4(p,0.,1.); }`
+: `attribute vec2 p; void main(){ gl_Position=vec4(p,0.,1.); }`;
+
+const HEAD2 = `#version 300 es
+precision highp float; out vec4 O;`;
+const HEAD1 = `precision highp float;`;
+
+const BODY = `
+uniform vec2  R;
+uniform float T;
+uniform vec2  M;        // light target (0..1, y up)
+uniform vec2  ROT;      // drag rotation
+uniform float DEPTH;    // scroll depth
+uniform float BURST;    // click flash
+uniform float QUAL;     // quality
+
+#define PI 3.14159265
+
+mat2 rot(float a){ float c=cos(a),s=sin(a); return mat2(c,-s,s,c); }
+float h11(float n){ return fract(sin(n)*43758.5453123); }
+float h13(vec3 p){ p=fract(p*0.3183099+vec3(.11,.27,.53)); p+=dot(p,p.yzx+19.19); return fract((p.x+p.y)*p.z); }
+
+// icy violet -> cyan -> gold palette
+vec3 pal(float t){
+  vec3 a=vec3(0.52,0.50,0.60), b=vec3(0.48,0.42,0.45),
+       c=vec3(1.0,1.0,1.0), d=vec3(0.00,0.20,0.46);
+  return a + b*cos(6.28318*(c*t + d));
+}
+
+// ---- crystal cave distance field via folded kaleidoscopic IFS ----
+// returns distance; out 'gid' carries facet id used for colour & glints,
+// out 'orb' carries orbit-trap (0..1) for inner glow.
+float map(vec3 p, out float gid, out float orb){
+  // we sit INSIDE a hollow rock sphere; carve glittering crystal folds inward
+  float scaleAcc = 1.0;
+  orb = 1e9;
+  vec3 q = p;
+  // slow breathing + scroll dive changes fold scale slightly
+  float fold = 1.12 + 0.06*sin(T*0.25) + 0.10*DEPTH;
+  float idAcc = 0.0;
+  for(int i=0;i<6;i++){
+    // mirror folds -> sharp crystal facets
+    q = abs(q);
+    if(q.x<q.y) q.xy=q.yx;
+    if(q.x<q.z) q.xz=q.zx;
+    if(q.y<q.z) q.yz=q.zy;
+    // rotate the fold for asymmetry (gem-like)
+    q.xz *= rot(0.42 + 0.05*sin(T*0.18));
+    q.xy *= rot(0.18);
+    // scale + translate (IFS)
+    q = q*fold - vec3(1.25,0.92,1.05)*(fold-1.0);
+    scaleAcc *= fold;
+    orb = min(orb, dot(q,q));
+    idAcc += h11(float(i)*7.1 + dot(floor(q*0.5),vec3(1.0)));
+  }
+  gid = fract(idAcc*0.137);
+  // box SDF in folded space -> sharp crystal shards, divided back by scale
+  vec3 b = abs(q) - vec3(1.05);
+  float d = (min(max(b.x,max(b.y,b.z)),0.0) + length(max(b,0.0))) / scaleAcc;
+
+  // hollow it: ray must stay inside a big rock cavity radius
+  float cavity = (3.4 + 0.12*DEPTH) - length(p);
+  d = max(d, -cavity*0.0); // (keep crystals)
+  // floating glowing core gem at centre
+  vec3 cc=p; cc.xy*=rot(T*0.16); cc.yz*=rot(T*0.11);
+  vec3 cb=abs(cc)-vec3(0.34+0.04*sin(T*0.9));
+  float core=(min(max(cb.x,max(cb.y,cb.z)),0.0)+length(max(cb,0.0)));
+  // octa cut on core for gem look
+  core = max(core, (abs(cc.x)+abs(cc.y)+abs(cc.z)-0.62)*0.5);
+
+  if(core < d){ d=core; gid = 2.0; }      // tag core
+  orb = clamp(sqrt(orb), 0.0, 1.0);
+  return d;
+}
+
+vec3 calcN(vec3 p){
+  vec2 e=vec2(0.0012,0.); float g,o;
+  return normalize(vec3(
+    map(p+e.xyy,g,o)-map(p-e.xyy,g,o),
+    map(p+e.yxy,g,o)-map(p-e.yxy,g,o),
+    map(p+e.yyx,g,o)-map(p-e.yyx,g,o)));
+}
+
+void main(){
+  vec2 fc = gl_FragCoord.xy;
+  vec2 uv = (2.*fc - R)/R.y;
+
+  // camera inside the geode — pull back on tall/narrow screens so the whole gem fits
+  float aspect = R.x/R.y;
+  float portrait = clamp((0.95 - aspect)/0.95, 0.0, 1.0); // 0 wide .. ~0.65 tall phone
+  float zoom = mix(2.95, 1.25, DEPTH) + portrait*1.15;
+  vec3 ro = vec3(0.0,0.0,zoom);
+  float yaw = ROT.x + 0.16*sin(T*0.10);
+  float pit = ROT.y*0.9 + 0.09*sin(T*0.08);
+  mat2 ry=rot(yaw), rx=rot(pit);
+  vec3 rd = normalize(vec3(uv,-1.5));
+  ro.yz*=rx; ro.xz*=ry; rd.yz*=rx; rd.xz*=ry;
+
+  // light position steered by pointer
+  vec2 mn=M*2.-1.; mn.x*=R.x/R.y;
+  vec3 lp=vec3(mn.x*2.0, mn.y*1.7, 0.9+1.1*sin(T*0.2));
+  lp.xz*=ry;
+  vec3 lcol = mix(vec3(0.40,0.70,1.05), vec3(1.05,0.62,0.30), 0.5+0.5*sin(T*0.13))*1.35;
+
+  // ---- primary raymarch ----
+  float t=0.02, gid=0.0, orb=0.0, hitOrb=0.0; bool hit=false;
+  vec3 p=ro;
+  int STEPS=int(84.0*QUAL);
+  for(int i=0;i<150;i++){
+    if(i>=STEPS) break;
+    p=ro+rd*t;
+    float g,o; float d=map(p,g,o);
+    if(d<0.0007*t+0.0006){ hit=true; gid=g; hitOrb=o; break; }
+    t += d*0.85;
+    if(t>9.0) break;
+  }
+
+  vec3 col=vec3(0.0);
+  if(hit){
+    vec3 n=calcN(p);
+    vec3 L=normalize(lp-p);
+    vec3 V=-rd;
+    vec3 H=normalize(L+V);
+    float dif=max(dot(n,L),0.0);
+    float spe=pow(max(dot(n,H),0.0),90.0);
+    float fres=pow(1.0-max(dot(n,V),0.0),4.0);
+    float lDist=length(lp-p);
+    float att=1.7/(1.0+0.40*lDist*lDist);     // softer falloff -> no near blowout
+
+    // colour by facet id + orbit trap -> rich gem variation
+    float hue = 0.55 + 0.34*gid + 0.26*hitOrb + 0.12*p.y;
+    vec3 base = pal(hue);
+    base = mix(vec3(0.02,0.04,0.11), base, 0.45+0.55*hitOrb);
+
+    // chromatic dispersion on rim (RGB split) — itself coloured
+    vec3 disp;
+    disp.r=pow(1.0-max(dot(n,normalize(V+vec3(0.03,0,0))),0.),5.0);
+    disp.g=pow(1.0-max(dot(n,V),0.),5.0);
+    disp.b=pow(1.0-max(dot(n,normalize(V-vec3(0.03,0,0))),0.),5.0);
+
+    // tinted diffuse: light colour modulates but base hue dominates
+    vec3 litTint = mix(vec3(1.0), lcol/max(max(lcol.r,lcol.g),lcol.b), 0.55);
+    col  = base*(0.30 + 0.95*dif*att*litTint);
+    col += base*pal(0.6+0.3*hitOrb)*0.45;       // coloured emissive bed
+    col += lcol*spe*1.8*att;                     // specular (reduced)
+    col += pal(0.05+0.7*gid)*fres*1.15;          // coloured rim
+    col += disp*1.5*(0.4+0.6*hitOrb)*mix(vec3(0.7,0.85,1.1),vec3(1.1,0.8,0.6),gid);
+
+    // inner glow for the central core gem
+    if(gid>1.5){
+      col += vec3(0.45,0.80,1.05)*1.5*(0.55+0.45*sin(T*1.4));
+      col += pal(0.5+0.2*sin(T*0.3))*0.7;
+    }
+
+    // facet micro-glints — slightly coloured, not pure white
+    float gl=h13(floor(n*42.0)+floor(p*9.0));
+    col += mix(vec3(0.8,0.92,1.1),vec3(1.1,0.95,0.7),gid)*step(0.984,gl)*1.5;
+
+    // depth haze toward far crystals (tinted violet, never grey)
+    col = mix(col, pal(0.62)*0.14, smoothstep(4.5,8.0,t));
+  } else {
+    // looking out of cavity -> deep nebular glow, never flat black
+    col = vec3(0.008,0.012,0.04) + pal(0.5+0.25*sin(T*0.1))*0.035*(1.0-length(uv)*0.4);
+  }
+
+  // ---- volumetric god-ray shafts (tinted, contrast-preserving) ----
+  // march toward primary hit, accumulate light scattering — but keep it COLORED
+  vec3 vol=vec3(0.0);
+  float vsteps=floor(24.0*QUAL);
+  float vmax=min(t,7.0);
+  float dt=vmax/vsteps;
+  float jit=h13(vec3(fc,T));
+  float tt=dt*jit;
+  for(int i=0;i<48;i++){
+    if(float(i)>=vsteps) break;
+    vec3 sp=ro+rd*tt;
+    vec3 toL=lp-sp; float dl=length(toL);
+    // shaft density: stronger near light direction, swirling dust
+    float dust=0.35+0.65*h13(floor(sp*5.5+vec3(0.,T*0.5,0.)));
+    float beam=1.0/(1.0+dl*dl*2.6);
+    // narrow the beam to a tight directional cone for crisp shafts
+    float cone=pow(max(dot(normalize(toL),normalize(lp)),0.0),5.0)*0.6+0.4;
+    vol += lcol*beam*dust*cone*dt;
+    tt += dt;
+  }
+  // keep god-rays coloured & restrained so they never grey-out the gem
+  vol = vol*vol*1.3;                 // gamma the shafts -> crisper, darker mids
+  vol *= 0.42*(0.85+1.0*BURST);
+  col += vol;
+
+  // central halo bloom (guarantees instant 'art' even on first frame)
+  vec3 cdir=normalize(-ro);
+  float halo=pow(max(dot(rd,cdir),0.0),5.0);
+  col += pal(0.5+0.2*sin(T*0.2))*halo*0.45;
+
+  // burst radial flash from light (coloured, restrained)
+  col += lcol*BURST*0.45*pow(max(dot(rd,normalize(lp-ro)),0.0),3.0);
+
+  // ---- grade ----
+  col = col/(1.0+col*0.78);             // soft filmic, preserves colour
+  col = pow(col, vec3(0.88));
+  col *= 1.10;
+  col = mix(col, col*vec3(0.82,0.94,1.18), 0.38);   // cool shadows / warm cores
+  // saturate hard for gem pop
+  float lum=dot(col,vec3(0.299,0.587,0.114));
+  col = mix(vec3(lum), col, 1.42);
+  // vignette
+  float vg=smoothstep(1.85,0.30,length(uv));
+  col *= mix(0.50,1.0,vg);
+  col += (h13(vec3(fc,T*1.7))-0.5)/255.0;
+  col = clamp(col,0.0,1.0);
+
+  OUTCOLOR;
+}`;
+
+function buildFrag(){
+  if(isWebGL2) return HEAD2 + BODY.replace('OUTCOLOR','O=vec4(col,1.0)');
+  return HEAD1 + BODY.replace('OUTCOLOR','gl_FragColor=vec4(col,1.0)');
+}
+
+function compile(type,src){
+  const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){
+    console.error('SHADER ERR',gl.getShaderInfoLog(s));
+    console.error(src.split('\n').map((l,i)=>(i+1)+': '+l).join('\n')); return null;
+  } return s;
+}
+const vs=compile(gl.VERTEX_SHADER,VERT);
+const fs=compile(gl.FRAGMENT_SHADER,buildFrag());
+const prog=gl.createProgram();
+gl.attachShader(prog,vs); gl.attachShader(prog,fs); gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog,gl.LINK_STATUS)) console.error('LINK',gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+
+const buf=gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 3,-1, -1,3]),gl.STATIC_DRAW);
+const pl=gl.getAttribLocation(prog,'p');
+gl.enableVertexAttribArray(pl);
+gl.vertexAttribPointer(pl,2,gl.FLOAT,false,0,0);
+
+const U={};
+['R','T','M','ROT','DEPTH','BURST','QUAL'].forEach(n=>U[n]=gl.getUniformLocation(prog,n));
+
+let W=0,H=0;
+let mouse={x:0.62,y:0.60}, mTarget={x:0.62,y:0.60};
+let rot={x:0,y:0}, rotTarget={x:0,y:0};
+let depth=0, depthTarget=0;
+let burst=0;
+let dragging=false, lastX=0,lastY=0;
+let qual=1.0, frameMs=16, lastT=performance.now();
+
+function resize(){
+  const maxPx=(innerWidth<=520)?1.0e6:2.4e6;
+  let dpr=Math.min(window.devicePixelRatio||1,2);
+  let cssW=innerWidth, cssH=innerHeight;
+  let pw=cssW*dpr, ph=cssH*dpr, scale=1;
+  if(pw*ph>maxPx) scale=Math.sqrt(maxPx/(pw*ph));
+  W=Math.max(2,Math.round(pw*scale)); H=Math.max(2,Math.round(ph*scale));
+  cv.width=W; cv.height=H; cv.style.width=cssW+'px'; cv.style.height=cssH+'px';
+  gl.viewport(0,0,W,H);
+}
+window.addEventListener('resize',resize); resize();
+
+function setPointer(x,y){ mTarget.x=x/innerWidth; mTarget.y=1.0-y/innerHeight; }
+cv.addEventListener('pointermove',e=>{
+  setPointer(e.clientX,e.clientY);
+  if(dragging){
+    rotTarget.x += (e.clientX-lastX)*0.006;
+    rotTarget.y += (e.clientY-lastY)*0.006;
+    rotTarget.y = Math.max(-1.1,Math.min(1.1,rotTarget.y));
+    lastX=e.clientX; lastY=e.clientY;
+  }
+});
+cv.addEventListener('pointerdown',e=>{
+  dragging=true; lastX=e.clientX; lastY=e.clientY; setPointer(e.clientX,e.clientY);
+  burst=1.0; cv.setPointerCapture&&cv.setPointerCapture(e.pointerId);
+});
+window.addEventListener('pointerup',()=>{dragging=false;});
+window.addEventListener('wheel',e=>{ depthTarget=Math.max(0,Math.min(1,depthTarget+e.deltaY*0.0008)); },{passive:true});
+let pinch0=null;
+cv.addEventListener('touchstart',e=>{ if(e.touches.length===2)
+  pinch0=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
+},{passive:true});
+cv.addEventListener('touchmove',e=>{
+  if(e.touches.length===2&&pinch0){
+    const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
+    depthTarget=Math.max(0,Math.min(1,depthTarget+(d-pinch0)*0.0016)); pinch0=d; e.preventDefault();
+  }
+},{passive:false});
+window.addEventListener('keydown',e=>{ if(e.key===' ') burst=1.0; });
+
+function frame(now){
+  const dt=Math.min(50,now-lastT); lastT=now;
+  frameMs=frameMs*0.92+dt*0.08;
+  if(frameMs>24&&qual>0.42) qual-=0.03;
+  else if(frameMs<15&&qual<1.0) qual+=0.01;
+
+  mouse.x+=(mTarget.x-mouse.x)*0.09; mouse.y+=(mTarget.y-mouse.y)*0.09;
+  rot.x+=(rotTarget.x-rot.x)*0.07; rot.y+=(rotTarget.y-rot.y)*0.07;
+  depth+=(depthTarget-depth)*0.05; burst*=0.92;
+  if(!dragging){ mTarget.x+=Math.sin(now*0.00021)*0.0006; mTarget.y+=Math.cos(now*0.00017)*0.0005; }
+
+  gl.uniform2f(U.R,W,H);
+  gl.uniform1f(U.T,now*0.001);
+  gl.uniform2f(U.M,mouse.x,mouse.y);
+  gl.uniform2f(U.ROT,rot.x,rot.y);
+  gl.uniform1f(U.DEPTH,depth);
+  gl.uniform1f(U.BURST,burst);
+  gl.uniform1f(U.QUAL,qual);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+window.__GEODE_READY=true;
+})();
+</script>
+</body>
+</html>

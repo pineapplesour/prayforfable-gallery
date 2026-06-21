@@ -1,0 +1,786 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>DUSK RUNNER // 486 DITHER</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<style>
+  :root{
+    /* limited warm 486 palette (also used for CSS chrome) */
+    --c-bg:      #1a0f14;  /* deep maroon-black   */
+    --c-maroon:  #3a1620;  /* deep maroon         */
+    --c-rust:    #b8482a;  /* rust orange         */
+    --c-orange:  #e07a3c;  /* orange              */
+    --c-salmon:  #e89b6c;  /* salmon              */
+    --c-peach:   #f3c98b;  /* peach               */
+    --c-cream:   #f6e2bd;  /* cream highlight     */
+    --c-teal:    #2f7d72;  /* teal accent panel   */
+    --c-teal-lt: #5fb8a6;  /* light teal text     */
+    --c-dgreen:  #1d3b34;  /* dark green          */
+    --c-ink:     #140a0d;  /* near black ink      */
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    background:var(--c-bg);
+    color:var(--c-peach);
+    font-family:'VT323',monospace;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    overflow:hidden;
+    -webkit-font-smoothing:none;
+    image-rendering:pixelated;
+    touch-action:none;
+    /* subtle outer warm vignette */
+    background:
+      radial-gradient(120% 90% at 50% 18%, #2a1218 0%, #160b10 70%, #0d0608 100%);
+  }
+
+  /* ---- frame / window chrome ---- */
+  #frame{
+    position:relative;
+    width:min(96vw, 1024px);
+    border:3px solid var(--c-rust);
+    background:var(--c-ink);
+    box-shadow:
+      0 0 0 2px var(--c-maroon),
+      0 0 0 5px var(--c-rust),
+      0 18px 0 -2px rgba(0,0,0,.55),
+      0 24px 70px rgba(0,0,0,.6);
+    border-radius:6px;
+    overflow:hidden;
+  }
+  /* title bar */
+  #titlebar{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    background:linear-gradient(var(--c-rust),var(--c-maroon));
+    color:var(--c-cream);
+    font-family:'Press Start 2P',monospace;
+    font-size:9px;
+    letter-spacing:1px;
+    padding:8px 10px;
+    border-bottom:2px solid var(--c-ink);
+    text-shadow:1px 1px 0 var(--c-ink);
+  }
+  #titlebar .dots{display:flex;gap:5px}
+  #titlebar .dots i{
+    width:9px;height:9px;border-radius:50%;
+    border:1px solid var(--c-ink);display:block;
+  }
+  #titlebar .dots i:nth-child(1){background:var(--c-peach)}
+  #titlebar .dots i:nth-child(2){background:var(--c-salmon)}
+  #titlebar .dots i:nth-child(3){background:var(--c-teal-lt)}
+
+  /* ---- stage ---- */
+  #stage{
+    position:relative;
+    width:100%;
+    background:var(--c-bg);
+    line-height:0;
+  }
+  /* the visible (upscaled) canvas — nearest-neighbor for chunky pixels */
+  #screen{
+    display:block;
+    width:100%;
+    height:auto;
+    image-rendering:pixelated;
+    image-rendering:crisp-edges;
+  }
+  /* CRT scanline + grain overlay */
+  #crt{
+    position:absolute;inset:0;
+    pointer-events:none;
+    mix-blend-mode:overlay;
+    opacity:.55;
+    background:
+      repeating-linear-gradient(
+        to bottom,
+        rgba(0,0,0,.0) 0px,
+        rgba(0,0,0,.0) 2px,
+        rgba(0,0,0,.45) 3px,
+        rgba(0,0,0,.0) 4px);
+    transition:opacity .2s;
+  }
+  #crt.off{opacity:0}
+
+  /* ---- HUD (mono) ---- */
+  #hud{
+    position:absolute;
+    top:12px;left:12px;
+    display:flex;gap:8px;flex-wrap:wrap;
+    z-index:5;
+    pointer-events:none;
+  }
+  .chip{
+    font-family:'Press Start 2P',monospace;
+    font-size:9px;
+    letter-spacing:1px;
+    color:var(--c-cream);
+    background:rgba(20,10,13,.62);
+    border:2px solid var(--c-rust);
+    border-radius:4px;
+    padding:6px 8px;
+    text-shadow:1px 1px 0 var(--c-ink);
+    line-height:1.4;
+  }
+  .chip b{color:var(--c-peach)}
+  .chip.score b{color:var(--c-salmon)}
+
+  /* CONTROL panel chip (teal, top-right) */
+  #control{
+    position:absolute;
+    top:12px;right:12px;
+    z-index:6;
+    background:linear-gradient(var(--c-teal),var(--c-dgreen));
+    border:2px solid var(--c-teal-lt);
+    border-radius:10px;
+    padding:8px 10px 9px;
+    box-shadow:0 4px 0 rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.12);
+    min-width:150px;
+  }
+  #control .hd{
+    font-family:'Press Start 2P',monospace;
+    font-size:8px;letter-spacing:2px;
+    color:var(--c-cream);
+    display:flex;align-items:center;gap:6px;
+    margin-bottom:7px;
+    text-shadow:1px 1px 0 var(--c-ink);
+  }
+  #control .hd .led{
+    width:8px;height:8px;border-radius:50%;
+    background:var(--c-salmon);
+    box-shadow:0 0 6px var(--c-orange);
+    animation:blink 1.1s steps(2) infinite;
+  }
+  @keyframes blink{50%{opacity:.25}}
+  #control .row{display:flex;gap:6px;flex-wrap:wrap}
+  .btn{
+    font-family:'VT323',monospace;
+    font-size:16px;line-height:1;
+    color:var(--c-cream);
+    background:rgba(20,10,13,.55);
+    border:2px solid var(--c-teal-lt);
+    border-radius:6px;
+    padding:6px 9px;
+    cursor:pointer;
+    letter-spacing:1px;
+    text-transform:uppercase;
+    user-select:none;
+    transition:transform .05s, background .12s;
+  }
+  .btn:hover{background:rgba(95,184,166,.25)}
+  .btn:active{transform:translateY(2px)}
+  .btn.on{background:var(--c-teal-lt);color:var(--c-ink)}
+  .btn.warn{border-color:var(--c-orange);color:var(--c-peach)}
+
+  /* center overlays (start / gameover) drawn as retro panels — NOT a blocking
+     loader: the dithered scene paints first and keeps animating behind these. */
+  .overlay{
+    position:absolute;inset:0;z-index:8;
+    display:flex;align-items:center;justify-content:center;
+    flex-direction:column;gap:14px;text-align:center;
+    background:rgba(13,6,8,.34);
+  }
+  .overlay.hidden{display:none}
+  .panel{
+    background:rgba(20,10,13,.82);
+    border:3px solid var(--c-rust);
+    box-shadow:0 0 0 2px var(--c-ink), 0 10px 0 -2px rgba(0,0,0,.5);
+    border-radius:6px;
+    padding:22px 26px;
+    max-width:84%;
+  }
+  .panel h1{
+    font-family:'Press Start 2P',monospace;
+    font-size:clamp(14px,3.2vw,26px);
+    color:var(--c-orange);
+    letter-spacing:2px;
+    text-shadow:2px 2px 0 var(--c-ink), 4px 4px 0 var(--c-maroon);
+    margin-bottom:6px;
+  }
+  .panel .sub{
+    font-size:20px;color:var(--c-salmon);letter-spacing:2px;
+    margin-bottom:14px;text-transform:uppercase;
+  }
+  .panel p{font-size:19px;color:var(--c-peach);letter-spacing:1px;line-height:1.35}
+  .panel .keys{
+    margin:12px 0 4px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap;
+  }
+  kbd{
+    font-family:'Press Start 2P',monospace;font-size:9px;
+    background:var(--c-maroon);color:var(--c-cream);
+    border:2px solid var(--c-rust);border-radius:4px;
+    padding:6px 7px;box-shadow:0 3px 0 var(--c-ink);
+  }
+  .big-btn{
+    font-family:'Press Start 2P',monospace;font-size:12px;letter-spacing:2px;
+    color:var(--c-ink);background:var(--c-peach);
+    border:2px solid var(--c-cream);border-radius:6px;
+    padding:13px 20px;cursor:pointer;
+    box-shadow:0 5px 0 var(--c-rust);
+    transition:transform .05s, box-shadow .05s;
+    text-transform:uppercase;
+  }
+  .big-btn:hover{background:var(--c-cream)}
+  .big-btn:active{transform:translateY(5px);box-shadow:0 0 0 var(--c-rust)}
+
+  /* footer status strip */
+  #status{
+    font-family:'VT323',monospace;
+    font-size:16px;color:var(--c-salmon);
+    letter-spacing:2px;
+    background:var(--c-ink);
+    border-top:2px solid var(--c-rust);
+    padding:6px 10px;
+    display:flex;justify-content:space-between;align-items:center;
+    text-transform:uppercase;
+  }
+  #status .tip{color:var(--c-teal-lt)}
+  .nowrap{white-space:nowrap}
+
+  /* mobile touch zones (visible only on small screens) */
+  #touch{position:absolute;inset:0;z-index:7;display:none}
+  #touch .zone{
+    position:absolute;bottom:0;height:100%;width:50%;
+  }
+  #touch .zone.left{left:0}
+  #touch .zone.right{right:0}
+
+  @media (max-width:560px){
+    #titlebar{font-size:7px}
+    .chip{font-size:7px;padding:5px 6px}
+    #control{min-width:120px;padding:6px 7px 7px}
+    #control .hd{font-size:6px}
+    .btn{font-size:13px;padding:5px 6px}
+    #status{font-size:13px}
+    #touch{display:block}
+    .panel p,.panel .sub{font-size:16px}
+  }
+</style>
+</head>
+<body>
+<div id="frame">
+  <div id="titlebar">
+    <span class="dots"><i></i><i></i><i></i></span>
+    <span>DUSK RUNNER.EXE&nbsp;&nbsp;//&nbsp;&nbsp;VGA 320x200 // 486DX</span>
+    <span class="nowrap">[ ■ ]</span>
+  </div>
+
+  <div id="stage">
+    <canvas id="screen" width="320" height="200"></canvas>
+    <div id="crt"></div>
+
+    <!-- HUD -->
+    <div id="hud">
+      <div class="chip score">SCORE&nbsp;<b id="hScore">000000</b></div>
+      <div class="chip">DIST&nbsp;<b id="hDist">0</b>M</div>
+      <div class="chip">FUEL&nbsp;<b id="hLife">III</b></div>
+    </div>
+
+    <!-- CONTROL panel chip -->
+    <div id="control">
+      <div class="hd"><span class="led"></span>CONTROL</div>
+      <div class="row">
+        <button class="btn" id="bPause" title="Pause">II</button>
+        <button class="btn on" id="bCrt" title="CRT scanlines">CRT</button>
+        <button class="btn" id="bDither" title="Toggle dithering">DTH</button>
+        <button class="btn warn" id="bReset" title="Restart">RST</button>
+      </div>
+    </div>
+
+    <!-- touch zones -->
+    <div id="touch">
+      <div class="zone left"></div>
+      <div class="zone right"></div>
+    </div>
+
+    <!-- START overlay (scene already animating behind it) -->
+    <div class="overlay" id="ovStart">
+      <div class="panel">
+        <h1>DUSK&nbsp;RUNNER</h1>
+        <div class="sub">486 dither demo</div>
+        <p>Outrun the falling night.<br>Hop the rust ridges, grab peach orbs.</p>
+        <div class="keys">
+          <kbd>SPACE / ▲</kbd><kbd>JUMP</kbd>
+          <kbd>TAP</kbd><kbd>JUMP</kbd>
+        </div>
+      </div>
+      <button class="big-btn" id="btnStart">PRESS&nbsp;START</button>
+    </div>
+
+    <!-- GAME OVER overlay -->
+    <div class="overlay hidden" id="ovOver">
+      <div class="panel">
+        <h1>SIGNAL&nbsp;LOST</h1>
+        <p>SCORE&nbsp;<span id="oScore" style="color:var(--c-salmon)">0</span><br>
+           BEST&nbsp;<span id="oBest" style="color:var(--c-peach)">0</span></p>
+      </div>
+      <button class="big-btn" id="btnRetry">RETRY</button>
+    </div>
+  </div>
+
+  <div id="status">
+    <span>● ONLINE&nbsp;&nbsp;|&nbsp;&nbsp;PALETTE&nbsp;<span id="sPal">12</span>&nbsp;COL&nbsp;&nbsp;|&nbsp;&nbsp;BAYER&nbsp;8x8</span>
+    <span class="tip" id="sTip">SPACE TO JUMP</span>
+  </div>
+</div>
+
+<script>
+/* =====================================================================
+   DUSK RUNNER — lo-fi 486 ordered-dither runner
+   Pipeline: procedural scene drawn on an offscreen canvas at native
+   320x200, then REAL ordered (Bayer 8x8) dithering quantizes every
+   pixel to a fixed 12-colour warm palette before blit to the visible
+   canvas (nearest-neighbour upscale = chunky VGA pixels).
+   ===================================================================== */
+(function(){
+'use strict';
+
+const W = 320, H = 200;           // native VGA-ish resolution
+const screen = document.getElementById('screen');
+const sctx   = screen.getContext('2d', {willReadFrequently:false});
+sctx.imageSmoothingEnabled = false;
+
+// offscreen full-colour scene buffer
+const buf  = document.createElement('canvas');
+buf.width = W; buf.height = H;
+const bctx = buf.getContext('2d', {willReadFrequently:true});
+bctx.imageSmoothingEnabled = false;
+
+/* ---------- limited warm palette (12 colours) ----------
+   ordered: dark -> light warm ramp + teal/dark-green accents.
+   These RGB triples are what every scene pixel is snapped to. */
+const PALETTE = [
+  [0x14,0x0a,0x0d], // ink
+  [0x26,0x10,0x18], // maroon-black
+  [0x3a,0x16,0x20], // deep maroon
+  [0x6e,0x24,0x2a], // brick
+  [0xb8,0x48,0x2a], // rust orange
+  [0xe0,0x7a,0x3c], // orange
+  [0xe8,0x9b,0x6c], // salmon
+  [0xf3,0xc9,0x8b], // peach
+  [0xf6,0xe2,0xbd], // cream
+  [0x1d,0x3b,0x34], // dark green
+  [0x2f,0x7d,0x72], // teal
+  [0x5f,0xb8,0xa6], // light teal
+];
+
+/* Precompute a fast nearest-palette lookup. Because dithering perturbs
+   the colour BEFORE the snap, a coarse 5-bit/channel cache is plenty and
+   keeps per-frame cost low. */
+const palLUT = new Uint8Array(32*32*32);   // index into PALETTE
+(function buildLUT(){
+  for(let r=0;r<32;r++)for(let g=0;g<32;g++)for(let b=0;b<32;b++){
+    const R=r<<3, G=g<<3, B=b<<3;
+    let best=0, bd=1e9;
+    for(let i=0;i<PALETTE.length;i++){
+      const p=PALETTE[i];
+      const dr=R-p[0], dg=G-p[1], db=B-p[2];
+      const d=dr*dr*0.30 + dg*dg*0.59 + db*db*0.11; // perceptual weights
+      if(d<bd){bd=d;best=i;}
+    }
+    palLUT[(r<<10)|(g<<5)|b]=best;
+  }
+})();
+
+/* ---------- Bayer 8x8 ordered-dither matrix ---------- */
+const BAYER8 = [
+   0,32, 8,40, 2,34,10,42,
+  48,16,56,24,50,18,58,26,
+  12,44, 4,36,14,46, 6,38,
+  60,28,52,20,62,30,54,22,
+   3,35,11,43, 1,33, 9,41,
+  51,19,59,27,49,17,57,25,
+  15,47, 7,39,13,45, 5,37,
+  63,31,55,23,61,29,53,21
+];
+// normalised threshold map centred on 0, scaled to colour spread.
+const DITHER_AMT = 26;            // how far a pixel is nudged (in 0-255)
+const bayerNorm = new Float32Array(64);
+for(let i=0;i<64;i++) bayerNorm[i] = (BAYER8[i]/64 - 0.5);
+
+let DITHER_ON = true;
+
+/* ===== core: dither + quantize the scene buffer in place ===== */
+function ditherToPalette(){
+  const img = bctx.getImageData(0,0,W,H);
+  const d = img.data;
+  let p = 0;
+  for(let y=0;y<H;y++){
+    const yr = (y&7)<<3;
+    for(let x=0;x<W;x++){
+      let r=d[p], g=d[p+1], b=d[p+2];
+      if(DITHER_ON){
+        const t = bayerNorm[yr | (x&7)] * DITHER_AMT;
+        r += t; g += t; b += t;
+        if(r<0)r=0;else if(r>255)r=255;
+        if(g<0)g=0;else if(g>255)g=255;
+        if(b<0)b=0;else if(b>255)b=255;
+      }
+      const idx = palLUT[((r>>3)<<10)|((g>>3)<<5)|(b>>3)];
+      const c = PALETTE[idx];
+      d[p]=c[0]; d[p+1]=c[1]; d[p+2]=c[2];
+      p+=4;
+    }
+  }
+  bctx.putImageData(img,0,0);
+}
+
+/* ===== scene drawing (full colour, pre-dither) ===== */
+const HORIZON = 128;              // ground line
+let t = 0;                        // global time
+let nightFall = 0;               // 0..1 sky darkening (rises with distance)
+
+function lerp(a,b,k){return a+(b-a)*k;}
+function rgb(c){return 'rgb('+c[0]+','+c[1]+','+c[2]+')';}
+
+// soft warm gradient sky (will be dithered into bands)
+function drawSky(){
+  // top -> horizon ramp through maroon..rust..orange..peach
+  const top    = [lerp(0x14,0x10,nightFall), lerp(0x0a,0x06,nightFall), lerp(0x0d,0x18,nightFall)];
+  const mid    = [lerp(0x8a,0x4a,nightFall), 0x30, 0x30];
+  const horiz  = [lerp(0xf3,0xb0,nightFall), lerp(0xc9,0x6a,nightFall), lerp(0x8b,0x40,nightFall)];
+  const grd = bctx.createLinearGradient(0,0,0,HORIZON);
+  grd.addColorStop(0.00, rgb([top[0]|0,top[1]|0,top[2]|0]));
+  grd.addColorStop(0.55, rgb([mid[0]|0,mid[1]|0,mid[2]|0]));
+  grd.addColorStop(1.00, rgb([horiz[0]|0,horiz[1]|0,horiz[2]|0]));
+  bctx.fillStyle = grd;
+  bctx.fillRect(0,0,W,HORIZON);
+
+  // sun — sinking as night falls
+  const sunY = lerp(40, HORIZON-6, nightFall*0.85);
+  const sunR = 26;
+  const sg = bctx.createRadialGradient(W*0.5,sunY,2, W*0.5,sunY,sunR);
+  sg.addColorStop(0, rgb([0xf6,0xe2,0xbd]));
+  sg.addColorStop(0.5, rgb([0xf3,0xc9,0x8b]));
+  sg.addColorStop(1, rgb([0xe0,0x7a,0x3c]));
+  bctx.fillStyle = sg;
+  bctx.beginPath(); bctx.arc(W*0.5,sunY,sunR,0,7); bctx.fill();
+  // sun reflection band on water handled in ground
+
+  // a few stars appear as night falls
+  if(nightFall>0.35){
+    bctx.fillStyle = rgb([0xf6,0xe2,0xbd]);
+    for(let i=0;i<22;i++){
+      const sx=(i*97+13)%W, sy=(i*53+7)%(HORIZON-24);
+      if(((sx+i*7)%5)===0) bctx.fillRect(sx,sy,1,1);
+    }
+  }
+}
+
+// far mountain silhouettes (parallax)
+function drawMountains(){
+  const layers=[
+    {col:[0x6e,0x24,0x2a], h:34, sp:0.10, base:HORIZON+2},
+    {col:[0x3a,0x16,0x20], h:48, sp:0.20, base:HORIZON+6},
+  ];
+  for(const L of layers){
+    bctx.fillStyle = rgb(L.col);
+    bctx.beginPath();
+    bctx.moveTo(0,H);
+    const off = (t*L.sp)%64;
+    for(let x=-64;x<=W+64;x+=8){
+      const xx=x-off;
+      const y=L.base - Math.abs(Math.sin((xx*0.045)+L.sp*9))*L.h
+                     - Math.sin(xx*0.012)*8;
+      bctx.lineTo(xx,y);
+    }
+    bctx.lineTo(W,H); bctx.closePath(); bctx.fill();
+  }
+}
+
+// ground + sun reflection
+function drawGround(){
+  // ground slab
+  const gg = bctx.createLinearGradient(0,HORIZON,0,H);
+  gg.addColorStop(0, rgb([0xb8,0x48,0x2a]));
+  gg.addColorStop(1, rgb([0x3a,0x16,0x20]));
+  bctx.fillStyle = gg;
+  bctx.fillRect(0,HORIZON,W,H-HORIZON);
+
+  // scrolling perspective lines (warm grid -> gives motion)
+  bctx.strokeStyle = rgb([0xe0,0x7a,0x3c]);
+  bctx.lineWidth=1;
+  const scroll = (t*2)%18;
+  for(let i=0;i<10;i++){
+    const yy = HORIZON + (i*i*0.9) + scroll*(i*0.12+0.3);
+    if(yy>H)break;
+    bctx.globalAlpha = 0.18 + i*0.05;
+    bctx.beginPath(); bctx.moveTo(0,yy); bctx.lineTo(W,yy); bctx.stroke();
+  }
+  bctx.globalAlpha=1;
+
+  // sun reflection shimmer near top of ground
+  bctx.fillStyle = rgb([0xf3,0xc9,0x8b]);
+  for(let i=0;i<6;i++){
+    const ry = HORIZON + i*2 + 1;
+    const w  = 30 - i*4 + Math.sin(t*0.2+i)*4;
+    if(w>0){ bctx.globalAlpha=0.28; bctx.fillRect(W*0.5 - w/2, ry, w, 1); }
+  }
+  bctx.globalAlpha=1;
+}
+
+/* ===== game entities ===== */
+const player = {x:54, y:HORIZON-18, vy:0, w:12, h:18, onGround:true};
+const GRAV = 0.62, JUMP = -7.6, GROUND_Y = HORIZON-18;
+let obstacles=[], orbs=[];
+let speed=2.2, dist=0, score=0, fuel=3, best=0;
+let spawnT=0, orbT=40;
+let running=false, paused=false, dead=false;
+
+function reset(){
+  player.y=GROUND_Y; player.vy=0; player.onGround=true;
+  obstacles=[]; orbs=[]; speed=2.2; dist=0; score=0; fuel=3;
+  spawnT=70; orbT=90; dead=false; paused=false; nightFall=0;
+}
+
+function spawnObstacle(){
+  const tall = Math.random()<0.4;
+  const w = 8 + (Math.random()*8|0);
+  const h = tall ? 22+(Math.random()*10|0) : 12+(Math.random()*6|0);
+  obstacles.push({x:W+10, y:HORIZON-h, w, h, type:tall?1:0});
+}
+function spawnOrb(){
+  const hi = Math.random()<0.5;
+  orbs.push({x:W+8, y:hi ? HORIZON-46-(Math.random()*16|0) : HORIZON-22, r:4, got:false, bob:Math.random()*6});
+}
+
+function jump(){
+  if(!running||paused||dead) return;
+  if(player.onGround){ player.vy=JUMP; player.onGround=false; }
+}
+
+function hitTest(a,bx,by,bw,bh){
+  return a.x < bx+bw && a.x+a.w > bx && a.y < by+bh && a.y+a.h > by;
+}
+
+function update(){
+  if(!running||paused||dead) return;
+  t += 1;
+  dist += speed*0.12;
+  speed = Math.min(5.2, 2.2 + dist*0.0016);
+  nightFall = Math.min(1, dist*0.0009);
+
+  // player physics
+  player.vy += GRAV;
+  player.y  += player.vy;
+  if(player.y >= GROUND_Y){ player.y=GROUND_Y; player.vy=0; player.onGround=true; }
+
+  // obstacles
+  spawnT -= 1;
+  if(spawnT<=0){ spawnObstacle(); spawnT = (52 - Math.min(28,dist*0.02)) + (Math.random()*30|0); }
+  for(const o of obstacles) o.x -= speed;
+  obstacles = obstacles.filter(o=>o.x+o.w>-4);
+
+  // orbs
+  orbT -= 1;
+  if(orbT<=0){ spawnOrb(); orbT = 70 + (Math.random()*60|0); }
+  for(const o of orbs){ o.x -= speed; o.bob += 0.18; }
+  orbs = orbs.filter(o=>o.x+o.r>-4 && !o.got);
+
+  // collisions
+  for(const o of obstacles){
+    if(hitTest(player, o.x,o.y,o.w,o.h)){ damage(); o.x=-999; }
+  }
+  for(const o of orbs){
+    const cy = o.y + Math.sin(o.bob)*3;
+    if(!o.got && hitTest(player, o.x-o.r,cy-o.r,o.r*2,o.r*2)){
+      o.got=true; score+=50;
+    }
+  }
+
+  score += 1;                       // distance points
+  if(score>best) best=score;
+}
+
+function damage(){
+  fuel -= 1;
+  if(fuel<=0){ gameOver(); }
+  else {
+    // knock the player back a hair + brief invuln via clearing nearby obstacles
+    obstacles = obstacles.filter(o=> o.x > player.x+30 );
+  }
+}
+
+/* ===== entity rendering (full colour) ===== */
+function drawPlayer(){
+  const px=player.x|0, py=player.y|0;
+  // running bob legs
+  const step = (running&&!paused&&!dead) ? Math.sin(t*0.6) : 0;
+  // body (rust jacket)
+  bctx.fillStyle=rgb([0xb8,0x48,0x2a]); bctx.fillRect(px,py+5,player.w,9);
+  // head (peach)
+  bctx.fillStyle=rgb([0xf3,0xc9,0x8b]); bctx.fillRect(px+2,py,8,6);
+  // visor (teal)
+  bctx.fillStyle=rgb([0x2f,0x7d,0x72]); bctx.fillRect(px+5,py+1,5,3);
+  // legs (maroon), animated
+  bctx.fillStyle=rgb([0x3a,0x16,0x20]);
+  bctx.fillRect(px+1, py+14, 4, 4+(step>0?2:0));
+  bctx.fillRect(px+7, py+14, 4, 4+(step<0?2:0));
+  // scarf trail (salmon)
+  bctx.fillStyle=rgb([0xe8,0x9b,0x6c]);
+  bctx.fillRect(px-3, py+5, 3, 2);
+  bctx.fillRect(px-6, py+6, 3, 2);
+}
+
+function drawObstacles(){
+  for(const o of obstacles){
+    if(o.x<-50)continue;
+    // body
+    bctx.fillStyle = o.type? rgb([0x3a,0x16,0x20]) : rgb([0x6e,0x24,0x2a]);
+    bctx.fillRect(o.x|0,o.y|0,o.w,o.h);
+    // lit top edge
+    bctx.fillStyle = rgb([0xe0,0x7a,0x3c]);
+    bctx.fillRect(o.x|0,o.y|0,o.w,2);
+    // dark base
+    bctx.fillStyle = rgb([0x14,0x0a,0x0d]);
+    bctx.fillRect(o.x|0,(o.y+o.h-2)|0,o.w,2);
+  }
+}
+
+function drawOrbs(){
+  for(const o of orbs){
+    const cy=(o.y+Math.sin(o.bob)*3)|0, cx=o.x|0;
+    bctx.fillStyle=rgb([0xf6,0xe2,0xbd]);
+    bctx.beginPath(); bctx.arc(cx,cy,o.r,0,7); bctx.fill();
+    bctx.fillStyle=rgb([0xe0,0x7a,0x3c]);
+    bctx.beginPath(); bctx.arc(cx,cy,o.r-2,0,7); bctx.fill();
+    // glint
+    bctx.fillStyle=rgb([0xf6,0xe2,0xbd]); bctx.fillRect(cx-1,cy-2,1,1);
+  }
+}
+
+/* ===== compose one frame ===== */
+function render(){
+  drawSky();
+  drawMountains();
+  drawGround();
+  drawOrbs();
+  drawObstacles();
+  drawPlayer();
+
+  // dither + quantize the entire scene to the 12-colour palette
+  ditherToPalette();
+
+  // blit to visible (upscaled, nearest neighbour)
+  sctx.imageSmoothingEnabled=false;
+  sctx.clearRect(0,0,W,H);
+  sctx.drawImage(buf,0,0);
+}
+
+/* ===== HUD ===== */
+const hScore=document.getElementById('hScore'),
+      hDist =document.getElementById('hDist'),
+      hLife =document.getElementById('hLife');
+function pad6(n){return ('000000'+n).slice(-6);}
+function updateHUD(){
+  hScore.textContent=pad6(score);
+  hDist.textContent=(dist|0);
+  hLife.textContent=['','I','II','III'][Math.max(0,Math.min(3,fuel))]||'-';
+}
+
+/* ===== main loop ===== */
+let raf;
+function frame(){
+  update();
+  render();
+  updateHUD();
+  raf=requestAnimationFrame(frame);
+}
+
+/* ===== state transitions ===== */
+const ovStart=document.getElementById('ovStart'),
+      ovOver =document.getElementById('ovOver'),
+      oScore =document.getElementById('oScore'),
+      oBest  =document.getElementById('oBest'),
+      sTip   =document.getElementById('sTip');
+
+function startGame(){
+  reset(); running=true; dead=false; paused=false;
+  ovStart.classList.add('hidden');
+  ovOver.classList.add('hidden');
+  sTip.textContent='RUN!';
+}
+function gameOver(){
+  dead=true; running=false;
+  oScore.textContent=score; oBest.textContent=best;
+  ovOver.classList.remove('hidden');
+  sTip.textContent='SIGNAL LOST';
+}
+
+/* ===== controls ===== */
+const bPause=document.getElementById('bPause'),
+      bCrt  =document.getElementById('bCrt'),
+      bDither=document.getElementById('bDither'),
+      bReset=document.getElementById('bReset'),
+      crt   =document.getElementById('crt'),
+      sPal  =document.getElementById('sPal');
+sPal.textContent = PALETTE.length;
+
+document.getElementById('btnStart').onclick=startGame;
+document.getElementById('btnRetry').onclick=startGame;
+
+bPause.onclick=()=>{ if(!running&&!dead)return; if(dead)return;
+  paused=!paused; bPause.classList.toggle('on',paused);
+  bPause.textContent=paused?'►':'II'; sTip.textContent=paused?'PAUSED':'RUN!'; };
+bCrt.onclick=()=>{ const off=crt.classList.toggle('off'); bCrt.classList.toggle('on',!off); };
+bDither.onclick=()=>{ DITHER_ON=!DITHER_ON; bDither.classList.toggle('on',DITHER_ON);
+  sTip.textContent = DITHER_ON?'DITHER ON':'DITHER OFF'; };
+bDither.classList.toggle('on',DITHER_ON);
+bReset.onclick=()=>{ startGame(); };
+
+// keyboard
+window.addEventListener('keydown',e=>{
+  if(e.code==='Space'||e.code==='ArrowUp'||e.code==='KeyW'){
+    e.preventDefault();
+    if(!running && !dead){ startGame(); }
+    else if(dead){ startGame(); }
+    else jump();
+  }
+  if(e.code==='KeyP'){ bPause.click(); }
+});
+// pointer / touch
+function pointerJump(e){
+  e.preventDefault();
+  if(!running && !dead){ startGame(); }
+  else if(dead){ startGame(); }
+  else jump();
+}
+const touch=document.getElementById('touch');
+touch.addEventListener('pointerdown',pointerJump);
+screen.addEventListener('pointerdown',pointerJump);
+
+/* keep canvas crisp on resize (CSS scales it; internal stays 320x200) */
+window.addEventListener('resize',()=>{ sctx.imageSmoothingEnabled=false; });
+
+/* ===== BOOT: scene paints + animates immediately (no blocking gate) ===== */
+// idle attract loop runs the world so first paint IS the dithered scene
+reset();
+// seed a few obstacles/orbs so the attract scene has life
+for(let i=0;i<3;i++){ obstacles.push({x:120+i*90, y:HORIZON-16, w:10, h:16, type:0}); }
+orbs.push({x:200,y:HORIZON-40,r:4,got:false,bob:0});
+// in attract mode we still scroll the world (player idles on ground)
+(function attractTick(){
+  if(!running && !dead){
+    t+=1; nightFall=Math.min(0.5,(t%900)/1800);
+    for(const o of obstacles)o.x-=1.4;
+    for(const o of orbs){o.x-=1.4;o.bob+=0.15;}
+    obstacles=obstacles.filter(o=>o.x+o.w>-4);
+    orbs=orbs.filter(o=>o.x+o.r>-4);
+    if(obstacles.length<3 && Math.random()<0.04) spawnObstacle();
+    if(orbs.length<2 && Math.random()<0.02) spawnOrb();
+  }
+  setTimeout(attractTick,1000/30);
+})();
+frame();   // start rendering loop right away → dithered scene is first paint
+
+})();
+</script>
+</body>
+</html>

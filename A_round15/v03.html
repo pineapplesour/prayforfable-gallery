@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>River of Light — 빛의 강</title>
+<style>
+  :root { --bg:#03040a; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:var(--bg); }
+  body {
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color:#cfe2ff; touch-action:none;
+    -webkit-user-select:none; user-select:none; cursor: crosshair;
+  }
+  #stage { position:fixed; inset:0; display:block; }
+  .hud {
+    position:fixed; left:0; right:0; bottom:0; padding:18px 26px 22px;
+    display:flex; justify-content:space-between; align-items:flex-end;
+    pointer-events:none; mix-blend-mode:screen; z-index:5;
+    background:linear-gradient(to top, rgba(3,4,10,.55), rgba(3,4,10,0));
+  }
+  .title { line-height:1.05; }
+  .title .ko {
+    font-size: clamp(28px, 5.2vw, 64px); font-weight:800; letter-spacing:-.02em;
+    background:linear-gradient(100deg,#9fd0ff,#e9c0ff 40%,#ffd9a8 70%,#9fffea);
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+    filter: drop-shadow(0 0 22px rgba(150,180,255,.35));
+  }
+  .title .en {
+    font-size: clamp(10px, 1.4vw, 14px); letter-spacing:.42em; text-transform:uppercase;
+    opacity:.62; margin-top:6px; color:#a9c6ff;
+  }
+  .hint {
+    text-align:right; font-size: clamp(9px,1.2vw,12px);
+    letter-spacing:.12em; opacity:.5; line-height:1.7; color:#bcd0ff;
+  }
+  .hint b { color:#ffe9c2; font-weight:600; }
+  @media (max-width:520px){
+    .hud{ flex-direction:column; align-items:flex-start; gap:10px; }
+    .hint{ text-align:left; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div class="hud">
+  <div class="title">
+    <div class="ko">빛의 강</div>
+    <div class="en">River&nbsp;of&nbsp;Light</div>
+  </div>
+  <div class="hint">
+    <div><b>이동</b> 강물을 끌어당겨 휘게</div>
+    <div><b>클릭/터치</b> 별의 폭발 · 소용돌이</div>
+    <div><b>드래그</b> 흐름을 가르다</div>
+  </div>
+</div>
+
+<script>
+"use strict";
+(() => {
+  const canvas = document.getElementById('stage');
+  const ctx = canvas.getContext('2d', { alpha:false });
+
+  let W=0,H=0,DPR=1,DIAG=1;
+  function resize(){
+    DPR = Math.min(window.devicePixelRatio||1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = Math.round(W*DPR); canvas.height = Math.round(H*DPR);
+    canvas.style.width=W+'px'; canvas.style.height=H+'px';
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    DIAG = Math.hypot(W,H);
+  }
+  window.addEventListener('resize', ()=>{ resize(); rebuild(); }, { passive:true });
+  resize();
+
+  // ---------- input ----------
+  const pointer = { x:W*0.5, y:H*0.5, px:W*0.5, py:H*0.5, vx:0, vy:0, down:false, active:false, influence:0 };
+  function setPos(x,y){
+    pointer.px=pointer.x; pointer.py=pointer.y;
+    pointer.x=x; pointer.y=y;
+    pointer.vx=pointer.x-pointer.px; pointer.vy=pointer.y-pointer.py;
+    pointer.active=true;
+  }
+  canvas.addEventListener('mousemove', e=>setPos(e.clientX,e.clientY), {passive:true});
+  canvas.addEventListener('mouseleave', ()=>{ pointer.active=false; });
+  canvas.addEventListener('mousedown', e=>{ pointer.down=true; setPos(e.clientX,e.clientY); burst(e.clientX,e.clientY); });
+  window.addEventListener('mouseup', ()=>{ pointer.down=false; });
+  canvas.addEventListener('touchstart', e=>{ const t=e.touches[0]; pointer.down=true; setPos(t.clientX,t.clientY); burst(t.clientX,t.clientY); }, {passive:true});
+  canvas.addEventListener('touchmove', e=>{ const t=e.touches[0]; setPos(t.clientX,t.clientY); }, {passive:true});
+  window.addEventListener('touchend', ()=>{ pointer.down=false; pointer.active=false; });
+
+  // ---------- palette LUT ----------
+  const LUT_N=256, lut=new Array(LUT_N);
+  (function(){
+    const stops=[
+      [0.00,[120,150,255]],[0.20,[120,210,255]],[0.42,[130,255,235]],
+      [0.60,[245,240,180]],[0.78,[255,200,150]],[1.00,[255,150,205]],
+    ];
+    for(let i=0;i<LUT_N;i++){
+      const t=i/(LUT_N-1); let a=stops[0],b=stops[stops.length-1];
+      for(let s=0;s<stops.length-1;s++){ if(t>=stops[s][0]&&t<=stops[s+1][0]){a=stops[s];b=stops[s+1];break;} }
+      const span=(b[0]-a[0])||1, k=(t-a[0])/span;
+      lut[i]=[Math.round(a[1][0]+(b[1][0]-a[1][0])*k),Math.round(a[1][1]+(b[1][1]-a[1][1])*k),Math.round(a[1][2]+(b[1][2]-a[1][2])*k)];
+    }
+  })();
+  function col(t){ t=t<0?0:t>1?1:t; return lut[(t*(LUT_N-1))|0]; }
+
+  // ---------- value noise ----------
+  const PERM=new Uint8Array(512);
+  (function(){
+    const p=new Uint8Array(256); for(let i=0;i<256;i++)p[i]=i;
+    let seed=20260621;
+    for(let i=255;i>0;i--){ seed=(seed*1103515245+12345)&0x7fffffff; const j=seed%(i+1); const tmp=p[i];p[i]=p[j];p[j]=tmp; }
+    for(let i=0;i<512;i++)PERM[i]=p[i&255];
+  })();
+  const fade=t=>t*t*t*(t*(t*6-15)+10);
+  const lerp=(a,b,t)=>a+(b-a)*t;
+  function grad(h,x,y){ switch(h&3){case 0:return x+y;case 1:return -x+y;case 2:return x-y;default:return -x-y;} }
+  function noise2(x,y){
+    const X=Math.floor(x)&255,Y=Math.floor(y)&255, xf=x-Math.floor(x),yf=y-Math.floor(y);
+    const u=fade(xf),v=fade(yf);
+    const aa=PERM[PERM[X]+Y],ab=PERM[PERM[X]+Y+1],ba=PERM[PERM[X+1]+Y],bb=PERM[PERM[X+1]+Y+1];
+    const x1=lerp(grad(aa,xf,yf),grad(ba,xf-1,yf),u);
+    const x2=lerp(grad(ab,xf,yf-1),grad(bb,xf-1,yf-1),u);
+    return lerp(x1,x2,v);
+  }
+
+  // ---------- river spine ----------
+  function spineY(x,t){
+    const nx=x/W;
+    return H*0.5
+      + Math.sin(nx*2.7 + t*0.40) * H*0.155
+      + Math.sin(nx*6.1 - t*0.26) * H*0.058
+      + Math.sin(nx*1.2 + t*0.16) * H*0.05;
+  }
+  // river half-width at x (varies => looks like a real braided stream)
+  function halfWidth(x,t){
+    return H * (0.12 + 0.055*Math.sin(x*0.011 + t*0.2) + 0.02*Math.sin(x*0.03 - t*0.15));
+  }
+
+  // ---------- particles ----------
+  function targetCount(){
+    const area=W*H, base=area/950;        // denser than before
+    return Math.max(1400, Math.min(4200, Math.floor(base)));
+  }
+  let stars=[];
+  // gaussian-ish band so stars cluster toward the core
+  function gaussBand(){
+    const u=Math.random(), v=Math.random();
+    let g=Math.sqrt(-2*Math.log(u+1e-9))*Math.cos(2*Math.PI*v)*0.42;
+    if(g>1)g=1; if(g<-1)g=-1; return g;
+  }
+  function makeStar(){
+    const x=Math.random()*W, t=simTime, sy=spineY(x,t);
+    const band=gaussBand();
+    const hw=halfWidth(x,t);
+    return {
+      x, y: sy+band*hw, band,
+      sp: 0.5+Math.random()*1.5, size:0.5+Math.random()*1.9,
+      twk:Math.random()*Math.PI*2, tws:1.4+Math.random()*3.2,
+      hueShift:(Math.random()-0.5)*0.10,
+      life:1, vx:1.5+Math.random(), vy:0, decay:0,
+      bg:false,
+    };
+  }
+  // faint, slow, far background dust so the dark areas never feel empty
+  function makeBgStar(){
+    return {
+      x:Math.random()*W, y:Math.random()*H, band:0,
+      sp:0.05+Math.random()*0.12, size:0.35+Math.random()*0.9,
+      twk:Math.random()*Math.PI*2, tws:0.6+Math.random()*1.6,
+      hueShift:(Math.random()-0.5)*0.3, life:1, vx:0.15, vy:0, decay:0, bg:true,
+    };
+  }
+  let bgStars=[];
+  function rebuild(){
+    const n=targetCount();
+    stars=new Array(n);
+    for(let i=0;i<n;i++) stars[i]=makeStar();
+    const bn=Math.max(120, Math.min(360, Math.floor(W*H/9000)));
+    bgStars=new Array(bn);
+    for(let i=0;i<bn;i++) bgStars[i]=makeBgStar();
+  }
+
+  // ---------- bursts / vortices ----------
+  const vortices=[];
+  function burst(x,y){
+    const n=110;
+    for(let i=0;i<n;i++){
+      const a=Math.random()*Math.PI*2, sp=Math.pow(Math.random(),0.5)*8;
+      const s=makeStar();
+      s.x=x+Math.cos(a)*5; s.y=y+Math.sin(a)*5;
+      s.vx=Math.cos(a)*sp; s.vy=Math.sin(a)*sp;
+      s.size=0.9+Math.random()*2.6; s.decay=0.006+Math.random()*0.013;
+      s.band=gaussBand()*0.5; s.sp=0.2+Math.random()*0.6;
+      stars.push(s);
+    }
+    vortices.push({ x,y,t:0,life:1, sign:Math.random()<0.5?-1:1, r:150+Math.random()*100 });
+    const cap=Math.floor(targetCount()*2.2);
+    if(stars.length>cap) stars.splice(0, stars.length-Math.floor(targetCount()*1.9));
+  }
+
+  // ---------- background nebula ----------
+  function drawNebula(t){
+    ctx.globalCompositeOperation='source-over';
+    ctx.fillStyle='rgba(3,4,10,0.22)';   // motion smear
+    ctx.fillRect(0,0,W,H);
+
+    ctx.globalCompositeOperation='lighter';
+    // luminous core haze that hugs the whole spine
+    const segs=22;
+    for(let i=0;i<=segs;i++){
+      const x=(i/segs)*W;
+      const y=spineY(x,t);
+      const hw=halfWidth(x,t);
+      const c=col(i/segs);
+      const r=hw*1.7;
+      const g=ctx.createRadialGradient(x,y,0,x,y,r);
+      g.addColorStop(0,`rgba(${c[0]},${c[1]},${c[2]},0.060)`);
+      g.addColorStop(0.5,`rgba(${c[0]},${c[1]},${c[2]},0.022)`);
+      g.addColorStop(1,'rgba(0,0,0,0)');
+      ctx.fillStyle=g;
+      ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
+    }
+    // big slow drifting glow blobs for depth
+    const blobs=5;
+    for(let i=0;i<blobs;i++){
+      const px=((i/blobs)+(t*0.013))%1, x=px*W, y=spineY(x,t);
+      const r=H*0.34*(0.7+0.3*Math.sin(t*0.4+i)), c=col(px);
+      const g=ctx.createRadialGradient(x,y,0,x,y,r);
+      g.addColorStop(0,`rgba(${c[0]},${c[1]},${c[2]},0.035)`);
+      g.addColorStop(1,'rgba(0,0,0,0)');
+      ctx.fillStyle=g;
+      ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
+    }
+  }
+
+  // ---------- vignette (once, on an offscreen-ish overlay each frame is cheap) ----------
+  function drawVignette(){
+    ctx.globalCompositeOperation='source-over';
+    const g=ctx.createRadialGradient(W*0.5,H*0.5,DIAG*0.30, W*0.5,H*0.5,DIAG*0.62);
+    g.addColorStop(0,'rgba(0,0,0,0)');
+    g.addColorStop(1,'rgba(2,3,8,0.55)');
+    ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  }
+
+  // ---------- main loop ----------
+  let simTime=18.0;             // start mid-flow so first paint is already alive
+  let last=performance.now();
+  let fpsAvg=60;
+  const NOISE_SCALE=0.0022;
+
+  function step(now){
+    let dt=(now-last)/1000; last=now;
+    if(dt>0.05) dt=0.05;
+    const fdt=dt*60; simTime+=dt;
+
+    const instFps=1/Math.max(dt,1e-3); fpsAvg=fpsAvg*0.92+instFps*0.08;
+    // adaptive cull: if sustained low fps, drop some river stars
+    if(fpsAvg<46 && stars.length>1200){ stars.splice(0, 40); }
+
+    pointer.influence += ((pointer.active?1:0)-pointer.influence)*0.08;
+    pointer.vx*=0.86; pointer.vy*=0.86;
+
+    drawNebula(simTime);
+    ctx.globalCompositeOperation='lighter';
+
+    // --- background dust ---
+    for(let i=0;i<bgStars.length;i++){
+      const s=bgStars[i];
+      s.x += s.vx*fdt; if(s.x>W+5){ s.x=-5; s.y=Math.random()*H; }
+      s.twk += s.tws*dt;
+      const tw=0.5+0.5*Math.sin(s.twk);
+      const c=col((s.x/W)+s.hueShift);
+      const a=(0.10+0.18*tw);
+      ctx.fillStyle=`rgba(${c[0]},${c[1]},${c[2]},${a})`;
+      ctx.beginPath(); ctx.arc(s.x,s.y,s.size,0,Math.PI*2); ctx.fill();
+    }
+
+    // --- river stars ---
+    const pInf=pointer.influence, pull=pointer.down?1.0:0.55;
+    const dragSpeed=Math.hypot(pointer.vx,pointer.vy);
+    const tN=simTime*0.25;
+
+    for(let i=stars.length-1;i>=0;i--){
+      const s=stars[i];
+
+      const n1=noise2(s.x*NOISE_SCALE, s.y*NOISE_SCALE+tN);
+      const n2=noise2(s.x*NOISE_SCALE+13.7, s.y*NOISE_SCALE-tN+4.2);
+      let fx=Math.cos(n1*Math.PI*2)*0.9 + n2*0.4;
+      let fy=Math.sin(n2*Math.PI*2)*0.9 - n1*0.4;
+
+      const sy=spineY(s.x,simTime), toSpine=sy-s.y;
+      fy += toSpine*0.006;
+      fx += 0.95;
+
+      const hw=halfWidth(s.x,simTime);
+      const dist=Math.abs(toSpine);
+      const coreT=Math.max(0, 1 - dist/(hw*1.25));
+
+      if(pInf>0.001){
+        const dx=s.x-pointer.x, dy=s.y-pointer.y, d2=dx*dx+dy*dy, R=240;
+        if(d2<R*R){
+          const d=Math.sqrt(d2)+0.001, f=1-d/R;
+          const swirl=f*2.6*pull*pInf;
+          fx += (-dy/d)*swirl; fy += (dx/d)*swirl;
+          fx += pointer.vx*0.045*f*pInf; fy += pointer.vy*0.045*f*pInf;
+          if(pointer.down){ fx += (dx/d)*f*0.9; fy += (dy/d)*f*0.9; }
+        }
+      }
+
+      for(let v=0;v<vortices.length;v++){
+        const vo=vortices[v], dx=s.x-vo.x, dy=s.y-vo.y, d2=dx*dx+dy*dy;
+        if(d2<vo.r*vo.r){
+          const d=Math.sqrt(d2)+0.001, f=(1-d/vo.r)*vo.life, swirl=f*3.4*vo.sign;
+          fx += (-dy/d)*swirl; fy += (dx/d)*swirl;
+        }
+      }
+
+      const speed=s.sp*(0.8+coreT*1.2);
+      s.vx=s.vx*0.90+fx*0.4; s.vy=s.vy*0.90+fy*0.4;
+      const dxStep=(s.vx+fx*speed)*fdt, dyStep=(s.vy+fy*speed)*fdt;
+      s.x+=dxStep; s.y+=dyStep;
+
+      if(s.x>W+20){ if(s.decay>0){stars.splice(i,1);continue;} s.x=-10; s.y=spineY(s.x,simTime)+s.band*halfWidth(0,simTime); s.vx=1.5;s.vy=0; }
+      if(s.x<-30||s.y<-70||s.y>H+70){ if(s.decay>0){stars.splice(i,1);continue;} s.x=-10; s.y=spineY(0,simTime)+gaussBand()*halfWidth(0,simTime); s.vx=1.5;s.vy=0; }
+
+      if(s.decay>0){ s.life-=s.decay*fdt; if(s.life<=0){stars.splice(i,1);continue;} }
+
+      s.twk+=s.tws*dt;
+      const tw=0.55+0.45*Math.sin(s.twk);
+      const ct=(s.x/W)+s.band*0.10+s.hueShift;
+      const c=col(ct);
+      const bright=(0.40+coreT*0.95)*tw*s.life;
+      const sz=s.size*(0.7+coreT*0.95)*(0.7+0.5*tw);
+      const a=Math.min(1,bright);
+
+      // motion streak: short line along velocity => the river "streams"
+      const sv=Math.hypot(dxStep,dyStep);
+      if(sv>1.2 && bright>0.35){
+        const ux=dxStep/sv, uy=dyStep/sv, len=Math.min(sv*1.6, 22)*(0.5+coreT*0.7);
+        ctx.strokeStyle=`rgba(${c[0]},${c[1]},${c[2]},${a*0.5})`;
+        ctx.lineWidth=sz*0.9; ctx.lineCap='round';
+        ctx.beginPath(); ctx.moveTo(s.x-ux*len, s.y-uy*len); ctx.lineTo(s.x,s.y); ctx.stroke();
+      }
+
+      // core dot
+      ctx.fillStyle=`rgba(${c[0]},${c[1]},${c[2]},${a*0.95})`;
+      ctx.beginPath(); ctx.arc(s.x,s.y,sz,0,Math.PI*2); ctx.fill();
+
+      // halo for bright ones
+      if(bright>0.6){
+        ctx.fillStyle=`rgba(${c[0]},${c[1]},${c[2]},${a*0.14})`;
+        ctx.beginPath(); ctx.arc(s.x,s.y,sz*3.6,0,Math.PI*2); ctx.fill();
+      }
+    }
+
+    for(let v=vortices.length-1;v>=0;v--){ vortices[v].t+=dt; vortices[v].life-=dt*0.9; if(vortices[v].life<=0)vortices.splice(v,1); }
+
+    // pointer comet head
+    if(pointer.influence>0.02 && pointer.active){
+      ctx.globalCompositeOperation='lighter';
+      const r=28+dragSpeed*0.9, cc=col(0.5);
+      const g=ctx.createRadialGradient(pointer.x,pointer.y,0,pointer.x,pointer.y,r);
+      g.addColorStop(0,`rgba(255,255,255,${0.24*pointer.influence})`);
+      g.addColorStop(0.4,`rgba(${cc[0]},${cc[1]},${cc[2]},${0.11*pointer.influence})`);
+      g.addColorStop(1,'rgba(0,0,0,0)');
+      ctx.fillStyle=g; ctx.beginPath(); ctx.arc(pointer.x,pointer.y,r,0,Math.PI*2); ctx.fill();
+    }
+
+    drawVignette();
+
+    pointer.vx*=0.9; pointer.vy*=0.9;
+    requestAnimationFrame(step);
+  }
+
+  rebuild();
+  requestAnimationFrame(step);
+})();
+</script>
+</body>
+</html>

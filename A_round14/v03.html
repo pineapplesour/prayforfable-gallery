@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Acrylic Pour — Fluid Color</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#07060a; }
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; touch-action:none; }
+  #stage { position:fixed; inset:0; display:block; }
+  canvas { position:absolute; inset:0; width:100%; height:100%; display:block; }
+  #sim { display:none; }   /* low-res source, not shown directly */
+  /* paper grain + vignette overlays, GPU-cheap */
+  #grain { pointer-events:none; mix-blend-mode:overlay; opacity:.10; }
+  #vig {
+    position:fixed; inset:0; pointer-events:none;
+    background:radial-gradient(120% 120% at 50% 42%, rgba(0,0,0,0) 52%, rgba(0,0,0,.55) 100%);
+    mix-blend-mode:multiply;
+  }
+  .ui { position:fixed; pointer-events:none; user-select:none; z-index:5; }
+  #title {
+    left:clamp(16px,3.4vw,44px); top:clamp(16px,3vw,40px);
+    color:#f3ece2; letter-spacing:.02em;
+  }
+  #title h1 {
+    font-weight:700; font-size:clamp(20px,2.6vw,34px); line-height:1.02;
+    text-shadow:0 2px 24px rgba(0,0,0,.55);
+  }
+  #title h1 span { font-weight:300; opacity:.62; font-style:italic; }
+  #title p {
+    margin-top:6px; font-size:clamp(10px,1.05vw,12.5px); font-weight:500;
+    letter-spacing:.16em; text-transform:uppercase; color:#cdbfb0; opacity:.8;
+  }
+  #hint {
+    right:clamp(16px,3.4vw,44px); bottom:clamp(16px,3vw,34px);
+    text-align:right; color:#e9dfd2; max-width:62vw;
+  }
+  #hint .row { font-size:clamp(10px,1vw,12.5px); letter-spacing:.04em; line-height:1.7; opacity:.78; }
+  #hint .k {
+    display:inline-block; padding:1px 7px; margin:0 2px; border-radius:6px;
+    background:rgba(255,255,255,.09); border:1px solid rgba(255,255,255,.14);
+    font-weight:600; color:#fff; font-size:.92em;
+  }
+  #pal {
+    left:50%; transform:translateX(-50%); bottom:clamp(14px,2.6vw,30px);
+    display:flex; gap:9px; align-items:center;
+  }
+  .sw {
+    width:clamp(20px,2.4vw,28px); height:clamp(20px,2.4vw,28px); border-radius:50%;
+    box-shadow:0 3px 12px rgba(0,0,0,.5), inset 0 1px 2px rgba(255,255,255,.4);
+    border:2px solid rgba(255,255,255,.0); transition:transform .25s cubic-bezier(.2,1.2,.3,1), border-color .25s;
+    opacity:.85;
+  }
+  .sw.on { transform:scale(1.45); border-color:rgba(255,255,255,.85); opacity:1; }
+  #flash {
+    position:fixed; left:50%; top:clamp(54px,9vw,86px); transform:translateX(-50%);
+    color:#fff; font-size:clamp(11px,1.1vw,13px); letter-spacing:.14em; text-transform:uppercase;
+    background:rgba(20,16,24,.5); padding:6px 14px; border-radius:99px; backdrop-filter:blur(6px);
+    border:1px solid rgba(255,255,255,.12); opacity:0; transition:opacity .4s; z-index:6; pointer-events:none;
+  }
+  @media (max-width:520px){
+    #hint .row.desk{ display:none; }
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="sim"></canvas>      <!-- low-res pigment field (hidden source) -->
+  <canvas id="view"></canvas>     <!-- smoothed, glazed display -->
+  <canvas id="grain"></canvas>
+</div>
+<div id="vig"></div>
+
+<div id="title" class="ui">
+  <h1>Acrylic&nbsp;<span>Pour</span></h1>
+  <p>fluid&nbsp;·&nbsp;pigment&nbsp;·&nbsp;in&nbsp;motion</p>
+</div>
+
+<div id="pal" class="ui"></div>
+
+<div id="flash" class="ui"></div>
+
+<div id="hint" class="ui">
+  <div class="row">드래그해 <span class="k">붓기</span> · 빠르게 그어 <span class="k">결</span> 만들기</div>
+  <div class="row desk"><span class="k">스크롤</span> 팔레트 전환 · <span class="k">클릭</span> 물방울 떨구기 · <span class="k">스페이스</span> 초기화</div>
+</div>
+
+<script>
+"use strict";
+/* =========================================================================
+   ACRYLIC POUR — a real-time stable-fluids pigment simulation.
+   Velocity field (Stam semi-Lagrangian) advects 3 pigment channels that
+   mix SUBTRACTIVELY (Kubelka-Munk-ish), so blue+yellow -> green, like
+   real acrylic. Rendered on a low-res grid, upscaled with a soft glaze
+   pass for that wet, glossy "cell"-and-lacing pour look.
+   ========================================================================= */
+
+const sim   = document.getElementById('sim');
+const gctx  = sim.getContext('2d', { alpha:false });   // low-res pigment source
+const view  = document.getElementById('view');
+const vctx  = view.getContext('2d', { alpha:false, desynchronized:true });
+const grain = document.getElementById('grain');
+const grctx = grain.getContext('2d');
+const palEl = document.getElementById('pal');
+const flash = document.getElementById('flash');
+
+let DPR = Math.min(window.devicePixelRatio || 1, 2);
+let W=0, H=0;            // css pixels
+let N=0, M=0;            // simulation grid (cols, rows)
+let SCALE=0;            // css px per grid cell
+const TARGET_CELLS = 8600;  // perf cap: total grid cells, tuned for 60fps
+
+// ---- fields (flat Float32 grids, with 1-cell border) -------------------
+let u, v, u0, v0;             // velocity
+let r, g, b, r0, g0, b0;      // pigment density per channel (0..1 "amount")
+let size=0;
+
+function idx(i,j){ return i + (N+2)*j; }
+
+// -------------------------------------------------------------------------
+// PALETTES — curated, gallery-grade pours. Each is a set of pigment colors.
+// pigments stored as their *absorption* so subtractive mixing works.
+// -------------------------------------------------------------------------
+const PALETTES = [
+  { name:"Cobalt Bloom",  bg:[10,12,22],
+    cols:[[34,82,196],[8,210,180],[245,247,250],[238,86,128],[14,30,64]] },
+  { name:"Saffron Dusk",  bg:[20,10,12],
+    cols:[[255,176,46],[232,64,52],[120,18,64],[250,238,206],[40,12,30]] },
+  { name:"Jade Ink",      bg:[7,14,12],
+    cols:[[24,160,128],[10,42,60],[214,238,150],[246,250,244],[6,20,30]] },
+  { name:"Orchid Smoke",  bg:[16,10,20],
+    cols:[[176,86,228],[58,40,150],[250,210,238],[26,210,210],[12,8,26]] },
+  { name:"Molten Copper", bg:[18,9,8],
+    cols:[[236,120,44],[150,30,18],[40,20,16],[255,224,168],[210,72,52]] },
+];
+let palI = 0;
+
+// each pour cycles through palette colors
+let pourK = 0;
+
+// -------------------------------------------------------------------------
+function allocate(){
+  N = Math.max(48, Math.round(Math.sqrt(TARGET_CELLS * (W/H))));
+  M = Math.max(48, Math.round(TARGET_CELLS / N));
+  SCALE = W / N;
+  size = (N+2)*(M+2);
+  u=new Float32Array(size); v=new Float32Array(size);
+  u0=new Float32Array(size); v0=new Float32Array(size);
+  r=new Float32Array(size); g=new Float32Array(size); b=new Float32Array(size);
+  r0=new Float32Array(size); g0=new Float32Array(size); b0=new Float32Array(size);
+  buildRenderBuffer();
+}
+
+// small offscreen bloom buffer (cheap blur source)
+const bloom = document.createElement('canvas');
+const bctx  = bloom.getContext('2d');
+let img, imgData;
+function buildRenderBuffer(){
+  img = gctx.createImageData(N+2, M+2);
+  imgData = img.data;
+  for(let p=0;p<imgData.length;p+=4) imgData[p+3]=255;
+}
+
+function resize(){
+  W = window.innerWidth; H = window.innerHeight;
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  // sim = low-res pigment buffer; view = smoothed display canvas
+  allocate();
+  sim.width = N+2; sim.height = M+2;
+  // display canvas at device resolution (capped). 1.0 keeps the soft-glaze
+  // compositing cheap; the bloom buffer already supplies the smooth gradients.
+  const VDPR = Math.min(DPR, 1.0);
+  view.width  = Math.round(W*VDPR);
+  view.height = Math.round(H*VDPR);
+  view.style.width = W+'px'; view.style.height = H+'px';
+  vctx.imageSmoothingEnabled = true;
+  vctx.imageSmoothingQuality = 'high';
+  // bloom buffer: small, fixed-ish size -> blur is essentially free
+  bloom.width  = Math.max(96, Math.round(N*1.4));
+  bloom.height = Math.max(96, Math.round(M*1.4));
+  bctx.imageSmoothingEnabled = true;
+  bctx.imageSmoothingQuality = 'high';
+  // grain at moderate res
+  grain.width  = Math.round(W*0.5);
+  grain.height = Math.round(H*0.5);
+  grain.style.width=W+'px'; grain.style.height=H+'px';
+  makeGrain();
+  applyBackground(true);
+}
+
+// background tint baked as faint pigment so it never looks empty
+function applyBackground(seed){
+  const bg = PALETTES[palI].bg;
+  // nothing to do for velocity; pigments start cleared, bg handled in render
+  if(seed){ /* gentle initial pours so first paint = artwork */ }
+}
+
+// ---------------- fluid solver (Jos Stam, "Stable Fluids") ---------------
+function setBnd(bmode, x){
+  for(let i=1;i<=N;i++){
+    x[idx(i,0)]   = (bmode===2)? -x[idx(i,1)] : x[idx(i,1)];
+    x[idx(i,M+1)] = (bmode===2)? -x[idx(i,M)] : x[idx(i,M)];
+  }
+  for(let j=1;j<=M;j++){
+    x[idx(0,j)]   = (bmode===1)? -x[idx(1,j)] : x[idx(1,j)];
+    x[idx(N+1,j)] = (bmode===1)? -x[idx(N,j)] : x[idx(N,j)];
+  }
+  x[idx(0,0)]     = .5*(x[idx(1,0)]+x[idx(0,1)]);
+  x[idx(0,M+1)]   = .5*(x[idx(1,M+1)]+x[idx(0,M)]);
+  x[idx(N+1,0)]   = .5*(x[idx(N,0)]+x[idx(N+1,1)]);
+  x[idx(N+1,M+1)] = .5*(x[idx(N,M+1)]+x[idx(N+1,M)]);
+}
+
+function lin(bmode, x, x_prev, a, c, iter){
+  const invc = 1/c;
+  for(let k=0;k<iter;k++){
+    for(let j=1;j<=M;j++){
+      for(let i=1;i<=N;i++){
+        const id=idx(i,j);
+        x[id] = (x_prev[id] + a*(x[id-1]+x[id+1]+x[id-(N+2)]+x[id+(N+2)]))*invc;
+      }
+    }
+    setBnd(bmode,x);
+  }
+}
+
+function diffuse(bmode, x, x0, diff, dt, iter){
+  const a = dt*diff*N*M;
+  lin(bmode, x, x0, a, 1+4*a, iter);
+}
+
+function advect(bmode, d, d0, vu, vv, dt){
+  const dt0x = dt*N, dt0y = dt*M;
+  for(let j=1;j<=M;j++){
+    for(let i=1;i<=N;i++){
+      const id=idx(i,j);
+      let x = i - dt0x*vu[id];
+      let y = j - dt0y*vv[id];
+      if(x<0.5)x=0.5; if(x>N+0.5)x=N+0.5;
+      if(y<0.5)y=0.5; if(y>M+0.5)y=M+0.5;
+      const i0=x|0, i1=i0+1, j0=y|0, j1=j0+1;
+      const s1=x-i0, s0=1-s1, t1=y-j0, t0=1-t1;
+      d[id] = s0*(t0*d0[idx(i0,j0)]+t1*d0[idx(i0,j1)])
+            + s1*(t0*d0[idx(i1,j0)]+t1*d0[idx(i1,j1)]);
+    }
+  }
+  setBnd(bmode,d);
+}
+
+function project(vu, vv, p, div){
+  const hx=1/N, hy=1/M;
+  for(let j=1;j<=M;j++){
+    for(let i=1;i<=N;i++){
+      const id=idx(i,j);
+      div[id] = -0.5*( (vu[id+1]-vu[id-1])*hx + (vv[id+(N+2)]-vv[id-(N+2)])*hy );
+      p[id]=0;
+    }
+  }
+  setBnd(0,div); setBnd(0,p);
+  lin(0,p,div,1,4,10);
+  for(let j=1;j<=M;j++){
+    for(let i=1;i<=N;i++){
+      const id=idx(i,j);
+      vu[id]-=0.5*(p[id+1]-p[id-1])/hx;
+      vv[id]-=0.5*(p[id+(N+2)]-p[id-(N+2)])/hy;
+    }
+  }
+  setBnd(1,vu); setBnd(2,vv);
+}
+
+const VISC=0.00000, DIFF=0.000004, DT=0.018, VEL_DAMP=0.992, PIG_DAMP=0.9985;
+
+function velStep(){
+  // forces already injected into u/v. Skip viscous diffusion (VISC=0 inviscid
+  // pour -> sharper filaments and 8 fewer relaxation passes/frame).
+  if(VISC>0){
+    [u0,u]=[u,u0]; diffuse(1,u,u0,VISC,DT,4);
+    [v0,v]=[v,v0]; diffuse(2,v,v0,VISC,DT,4);
+  }
+  project(u,v,u0,v0);
+  [u0,u]=[u,u0]; [v0,v]=[v,v0];
+  advect(1,u,u0,u0,v0,DT);
+  advect(2,v,v0,u0,v0,DT);
+  project(u,v,u0,v0);
+  for(let p=0;p<size;p++){ u[p]*=VEL_DAMP; v[p]*=VEL_DAMP; }
+}
+
+function densStep(){
+  // pigment is purely advected along the velocity field (no explicit diffusion:
+  // the bloom-blur glaze + bilinear upscale supply the soft wet edges, far
+  // cheaper than 6 extra full-grid relaxation passes per frame).
+  [r0,r]=[r,r0]; advect(0,r,r0,u,v,DT);
+  [g0,g]=[g,g0]; advect(0,g,g0,u,v,DT);
+  [b0,b]=[b,b0]; advect(0,b,b0,u,v,DT);
+  for(let p=0;p<size;p++){ r[p]*=PIG_DAMP; g[p]*=PIG_DAMP; b[p]*=PIG_DAMP; }
+  smoothPigment();   // one fused light blur kills isolated grid specks cheaply
+}
+
+// fused single-pass neighbor smoothing of all 3 pigment channels at once.
+// w = self weight; the 4-neighbour average dissolves stray dots into the wash.
+const SMOOTH_W = 0.62;
+function smoothPigment(){
+  const nW=(1-SMOOTH_W)*0.25, row=N+2;
+  for(let j=1;j<=M;j++){
+    let id=idx(1,j);
+    for(let i=1;i<=N;i++,id++){
+      r[id]=r[id]*SMOOTH_W + (r[id-1]+r[id+1]+r[id-row]+r[id+row])*nW;
+      g[id]=g[id]*SMOOTH_W + (g[id-1]+g[id+1]+g[id-row]+g[id+row])*nW;
+      b[id]=b[id]*SMOOTH_W + (b[id-1]+b[id+1]+b[id-row]+b[id+row])*nW;
+    }
+  }
+}
+
+// ----------------- pouring / forces --------------------------------------
+function gridXY(cx,cy){ return [ cx/SCALE, cy/(H/M) ]; }
+
+// deposit pigment of a given rgb color at grid cell with brush radius
+function deposit(cx, cy, col, amount, radius, fu, fv){
+  const [gx,gy]=gridXY(cx,cy);
+  const rad = Math.max(1, radius);
+  const r2 = rad*rad;
+  const ci=Math.round(gx), cj=Math.round(gy);
+  const lo=Math.ceil(rad);
+  // convert rgb (0..255) to pigment "amount" per channel:
+  // treat each channel as how much of that ink to add (normalized)
+  const cr = col[0]/255, cg=col[1]/255, cb=col[2]/255;
+  for(let dj=-lo;dj<=lo;dj++){
+    for(let di=-lo;di<=lo;di++){
+      const i=ci+di, j=cj+dj;
+      if(i<1||i>N||j<1||j>M) continue;
+      const d2=di*di+dj*dj;
+      if(d2>r2) continue;
+      const fall = Math.exp(-d2/(r2*0.42));
+      const a = amount*fall;
+      const id=idx(i,j);
+      r[id] += cr*a;  g[id]+=cg*a;  b[id]+=cb*a;
+      if(fu||fv){
+        u[id]+=fu*fall;  v[id]+=fv*fall;
+      }
+    }
+  }
+}
+
+// -------------------- pointer interaction --------------------------------
+const ptr = { x:0,y:0, px:0,py:0, down:false, moved:0, lastT:0 };
+function setPtr(x,y){ ptr.px=ptr.x; ptr.py=ptr.y; ptr.x=x; ptr.y=y; }
+
+function pourAt(x,y, hard){
+  const dx=x-ptr.px, dy=y-ptr.py;
+  const speed = Math.hypot(dx,dy);
+  const pal = PALETTES[palI].cols;
+  const col = pal[pourK % pal.length];
+  // velocity injection scaled by drag speed -> fast strokes make filaments
+  const fScale = 7.5;
+  const fu = dx*fScale, fv = dy*fScale;
+  const rad = hard ? 5.4 : 3.4 + Math.min(speed*0.05, 3.2);
+  const amt = hard ? 1.5 : 0.55 + Math.min(speed*0.012,0.5);
+  deposit(x,y,col,amt,rad,fu,fv);
+}
+
+// idle auto-pour so the canvas is alive from frame 1 (no loading gate)
+let idleT = 0;
+const idleSeq = [];
+function planIdlePour(){
+  // a graceful drifting pour path
+  const margin=0.12;
+  const a = Math.random()*Math.PI*2;
+  const sx = (0.5 + Math.cos(a)*0.34) * W;
+  const sy = (0.5 + Math.sin(a)*0.30) * H;
+  idleSeq.length=0;
+  let px=sx, py=sy, ang=a+Math.PI+ (Math.random()-0.5);
+  const steps = 26 + (Math.random()*18|0);
+  for(let s=0;s<steps;s++){
+    ang += (Math.random()-0.5)*0.5;
+    const sp = (W*0.012) * (0.7+Math.random()*0.8);
+    px += Math.cos(ang)*sp; py += Math.sin(ang)*sp;
+    px = Math.max(W*margin, Math.min(W*(1-margin), px));
+    py = Math.max(H*margin, Math.min(H*(1-margin), py));
+    idleSeq.push([px,py]);
+  }
+  pourK = (pourK+1) % PALETTES[palI].cols.length;
+}
+let idleStep=0, idlePrev=null;
+function runIdle(){
+  if(ptr.down) return;
+  if(idleStep===0 && idleSeq.length===0){ planIdlePour(); idlePrev=null; }
+  if(idleStep < idleSeq.length){
+    const p = idleSeq[idleStep++];
+    if(idlePrev){ ptr.px=idlePrev[0]; ptr.py=idlePrev[1]; }
+    else { ptr.px=p[0]; ptr.py=p[1]; }
+    pourAt(p[0],p[1],false);
+    idlePrev=p;
+  } else {
+    // pause then plan next
+    idleStep++;
+    if(idleStep > idleSeq.length + 36){ idleStep=0; idleSeq.length=0; }
+  }
+}
+
+// ----------------------- rendering ---------------------------------------
+// subtractive pigment -> screen color. Each pigment "amount" attenuates light.
+// We treat the three pigment channels as absorbers; classic acrylic mixing.
+const bgArr = ()=>PALETTES[palI].bg;
+function render(){
+  const d=imgData;
+  const bg=PALETTES[palI].bg;
+  const bgr=bg[0], bgg=bg[1], bgb=bg[2];
+  // Beer-Lambert-ish: transmitted = exp(-k * amount) per channel.
+  // pigment r adds RED ink -> absorbs cyan-ish, etc. We invert: amount of a
+  // color means light is *tinted toward* that color but darkened where dense.
+  const K = 1.35;
+  for(let j=0;j<=M+1;j++){
+    for(let i=0;i<=N+1;i++){
+      const id=idx(i,j);
+      let ar=r[id], ag=g[id], ab=b[id];
+      const tot = ar+ag+ab;
+      const o = (i + (N+2)*j)*4;
+      if(tot < 0.0008){
+        d[o]=bgr; d[o+1]=bgg; d[o+2]=bgb;
+        continue;
+      }
+      // normalized hue from pigment ratios -> the *paint color*
+      const inv = 1/tot;
+      let pr=ar*inv, pg=ag*inv, pb=ab*inv;
+      // density -> opacity (covers background), with glossy lift.
+      // higher K -> mid densities saturate quickly & smoothly (no speckle gap)
+      let cover = 1 - Math.exp(-K*tot);
+      if(cover>1)cover=1;
+      // wet sheen: gentle specular lift on dense cores only
+      const sheen = Math.min(tot*0.10, 0.34);
+      let R = (pr*255)*(0.82+sheen) + 255*sheen*0.10;
+      let G = (pg*255)*(0.82+sheen) + 255*sheen*0.10;
+      let B = (pb*255)*(0.82+sheen) + 255*sheen*0.10;
+      // composite over background by coverage
+      d[o]   = R*cover + bgr*(1-cover);
+      d[o+1] = G*cover + bgg*(1-cover);
+      d[o+2] = B*cover + bgb*(1-cover);
+    }
+  }
+  gctx.putImageData(img,0,0);
+
+  // ---- smoothed glaze upscale -> the wet, glossy display ----
+  // Softness comes from bilinear UPSCALING (cheap, GPU) rather than per-frame
+  // blur filters (costly). A small low-res bloom buffer adds luminous sheen.
+  const vw=view.width, vh=view.height;
+  const sx=1, sy=1, sw=N, sh=M;
+  // 1) bloom buffer: downsample pigment, blur once at tiny size (near-free)
+  bctx.clearRect(0,0,bloom.width,bloom.height);
+  bctx.globalCompositeOperation='source-over';
+  bctx.filter=`blur(${Math.max(1.6,bloom.width*0.032)}px)`;
+  bctx.drawImage(sim, sx,sy,sw,sh, 0,0, bloom.width, bloom.height);
+  bctx.filter='none';
+  // 2) base layer: the real color painting, bilinear-scaled (upscale dissolves
+  //    the grid into smooth wet flow).
+  vctx.globalCompositeOperation='source-over';
+  vctx.globalAlpha=1;
+  vctx.drawImage(sim, sx,sy,sw,sh, 0,0, vw,vh);
+  // 3) single soft bloom (screen) -> luminous wet sheen + glaze depth in one pass
+  vctx.globalCompositeOperation='screen';
+  vctx.globalAlpha=0.5;
+  vctx.drawImage(bloom, 0,0, vw,vh);
+  vctx.globalCompositeOperation='source-over';
+  vctx.globalAlpha=1;
+}
+
+// ----------------------- grain (static paper texture) --------------------
+function makeGrain(){
+  const gw=grain.width, gh=grain.height;
+  const im=grctx.createImageData(gw,gh);
+  const dd=im.data;
+  for(let p=0;p<dd.length;p+=4){
+    const n = 110 + (Math.random()*90|0);
+    dd[p]=dd[p+1]=dd[p+2]=n; dd[p+3]=255;
+  }
+  grctx.putImageData(im,0,0);
+}
+
+// ----------------------- palette UI --------------------------------------
+function buildPalUI(){
+  palEl.innerHTML='';
+  PALETTES.forEach((p,k)=>{
+    const sw=document.createElement('div');
+    sw.className='sw'+(k===palI?' on':'');
+    const c=p.cols;
+    sw.style.background=`conic-gradient(rgb(${c[0]}),rgb(${c[1]}),rgb(${c[2]}),rgb(${c[3]}),rgb(${c[0]}))`;
+    palEl.appendChild(sw);
+  });
+}
+function refreshPalUI(){
+  [...palEl.children].forEach((el,k)=>el.classList.toggle('on',k===palI));
+}
+let flashT=null;
+function showFlash(t){
+  flash.textContent=t; flash.style.opacity='1';
+  clearTimeout(flashT); flashT=setTimeout(()=>flash.style.opacity='0',1100);
+}
+function switchPalette(dir){
+  palI=(palI+dir+PALETTES.length)%PALETTES.length;
+  refreshPalUI();
+  showFlash(PALETTES[palI].name);
+}
+
+// ----------------------- events ------------------------------------------
+function pos(e){
+  const t = e.touches? e.touches[0] : e;
+  return [t.clientX, t.clientY];
+}
+function onDown(e){
+  const [x,y]=pos(e);
+  ptr.down=true; ptr.x=x;ptr.y=y;ptr.px=x;ptr.py=y;
+  pourK=(pourK+1)%PALETTES[palI].cols.length;
+  idleStep=0; idleSeq.length=0;
+  deposit(x,y,PALETTES[palI].cols[pourK%PALETTES[palI].cols.length],1.6,5.6, (Math.random()-.5)*40,(Math.random()-.5)*40);
+}
+function onMove(e){
+  const [x,y]=pos(e);
+  setPtr(x,y);
+  if(ptr.down) pourAt(x,y,false);
+  else { /* slight hover stir */
+    const dx=ptr.x-ptr.px, dy=ptr.y-ptr.py;
+    const [gx,gy]=gridXY(x,y);
+    const ci=Math.round(gx),cj=Math.round(gy);
+    if(ci>1&&ci<N&&cj>1&&cj<M){ u[idx(ci,cj)]+=dx*1.6; v[idx(ci,cj)]+=dy*1.6; }
+  }
+}
+function onUp(){ ptr.down=false; }
+
+view.addEventListener('mousedown',onDown);
+window.addEventListener('mousemove',onMove,{passive:true});
+window.addEventListener('mouseup',onUp);
+view.addEventListener('touchstart',e=>{e.preventDefault();onDown(e);},{passive:false});
+view.addEventListener('touchmove',e=>{e.preventDefault();onMove(e);},{passive:false});
+window.addEventListener('touchend',onUp);
+
+window.addEventListener('wheel',e=>{ switchPalette(e.deltaY>0?1:-1); },{passive:true});
+window.addEventListener('keydown',e=>{
+  if(e.code==='Space'){ e.preventDefault(); clearAll(); }
+  else if(e.code==='ArrowRight') switchPalette(1);
+  else if(e.code==='ArrowLeft') switchPalette(-1);
+});
+function clearAll(){
+  r.fill(0);g.fill(0);b.fill(0);u.fill(0);v.fill(0);
+  idleStep=0; idleSeq.length=0;
+  showFlash('Cleared');
+}
+
+window.addEventListener('resize',()=>{ clearTimeout(window._rz); window._rz=setTimeout(resize,140); });
+
+// ----------------------- main loop ---------------------------------------
+let acc=0, last=performance.now();
+function frame(now){
+  const dt=Math.min(now-last,50); last=now;
+  // idle pour pacing: roughly every ~55ms add a step
+  idleT+=dt;
+  if(!ptr.down){
+    while(idleT>42){ runIdle(); idleT-=42; }
+  } else idleT=0;
+
+  velStep();
+  densStep();
+  render();
+  requestAnimationFrame(frame);
+}
+
+// ----------------------- boot --------------------------------------------
+function seedOpening(){
+  // a few overlapping pours instantly => first paint is already a painting
+  const cx=W*0.5, cy=H*0.46;
+  const cols=PALETTES[palI].cols;
+  const spots=[
+    [cx-W*0.10,cy-H*0.04,0],[cx+W*0.09,cy+H*0.02,1],
+    [cx,cy+H*0.10,2],[cx+W*0.02,cy-H*0.09,3],[cx-W*0.07,cy+H*0.07,4]
+  ];
+  spots.forEach(([x,y,ci],n)=>{
+    for(let k=0;k<5;k++){
+      const a=Math.random()*6.283, rr=Math.random()*Math.min(W,H)*0.07;
+      deposit(x+Math.cos(a)*rr, y+Math.sin(a)*rr, cols[ci%cols.length], 2.2, 6.2,
+              Math.cos(a+1.6)*70, Math.sin(a+1.6)*70);
+    }
+  });
+  // a gentle swirling impulse so it blooms outward (soft enough to avoid
+  // high-frequency turbulence the projection can't smooth -> no speckle)
+  for(let q=0;q<60;q++){
+    const a=q/60*6.283;
+    const i=Math.round(N/2 + Math.cos(a)*N*0.18);
+    const j=Math.round(M/2 + Math.sin(a)*M*0.18);
+    if(i>1&&i<N&&j>1&&j<M){ u[idx(i,j)]+=Math.cos(a+1.57)*95; v[idx(i,j)]+=Math.sin(a+1.57)*95; }
+  }
+}
+
+resize();
+buildPalUI();
+seedOpening();
+showFlash(PALETTES[palI].name);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

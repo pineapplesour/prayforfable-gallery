@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>GLYPHFALL</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%;
+    background: #03040a;
+    overflow: hidden;
+    cursor: crosshair;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  #stage { position: fixed; inset: 0; display: block; }
+  /* HUD */
+  #hud {
+    position: fixed; left: 18px; bottom: 16px;
+    color: #6df3ff; font-size: 11px; letter-spacing: .22em;
+    line-height: 1.7; pointer-events: none;
+    text-transform: uppercase; opacity: .82;
+    text-shadow: 0 0 8px rgba(80,230,255,.55);
+    mix-blend-mode: screen;
+  }
+  #hud b { color: #fff; font-weight: 600; }
+  #title {
+    position: fixed; right: 20px; top: 16px;
+    color: #fff; font-size: 13px; letter-spacing: .5em;
+    pointer-events: none; opacity: .9;
+    text-shadow: 0 0 14px rgba(140,120,255,.8);
+    mix-blend-mode: screen;
+  }
+  #title small { display:block; font-size:9px; letter-spacing:.34em; color:#9aa0ff; opacity:.7; margin-top:4px; }
+  @media (max-width: 560px) {
+    #hud { font-size: 9px; left: 12px; bottom: 12px; letter-spacing:.16em; }
+    #title { font-size: 11px; right: 14px; top: 12px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="title">GLYPHFALL<small>move · click · scroll</small></div>
+<div id="hud">
+  <div>signal <b id="hSig">stable</b></div>
+  <div>drift <b id="hDrift">0.0</b></div>
+  <div>depth <b id="hDepth">3</b></div>
+</div>
+<script>
+(() => {
+  "use strict";
+  const cv = document.getElementById('stage');
+  const ctx = cv.getContext('2d', { alpha: false });
+  let W = 0, H = 0, DPR = 1;
+  const FONT_BASE = 18;          // logical glyph cell at depth 1
+  const LAYERS = 3;              // parallax depth layers
+
+  // ---- Original glyph alphabet: procedurally drawn vector strokes on a 5x7-ish grid ----
+  // Each glyph = list of strokes; each stroke = array of [x,y] points in 0..1 space.
+  // Generated once with a seeded RNG so the alphabet is stable & "alien".
+  let SEED = 1337;
+  function rnd() { SEED = (SEED * 1664525 + 1013904223) >>> 0; return SEED / 4294967296; }
+  function ri(a, b) { return a + Math.floor(rnd() * (b - a + 1)); }
+
+  const GLYPHS = [];
+  const GLYPH_COUNT = 48;
+  function buildGlyphs() {
+    GLYPHS.length = 0;
+    // grid nodes: 3 cols x 4 rows
+    const COLS = 3, ROWS = 4;
+    const nx = i => (i % COLS) / (COLS - 1);
+    const ny = i => Math.floor(i / COLS) / (ROWS - 1);
+    const N = COLS * ROWS;
+    for (let g = 0; g < GLYPH_COUNT; g++) {
+      const strokes = [];
+      const nStrokes = ri(2, 4);
+      for (let s = 0; s < nStrokes; s++) {
+        const len = ri(2, 3);
+        const pts = [];
+        let cur = ri(0, N - 1);
+        pts.push([nx(cur), ny(cur)]);
+        for (let k = 0; k < len; k++) {
+          // step to an adjacent-ish node
+          const cc = cur % COLS, cr = Math.floor(cur / COLS);
+          const dc = ri(-1, 1), dr = ri(-1, 1);
+          let ncc = Math.max(0, Math.min(COLS - 1, cc + dc));
+          let ncr = Math.max(0, Math.min(ROWS - 1, cr + dr));
+          cur = ncr * COLS + ncc;
+          pts.push([nx(cur), ny(cur)]);
+        }
+        strokes.push(pts);
+      }
+      // a few glyphs get a "dot" accent
+      const dot = rnd() < 0.3 ? [nx(ri(0, N - 1)), ny(ri(0, N - 1))] : null;
+      GLYPHS.push({ strokes, dot });
+    }
+  }
+  buildGlyphs();
+
+  // ---- Glyph atlas: pre-render each glyph at a few brightness tiers into offscreen tiles ----
+  // tiers represent the phosphor intensity; we tint at draw time with globalAlpha + composite.
+  const TILE = 64;               // atlas tile size (px)
+  let atlas = null;
+  function buildAtlas() {
+    const cols = 8;
+    const rows = Math.ceil(GLYPH_COUNT / cols);
+    const a = document.createElement('canvas');
+    a.width = cols * TILE; a.height = rows * TILE;
+    const c = a.getContext('2d');
+    c.lineCap = 'round';
+    c.lineJoin = 'round';
+    for (let i = 0; i < GLYPH_COUNT; i++) {
+      const tx = (i % cols) * TILE, ty = Math.floor(i / cols) * TILE;
+      const pad = TILE * 0.16;
+      const sz = TILE - pad * 2;
+      const G = GLYPHS[i];
+      c.save();
+      c.translate(tx + pad, ty + pad);
+      c.strokeStyle = '#fff';
+      c.fillStyle = '#fff';
+      c.lineWidth = TILE * 0.085;
+      // map glyph 0..1 space into a slightly narrow column (taller than wide)
+      const gw = sz * 0.82, gh = sz;
+      const ox = (sz - gw) / 2;
+      for (const st of G.strokes) {
+        c.beginPath();
+        for (let p = 0; p < st.length; p++) {
+          const X = ox + st[p][0] * gw, Y = st[p][1] * gh;
+          if (p === 0) c.moveTo(X, Y); else c.lineTo(X, Y);
+        }
+        c.stroke();
+      }
+      if (G.dot) {
+        c.beginPath();
+        c.arc(ox + G.dot[0] * gw, G.dot[1] * gh, TILE * 0.055, 0, Math.PI * 2);
+        c.fill();
+      }
+      c.restore();
+    }
+    atlas = a;
+  }
+  buildAtlas();
+
+  // ---- Color: depth-based palette, scroll shifts the whole spectrum ----
+  let spectrum = 0;     // 0..1 master hue shift driven by scroll
+  let spectrumTarget = 0;
+  // base hues per layer (far -> near): violet, cyan, mint
+  const LAYER_HUE = [262, 188, 158];
+  const LAYER_SAT = [70, 92, 95];
+
+  // ---- Columns ----
+  let cols = [];
+  function colCountForLayer(L) {
+    const cell = FONT_BASE * (1 + L * 0.55); // deeper = bigger cells (closer)
+    return Math.ceil(W / cell);
+  }
+  function setupColumns() {
+    cols = [];
+    for (let L = 0; L < LAYERS; L++) {
+      const cell = FONT_BASE * (1 + L * 0.55);
+      const n = Math.ceil(W / cell) + 1;
+      for (let i = 0; i < n; i++) {
+        cols.push(makeColumn(L, i, cell));
+      }
+    }
+  }
+  function makeColumn(L, i, cell) {
+    const speedBase = (0.5 + L * 0.45);      // near layers fall faster
+    return {
+      L, cell,
+      x: i * cell + cell * 0.5,
+      head: Math.random() * -H,              // head y (px)
+      speed: (speedBase) * (0.7 + Math.random() * 0.7) * (cell * 0.9),
+      trail: 8 + Math.floor(Math.random() * 22),
+      glyphSeed: (Math.random() * 9999) | 0,
+      tick: Math.random() * 1,               // glyph mutation phase
+      mutRate: 0.5 + Math.random() * 2.5,    // mutations/sec along the trail
+      bright: 0.7 + Math.random() * 0.3
+    };
+  }
+
+  // glyph index for a given column + row, mutating slowly over time
+  function glyphAt(col, row, t) {
+    // deterministic-ish hash that changes in steps (so it flickers, not boils)
+    const phase = Math.floor((t * col.mutRate + row * 0.37 + col.glyphSeed) );
+    let h = (col.glyphSeed * 374761393 + row * 668265263 + phase * 2654435761) >>> 0;
+    h ^= h >>> 13; h = (h * 1274126177) >>> 0;
+    return h % GLYPH_COUNT;
+  }
+
+  // ---- Interaction state ----
+  const pointer = { x: -9999, y: -9999, px: -9999, py: -9999, active: false, vx: 0, vy: 0 };
+  let drift = 0;            // smoothed pointer speed -> wind
+  const shocks = [];        // click shockwaves
+  let lastT = performance.now();
+
+  function resize() {
+    DPR = Math.min(2, window.devicePixelRatio || 1);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = Math.floor(W * DPR);
+    cv.height = Math.floor(H * DPR);
+    cv.style.width = W + 'px';
+    cv.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    // dark base fill once
+    ctx.fillStyle = '#03040a';
+    ctx.fillRect(0, 0, W, H);
+    setupColumns();
+  }
+  window.addEventListener('resize', resize);
+
+  // ---- Pointer ----
+  function setPointer(x, y) {
+    pointer.x = x; pointer.y = y; pointer.active = true;
+  }
+  window.addEventListener('pointermove', e => setPointer(e.clientX, e.clientY), { passive: true });
+  window.addEventListener('pointerdown', e => {
+    setPointer(e.clientX, e.clientY);
+    shocks.push({ x: e.clientX, y: e.clientY, r: 0, t: 0, life: 1.0 });
+  }, { passive: true });
+  window.addEventListener('pointerleave', () => { pointer.active = false; pointer.x = -9999; pointer.y = -9999; });
+
+  // scroll / wheel -> spectrum shift + slight global speed/warp
+  window.addEventListener('wheel', e => {
+    spectrumTarget += e.deltaY * 0.0008;
+  }, { passive: true });
+  // touch fallback for "scroll": vertical drag with two fingers OR keep simple swipe
+  let touchY = null;
+  window.addEventListener('touchmove', e => {
+    if (e.touches.length) {
+      const y = e.touches[0].clientY;
+      if (touchY !== null) spectrumTarget += (touchY - y) * 0.0012;
+      touchY = y;
+      setPointer(e.touches[0].clientX, e.touches[0].clientY);
+    }
+  }, { passive: true });
+  window.addEventListener('touchstart', e => {
+    if (e.touches.length) {
+      touchY = e.touches[0].clientY;
+      setPointer(e.touches[0].clientX, e.touches[0].clientY);
+      shocks.push({ x: e.touches[0].clientX, y: e.touches[0].clientY, r: 0, t: 0, life: 1.0 });
+    }
+  }, { passive: true });
+  window.addEventListener('touchend', () => { touchY = null; });
+
+  // ---- HUD ----
+  const hSig = document.getElementById('hSig');
+  const hDrift = document.getElementById('hDrift');
+  const hDepth = document.getElementById('hDepth');
+  hDepth.textContent = LAYERS;
+  let hudTick = 0;
+
+  // atlas tile source rect for glyph i
+  const ATL_COLS = 8;
+  function atlasSrc(i) {
+    return { sx: (i % ATL_COLS) * TILE, sy: Math.floor(i / ATL_COLS) * TILE };
+  }
+
+  // ---- Main loop ----
+  function frame(now) {
+    let dt = (now - lastT) / 1000;
+    if (dt > 0.05) dt = 0.05;     // clamp after tab switch
+    lastT = now;
+    const t = now / 1000;
+
+    // pointer velocity
+    if (pointer.active) {
+      pointer.vx = pointer.x - pointer.px;
+      pointer.vy = pointer.y - pointer.py;
+    } else { pointer.vx *= 0.85; pointer.vy *= 0.85; }
+    pointer.px = pointer.x; pointer.py = pointer.y;
+    const pspeed = Math.hypot(pointer.vx, pointer.vy);
+    drift += (pspeed - drift) * 0.12;
+
+    // spectrum easing
+    spectrum += (spectrumTarget - spectrum) * 0.08;
+
+    // ---- Phosphor decay: translucent dark rectangle instead of clear ----
+    // gives trailing/ghosting. Slightly bluish-black for mood.
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = 'rgba(3, 5, 12, 0.30)';
+    ctx.fillRect(0, 0, W, H);
+
+    // additive glyph rendering for glow
+    ctx.globalCompositeOperation = 'lighter';
+
+    const windX = pointer.active ? (pointer.vx * 0.4) : 0;
+
+    // update + draw columns, sorted far->near (already grouped by L in array order)
+    for (let ci = 0; ci < cols.length; ci++) {
+      const col = cols[ci];
+      const L = col.L;
+      const cell = col.cell;
+
+      // fall
+      const globalSpeed = 1 + Math.abs(spectrum) * 0.15;
+      col.head += col.speed * dt * globalSpeed;
+
+      // reset when fully off bottom (head + trail length past bottom)
+      const trailPx = col.trail * cell;
+      if (col.head - trailPx > H + cell) {
+        col.head = -Math.random() * H * 0.5 - trailPx;
+        col.speed = (0.5 + L * 0.45) * (0.7 + Math.random() * 0.7) * (cell * 0.9);
+        col.trail = 8 + Math.floor(Math.random() * 22);
+        col.x = col.x; // keep x
+      }
+
+      // layer color
+      let hue = LAYER_HUE[L] + spectrum * 90;
+      let sat = LAYER_SAT[L];
+
+      // pointer field: distance from column x to pointer
+      const dxCol = col.x - pointer.x;
+      const headRow = Math.floor(col.head / cell);
+
+      // draw trail of glyphs from head upward
+      const tile = TILE;
+      const draw = tile; // we scale to cell
+      const scale = cell / tile * 1.0;
+      for (let k = 0; k < col.trail; k++) {
+        const gy = col.head - k * cell;
+        if (gy < -cell || gy > H + cell) continue;
+        const row = headRow - k;
+
+        // base intensity: head is brightest, fades up the trail
+        let inten = (1 - k / col.trail);
+        inten = inten * inten;     // sharper falloff
+        let isHead = (k === 0);
+
+        // pointer interaction: glyphs near cursor bloom + lens (radial warp) + gravity pull
+        let gx = col.x, gyOff = 0;
+        let extraHue = 0, bloom = 0, warp = 0;
+        if (pointer.active) {
+          const dx = gx - pointer.x;
+          const dy = gy - pointer.y;
+          const d2 = dx * dx + dy * dy;
+          const R = 190 + L * 46;
+          if (d2 < R * R) {
+            const d = Math.sqrt(d2) || 1;
+            const f = 1 - d / R;
+            bloom = f * f;
+            // lens distortion: push glyphs out radially (magnifying-glass edge)
+            warp = (dx / d) * f * 40;
+            gx += warp;
+            // gravity well: tug vertically toward the cursor line for a living swirl
+            gyOff = -(dy / d) * f * f * 26;
+            extraHue = f * 90;          // hue shift toward warm near cursor
+            inten = Math.min(1.25, inten + bloom * 1.25);
+            isHead = isHead || bloom > 0.42;
+          }
+        }
+        const gyDraw = gy + gyOff;
+
+        // shockwaves: clicking sends an expanding ring that flares glyphs to white-hot
+        for (let si = 0; si < shocks.length; si++) {
+          const sh = shocks[si];
+          const dx = gx - sh.x, dy = gyDraw - sh.y;
+          const d = Math.hypot(dx, dy);
+          const ring = Math.abs(d - sh.r);
+          if (ring < 54) {
+            const f = (1 - ring / 54) * sh.life;
+            inten = Math.min(1.6, inten + f * 1.4);
+            extraHue += f * 150;
+            bloom = Math.max(bloom, f);
+            isHead = isHead || f > 0.5;
+          }
+        }
+
+        if (inten <= 0.02) continue;
+
+        const i = glyphAt(col, row, t);
+        const src = atlasSrc(i);
+
+        const a = Math.min(1, inten * col.bright);
+        const hh = (hue + extraHue + L * 6) % 360;
+        const light = isHead ? 80 : 55 + inten * 18;
+        const ss = Math.min(100, sat + bloom * 8);
+
+        // Render through the tinted-glyph cache (atlas is white; cache tints + caps glow).
+        drawTinted(src.sx, src.sy, gx, gyDraw, cell, hh, ss, light, a, isHead || bloom > 0.5);
+      }
+    }
+
+    // advance + cull shocks, and draw a luminous expanding ring stroke
+    ctx.globalCompositeOperation = 'lighter';
+    for (let si = shocks.length - 1; si >= 0; si--) {
+      const sh = shocks[si];
+      sh.t += dt;
+      sh.r = sh.t * 620;                 // expansion speed
+      sh.life = Math.max(0, 1 - sh.t / 1.1);
+      // ring flash
+      const hh = (LAYER_HUE[2] + spectrum * 90 + 30) % 360;
+      ctx.strokeStyle = hsla(hh, 100, 72, sh.life * 0.55);
+      ctx.lineWidth = 2 + sh.life * 5;
+      ctx.beginPath();
+      ctx.arc(sh.x, sh.y, sh.r, 0, Math.PI * 2);
+      ctx.stroke();
+      if (sh.life <= 0 || sh.r > Math.hypot(W, H) + 60) shocks.splice(si, 1);
+    }
+
+    // pointer aura: a persistent luminous core so the cursor reads as a light source
+    if (pointer.active) {
+      ctx.globalCompositeOperation = 'lighter';
+      const baseA = 0.10 + Math.min(0.16, drift * 0.012);
+      const g = ctx.createRadialGradient(pointer.x, pointer.y, 0, pointer.x, pointer.y, 150);
+      const hh = (LAYER_HUE[1] + spectrum * 90 + 40) % 360;
+      g.addColorStop(0, hsla(hh, 90, 72, baseA));
+      g.addColorStop(0.4, hsla(hh, 95, 60, baseA * 0.5));
+      g.addColorStop(1, hsla(hh, 95, 60, 0));
+      ctx.fillStyle = g;
+      ctx.fillRect(pointer.x - 150, pointer.y - 150, 300, 300);
+    }
+
+    // vignette (drawn rarely-cheap, multiply look via source-over dark gradient)
+    ctx.globalCompositeOperation = 'source-over';
+    if (!vignette) buildVignette();
+    ctx.globalAlpha = 1;
+    ctx.drawImage(vignette, 0, 0, W, H);
+
+    // HUD update (throttled)
+    hudTick += dt;
+    if (hudTick > 0.12) {
+      hudTick = 0;
+      hDrift.textContent = drift.toFixed(1);
+      const sigState = shocks.length ? 'BREACH' : (drift > 8 ? 'turbulent' : (Math.abs(spectrum) > 0.4 ? 'shifting' : 'stable'));
+      hSig.textContent = sigState;
+      hSig.style.color = shocks.length ? '#ff7a9c' : (drift > 8 ? '#ffd36d' : '#6df3ff');
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  // ---- Tinted glyph cache ----
+  // Build per-color tinted versions on demand and cache them. Color key quantized.
+  const tintCache = new Map();
+  let tintCanvas = null, tintCtx = null;
+  function ensureTintScratch() {
+    if (!tintCanvas) {
+      tintCanvas = document.createElement('canvas');
+      tintCanvas.width = TILE; tintCanvas.height = TILE;
+      tintCtx = tintCanvas.getContext('2d');
+    }
+  }
+  function getTinted(sx, sy, hh, ss, light, head) {
+    // quantize for cache hits
+    const qh = Math.round(hh / 8) * 8;
+    const ql = Math.round(light / 8) * 8;
+    const qs = Math.round(ss / 12) * 12;
+    const gi = (sy / TILE) * ATL_COLS + (sx / TILE);
+    const key = (gi | 0) + '|' + qh + '|' + qs + '|' + ql + '|' + (head ? 1 : 0);
+    let c = tintCache.get(key);
+    if (c) return c;
+    ensureTintScratch();
+    const tc = document.createElement('canvas');
+    tc.width = TILE; tc.height = TILE;
+    const x = tc.getContext('2d');
+    // draw white glyph
+    x.clearRect(0, 0, TILE, TILE);
+    x.drawImage(atlas, sx, sy, TILE, TILE, 0, 0, TILE, TILE);
+    // tint: source-in fill with color
+    x.globalCompositeOperation = 'source-in';
+    x.fillStyle = hsl(qh, qs, ql);
+    x.fillRect(0, 0, TILE, TILE);
+    if (head) {
+      // brighten core for head glyphs
+      x.globalCompositeOperation = 'lighter';
+      x.fillStyle = hsla((qh + 0) % 360, Math.max(0, qs - 30), 95, 0.5);
+      x.globalCompositeOperation = 'source-atop';
+      x.fillStyle = hsla(qh, 20, 96, 0.55);
+      x.fillRect(0, 0, TILE, TILE);
+    }
+    tc._k = key;
+    // cap cache size
+    if (tintCache.size > 1400) { tintCache.clear(); }
+    tintCache.set(key, tc);
+    return tc;
+  }
+  function drawTinted(sx, sy, gx, gy, cell, hh, ss, light, alpha, head) {
+    const tc = getTinted(sx, sy, hh, ss, light, head);
+    const s = cell / TILE * 1.18;
+    const w = TILE * s, h = TILE * s;
+    ctx.globalAlpha = alpha;
+    // glow for heads via shadow is expensive; emulate with a faint scaled second draw
+    if (head) {
+      ctx.globalAlpha = alpha * 0.5;
+      ctx.drawImage(tc, gx - w * 0.62, gy - h * 0.62, w * 1.24, h * 1.24);
+      ctx.globalAlpha = alpha;
+    }
+    ctx.drawImage(tc, gx - w / 2, gy - h / 2, w, h);
+  }
+
+  // ---- helpers ----
+  function hsl(h, s, l) { return `hsl(${h|0},${s|0}%,${l|0}%)`; }
+  function hsla(h, s, l, a) { return `hsla(${h|0},${s|0}%,${l|0}%,${a})`; }
+
+  let vignette = null;
+  function buildVignette() {
+    const v = document.createElement('canvas');
+    v.width = Math.max(2, Math.floor(W)); v.height = Math.max(2, Math.floor(H));
+    const c = v.getContext('2d');
+    const g = c.createRadialGradient(W/2, H*0.42, Math.min(W,H)*0.2, W/2, H/2, Math.max(W,H)*0.75);
+    g.addColorStop(0, 'rgba(0,0,0,0)');
+    g.addColorStop(0.7, 'rgba(0,0,0,0)');
+    g.addColorStop(1, 'rgba(0,0,4,0.62)');
+    c.fillStyle = g; c.fillRect(0,0,W,H);
+    // top scanline-ish horizon glow
+    const tg = c.createLinearGradient(0,0,0,H*0.18);
+    tg.addColorStop(0,'rgba(40,30,90,0.10)');
+    tg.addColorStop(1,'rgba(0,0,0,0)');
+    c.fillStyle = tg; c.fillRect(0,0,W,H*0.18);
+    vignette = v;
+  }
+
+  // ---- boot ----
+  resize();
+  // first paint: draw an initial frame of glyphs so opening = artwork (no blank gate)
+  function seedFirstPaint() {
+    ctx.globalCompositeOperation = 'lighter';
+    for (let ci = 0; ci < cols.length; ci++) {
+      const col = cols[ci];
+      // scatter heads across the screen for an instantly-full field
+      col.head = Math.random() * H;
+    }
+  }
+  seedFirstPaint();
+  requestAnimationFrame(frame);
+
+  // expose a tiny bit for debugging/verification
+  window.__GF = { glyphs: GLYPHS, colsLen: () => cols.length, shocks };
+})();
+</script>
+</body>
+</html>

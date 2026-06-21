@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>liquid glass · newsprint loupe</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0c0a07;cursor:none}
+  #gl{position:fixed;inset:0;width:100vw;height:100vh;display:block}
+  #hint{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);
+    font:11px/1.4 "SF Mono",Menlo,monospace;letter-spacing:.18em;color:rgba(255,250,240,.5);
+    text-shadow:0 0 6px rgba(0,0,0,.85);pointer-events:none;transition:opacity 1.2s;text-transform:uppercase}
+  #fallback{color:#8a8378;font:14px/1.6 Georgia,serif;padding:3em;max-width:30em}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="hint">move mouse · hold to press the lens · scroll the page</div>
+<script>
+'use strict';
+/* ============================================================
+   LIQUID GLASS — a heavy reading loupe resting on a broadsheet
+   newspaper, filmed handheld on a wooden desk.
+   scene  = canvas2d newsprint  ·  optics = webgl shader
+   ============================================================ */
+
+const DPR = Math.min(window.devicePixelRatio || 1, 1.75);
+let W = 0, H = 0;
+
+const glCanvas = document.getElementById('gl');
+const gl = glCanvas.getContext('webgl', { antialias:false, preserveDrawingBuffer:false });
+if (!gl) document.body.innerHTML = '<div id="fallback">WebGL is unavailable in this browser, so the liquid-glass loupe cannot render.</div>';
+
+/* ------------------------------------------------------------
+   SCENE — the newspaper. logical space 1600x1100, cover-scaled
+   onto the canvas and tilted like a sheet of paper on a desk.
+   Pure ink-on-newsprint: masthead, rules, multi-column body,
+   headlines, a halftone photo block, a stock chart, a cartoon.
+   ------------------------------------------------------------ */
+const scene = document.createElement('canvas');
+const sx = scene.getContext('2d');
+const LW = 1600, LH = 1100;
+let scrollY = 0;
+const SCROLL_MAX = 760;
+
+const INK   = '#15120c';   // near-black printing ink
+const INK2  = '#3a342a';   // softer ink (body lightened by halftone)
+const FAINT = '#6b6354';   // faint rule / caption ink
+const PAPER = '#e9e2cf';   // base newsprint
+const PAPER2= '#ded5bd';   // shadowed paper
+
+function tw(c, text, x, y, size, color, font, align){
+  c.fillStyle = color;
+  c.font = (font || ('400 '+size+'px Georgia,"Times New Roman",serif'));
+  c.textAlign = align || 'left';
+  c.fillText(text, x, y);
+  c.textAlign = 'left';
+}
+function rr(c, x, y, w, h, r){
+  c.beginPath();
+  c.moveTo(x+r,y); c.arcTo(x+w,y,x+w,y+h,r); c.arcTo(x+w,y+h,x,y+h,r);
+  c.arcTo(x,y+h,x,y,r); c.arcTo(x,y,x+w,y,r); c.closePath();
+}
+function rule(c, x1, y, x2, w, col){
+  c.strokeStyle = col || INK; c.lineWidth = w || 1;
+  c.beginPath(); c.moveTo(x1, y); c.lineTo(x2, y); c.stroke();
+}
+
+/* deterministic rng so the page is stable across redraws */
+let _rnd = 1;
+function seed(s){ _rnd = s; }
+function rand(){ _rnd = (_rnd * 16807) % 2147483647; return _rnd / 2147483647; }
+
+/* lorem word bank for plausible body text */
+const WORDS = ('the of and to in a is that for it as with on was by an at from but not are '+
+  'or have this they his which one you were her she there would their we him been has when who '+
+  'will more no if out so what up its about into than them can only other new some could time '+
+  'these two may then do first any my now such like our over man me even most made after also did '+
+  'glass light bends across the printed column and every letter swells beneath the lens water clear '+
+  'curvature focus paper ink fibre grain reading desk lamp morning edition press type set serif').split(' ');
+
+function makeSentence(words){
+  let s = '';
+  for (let i = 0; i < words; i++){
+    let wd = WORDS[Math.floor(rand() * WORDS.length)];
+    if (i === 0) wd = wd[0].toUpperCase() + wd.slice(1);
+    s += (i ? ' ' : '') + wd;
+  }
+  return s + '.';
+}
+function makeParagraph(sentences){
+  let p = '';
+  for (let i = 0; i < sentences; i++) p += (i ? ' ' : '') + makeSentence(6 + Math.floor(rand() * 12));
+  return p;
+}
+
+/* justified column text. returns y after the block. */
+function flowColumn(c, text, x, top, colW, lineH, size, color, dropCap){
+  c.font = '400 ' + size + 'px Georgia,"Times New Roman",serif';
+  c.fillStyle = color;
+  const words = text.split(' ');
+  let line = [], lineWidth = 0, y = top;
+  const spaceW = c.measureText(' ').width;
+
+  let indentX = x, indentLeft = 0;
+  if (dropCap){
+    const dcH = lineH * 2.6;
+    c.font = '700 ' + Math.round(dcH) + 'px Georgia,serif';
+    const dc = words.shift();
+    const firstChar = dc[0];
+    c.fillStyle = INK;
+    c.fillText(firstChar, x, top + dcH * 0.78);
+    const dcW = c.measureText(firstChar).width + 6;
+    c.font = '400 ' + size + 'px Georgia,"Times New Roman",serif';
+    c.fillStyle = color;
+    if (dc.length > 1) words.unshift(dc.slice(1));
+    indentLeft = dcW; // first 3 lines indented
+    var dropLines = 3, lineNo = 0;
+    indentX = x + indentLeft;
+  }
+
+  function emit(arr, w, justify){
+    let lx = indentX;
+    const aw = (dropCap && lineNo < (dropLines||0)) ? colW - indentLeft : colW;
+    if (justify && arr.length > 1){
+      const extra = (aw - w) / (arr.length - 1);
+      for (let i = 0; i < arr.length; i++){
+        c.font = '400 ' + size + 'px Georgia,"Times New Roman",serif';
+        c.fillText(arr[i], lx, y);
+        lx += c.measureText(arr[i]).width + spaceW + extra;
+      }
+    } else {
+      c.fillText(arr.join(' '), lx, y);
+    }
+  }
+
+  for (let i = 0; i < words.length; i++){
+    const wd = words[i];
+    c.font = '400 ' + size + 'px Georgia,"Times New Roman",serif';
+    const ww = c.measureText(wd).width;
+    const aw = (dropCap && lineNo < (dropLines||0)) ? colW - indentLeft : colW;
+    if (lineWidth + ww + (line.length ? spaceW : 0) > aw && line.length){
+      emit(line, lineWidth, true);
+      y += lineH; line = []; lineWidth = 0;
+      if (dropCap){ lineNo++; indentX = (lineNo < dropLines) ? x + indentLeft : x; }
+    }
+    line.push(wd); lineWidth += ww + (line.length > 1 ? spaceW : 0);
+  }
+  if (line.length){ emit(line, lineWidth, false); y += lineH; }
+  return y;
+}
+
+/* halftone-ish photo block: a grey gradient + dot pattern + subject silhouette */
+function halftonePhoto(c, x, y, w, h){
+  rr(c, x, y, w, h, 2); c.save(); c.clip();
+  const g = c.createLinearGradient(x, y, x, y + h);
+  g.addColorStop(0, '#cfc6b0'); g.addColorStop(0.6, '#b3a98f'); g.addColorStop(1, '#8f8670');
+  c.fillStyle = g; c.fillRect(x, y, w, h);
+  // a simple "skyline" subject so it reads as a real photo
+  c.fillStyle = 'rgba(30,26,18,0.55)';
+  let bx = x + 14;
+  seed(7733);
+  while (bx < x + w - 14){
+    const bw = 14 + rand() * 36;
+    const bh = h * (0.28 + rand() * 0.55);
+    c.fillRect(bx, y + h - bh, bw, bh);
+    bx += bw + 6;
+  }
+  // halftone dots over everything
+  const dot = 4.2;
+  for (let yy = y + 2; yy < y + h; yy += dot){
+    for (let xx = x + 2; xx < x + w; xx += dot){
+      // sample lightness from a fake radial light
+      const cx = x + w * 0.5, cy = y + h * 0.42;
+      const dl = Math.hypot(xx - cx, yy - cy) / Math.max(w, h);
+      const r = 0.45 + dl * 1.6;
+      c.fillStyle = 'rgba(20,18,12,0.5)';
+      c.beginPath(); c.arc(xx, yy, Math.min(r, dot * 0.5), 0, 7); c.fill();
+    }
+  }
+  c.restore();
+  c.strokeStyle = INK; c.lineWidth = 1.4; rr(c, x, y, w, h, 2); c.stroke();
+}
+
+/* a small ascending stock chart line + axis (engraved style) */
+function stockChart(c, x, y, w, h){
+  c.fillStyle = PAPER2; c.fillRect(x, y, w, h);
+  c.strokeStyle = INK; c.lineWidth = 1.2; c.strokeRect(x, y, w, h);
+  // gridlines
+  c.strokeStyle = FAINT; c.lineWidth = 0.6;
+  for (let i = 1; i < 4; i++){ const gy = y + h * i / 4; rule(c, x, gy, x + w, 0.6, FAINT); }
+  // jagged ascending line
+  c.strokeStyle = INK; c.lineWidth = 2;
+  c.beginPath();
+  seed(4127);
+  let v = h * 0.72;
+  for (let i = 0; i <= 16; i++){
+    const px = x + (w) * i / 16;
+    v += (-h * 0.045) + (rand() - 0.5) * h * 0.12;
+    v = Math.max(h * 0.12, Math.min(h * 0.85, v));
+    if (i === 0) c.moveTo(px, y + v); else c.lineTo(px, y + v);
+  }
+  c.stroke();
+}
+
+/* a 4-panel "weather" of ink dots */
+function weatherStrip(c, x, y, w){
+  const cells = ['MON','TUE','WED','THU'];
+  const cw = w / 4;
+  cells.forEach((d, i) => {
+    const cx = x + i * cw;
+    tw(c, d, cx + cw * 0.5, y + 14, 12, FAINT, '700 12px Georgia,serif', 'center');
+    c.strokeStyle = INK; c.lineWidth = 1.1;
+    c.beginPath(); c.arc(cx + cw * 0.5, y + 38, 12, 0, 7); c.stroke();
+    // little rays / cloud
+    if (i % 2 === 0){
+      for (let k = 0; k < 8; k++){ const a = k * Math.PI / 4;
+        c.beginPath(); c.moveTo(cx + cw*0.5 + Math.cos(a)*16, y+38 + Math.sin(a)*16);
+        c.lineTo(cx + cw*0.5 + Math.cos(a)*20, y+38 + Math.sin(a)*20); c.stroke(); }
+    }
+    tw(c, (i%2?'17°':'21°'), cx + cw * 0.5, y + 66, 12, INK, '400 12px Georgia,serif', 'center');
+  });
+}
+
+const HEADLINES = [
+  'GLASS BENDS THE MORNING LIGHT',
+  'A Lens Upon the Printed Word',
+  'Readers Marvel at the Liquid Loupe',
+  'Type Swells Beneath Clear Curvature',
+  'Old Desk, New Optics: A Quiet Sensation',
+];
+
+function drawScene(){
+  scene.width = W; scene.height = H;
+  const c = sx;
+
+  /* dark wooden desk under the paper */
+  const dg = c.createRadialGradient(W*0.5, H*0.42, H*0.15, W*0.5, H*0.55, H*0.95);
+  dg.addColorStop(0, '#2a2014'); dg.addColorStop(1, '#0b0805');
+  c.fillStyle = dg; c.fillRect(0, 0, W, H);
+  // faint wood grain
+  c.strokeStyle = 'rgba(80,55,28,0.18)'; c.lineWidth = 1;
+  seed(99);
+  for (let i = 0; i < 30; i++){
+    const gy = rand() * H;
+    c.beginPath(); c.moveTo(0, gy);
+    c.bezierCurveTo(W*0.33, gy + (rand()-0.5)*40, W*0.66, gy + (rand()-0.5)*40, W, gy + (rand()-0.5)*30);
+    c.stroke();
+  }
+
+  // cover-scale logical page, slight desk tilt
+  const sc = Math.max(W / LW, H / LH) * 1.04;
+  c.save();
+  c.translate(W/2, H/2); c.rotate(-0.018); c.scale(sc, sc); c.translate(-LW/2, -LH/2);
+
+  // paper drop shadow
+  c.save();
+  c.shadowColor = 'rgba(0,0,0,0.55)'; c.shadowBlur = 60; c.shadowOffsetY = 26;
+  c.fillStyle = PAPER; c.fillRect(40, 26, LW - 80, LH - 52);
+  c.restore();
+
+  // paper base with subtle vertical tone
+  const pg = c.createLinearGradient(0, 26, 0, LH - 26);
+  pg.addColorStop(0, '#efe9d8'); pg.addColorStop(0.5, PAPER); pg.addColorStop(1, '#e2dac6');
+  c.fillStyle = pg; c.fillRect(40, 26, LW - 80, LH - 52);
+
+  // page margins
+  const ML = 80, MR = LW - 80, MT = 60;
+  const PW = MR - ML;
+
+  /* ---------- MASTHEAD ---------- */
+  rule(c, ML, MT, MR, 3, INK);
+  tw(c, 'EST. 1887', ML, MT + 26, 13, FAINT, '400 13px Georgia,serif');
+  tw(c, 'PRICE 25¢', MR, MT + 26, 13, FAINT, '400 13px Georgia,serif', 'right');
+  tw(c, 'THE LIQUID GLASS TIMES',
+     LW/2, MT + 58, 56, INK, '700 56px "Times New Roman",Georgia,serif', 'center');
+  tw(c, '— ALL THE TYPE THAT BENDS THE LIGHT —',
+     LW/2, MT + 84, 15, INK2, 'italic 400 15px Georgia,serif', 'center');
+  rule(c, ML, MT + 100, MR, 1.4, INK);
+  tw(c, 'MORNING EDITION', ML, MT + 118, 12, FAINT, '700 12px Georgia,serif');
+  tw(c, 'WEDNESDAY, JUNE 20, 2026', LW/2, MT + 118, 12, FAINT, '700 12px Georgia,serif', 'center');
+  tw(c, 'VOL. CXXXIX · No. 4127', MR, MT + 118, 12, FAINT, '700 12px Georgia,serif', 'right');
+  rule(c, ML, MT + 128, MR, 3, INK);
+
+  /* ---------- BODY: scrollable region clipped below masthead ---------- */
+  const BODY_TOP = MT + 128;
+  const BODY_BOT = LH - 60;
+  c.save();
+  c.beginPath(); c.rect(ML - 8, BODY_TOP, PW + 16, BODY_BOT - BODY_TOP); c.clip();
+
+  const oy = -scrollY;       // scroll offset
+  let y0 = BODY_TOP + 14 + oy;
+
+  /* lead headline spanning columns */
+  seed(31);
+  tw(c, HEADLINES[0], ML, y0 + 44, 46, INK, '700 46px "Times New Roman",Georgia,serif');
+  tw(c, 'A heavy reading loupe, set upon the page, turns six-point body into something a reader can fall into.',
+     ML, y0 + 76, 18, INK2, 'italic 400 18px Georgia,serif');
+  rule(c, ML, y0 + 92, MR, 1, FAINT);
+  tw(c, 'BY A STAFF CORRESPONDENT', ML, y0 + 110, 12, FAINT, '700 12px Georgia,serif');
+  tw(c, 'AT THE READING DESK', MR, y0 + 110, 12, FAINT, '700 12px Georgia,serif', 'right');
+
+  /* three text columns + a photo in col 3 */
+  const colTop = y0 + 130;
+  const gap = 34;
+  const nCol = 3;
+  const colW = (PW - gap * (nCol - 1)) / nCol;
+
+  // Column 1 (drop cap)
+  let cx1 = ML;
+  flowColumn(c, makeParagraph(7) + ' ' + makeParagraph(6) + ' ' + makeParagraph(8),
+             cx1, colTop + 16, colW, 19, 14, INK2, true);
+
+  // Column 2
+  let cx2 = ML + (colW + gap);
+  let cy2 = flowColumn(c, makeParagraph(6), cx2, colTop + 16, colW, 19, 14, INK2, false);
+  // subhead
+  cy2 += 8;
+  tw(c, 'On the Curvature of Type', cx2, cy2 + 4, 18, INK, '700 18px Georgia,serif');
+  cy2 += 14;
+  flowColumn(c, makeParagraph(10), cx2, cy2 + 16, colW, 19, 14, INK2, false);
+
+  // Column 3: photo, caption, then text
+  let cx3 = ML + 2 * (colW + gap);
+  halftonePhoto(c, cx3, colTop + 4, colW, 150);
+  tw(c, 'The loupe at rest on the morning edition.', cx3, colTop + 174, 12, FAINT, 'italic 400 12px Georgia,serif');
+  flowColumn(c, makeParagraph(6) + ' ' + makeParagraph(7),
+             cx3, colTop + 198, colW, 19, 14, INK2, false);
+
+  /* ---- a horizontal rule, then a secondary section ---- */
+  const sec2 = colTop + 470;
+  rule(c, ML, sec2, MR, 3, INK);
+
+  // secondary headline (2 cols) + sidebar (chart/weather)
+  tw(c, HEADLINES[3], ML, sec2 + 44, 30, INK, '700 30px "Times New Roman",Georgia,serif');
+  rule(c, ML, sec2 + 58, ML + (colW * 2 + gap), 1, FAINT);
+  const s2top = sec2 + 72;
+  flowColumn(c, makeParagraph(9), ML, s2top + 14, colW, 18, 13.5, INK2, false);
+  flowColumn(c, makeParagraph(9), ML + colW + gap, s2top + 14, colW, 18, 13.5, INK2, false);
+
+  // sidebar col: a boxed chart + weather
+  const sbx = cx3;
+  c.strokeStyle = INK; c.lineWidth = 2; c.strokeRect(sbx, sec2 + 20, colW, 320);
+  tw(c, 'MARKETS', sbx + colW/2, sec2 + 44, 16, INK, '700 16px Georgia,serif', 'center');
+  rule(c, sbx + 10, sec2 + 54, sbx + colW - 10, 1, FAINT);
+  stockChart(c, sbx + 14, sec2 + 66, colW - 28, 120);
+  tw(c, 'INDEX  +3.8%  ▲', sbx + colW/2, sec2 + 206, 13, INK, '700 13px Georgia,serif', 'center');
+  rule(c, sbx + 10, sec2 + 220, sbx + colW - 10, 1, FAINT);
+  tw(c, 'WEATHER', sbx + colW/2, sec2 + 244, 16, INK, '700 16px Georgia,serif', 'center');
+  weatherStrip(c, sbx + 8, sec2 + 256, colW - 16);
+
+  /* ---- a third strip lower down (for scrolling reward) ---- */
+  const sec3 = sec2 + 380;
+  rule(c, ML, sec3, MR, 1.4, INK);
+  tw(c, HEADLINES[2], ML, sec3 + 38, 26, INK, '700 26px "Times New Roman",Georgia,serif');
+  flowColumn(c, makeParagraph(8), ML, sec3 + 60, colW, 18, 13.5, INK2, false);
+  flowColumn(c, makeParagraph(8), ML + colW + gap, sec3 + 60, colW, 18, 13.5, INK2, false);
+  flowColumn(c, makeParagraph(8), ML + 2*(colW + gap), sec3 + 60, colW, 18, 13.5, INK2, false);
+
+  c.restore(); // unclip body
+
+  /* column separator rules drawn on top (full body height) */
+  c.strokeStyle = FAINT; c.lineWidth = 0.8;
+  for (let i = 1; i < nCol; i++){
+    const lx = ML + i * (colW + gap) - gap/2;
+    c.beginPath(); c.moveTo(lx, BODY_TOP + 6); c.lineTo(lx, BODY_BOT - 6); c.stroke();
+  }
+
+  /* bottom rule + footer */
+  rule(c, ML, LH - 48, MR, 3, INK);
+  tw(c, 'CONTINUED ON PAGE 7', ML, LH - 30, 12, FAINT, '700 12px Georgia,serif');
+  tw(c, 'PRINTED ON THE PREMISES', MR, LH - 30, 12, FAINT, '700 12px Georgia,serif', 'right');
+
+  /* paper grain / foxing speckle over the whole sheet */
+  seed(20260620);
+  c.globalAlpha = 0.05;
+  for (let i = 0; i < 1400; i++){
+    const px = 40 + rand() * (LW - 80);
+    const py = 26 + rand() * (LH - 52);
+    c.fillStyle = rand() > 0.5 ? '#000' : '#7a5a2a';
+    c.fillRect(px, py, rand() * 1.6 + 0.3, rand() * 1.6 + 0.3);
+  }
+  c.globalAlpha = 1;
+
+  /* uneven page lighting: warm lamp from upper-left, falloff to lower-right */
+  const lg = c.createRadialGradient(LW*0.32, LH*0.30, LH*0.1, LW*0.5, LH*0.5, LH*1.0);
+  lg.addColorStop(0, 'rgba(255,240,200,0.16)');
+  lg.addColorStop(0.5, 'rgba(255,240,200,0.0)');
+  lg.addColorStop(1, 'rgba(20,12,0,0.22)');
+  c.fillStyle = lg; c.fillRect(40, 26, LW - 80, LH - 52);
+
+  c.restore(); // untilt
+}
+
+/* ------------------------------------------------------------
+   WEBGL — the optics of a thick glass reading loupe:
+   strong central magnification, compressed edges, a glass rim
+   with concentric rings + speculars, caustics, milky veil, CA,
+   contact shadow, then handheld phone-camera post.
+   ------------------------------------------------------------ */
+const VS = `
+attribute vec2 aP;
+void main(){ gl_Position = vec4(aP, 0.0, 1.0); }`;
+
+const FS = `
+precision highp float;
+uniform sampler2D uScene;
+uniform vec2  uRes, uGlass, uShake, uTilt;
+uniform float uR, uTime, uPress, uBlur, uExpo, uRot;
+
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+
+vec3 scn(vec2 uv){
+  return texture2D(uScene, clamp(uv / uRes, vec2(0.002), vec2(0.998))).rgb;
+}
+/* handheld camera: rotate + slight barrel + shake on source coords */
+vec2 cam(vec2 v){
+  vec2 cen = uRes * 0.5;
+  vec2 p = v - cen;
+  float ca = cos(uRot), sa = sin(uRot);
+  p = vec2(ca*p.x - sa*p.y, sa*p.x + ca*p.y);
+  float rr = dot(p, p) / dot(cen, cen);
+  p *= 1.0 + 0.040 * rr;
+  return cen + p + uShake;
+}
+float gband(float x, float c, float w){ float d = (x - c) / w; return exp(-d * d); }
+
+void main(){
+  vec2 fc = gl_FragCoord.xy;
+  vec2 d  = fc - uGlass;
+
+  /* tilt: viewed at an angle the loupe foreshortens to an ellipse */
+  float tA = length(uTilt);
+  vec2 tD = tA > 0.001 ? uTilt / tA : vec2(1.0, 0.0);
+  vec2 pD = vec2(-tD.y, tD.x);
+  float squash = 1.0 - 0.40 * tA;
+  vec2 ds = tD * (dot(d, tD) / squash) + pD * dot(d, pD);
+  float r = length(ds);
+  vec2 dir = r > 0.5 ? ds / r : vec2(1.0, 0.0);
+  vec2 tdir = vec2(-dir.y, dir.x);
+  float x = r / uR;
+
+  float innerX = 0.82;
+  float w    = smoothstep(innerX - 0.05, innerX + 0.03, x);   // rim weight
+  float wOut = smoothstep(1.0, 1.06, x);                      // outside weight
+  float q = clamp(x / innerX, 0.0, 1.0);
+
+  /* refracted source radius: strongly magnified center (reading loupe),
+     fiercely compressed toward the edge. smaller magA = bigger zoom. */
+  float magA = mix(0.30, 0.24, uPress);
+  float q5 = q*q*q*q*q;
+  float rsG = uR * (magA * q + (1.04 - magA) * q5);
+  /* tilted glass: asymmetric magnification + prism deviation */
+  float asym = 1.0 + 0.34 * tA * dot(dir, tD);
+  vec2 refr = dir * mix(rsG, uR * 1.05, w) * asym + uTilt * uR * 0.50;
+
+  /* anisotropic blur (source-space px): sharp center, soft edge ring */
+  float q4 = q*q*q*q;
+  float radial = mix(mix(q4 * uR * 0.10, uR * 0.02, w), 0.0, wOut) + uBlur + 0.6;
+  float tang   = mix(mix(q*q*q * uR * 0.04, uR * 0.18, w), 0.0, wOut) + uBlur + 0.6;
+
+  vec2 srcBase = uGlass + mix(refr, d, wOut);
+  vec3 col = vec3(0.0);
+  #define TAP(rx, ty) col += scn(cam(srcBase + dir * ((rx) * radial) + tdir * ((ty) * tang)));
+  TAP( 0.00,  0.00) TAP( 0.62,  0.25) TAP(-0.58,  0.30) TAP( 0.21, -0.64)
+  TAP(-0.25, -0.61) TAP( 0.45,  0.68) TAP(-0.70, -0.15) TAP( 0.86, -0.18)
+  TAP(-0.41,  0.74) TAP( 0.05,  0.94) TAP(-0.88,  0.35) TAP( 0.33,  0.13)
+  TAP(-0.18,  0.20) TAP( 0.69, -0.55)
+  col /= 14.0;
+
+  float inG = (1.0 - wOut);          // inside glass (incl. rim)
+  float inI = inG * (1.0 - w);       // inner refraction zone only
+
+  /* chromatic aberration, stronger toward the rim and when tilted */
+  float caW = 0.5 * smoothstep(0.25, 1.0, x) * (1.0 + 1.3 * tA) * inG;
+  caW = min(caW, 0.85);
+  if (caW > 0.01){
+    vec3 cR = scn(cam(uGlass + refr * 0.975));
+    vec3 cB = scn(cam(uGlass + refr * 1.025));
+    col.r = mix(col.r, cR.r, caW);
+    col.b = mix(col.b, cB.b, caW);
+  }
+
+  /* glass body tint: very slightly cool + a touch brighter (clean optical glass) */
+  float lum = dot(col, vec3(0.299, 0.587, 0.114));
+  col = mix(col, vec3(lum), 0.06 * inI);
+  col = mix(col, col * 1.04 + vec3(0.015), inI);
+  /* faint milky veil that grows outward, plus a soft center bloom */
+  float veil = (0.02 + 0.10 * x * x + 0.05 * uPress) * inI;
+  col = mix(col, vec3(0.99, 0.99, 1.0), veil);
+  col += inI * 0.05 * (1.0 - x * x);
+
+  /* radial caustic streaks refracted onto the paper inside the glass */
+  float th = atan(d.y, d.x);
+  float cau = 0.5 * sin(th * 13.0 + 2.0) + 0.5 * sin(th * 29.0 + 0.6) + 0.35 * sin(th * 7.0 - 1.2);
+  col += cau * 0.045 * q4 * inI;
+
+  /* rim: dark glass wall + concentric rings + bright specular arcs */
+  float rim = w * (1.0 - wOut);
+  col = mix(col, col * 0.34, rim);
+  float bands = gband(x, 0.850, 0.018) * 0.85
+              + gband(x, 0.925, 0.014) * 0.50
+              + gband(x, 0.988, 0.010) * 0.80;
+  float arc = pow(max(cos(th - 2.45), 0.0), 6.0)
+            + 0.7 * pow(max(cos(th + 0.55), 0.0), 10.0)
+            + 0.45 * pow(max(cos(th - 4.30), 0.0), 14.0);
+  col += rim * bands * (0.14 + 0.70 * arc);
+  col *= mix(1.0, 0.55, rim * gband(x, 1.0, 0.012));            // dark outer lip
+  col += inI * 0.16 * gband(x, 0.815, 0.012);                   // bright inner ring
+
+  /* soft window-reflection highlight on the glass, upper-left */
+  vec2 hp = uGlass + vec2(-0.32, 0.40) * uR + uTilt * uR * 0.5;
+  vec2 hd = fc - hp;
+  col += exp(-dot(hd, hd) / (uR * uR * 0.15)) * (0.16 + 0.08 * uPress) * inG;
+  /* a tiny sharp glint, lower-right of the dome */
+  vec2 gp = uGlass + vec2(0.34, -0.30) * uR;
+  vec2 gd = fc - gp;
+  col += exp(-dot(gd, gd) / (uR * uR * 0.006)) * 0.5 * inG;
+
+  /* contact shadow hugging the outside of the glass on the paper */
+  col *= 1.0 - (0.30 - 0.10 * uPress) * gband(x, 1.030, 0.045) * wOut;
+  col += 0.06 * gband(x, 1.10, 0.022) * wOut;                   // faint outer caustic on paper
+
+  /* ---- phone-camera post ---- */
+  col *= uExpo;
+  col *= vec3(1.01, 1.0, 0.985);                               // warm desk-lamp white balance
+  vec2 vc = (fc - uRes * 0.5) / (uRes * 0.5);
+  col *= 1.0 - 0.30 * pow(dot(vc, vc) * 0.55, 1.4);            // vignette
+  col *= 1.0 + 0.010 * sin(fc.y * 0.07 - uTime * 6.0);         // faint banding
+  float gn = hash(fc + fract(uTime * 7.0) * 113.0);
+  col += (gn - 0.5) * 0.045;                                    // luma grain
+  col.r += (hash(fc.yx + 7.7 + fract(uTime * 5.0) * 51.0) - 0.5) * 0.020;
+  col.b += (hash(fc + 3.1 + fract(uTime * 3.0) * 77.0) - 0.5) * 0.016;
+  col = clamp(col, 0.0, 1.0);
+  col = pow(col, vec3(0.98));
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
+function compile(type, src){
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+const aP = gl.getAttribLocation(prog, 'aP');
+gl.enableVertexAttribArray(aP);
+gl.vertexAttribPointer(aP, 2, gl.FLOAT, false, 0, 0);
+
+const U = {};
+for (const n of ['uScene','uRes','uGlass','uShake','uTilt','uR','uTime','uPress','uBlur','uExpo','uRot'])
+  U[n] = gl.getUniformLocation(prog, n);
+
+function makeTex(unit){
+  const t = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0 + unit);
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  return t;
+}
+const sceneTex = makeTex(0);
+gl.uniform1i(U.uScene, 0);
+
+function uploadScene(){
+  gl.activeTexture(gl.TEXTURE0);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, scene);
+}
+
+/* ------------------------------------------------------------ state */
+const mouse = { x: 0, y: 0 };
+const glass = { x: 0, y: 0 };
+const tilt  = { x: 0, y: 0 };
+const tiltVel = { x: 0, y: 0 };
+let pressTarget = 0, press = 0;
+let needScene = true;
+
+function resize(){
+  W = Math.round(innerWidth * DPR); H = Math.round(innerHeight * DPR);
+  glCanvas.width = W; glCanvas.height = H;
+  gl.viewport(0, 0, W, H);
+  if (!mouse.x){ mouse.x = innerWidth * 0.5; mouse.y = innerHeight * 0.48; glass.x = W * 0.5; glass.y = H * 0.52; }
+  needScene = true;
+}
+addEventListener('resize', resize); resize();
+
+addEventListener('contextmenu', e => e.preventDefault());
+addEventListener('pointermove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+addEventListener('pointerdown', () => pressTarget = 1);
+addEventListener('pointerup',   () => pressTarget = 0);
+addEventListener('wheel', e => {
+  scrollY = Math.max(0, Math.min(SCROLL_MAX, scrollY + e.deltaY * 0.7));
+  needScene = true;
+}, { passive: true });
+setTimeout(() => { const h = document.getElementById('hint'); if (h) h.style.opacity = '0'; }, 5200);
+
+function frame(tms){
+  const t = tms * 0.001;
+  if (needScene){ drawScene(); uploadScene(); needScene = false; }
+
+  // loupe follows the mouse with lag + a faint grip tremor
+  const tx = mouse.x * DPR + Math.sin(t * 8.7) * 1.4 * DPR + Math.sin(t * 13.1 + 2.0) * 0.8 * DPR;
+  const ty = (innerHeight - mouse.y) * DPR + Math.cos(t * 9.4 + 1.0) * 1.3 * DPR;
+  const pgx = glass.x, pgy = glass.y;
+  glass.x += (tx - glass.x) * 0.16;
+  glass.y += (ty - glass.y) * 0.16;
+  press += (pressTarget - press) * 0.09;
+
+  // tilt leans against motion (inertia)
+  const vk = -0.009 / DPR;
+  tiltVel.x += ((glass.x - pgx) * vk - tiltVel.x) * 0.18;
+  tiltVel.y += ((glass.y - pgy) * vk - tiltVel.y) * 0.18;
+  let ttx = tiltVel.x, tty = tiltVel.y;
+  const tm = Math.hypot(ttx, tty);
+  if (tm > 0.5){ ttx *= 0.5 / tm; tty *= 0.5 / tm; }
+  tilt.x += (ttx - tilt.x) * 0.12;
+  tilt.y += (tty - tilt.y) * 0.12;
+
+  const R = Math.min(W, H) * (0.30 + press * 0.020);
+
+  // handheld shake / drift
+  const shx = (Math.sin(t * 1.3) * 2.6 + Math.sin(t * 0.7 + 1.7) * 3.6 + Math.sin(t * 3.1 + 0.5) * 1.1 + Math.sin(t * 7.3) * 0.4) * DPR;
+  const shy = (Math.cos(t * 1.1 + 0.4) * 2.9 + Math.sin(t * 0.5 + 2.6) * 4.0 + Math.cos(t * 2.7 + 1.2) * 1.2 + Math.cos(t * 8.1) * 0.4) * DPR;
+  const rot = 0.004 * Math.sin(t * 0.45) + 0.0018 * Math.sin(t * 1.7 + 1.0);
+
+  // gentle focus breathing
+  const blur = Math.max(0.0, 0.6 + 0.5 * Math.sin(t * 0.8) + 0.35 * Math.sin(t * 2.3 + 0.7)) * DPR;
+  // exposure slowly re-metering
+  const expo = 1.0 + 0.04 * Math.sin(t * 0.4) + 0.025 * Math.sin(t * 1.1 + 2.2) - press * 0.04;
+
+  gl.uniform2f(U.uRes, W, H);
+  gl.uniform2f(U.uGlass, glass.x, glass.y);
+  gl.uniform2f(U.uShake, shx, shy);
+  gl.uniform2f(U.uTilt, tilt.x, tilt.y);
+  gl.uniform1f(U.uR, R);
+  gl.uniform1f(U.uTime, t);
+  gl.uniform1f(U.uPress, press);
+  gl.uniform1f(U.uBlur, blur);
+  gl.uniform1f(U.uExpo, expo);
+  gl.uniform1f(U.uRot, rot);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

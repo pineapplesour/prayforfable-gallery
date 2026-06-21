@@ -1,0 +1,985 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>시계탑 내부</title>
+<style>
+  :root{
+    --paper:#efe8d6; --ink:#2b2620; --dim:#6f6450; --brass:#b08948;
+    --glow:#e8c878; --shadow:#1c1814; --line:#c9bfa6;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;background:var(--shadow);overflow:hidden;}
+  body{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    color:var(--ink);-webkit-text-size-adjust:100%;
+  }
+
+  /* ---- 무대 ---- */
+  #stage{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--shadow);}
+  #scene{
+    flex:1 1 auto;position:relative;overflow:hidden;
+    background:
+      radial-gradient(120% 90% at 50% 22%, #3a342a 0%, #221d17 55%, #16120e 100%);
+  }
+  #ascii{
+    position:absolute;inset:0;margin:0;
+    white-space:pre;letter-spacing:0;user-select:none;
+    color:#d8cba8; text-shadow:0 0 6px rgba(0,0,0,.6);
+    display:flex;align-items:center;justify-content:center;
+  }
+  #ascii b{ display:block; }
+  /* 색조: 깊이/하이라이트 */
+  .gl{color:var(--glow);text-shadow:0 0 8px rgba(232,200,120,.55);}
+  .br{color:var(--brass);}
+  .dk{color:#6c5f49;}
+  .fl{color:#544c38;}
+  .f2{color:#6a5f44;}
+  .wl{color:#4f463318;color:#5a4f39;}
+  .sel{color:#fff4d6;text-shadow:0 0 10px rgba(255,230,170,.9);}
+
+  /* ---- HUD ---- */
+  #topbar{
+    position:absolute;left:0;right:0;top:0;display:flex;justify-content:space-between;
+    gap:10px;padding:8px 12px;font-size:12px;color:#cdbf9c;
+    background:linear-gradient(#221d17ee,#221d1700);pointer-events:none;z-index:4;
+  }
+  #topbar .rm{letter-spacing:3px;color:var(--glow);}
+  #topbar .clk{font-variant-numeric:tabular-nums;color:#bda87a;}
+  #statusbar{
+    flex:0 0 auto;min-height:34px;background:var(--ink);color:var(--paper);
+    font-size:12.5px;line-height:1.5;padding:7px 14px;border-top:1px solid #3a342a;
+    white-space:normal;z-index:5;
+  }
+  #statusbar .hl{color:var(--glow);}
+
+  /* 객체 선택 패널 */
+  #objpanel{
+    position:absolute;left:10px;bottom:10px;z-index:4;max-width:46%;
+    background:rgba(20,16,12,.72);border:1px solid #4a4030;border-radius:6px;
+    padding:8px 10px;font-size:12px;color:#e7dcc0;backdrop-filter:blur(2px);
+    transition:opacity .25s;
+  }
+  #objpanel h4{margin:0 0 4px;font-size:12px;color:var(--glow);letter-spacing:1px;font-weight:600;}
+  #objpanel .o{padding:2px 4px;border-radius:3px;color:#bdb094;}
+  #objpanel .o.cur{background:#4a3c22;color:#fff4d6;}
+  #objpanel .o.cur::before{content:"▸ ";color:var(--glow);}
+  #objpanel .done{color:#7d9d6a;}
+
+  #invpanel{
+    position:absolute;right:10px;bottom:10px;z-index:4;max-width:40%;
+    background:rgba(20,16,12,.72);border:1px solid #4a4030;border-radius:6px;
+    padding:8px 10px;font-size:12px;color:#e7dcc0;backdrop-filter:blur(2px);
+  }
+  #invpanel h4{margin:0 0 4px;font-size:12px;color:var(--brass);letter-spacing:1px;font-weight:600;}
+  #invpanel .i{color:#cdbf9c;}
+  #invpanel .empty{color:#6f6450;font-style:italic;}
+
+  /* 출구 화살표 힌트 */
+  #doors{position:absolute;inset:0;pointer-events:none;z-index:3;}
+  .door{
+    position:absolute;color:#b9a878;font-size:13px;opacity:.0;transition:opacity .3s,color .2s;
+    text-shadow:0 0 6px rgba(0,0,0,.7);
+  }
+  .door.on{opacity:.95;}
+  .door.locked{color:#6a5f49;}
+  #doorN{top:42px;left:50%;transform:translateX(-50%);}
+  #doorS{bottom:48px;left:50%;transform:translateX(-50%);}
+  #doorW{left:10px;top:50%;transform:translateY(-50%);text-align:left;}
+  #doorE{right:10px;top:50%;transform:translateY(-50%);text-align:right;}
+
+  /* ---- 인트로 / 엔딩 ---- */
+  #intro,#ending{
+    position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;text-align:center;z-index:20;padding:28px;
+    transition:opacity 1.1s ease;
+  }
+  #intro{background:radial-gradient(130% 100% at 50% 40%, #f3ecdb, #e6ddc6);color:var(--ink);}
+  #intro h1{
+    font-size:clamp(30px,7vw,52px);font-weight:700;letter-spacing:.32em;
+    margin:0 0 6px;text-indent:.32em;
+  }
+  #intro .sub{font-size:clamp(12px,2.6vw,15px);color:var(--dim);letter-spacing:.4em;margin:0 0 22px;}
+  #intro .tower{
+    font-size:clamp(8px,1.7vw,12px);line-height:1.05;color:#7a6b4e;white-space:pre;
+    margin:4px 0 18px;text-shadow:0 1px 0 #f6efde;
+  }
+  #intro p{font-size:clamp(12px,2.6vw,14.5px);line-height:2;max-width:480px;margin:4px 0;color:#4a4133;}
+  #intro .keys{font-size:12px;color:var(--brass);margin-top:18px;letter-spacing:.05em;}
+  #intro .start{
+    margin-top:18px;font-size:13px;color:#fff;background:var(--ink);
+    border:none;border-radius:30px;padding:11px 26px;letter-spacing:.25em;cursor:pointer;
+    font-family:inherit;
+  }
+  #intro .start:active{transform:scale(.97);}
+  #ending{background:radial-gradient(120% 100% at 50% 40%, #2a2419, #14110c);color:var(--paper);opacity:0;pointer-events:none;}
+  #ending h2{font-size:clamp(22px,5vw,30px);letter-spacing:.3em;color:var(--glow);margin:0 0 10px;}
+  #ending p{font-size:clamp(12px,2.6vw,15px);line-height:2;max-width:500px;margin:6px 0;color:#e3d8bd;}
+  #ending .art{font-size:clamp(8px,1.6vw,11px);line-height:1.1;color:#caa85e;white-space:pre;margin:14px 0;}
+  #ending .keys{font-size:12px;color:var(--brass);margin-top:16px;}
+  .gone{opacity:0 !important;pointer-events:none !important;}
+
+  /* ---- 모바일 컨트롤 ---- */
+  #touch{position:absolute;inset:0;z-index:6;display:none;pointer-events:none;}
+  .tbtn{
+    position:absolute;pointer-events:auto;width:54px;height:54px;border-radius:50%;
+    background:rgba(40,33,24,.6);border:1px solid #6a5c40;color:#e8dcbd;
+    font-size:20px;display:flex;align-items:center;justify-content:center;
+    user-select:none;-webkit-user-select:none;touch-action:none;
+  }
+  .tbtn:active{background:rgba(90,72,40,.8);color:#fff4d6;}
+  #tUp{left:50%;bottom:118px;transform:translateX(-50%);}
+  #tLeft{left:14px;bottom:64px;}
+  #tRight{left:128px;bottom:64px;}
+  #tDown{left:71px;bottom:64px;}
+  #tCycle{right:14px;bottom:118px;width:64px;height:64px;font-size:13px;letter-spacing:1px;}
+  #tAct{right:14px;bottom:46px;width:64px;height:64px;font-size:13px;letter-spacing:1px;background:rgba(120,92,40,.65);}
+
+  @media (max-width:560px){
+    #touch{display:block;}
+    #objpanel{max-width:54%;bottom:182px;font-size:11px;}
+    #invpanel{display:none;}
+    #ascii{font-size:9px;line-height:9px;}
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="scene">
+    <pre id="ascii"><b></b></pre>
+    <div id="topbar">
+      <span class="rm" id="roomName">—</span>
+      <span class="clk" id="clock">--:--:--</span>
+    </div>
+    <div id="doors">
+      <div class="door" id="doorN">▲ N</div>
+      <div class="door" id="doorS">▼ S</div>
+      <div class="door" id="doorW">◀ W</div>
+      <div class="door" id="doorE">E ▶</div>
+    </div>
+    <div id="objpanel">
+      <h4>이 방의 사물 <span style="color:#9c9075;font-weight:400">(Tab 선택 · E 상호작용)</span></h4>
+      <div id="objlist"></div>
+    </div>
+    <div id="invpanel">
+      <h4>소지품</h4>
+      <div id="invlist"><span class="empty">— 비어 있음 —</span></div>
+    </div>
+
+    <div id="touch">
+      <div class="tbtn" id="tUp">▲</div>
+      <div class="tbtn" id="tLeft">◀</div>
+      <div class="tbtn" id="tDown">▼</div>
+      <div class="tbtn" id="tRight">▶</div>
+      <div class="tbtn" id="tCycle">TAB</div>
+      <div class="tbtn" id="tAct">E</div>
+    </div>
+  </div>
+  <div id="statusbar"><span class="hl">시계탑</span> 내부로 들어왔다. 톱니가 멈춰 있다.</div>
+</div>
+
+<div id="intro">
+  <h1>시계탑</h1>
+  <div class="sub">內 部 · 멈춘 시간의 안쪽</div>
+  <pre class="tower">      _____
+     /     \
+    | XII   |      거대한 시계탑.
+    |   *   |      그 안으로 들어간다.
+    | IX  III|
+     \_____/
+    |||||||||
+    |||||||||
+   /|||||||||\
+  /__|||||||__\</pre>
+  <p>탑의 톱니는 오래전 멈췄다.<br>방마다 잠든 기계들이 놓여 있다.</p>
+  <p>태엽을 감고 · 추를 흔들고 · 종을 울려<br>다시 시간이 흐르게 하라.</p>
+  <p class="keys">W A S D / ← → 방 이동 · Tab 사물 선택 · E 상호작용</p>
+  <button class="start" id="startBtn">들어가기</button>
+</div>
+
+<div id="ending">
+  <h2>시간이 흐른다</h2>
+  <p id="endingText"></p>
+  <pre class="art" id="endingArt"></pre>
+  <p class="keys" id="endingKeys"></p>
+</div>
+
+<script>
+"use strict";
+(()=>{
+
+/* =====================================================================
+   시계탑 내부 — 3D 아스키 룸 탐험
+   각 방은 원근 바닥/천장 + 깊이음영 아스키 사물로 구성.
+   방 이동(문/방향키), 사물 상호작용(살펴보기/줍기/작동),
+   기계 사슬을 복원해 시계를 다시 움직이게 하는 것이 목표.
+   ===================================================================== */
+
+/* ---------- 전역 상태 ---------- */
+const G = {
+  roomId: "hall",
+  cursor: 0,           // 현재 방의 선택 사물 인덱스
+  inv: new Set(),      // 소지품 키
+  flags: {             // 진행 플래그
+    spring:false, gears:false, pendulum:false, escapement:false,
+    bell:false, hands:false
+  },
+  ticks: 0,            // 작동한 톱니 단계(애니메이션 속도)
+  t0: performance.now(),
+  entered:false,
+  won:false,
+  msg:"",
+};
+
+/* ---------- 방 정의 ----------
+   각 방: name, 설명, 출구(dir->roomId|null), 사물 목록.
+   사물: id, name, x/y(장면 그리드 비율 0..1), art(여러 행), tone,
+         examine(텍스트 fn), 동작(operate/take) 정의.
+*/
+
+// 시계 시각: 진행도에 따라 멈춤→재가동
+function clockText(){
+  if(!G.flags.hands) return "--:--:--";
+  // 가동되면 현재 실제 시각처럼 흐른다
+  const sec = ((performance.now()-G.t0)/1000)|0;
+  const base = 11*3600 + 58*60; // 12시 직전부터
+  const tot = base + sec;
+  const h=((tot/3600)|0)%24, m=((tot/60)|0)%60, s=tot%60;
+  const p=n=>String(n).padStart(2,"0");
+  return `${p(h)}:${p(m)}:${p(s)}`;
+}
+
+const ROOMS = {
+
+  /* ===== 1. 입구 홀 ===== */
+  hall:{
+    name:"입구 홀",
+    intro:"먼지 쌓인 입구. 위로는 기계실, 옆으로는 추가 매달린 수직 통로가 보인다.",
+    exits:{N:"gears", E:"shaft", S:null, W:null},
+    objects:[
+      {
+        id:"plaque", name:"황동 명판", tone:"br",
+        cx:.5, cy:.30, scale:1,
+        art:[
+          "  .----------------.",
+          "  | ~ HOROLOGE  ~  |",
+          "  |  est. MMDCCC   |",
+          "  '----------------'",
+        ],
+        examine:()=>"명판: 「HOROLOGE — 이 탑의 모든 기계는 하나의 사슬로 이어진다. 태엽이 처음이고, 시계바늘이 끝이다.」",
+      },
+      {
+        id:"oilcan", name:"기름통", tone:"gl", take:"oil",
+        cx:.22, cy:.66, scale:1,
+        art:[
+          "    __",
+          "   (__)__",
+          "  /......\\_",
+          "  \\______/ )",
+          "    |__|--'",
+        ],
+        examine:()=>"바닥에 굴러다니는 낡은 기름통. 아직 절반쯤 차 있다. 굳은 톱니에 쓸 수 있겠다.",
+        takeMsg:"기름통을 주웠다. 굳은 기계에 칠할 수 있다.",
+      },
+      {
+        id:"stair", name:"나선 계단", tone:"dk",
+        cx:.8, cy:.62, scale:1,
+        art:[
+          "      ___",
+          "    _/  /|",
+          "  _/  /  |",
+          " /__ /  /|",
+          " |  |__/ |",
+          " |  /   /",
+          " |_/___/",
+        ],
+        examine:()=>"위층 기계실(N)과 추 통로(E)로 이어지는 나선 계단. 발을 디딜 때마다 쇠가 운다.",
+      },
+    ],
+  },
+
+  /* ===== 2. 톱니 기계실 ===== */
+  gears:{
+    name:"톱니 기계실",
+    intro:"천장까지 맞물린 거대한 톱니바퀴들. 한가운데 태엽 감개가 솟아 있다.",
+    exits:{N:"escape", E:null, S:"hall", W:null},
+    objects:[
+      {
+        id:"mainspring", name:"태엽 감개", tone:"gl",
+        cx:.5, cy:.40, scale:1,
+        art:[
+          "        ___",
+          "      .'   '.",
+          "     /  ╔═╗  \\",
+          "    |   ║+║   |",
+          "     \\  ╚═╝  /",
+          "      '.___.'",
+          "     ===|H|===",
+          "        |_|",
+        ],
+        examine:()=>G.flags.spring
+          ? "태엽은 끝까지 감겼다. 안에서 팽팽한 강철이 떨고 있다."
+          : "거대한 태엽 감개. 손잡이가 녹슬어 꼼짝 않는다. 기름이 필요하다.",
+        operate:()=>{
+          if(G.flags.spring) return ["태엽은 이미 가득 감겼다.",false];
+          if(!G.inv.has("oil")) return ["손잡이가 녹슬어 돌아가지 않는다. 어딘가에 기름통이 있었다.",false];
+          G.flags.spring=true; G.ticks=1;
+          return ["기름을 먹인 손잡이를 끝까지 감았다. 탑 전체에서 둔탁한 *철컹*. 멈췄던 톱니에 힘이 실렸다.",true];
+        },
+      },
+      {
+        id:"biggear", name:"대형 톱니바퀴", tone:"br", spin:true,
+        cx:.24, cy:.34, scale:1,
+        art:[
+          "    _|_|_",
+          "  _/ . . \\_",
+          " |_ . O . _|",
+          "  \\_ . . _/",
+          "    '|_|'",
+        ],
+        examine:()=>G.flags.spring
+          ? "태엽의 힘을 받아 천천히 돌고 있다. 이가 정확히 맞물린다."
+          : "거대한 주 톱니바퀴. 지금은 죽은 듯 멈춰 있다.",
+      },
+      {
+        id:"smallgears", name:"보조 톱니열", tone:"dk", spin:true,
+        cx:.78, cy:.58, scale:1,
+        art:[
+          "  (*)(*)(*)",
+          " (*)(*)(*)(*)",
+          "  (*)(*)(*)",
+        ],
+        examine:()=>"크기가 다른 톱니들이 사슬처럼 늘어서 있다. 위층 탈진기로 힘을 전한다.",
+        operate:()=>{
+          if(!G.flags.spring) return ["힘이 없다. 먼저 태엽을 감아야 한다.",false];
+          if(G.flags.gears) return ["톱니열은 이미 활발히 맞물려 돌고 있다.",false];
+          G.flags.gears=true; G.ticks=2;
+          return ["보조 톱니열의 핀을 끼워 넣었다. 힘이 위층(N)으로 전달되기 시작한다.",true];
+        },
+      },
+    ],
+  },
+
+  /* ===== 3. 추 통로(수직축) ===== */
+  shaft:{
+    name:"추 통로",
+    intro:"끝이 보이지 않는 수직 통로. 굵은 사슬에 거대한 추가 매달려 있다.",
+    exits:{N:"belfry", S:null, W:"hall", E:null},
+    objects:[
+      {
+        id:"weight", name:"구동 추", tone:"br",
+        cx:.5, cy:.46, scale:1,
+        art:[
+          "      ||",
+          "      ||",
+          "    .====.",
+          "    | ## |",
+          "    | ## |",
+          "    | ## |",
+          "    '===='",
+        ],
+        examine:()=>G.flags.pendulum
+          ? "추가 사슬을 따라 일정하게 내려가며 탑에 동력을 보탠다."
+          : "수 톤짜리 구동 추. 멈춘 채 매달려 있다. 추가 내려가야 탈진기가 산다.",
+      },
+      {
+        id:"pendulum", name:"진자", tone:"gl", swing:true,
+        cx:.34, cy:.30, scale:1,
+        art:[
+          "    .--+--.",
+          "     \\ | /",
+          "      \\|/",
+          "       |",
+          "       |",
+          "       O",
+          "      (#)",
+        ],
+        examine:()=>G.flags.pendulum
+          ? "진자가 좌우로 규칙적으로 흔들린다. 똑… 딱… 똑… 딱…"
+          : "기다란 진자가 죽은 추처럼 늘어져 있다. 한 번 밀어주면 탑의 심장이 다시 뛸지도.",
+        operate:()=>{
+          if(!G.flags.gears) return ["진자를 밀어도 위쪽 톱니가 받쳐주지 못한다. 기계실(hall→gears)의 톱니열을 먼저 살려야 한다.",false];
+          if(G.flags.pendulum) return ["진자는 이미 흔들리고 있다.",false];
+          G.flags.pendulum=true; G.ticks=Math.max(G.ticks,2);
+          return ["진자를 힘껏 밀었다. 좌우로 *똑—딱* 흔들리기 시작한다. 추가 사슬을 따라 내려간다.",true];
+        },
+      },
+      {
+        id:"chain", name:"구동 사슬", tone:"dk",
+        cx:.72, cy:.5, scale:1,
+        art:[
+          "  o",
+          "  8",
+          "  o",
+          "  8",
+          "  o",
+          "  8",
+          "  o",
+        ],
+        examine:()=>"천장의 도르래에서 추까지 이어진 굵은 사슬. 위층 종탑(N)과도 연결되어 있다.",
+      },
+    ],
+  },
+
+  /* ===== 4. 탈진기 방 ===== */
+  escape:{
+    name:"탈진기 방",
+    intro:"섬세한 갈고리 바퀴와 앵커. 시간을 한 칸씩 끊어 흘려보내는 심장부.",
+    exits:{N:null, S:"gears", W:null, E:"belfry"},
+    objects:[
+      {
+        id:"escwheel", name:"탈진 바퀴", tone:"gl", spin:true,
+        cx:.4, cy:.4, scale:1,
+        art:[
+          "     ^^^^^",
+          "   <_______>",
+          "  | < . . > |",
+          "   <_______>",
+          "     vvvvv",
+        ],
+        examine:()=>G.flags.escapement
+          ? "갈고리 바퀴가 앵커에 막혔다 풀렸다 하며 *틱-톡* 정확한 박자를 만든다."
+          : "톱니 모양 탈진 바퀴. 앵커가 어긋나 헛돌 준비만 하고 있다.",
+      },
+      {
+        id:"anchor", name:"앵커(닻 모양 레버)", tone:"br",
+        cx:.66, cy:.52, scale:1,
+        art:[
+          "    ___",
+          "   /   \\",
+          "  |  o  |",
+          "   \\_|_/",
+          "  __/ \\__",
+          " <__   __>",
+          "    | |",
+        ],
+        examine:()=>G.flags.escapement
+          ? "앵커가 좌우로 까딱이며 탈진 바퀴를 한 칸씩 풀어준다."
+          : "탈진 바퀴 위의 앵커. 진자와 맞물려야 작동한다. 진자가 흔들리고 있어야 한다.",
+        operate:()=>{
+          if(!G.flags.pendulum) return ["앵커를 맞춰도 진자가 죽어 있어 박자를 못 만든다. 추 통로(gears→shaft)에서 진자를 먼저 흔들어야 한다.",false];
+          if(G.flags.escapement) return ["탈진기는 이미 정확히 박동하고 있다.",false];
+          G.flags.escapement=true; G.ticks=3;
+          return ["앵커를 진자에 물렸다. *틱-톡 틱-톡* — 탑이 시간을 한 칸씩 세기 시작한다. 종탑(E)으로 박자가 전해진다.",true];
+        },
+      },
+      {
+        id:"key", name:"바늘 열쇠", tone:"gl", take:"key",
+        cx:.2, cy:.66, scale:1,
+        art:[
+          "   ,---.",
+          "   | O |==[]==-",
+          "   '---'",
+        ],
+        examine:()=>"벽 고리에 걸린 정교한 열쇠. 시계바늘 축을 푸는 데 쓰는 듯하다.",
+        takeMsg:"바늘 열쇠를 주웠다. 시계 정면(belfry→face)에서 쓸 수 있을 것 같다.",
+      },
+    ],
+  },
+
+  /* ===== 5. 종탑(belfry) ===== */
+  belfry:{
+    name:"종 탑",
+    intro:"머리 위로 거대한 청동 종들이 매달려 있다. 망치가 박자를 기다린다.",
+    exits:{N:null, S:"shaft", W:"escape", E:"face"},
+    objects:[
+      {
+        id:"bell", name:"대종(大鐘)", tone:"gl", ring:true,
+        cx:.5, cy:.34, scale:1,
+        art:[
+          "     _______",
+          "    /   |   \\",
+          "   /    |    \\",
+          "  |   ( O )   |",
+          "  |    \\|/    |",
+          "   \\____|____/",
+          "      '-O-'",
+        ],
+        examine:()=>G.flags.bell
+          ? "종이 정시마다 울릴 준비를 마쳤다. 청동이 낮게 진동한다."
+          : "거대한 청동 종. 망치가 닿지 않아 침묵하고 있다. 탈진기의 박자가 필요하다.",
+        operate:()=>{
+          if(!G.flags.escapement) return ["망치를 당겨봐도 박자가 없다. 탈진기 방(escape)에서 앵커를 먼저 맞춰야 한다.",false];
+          if(G.flags.bell) return ["종은 이미 울릴 준비가 끝났다. *뎅—*",false];
+          G.flags.bell=true; G.ticks=4;
+          return ["망치를 박자에 연결했다. *뎅— 뎅—* 종이 탑을 울린다. 이제 시계 정면만 남았다.",true];
+        },
+      },
+      {
+        id:"hammer", name:"종 망치", tone:"br",
+        cx:.74, cy:.55, scale:1,
+        art:[
+          "   [###]====",
+          "       |",
+          "       |",
+          "      _|_",
+        ],
+        examine:()=>"종 옆에 늘어진 무쇠 망치. 탈진기의 박자에 맞춰 종을 때리도록 설계됐다.",
+      },
+      {
+        id:"owl", name:"기계 부엉이", tone:"dk", blink:true,
+        cx:.22, cy:.6, scale:1,
+        art:[
+          "   ,___,",
+          "   {o,o}",
+          "   /)_)",
+          '   " "',
+        ],
+        examine:()=>{
+          const lines=[
+            "구석에 앉은 태엽 부엉이. 종이 울릴 때마다 고개를 까딱인다.",
+            "부엉이가 너를 본다. 「사슬을 끝까지. 마지막은… 바늘.」 하고 속삭이는 것 같다.",
+          ];
+          return lines[(Math.random()*lines.length)|0];
+        },
+      },
+    ],
+  },
+
+  /* ===== 6. 시계 정면(face) — 심장/엔딩 ===== */
+  face:{
+    name:"시계 정면",
+    intro:"안쪽에서 본 거대한 문자반. 반투명한 유리 너머로 도시의 빛이 스민다.",
+    exits:{N:null, S:null, W:"belfry", E:null},
+    objects:[
+      {
+        id:"dial", name:"문자반(안쪽)", tone:"gl",
+        cx:.5, cy:.40, scale:1.1,
+        art:[
+          "        . XII .",
+          "     .'        '.",
+          "    /   \\    |   \\",
+          "   |     \\   |    |",
+          "  IX      \\  |   III",
+          "   |       \\ |    |",
+          "    \\       \\|   /",
+          "     '.      *  .'",
+          "        ' VI '",
+        ],
+        examine:()=>G.flags.hands
+          ? "바늘이 돌며 도시의 시간을 다시 알린다. 유리에 빛이 부서진다."
+          : "탑 가장 안쪽 문자반. 바늘이 12를 가리킨 채 굳어 있다. 축을 풀 열쇠가 필요하다.",
+        operate:()=>{
+          if(!G.flags.bell) return ["바늘을 풀어도 종이 울리지 않으면 시간을 알릴 수 없다. 먼저 종탑(belfry)의 종을 살려야 한다.",false];
+          if(!G.inv.has("key")) return ["바늘 축이 잠겨 있다. 탈진기 방(escape)의 바늘 열쇠가 필요하다.",false];
+          if(G.flags.hands) return ["바늘은 이미 돌고 있다.",false];
+          G.flags.hands=true; G.ticks=5;
+          setTimeout(showEnding, 1600);
+          return ["열쇠로 바늘 축을 풀었다. 태엽→톱니→진자→탈진기→종까지 이어진 힘이 마침내 바늘을 밀어낸다. 시계가 움직인다.",true];
+        },
+      },
+    ],
+  },
+};
+
+/* ---------- 화면 합성 ----------
+   ASCII 캔버스를 grid(W x H)로 만들고
+   1) 천장 소실선 + 바닥 원근 격자
+   2) 사물 art를 깊이음영으로 배치
+   를 그린다. 색조는 토큰(태그)으로 입혀 innerHTML 생성.
+*/
+const asciiEl = document.getElementById("ascii").querySelector("b");
+
+let GW=120, GH=46, FS=13;
+function fit(){
+  const sc = document.getElementById("scene").getBoundingClientRect();
+  // 모바일이면 글자 작게
+  const small = window.innerWidth < 560;
+  FS = small ? 9 : (window.innerWidth<1000 ? 11 : 13);
+  const cw = FS*0.6, ch = FS*1.0;
+  GW = Math.max(54, Math.min(180, Math.floor(sc.width / cw)));
+  GH = Math.max(28, Math.min(60, Math.floor(sc.height / ch)));
+  asciiEl.parentElement.style.fontSize = FS+"px";
+  asciiEl.parentElement.style.lineHeight = FS+"px";
+}
+
+// 셀: {ch, tone} — tone: ''|gl|br|dk|fl|sel
+function newGrid(){
+  const g = new Array(GH);
+  for(let y=0;y<GH;y++){ g[y]=new Array(GW); for(let x=0;x<GW;x++) g[y][x]={c:" ",t:""}; }
+  return g;
+}
+function put(g,x,y,c,t){
+  x=Math.round(x); y=Math.round(y);
+  if(x<0||y<0||x>=GW||y>=GH) return;
+  if(c===" "||c===" ") return;
+  g[y][x]={c,t:t||""};
+}
+
+/* 원근 공간: 양옆 석조 기둥(탑 벽) + 천장 골조 소실선 + 바닥 원근 격자
+   소실점을 중심으로 모이는 1점 투시로 3D 방 느낌을 만든다. */
+function drawSpace(g, phase){
+  const hy = Math.floor(GH*0.44);          // 지평선(소실점 높이)
+  const cx = GW/2;
+  const vy = Math.floor(GH*0.40);          // 소실점 y
+  const inset = Math.max(6, Math.floor(GW*0.06)); // 벽까지 여백
+
+  // ---- 천장: 소실점으로 모이는 빔 ----
+  const beams = 9;
+  for(let b=-beams; b<=beams; b++){
+    const fx = cx + b*(GW*0.5/beams);      // 화면 앞쪽(아래) 끝
+    for(let y=0;y<vy;y++){
+      const t = y/vy;                      // 0(위 끝)→1(소실점)
+      const x = fx + (cx - fx)*t;
+      put(g, x, y, t>0.78? "·" : (Math.abs(b)%2? "/":"\\"), b%2? "fl":"f2");
+    }
+  }
+  // 천장 가로 골조(아치 링)
+  for(let r=1;r<=5;r++){
+    const yy = Math.floor(vy*(r/6));
+    const span = (GW*0.5)*(1 - r/6) + GW*0.04;
+    for(let x=cx-span;x<=cx+span;x++) if(x%2) put(g,x,yy,"-","f2");
+    put(g, cx-span, yy, "+", "fl"); put(g, cx+span, yy, "+", "fl");
+  }
+
+  // ---- 양옆 탑 벽(석조 기둥) : 원근으로 안쪽으로 기운다 ----
+  for(let y=0;y<GH;y++){
+    // 벽 안쪽 경계가 위로 갈수록 중앙으로 수렴
+    const tt = y < vy ? y/vy : 1;          // 천장부에서 수렴
+    const edgeL = inset + (cx-inset)*(1-tt)*0.0; // 수직 벽 (단순)
+    // 좌/우 벽 텍스처(벽돌)
+    const lx = inset, rx = GW-1-inset;
+    const brick = (y%3===0) ? "=" : (y%3===1? "|":":");
+    put(g, lx-1, y, brick, "wl");
+    put(g, rx+1, y, brick, "wl");
+    if(y%3===0){ // 벽돌 줄눈 안쪽으로 살짝
+      put(g, lx, y, ".", "wl");
+      put(g, rx, y, ".", "wl");
+    }
+  }
+
+  // ---- 바닥 원근 격자 ----
+  for(let y=hy; y<GH; y++){
+    const t = (y-hy)/(GH-hy);              // 0(멀리)→1(가까이)
+    const half = (GW*0.08) + t*(GW*0.42);
+    // 세로 수렴선
+    for(let v=-6; v<=6; v++){
+      const x = cx + v*(half/6);
+      put(g, x, y, "`", v===0? "f2":"fl");
+    }
+    // 깊이 가로선 — 가까울수록 듬성
+    const k = Math.floor(t*t*9);
+    if((y-hy) === k || t>0.0 && Math.abs((y-hy) - Math.round(Math.pow(t,1.7)*( GH-hy)) )<0){}
+  }
+  // 바닥 깊이선(로그 간격): 멀수록 촘촘, 가까울수록 듬성
+  let prev=-1;
+  for(let i=1;i<=8;i++){
+    const t = i/9;                          // 0..1
+    const y = Math.floor(hy + Math.pow(t,1.6)*(GH-hy));
+    if(y===prev||y>=GH) continue; prev=y;
+    const tt=(y-hy)/(GH-hy);
+    const half = (GW*0.08) + tt*(GW*0.42);
+    for(let x=cx-half;x<=cx+half;x++) put(g,x,y, x%2? "-":".", "f2");
+    put(g, cx-half, y, "+","fl"); put(g, cx+half, y, "+","fl");
+  }
+}
+
+/* 사물 art를 깊이음영 + 윤곽으로 배치 */
+function drawObject(g, obj, selected, phase){
+  let art = obj.art.slice();
+
+  // 애니메이션: 회전/흔들림/깜빡임 — 작동 단계(ticks)에 따라 활성
+  const live = liveFlagFor(obj);
+  if(obj.spin && live){
+    const spin = "+x*o"[ (phase>>2) % 4 ];
+    art = art.map(l=>l.replace(/[*xo+]/g, spin));
+  }
+  if(obj.swing && live){
+    const sh = Math.round(Math.sin(phase*0.18)*2);
+    art = art.map(l=> sh>0 ? " ".repeat(sh)+l : l.slice(-sh));
+  }
+  if(obj.ring && live){
+    // 종이 진동: 좌우 1칸
+    const sh = (phase>>1)%2? 1:0;
+    art = art.map(l=> " ".repeat(sh)+l);
+  }
+  if(obj.blink){
+    const open = (phase>>3)%6!==0;
+    art = art.map(l=> open? l : l.replace(/o/g,"-"));
+  }
+
+  // 캔버스가 넓으면 가로로 글자 복제해 사물을 키운다(아스키 확대)
+  const sx = GW >= 130 ? 2 : 1;
+  if(sx>1){
+    const mirror={"/":"/","\\":"\\","(":"(",")":")","<":"<",">":">","[":"[","]":"]"};
+    art = art.map(line=>{
+      let out="";
+      for(const ch of line) out += ch + (ch===" "? " " : (mirror[ch]!==undefined? ch : ch));
+      return out;
+    });
+  }
+
+  const w = Math.max(...art.map(l=>l.length));
+  const h = art.length;
+  const ox = Math.round(obj.cx*GW - w/2);
+  const oy = Math.round(obj.cy*GH - h/2);
+  const tone = obj.tone || "br";
+
+  // 접지 그림자(바닥에 닿는 느낌)
+  for(let i=2;i<w-2;i++){
+    if(i%2) put(g, ox+i, oy+h, ".", "dk");
+  }
+
+  for(let j=0;j<h;j++){
+    const line = art[j];
+    for(let i=0;i<line.length;i++){
+      const ch = line[i];
+      if(ch===" ") continue;
+      let t = tone;
+      if(selected) t="sel";
+      else {
+        // 깊이음영: 윗부분 살짝 어둑, 본체 강조
+        if(j<h*0.22 && tone!=="gl") t="dk";
+      }
+      put(g, ox+i, oy+j, ch, t);
+    }
+  }
+
+  // 라벨/선택 표식
+  const labelY = oy + h + 1;
+  const label = (selected? "▸ ":"  ") + obj.name + (objDone(obj)? " ✓":"");
+  const lx = Math.round(obj.cx*GW - label.length/2);
+  for(let i=0;i<label.length;i++){
+    put(g, lx+i, labelY, label[i], selected? "sel":"dk");
+  }
+  if(selected){
+    // 선택 테두리 표식
+    put(g, ox-2, oy-1, "[", "sel");
+    put(g, ox+w+1, oy-1, "]", "sel");
+  }
+}
+
+function liveFlagFor(obj){
+  // 어떤 기계가 "살아 움직이는가"
+  switch(obj.id){
+    case "biggear": case "smallgears": return G.flags.spring;
+    case "pendulum": return G.flags.pendulum;
+    case "escwheel": case "anchor": return G.flags.escapement;
+    case "bell": return G.flags.bell;
+    case "dial": return G.flags.hands;
+    default: return false;
+  }
+}
+function objDone(obj){
+  const map={mainspring:"spring",smallgears:"gears",pendulum:"pendulum",
+             anchor:"escapement",bell:"bell",dial:"hands"};
+  if(obj.take) return G.inv.has(obj.take);
+  return map[obj.id]? G.flags[map[obj.id]] : false;
+}
+
+/* 그리드 -> 색조 입힌 HTML */
+function gridToHTML(g){
+  let out="";
+  for(let y=0;y<GH;y++){
+    let curT="";
+    for(let x=0;x<GW;x++){
+      const cell=g[y][x];
+      let ch=cell.c;
+      // HTML escape
+      if(ch==="<")ch="&lt;"; else if(ch===">")ch="&gt;"; else if(ch==="&")ch="&amp;";
+      if(cell.t!==curT){
+        if(curT) out += "</span>";
+        curT=cell.t;
+        out += curT? `<span class="${curT}">`:"";
+      }
+      out += ch;
+    }
+    if(curT) out += "</span>";
+    out += "\n";
+  }
+  return out;
+}
+
+let phase=0;
+function render(){
+  const g = newGrid();
+  drawSpace(g, phase);
+  const room = ROOMS[G.roomId];
+  // 사물: 뒤(작은 cy)부터 그려서 앞이 위에 오게
+  const order = room.objects.map((o,i)=>i).sort((a,b)=>room.objects[a].cy-room.objects[b].cy);
+  for(const i of order){
+    drawObject(g, room.objects[i], i===G.cursor, phase);
+  }
+  asciiEl.innerHTML = gridToHTML(g);
+}
+
+/* ---------- HUD 갱신 ---------- */
+const roomNameEl=document.getElementById("roomName");
+const clockEl=document.getElementById("clock");
+const objlistEl=document.getElementById("objlist");
+const invlistEl=document.getElementById("invlist");
+const statusEl=document.getElementById("statusbar");
+
+function setStatus(html){ statusEl.innerHTML=html; }
+
+function refreshHUD(){
+  const room=ROOMS[G.roomId];
+  roomNameEl.textContent=room.name;
+  // 사물 목록
+  objlistEl.innerHTML = room.objects.map((o,i)=>{
+    const cur=i===G.cursor?"cur":"";
+    const done=objDone(o)?"done":"";
+    const mark=objDone(o)? " ✓":"";
+    return `<div class="o ${cur} ${done}">${o.name}${mark}</div>`;
+  }).join("");
+  // 소지품
+  const items=[...G.inv].map(k=>INV_NAME[k]||k);
+  invlistEl.innerHTML = items.length
+    ? items.map(n=>`<div class="i">• ${n}</div>`).join("")
+    : `<span class="empty">— 비어 있음 —</span>`;
+  // 문 힌트
+  for(const d of ["N","S","E","W"]){
+    const el=document.getElementById("door"+d);
+    const tgt=room.exits[d];
+    if(tgt && ROOMS[tgt]){ el.classList.add("on"); el.classList.remove("locked");
+      el.textContent = doorLabel(d, ROOMS[tgt].name); }
+    else { el.classList.remove("on"); }
+  }
+}
+const INV_NAME={oil:"기름통", key:"바늘 열쇠"};
+function doorLabel(d,name){
+  const arrow={N:"▲",S:"▼",W:"◀",E:"▶"}[d];
+  return d==="W"? `${arrow} ${name}` : d==="E"? `${name} ${arrow}` : `${arrow} ${name}`;
+}
+
+/* ---------- 이동/상호작용 ---------- */
+function gotoRoom(dir){
+  const room=ROOMS[G.roomId];
+  const tgt=room.exits[dir];
+  if(!tgt || !ROOMS[tgt]){ setStatus(`그쪽(<span class="hl">${dir}</span>)에는 문이 없다.`); return; }
+  G.roomId=tgt; G.cursor=0;
+  const r=ROOMS[tgt];
+  setStatus(`<span class="hl">${r.name}</span> — ${r.intro}`);
+  refreshHUD();
+}
+function cycle(delta){
+  const n=ROOMS[G.roomId].objects.length;
+  G.cursor=(G.cursor+delta+n)%n;
+  const o=ROOMS[G.roomId].objects[G.cursor];
+  setStatus(`<span class="hl">${o.name}</span> 선택. <span style="color:#bda87a">E</span>로 살펴보거나 작동한다.`);
+  refreshHUD();
+}
+function interact(){
+  const o=ROOMS[G.roomId].objects[G.cursor];
+  // 우선순위: 작동(operate) > 줍기(take) > 살펴보기(examine)
+  if(o.operate){
+    const [msg,ok]=o.operate();
+    setStatus( ok? `<span class="hl">★</span> ${msg}` : msg );
+    if(ok) progressCheck();
+    refreshHUD();
+    return;
+  }
+  if(o.take){
+    if(G.inv.has(o.take)){ setStatus(`${o.name}은(는) 이미 가지고 있다.`); return; }
+    G.inv.add(o.take);
+    setStatus(`<span class="hl">+</span> ${o.takeMsg||(o.name+"을(를) 주웠다.")}`);
+    refreshHUD();
+    return;
+  }
+  // 그냥 살펴보기
+  setStatus(o.examine());
+}
+function examineOnly(){
+  const o=ROOMS[G.roomId].objects[G.cursor];
+  setStatus(o.examine());
+}
+
+function progressCheck(){
+  // 작동할 때마다 톱니 단계 갱신 → 애니메이션 속도/분위기
+}
+
+/* ---------- 입력 ---------- */
+function enter(){
+  if(G.entered) return;
+  G.entered=true;
+  document.getElementById("intro").classList.add("gone");
+  const r=ROOMS[G.roomId];
+  setStatus(`<span class="hl">${r.name}</span> — ${r.intro}`);
+  refreshHUD();
+}
+
+addEventListener("keydown", e=>{
+  const k=e.key.toLowerCase();
+  if(!G.entered){ enter(); e.preventDefault(); return; }
+  if(G.won) return;
+  const nav={w:"N",arrowup:"N",s:"S",arrowdown:"S",a:"W",arrowleft:"W",d:"E",arrowright:"E"};
+  if(nav[k]){ gotoRoom(nav[k]); e.preventDefault(); return; }
+  if(k==="tab"){ cycle(e.shiftKey?-1:1); e.preventDefault(); return; }
+  if(k==="e"||k==="enter"||k===" "){ interact(); e.preventDefault(); return; }
+  if(k==="x"){ examineOnly(); e.preventDefault(); return; }
+});
+
+/* 터치 컨트롤 */
+function bindTouch(id, fn){
+  const el=document.getElementById(id);
+  el.addEventListener("touchstart", ev=>{ ev.preventDefault();
+    if(!G.entered){ enter(); return; } fn(); }, {passive:false});
+  el.addEventListener("mousedown", ev=>{ ev.preventDefault();
+    if(!G.entered){ enter(); return; } fn(); });
+}
+bindTouch("tUp",   ()=>gotoRoom("N"));
+bindTouch("tDown", ()=>gotoRoom("S"));
+bindTouch("tLeft", ()=>gotoRoom("W"));
+bindTouch("tRight",()=>gotoRoom("E"));
+bindTouch("tCycle",()=>cycle(1));
+bindTouch("tAct",  ()=>interact());
+
+document.getElementById("startBtn").addEventListener("click", e=>{ e.stopPropagation(); enter(); });
+// 인트로 아무 곳이나 탭/클릭해도 입장
+document.getElementById("intro").addEventListener("click", ()=>enter());
+document.getElementById("intro").addEventListener("touchstart", ()=>enter(), {passive:true});
+
+/* 장면(사물) 탭으로도 선택 순환 */
+document.getElementById("scene").addEventListener("click", e=>{
+  if(!G.entered || G.won) return;
+  // 모바일 버튼 위 클릭은 무시
+  if(e.target.closest("#touch")||e.target.closest("#objpanel")||e.target.closest("#invpanel")) return;
+  cycle(1);
+});
+
+/* ---------- 엔딩 ---------- */
+function showEnding(){
+  G.won=true;
+  const endEl=document.getElementById("ending");
+  document.getElementById("endingText").innerHTML =
+    "태엽 → 톱니 → 진자 → 탈진기 → 종 → 바늘.<br>"+
+    "멈춰 있던 사슬이 처음부터 끝까지 이어졌다.<br>"+
+    "탑이 다시 시간을 새긴다. *틱-톡, 뎅—*";
+  document.getElementById("endingArt").textContent =
+`        . XII .
+     .'    |    '.
+    /      |      \\
+  IX  -----+----- III
+    \\      |      /
+     '.    |    .'
+        ' VI '
+       틱 · 톡 · 뎅`;
+  document.getElementById("endingKeys").textContent = "당신이 지나온 방들이 다시 똑딱인다.";
+  endEl.style.opacity="1"; endEl.style.pointerEvents="auto";
+  setStatus(`<span class="hl">완성</span> — 시계탑이 다시 살아났다. 시각: <span class="hl">${clockText()}</span>`);
+}
+
+/* ---------- 루프 ---------- */
+function frame(){
+  // 작동 단계가 높을수록 애니메이션 위상 빨라짐
+  phase += 1 + Math.min(4, G.ticks);
+  clockEl.textContent = clockText();
+  render();
+  requestAnimationFrame(frame);
+}
+
+/* ---------- 부팅 ---------- */
+function boot(){
+  fit();
+  refreshHUD();
+  render();
+  requestAnimationFrame(frame);
+}
+addEventListener("resize", ()=>{ fit(); render(); });
+boot();
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>LIQUID TYPE — flux</title>
+<style>
+  :root{ color-scheme: dark; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ height:100%; width:100%; overflow:hidden; background:#05060a; }
+  body{
+    font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;
+    -webkit-tap-highlight-color:transparent;
+    cursor:none;
+    touch-action:none;
+  }
+  #gl{ position:fixed; inset:0; width:100%; height:100%; display:block; }
+  /* on-screen UI overlay, kept minimal so first paint == the art */
+  #ui{
+    position:fixed; inset:0; pointer-events:none;
+    display:flex; flex-direction:column; justify-content:space-between;
+    padding:clamp(14px,2.4vw,30px);
+    mix-blend-mode:screen;
+    z-index:5;
+  }
+  .row{ display:flex; justify-content:space-between; align-items:flex-start; gap:18px; }
+  .tag{
+    font-size:clamp(9px,1.05vw,12px);
+    letter-spacing:.34em; text-transform:uppercase;
+    color:rgba(200,225,255,.55); font-weight:600;
+  }
+  .tag b{ color:rgba(255,255,255,.9); font-weight:700; }
+  #hint{
+    align-self:center; text-align:center;
+    font-size:clamp(9px,1.05vw,11px); letter-spacing:.32em; text-transform:uppercase;
+    color:rgba(170,200,255,.45);
+    transition:opacity 1.2s ease;
+  }
+  #word{
+    font-size:clamp(10px,1.15vw,13px); letter-spacing:.30em; text-transform:uppercase;
+    color:rgba(255,255,255,.82); font-weight:700;
+    text-align:right;
+  }
+  .dim{ color:rgba(160,185,230,.5); font-weight:600; }
+  /* custom cursor ring */
+  #ring{
+    position:fixed; top:0; left:0; z-index:9; pointer-events:none;
+    width:34px; height:34px; margin:-17px 0 0 -17px;
+    border:1.5px solid rgba(180,220,255,.7);
+    border-radius:50%; mix-blend-mode:screen;
+    transition:width .18s ease,height .18s ease,border-color .18s ease;
+  }
+  #ring.hot{ width:64px; height:64px; margin:-32px 0 0 -32px; border-color:rgba(255,180,120,.9); }
+  #dot{
+    position:fixed; top:0; left:0; z-index:9; pointer-events:none;
+    width:4px; height:4px; margin:-2px 0 0 -2px; border-radius:50%;
+    background:rgba(220,240,255,.95); mix-blend-mode:screen;
+  }
+  @media (pointer:coarse){ body{cursor:auto;} #ring,#dot{display:none;} }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+
+<div id="ui">
+  <div class="row">
+    <div class="tag"><b>LIQUID</b> &nbsp;type / flux</div>
+    <div id="word">PRAY<span class="dim"> · 01 / 06</span></div>
+  </div>
+  <div id="hint">MOVE TO MELT &nbsp;·&nbsp; HOLD TO IGNITE &nbsp;·&nbsp; SCROLL TO MORPH</div>
+  <div class="row">
+    <div class="tag dim">webgl · single shader</div>
+    <div class="tag dim">60<span style="opacity:.5">fps</span></div>
+  </div>
+</div>
+
+<div id="ring"></div>
+<div id="dot"></div>
+
+<script>
+/* ============================================================
+   LIQUID TYPE — flux
+   A single full-screen GLSL fragment shader.
+   Text is rasterized to an offscreen canvas -> distance-ish
+   luminance texture. The shader treats that field as molten
+   metal: domain-warped by curl-like flow noise, lit with a
+   fake normal from the SDF gradient, dripping, and dissolving
+   into volumetric smoke where the pointer "heats" it.
+   ============================================================ */
+(function(){
+'use strict';
+
+const cv = document.getElementById('gl');
+const gl = cv.getContext('webgl', {antialias:false, alpha:false, premultipliedAlpha:false, powerPreference:'high-performance'})
+        || cv.getContext('experimental-webgl');
+
+if(!gl){ document.body.innerHTML='<div style="color:#cdd;font:14px sans-serif;padding:30px">WebGL not available.</div>'; return; }
+
+/* ---------- text raster -> texture ---------- */
+const WORDS = ["PRAY","MELT","FLUX","ASH","DRIFT","盤"];
+const SUBS  = ["for fable","into light","of the type","to smoke","through you","流"];
+let curWord = 0;
+const TEXW = 1024, TEXH = 512;
+const tcv = document.createElement('canvas');
+tcv.width = TEXW; tcv.height = TEXH;
+const tx = tcv.getContext('2d');
+
+function drawWord(w){
+  tx.clearRect(0,0,TEXW,TEXH);
+  tx.fillStyle = '#000'; tx.fillRect(0,0,TEXW,TEXH);
+  tx.fillStyle = '#fff';
+  tx.textAlign = 'center';
+  tx.textBaseline = 'middle';
+  // fit the word
+  let fs = 360;
+  tx.font = `900 ${fs}px "Helvetica Neue",Arial,sans-serif`;
+  let m = tx.measureText(w);
+  const maxW = TEXW*0.86;
+  if(m.width > maxW){ fs = Math.floor(fs * maxW / m.width); tx.font = `900 ${fs}px "Helvetica Neue",Arial,sans-serif`; }
+  tx.fillText(w, TEXW/2, TEXH/2 + fs*0.02);
+}
+drawWord(WORDS[curWord]);
+
+const tex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, tex);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+function uploadText(){
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, gl.LUMINANCE, gl.UNSIGNED_BYTE, tcv);
+}
+uploadText();
+
+/* ---------- shaders ---------- */
+const VERT = `
+attribute vec2 p;
+varying vec2 v;
+void main(){ v = p*0.5+0.5; gl_Position = vec4(p,0.0,1.0); }
+`;
+
+const FRAG = `
+precision highp float;
+varying vec2 v;
+uniform vec2  uRes;
+uniform float uTime;
+uniform sampler2D uTex;
+uniform vec2  uTexAspect;   // how to map screen->text uv keeping word aspect
+uniform vec2  uMouse;       // 0..1, y up
+uniform vec2  uMouseV;      // velocity
+uniform float uHeat;        // 0..1 hold / press
+uniform float uMorph;       // 0..1 transition progress between words
+uniform float uScroll;      // accumulated scroll energy
+uniform float uReveal;      // intro 0..1
+
+/* ---- hash / noise ---- */
+float hash(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
+float vnoise(vec2 p){
+  vec2 i=floor(p), f=fract(p);
+  vec2 u=f*f*(3.0-2.0*f);
+  float a=hash(i), b=hash(i+vec2(1,0)), c=hash(i+vec2(0,1)), d=hash(i+vec2(1,1));
+  return mix(mix(a,b,u.x),mix(c,d,u.x),u.y);
+}
+float fbm(vec2 p){
+  float s=0.0, a=0.5; mat2 m=mat2(1.6,1.2,-1.2,1.6);
+  for(int i=0;i<6;i++){ s+=a*vnoise(p); p=m*p; a*=0.5; }
+  return s;
+}
+/* analytic-ish curl from fbm potential */
+vec2 curl(vec2 p){
+  float e=0.08;
+  float n1=fbm(p+vec2(0.0,e));
+  float n2=fbm(p-vec2(0.0,e));
+  float n3=fbm(p+vec2(e,0.0));
+  float n4=fbm(p-vec2(e,0.0));
+  return vec2(n1-n2, n4-n3)/(2.0*e);
+}
+
+/* sample the text field with screen->word uv mapping (keeps centered) */
+float sampField(vec2 uv){
+  // uv in screen space 0..1, y up
+  vec2 c = (uv-0.5)*uTexAspect + 0.5;
+  if(c.x<0.0||c.x>1.0||c.y<0.0||c.y>1.0) return 0.0;
+  return texture2D(uTex, c).r;
+}
+/* blurred field => fake SDF-ish softness + gradient for normals */
+float field(vec2 uv){
+  float k=1.5/uRes.y;
+  float s=0.0;
+  s+=sampField(uv)*0.40;
+  s+=sampField(uv+vec2(k,0.0))*0.12;
+  s+=sampField(uv-vec2(k,0.0))*0.12;
+  s+=sampField(uv+vec2(0.0,k))*0.12;
+  s+=sampField(uv-vec2(0.0,k))*0.12;
+  s+=sampField(uv+vec2(k,k))*0.06;
+  s+=sampField(uv-vec2(k,k))*0.06;
+  return s;
+}
+
+void main(){
+  vec2 uv = v;
+  float asp = uRes.x/uRes.y;
+  vec2 p = (uv-0.5); p.x*=asp;          // aspect-correct centered coords
+  float t = uTime;
+
+  // pointer in same aspect-corrected space
+  vec2 mp = (uMouse-0.5); mp.x*=asp;
+  float md = length(p-mp);
+  float mspeed = clamp(length(uMouseV)*9.0,0.0,1.4);
+
+  /* ---------- flow field that warps the type ---------- */
+  vec2 flow = curl(p*2.2 + vec2(0.0, t*0.10));
+  flow += 0.5*curl(p*5.0 - vec2(t*0.06,0.0));
+  // pointer drags the liquid (push away + swirl)
+  vec2 toM = p-mp;
+  float pull = exp(-md*3.2);
+  vec2 swirl = vec2(-toM.y, toM.x);
+  flow += swirl*pull*(1.2+mspeed*2.0);
+  flow += normalize(toM+1e-4)*pull*(0.4+mspeed*1.5);
+
+  // morph: words slide/melt as they cross-fade -> extra vertical drip during morph
+  float drip = (0.18 + uMorph*0.5);
+  float warpAmt = 0.045 + mspeed*0.02 + uScroll*0.03;
+  vec2 wp = uv;
+  wp += flow * warpAmt;
+  wp.y -= drip * (0.04) * fbm(p*3.0 - vec2(0.0,t*0.5)); // gravity drip downward (screen y up -> subtract)
+
+  /* ---------- sample molten field ---------- */
+  float f = field(wp);
+  // melting near edges driven by noise -> liquid breakup (kept gentle so bodies stay solid)
+  float edgeNoise = fbm(wp*vec2(asp,1.0)*6.0 + flow*1.2 + t*0.3);
+  float melt = smoothstep(0.10,0.40, f + (edgeNoise-0.5)*0.22*(0.5+uMorph));
+  float core = smoothstep(0.30,0.62, f);   // solid interior mask
+
+  // gradient of field => fake surface normal for metallic lighting (ripple it)
+  float e=2.0/uRes.y;
+  float ripple = 0.018*sin(f*40.0 - t*2.0) * core;   // surface tension ripples
+  float fx = field(wp+vec2(e,0.0)) - field(wp-vec2(e,0.0));
+  float fy = field(wp+vec2(0.0,e)) - field(wp-vec2(0.0,e));
+  // add fine flow-driven micro-normal for "wet" shimmer
+  fx += (curl(wp*9.0 + t*0.4).x)*0.012;
+  fy += (curl(wp*9.0 + t*0.4).y)*0.012;
+  vec3 n = normalize(vec3(-fx*7.0, -fy*7.0 - ripple*30.0, 1.0));
+
+  /* ---------- lighting: liquid chrome / oil film ---------- */
+  vec3 L  = normalize(vec3(0.45,0.75,0.65));
+  vec3 L2 = normalize(vec3(-0.6,-0.2,0.5));   // cool rim light
+  vec3 V = vec3(0.0,0.0,1.0);
+  vec3 H = normalize(L+V);
+  float dif  = clamp(dot(n,L),0.0,1.0);
+  float dif2 = clamp(dot(n,L2),0.0,1.0);
+  float spec = pow(clamp(dot(n,H),0.0,1.0), 90.0);
+  // streaky anisotropic-ish highlight for liquid sheen
+  float sheen = pow(clamp(dot(n,H),0.0,1.0), 12.0)*0.4;
+  float fres = pow(1.0-clamp(n.z,0.0,1.0), 3.0);
+
+  // thin-film interference confined to the FRESNEL RIM only (oil-on-metal), not the body
+  float filmPhase = fres*6.0 + n.x*1.2 + t*0.25 + uScroll*2.0;
+  vec3 film = 0.5+0.5*cos(vec3(0.0,2.094,4.188) + filmPhase);
+  // soft oil-film palette reused by background sheen & intro reveal
+  vec3 irid = 0.5+0.5*cos(vec3(0.0,2.094,4.188) + t*0.3 + uScroll*2.0 + length(p)*1.5);
+  // restrained chrome palette for the body: deep steel-blue -> silver
+  vec3 steel = vec3(0.05,0.08,0.16);
+  vec3 silver= vec3(0.62,0.72,0.86);
+  vec3 body = mix(steel, silver, dif*0.85 + sheen);
+  body += vec3(0.10,0.14,0.22)*dif2;                 // cool fill
+  vec3 col = body;
+  col += film*fres*0.85;                              // iridescent rim
+  col += vec3(1.0,0.98,0.95)*spec*1.4;               // sharp wet highlight
+  col = mix(body*0.5, col, core*0.6+0.4);            // keep edges from blowing out
+
+  // heat tint: pointer hold turns metal -> incandescent, focused hotspot
+  float heatReach = exp(-md*3.4)*uHeat;
+  // molten gradient: outer dull-red -> inner white-hot, modulated by flow for living flame
+  float hot = clamp(heatReach*1.5 + (fbm(wp*8.0 - t*1.2)-0.5)*0.4*heatReach, 0.0, 1.0);
+  vec3 ember = mix(vec3(0.9,0.18,0.03), mix(vec3(1.5,0.55,0.10), vec3(1.6,1.3,0.9), hot*hot), hot);
+  col = mix(col, ember*(0.4+f*0.9), clamp(hot*1.4,0.0,1.0));
+
+  col *= melt;
+
+  /* ---------- dissolve into smoke ---------- */
+  // material is "burned" where heat is high AND noise threshold crossed -> turns to rising smoke
+  float burn = clamp(heatReach*1.4 + uMorph*0.4 - 0.2, 0.0, 1.0);
+  float ash = smoothstep(0.35,0.75, edgeNoise + burn - melt*0.3);
+  // smoke density: advected fbm rising upward, seeded by the type silhouette
+  vec2 sp = uv*vec2(asp,1.0);
+  sp.y -= t*0.12;                          // rise
+  sp += flow*0.06;
+  float smokeSeed = field(uv + vec2(0.0,0.0));
+  float smoke = fbm(sp*5.0 + flow*2.0) * (0.4 + smokeSeed*1.2);
+  smoke *= (burn*1.4 + uMorph*0.5);
+  smoke = clamp(smoke,0.0,1.0);
+  vec3 smokeCol = mix(vec3(0.20,0.22,0.30), vec3(0.9,0.55,0.35), heatReach) ;
+  // add smoke on top of (or instead of) molten metal where burning
+  col = mix(col, smokeCol, smoke*0.85);
+  col += smokeCol*smoke*0.15;
+
+  /* ---------- ambient field: faint liquid sheen even off-letter ---------- */
+  float bg = fbm(p*3.0 + flow*0.8 + t*0.05);
+  vec3 bgCol = mix(vec3(0.02,0.03,0.06), vec3(0.04,0.07,0.14), bg);
+  bgCol += irid*0.04*pow(bg,3.0);
+  // pointer halo on background
+  bgCol += vec3(0.10,0.16,0.28)*pull*0.6;
+  bgCol += ember*heatReach*0.25*exp(-md*1.5);
+
+  float maskOut = clamp(melt + smoke*0.9, 0.0, 1.0);
+  vec3 outc = mix(bgCol, col, clamp(maskOut,0.0,1.0));
+
+  // sparks: hot bright points flying off when burning + moving fast
+  float sparkField = hash(floor(uv*vec2(uRes.x,uRes.y)/3.0) + floor(t*12.0));
+  float spark = step(0.9985 - heatReach*0.004 - mspeed*0.0015, sparkField) * (heatReach+mspeed*0.4);
+  outc += vec3(1.4,0.8,0.4)*spark;
+
+  // vignette + gentle grain + reveal
+  float vig = smoothstep(1.3,0.25,length((uv-0.5)*vec2(asp,1.0)));
+  outc *= mix(0.55,1.0,vig);
+  float grain = (hash(uv*uRes + t)-0.5)*0.035;
+  outc += grain;
+
+  // intro reveal: wipe of heat/light from center
+  float rev = smoothstep(0.0,1.0,uReveal);
+  outc *= rev;
+  outc += irid*(1.0-rev)*0.3*smoothstep(0.0,1.0, 1.0-abs(length(p)-(1.0-rev)*2.0)*4.0);
+
+  // tonemap
+  outc = outc/(outc+vec3(0.85));
+  outc = pow(outc, vec3(0.86));
+  gl_FragColor = vec4(outc,1.0);
+}
+`;
+
+function compile(type,src){
+  const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){ console.error(gl.getShaderInfoLog(s)); throw new Error('shader'); }
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER,VERT));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER,FRAG));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog,gl.LINK_STATUS)){ console.error(gl.getProgramInfoLog(prog)); throw new Error('link'); }
+gl.useProgram(prog);
+
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+const pLoc = gl.getAttribLocation(prog,'p');
+gl.enableVertexAttribArray(pLoc);
+gl.vertexAttribPointer(pLoc,2,gl.FLOAT,false,0,0);
+
+const U = {};
+['uRes','uTime','uTex','uTexAspect','uMouse','uMouseV','uHeat','uMorph','uScroll','uReveal']
+  .forEach(k=>U[k]=gl.getUniformLocation(prog,k));
+gl.uniform1i(U.uTex,0);
+
+/* ---------- sizing (resolution cap for perf) ---------- */
+let DPR=1, W=0, H=0;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  // resolution cap: keep total pixels under ~2.6M for smooth 60fps
+  const cssW = window.innerWidth, cssH = window.innerHeight;
+  let rw = Math.round(cssW*DPR), rh = Math.round(cssH*DPR);
+  const cap = 2600000;
+  const px = rw*rh;
+  if(px>cap){ const s=Math.sqrt(cap/px); rw=Math.round(rw*s); rh=Math.round(rh*s); }
+  cv.width=rw; cv.height=rh;
+  cv.style.width=cssW+'px'; cv.style.height=cssH+'px';
+  W=rw; H=rh;
+  gl.viewport(0,0,W,H);
+}
+window.addEventListener('resize', resize); resize();
+
+/* texAspect: map full-screen uv into the centered word region keeping legible scale */
+function texAspect(){
+  // We want the word ~70% of screen height, aspect-correct.
+  const sa = window.innerWidth/window.innerHeight;
+  const wa = TEXW/TEXH;                 // texture aspect 2:1
+  // scale so that the word height occupies ~ 0.7 of screen and width follows
+  const targetH = 0.78;                 // fraction of screen used by text uv span
+  const ax = (sa/wa)/targetH * (TEXH/TEXH); // map x
+  const ay = 1.0/targetH;
+  return [ax, ay];
+}
+
+/* ---------- input ---------- */
+const mouse = {x:0.5,y:0.5, tx:0.5,ty:0.5, vx:0,vy:0, px:0.5,py:0.5};
+let heat=0, heatTarget=0;
+let scrollE=0;            // decays
+let morph=0, morphing=false, nextWord=0;
+const ring=document.getElementById('ring'), dot=document.getElementById('dot'), hint=document.getElementById('hint'), wordEl=document.getElementById('word');
+
+function setPointer(cx,cy){
+  mouse.tx = cx/window.innerWidth;
+  mouse.ty = 1.0 - cy/window.innerHeight;
+  ring.style.transform = `translate(${cx}px,${cy}px)`;
+  dot.style.transform = `translate(${cx}px,${cy}px)`;
+}
+window.addEventListener('mousemove', e=>{ setPointer(e.clientX,e.clientY); fadeHint(); }, {passive:true});
+window.addEventListener('mousedown', ()=>{ heatTarget=1; ring.classList.add('hot'); });
+window.addEventListener('mouseup',   ()=>{ heatTarget=0; ring.classList.remove('hot'); });
+
+// touch
+window.addEventListener('touchstart', e=>{ if(e.touches[0]){ setPointer(e.touches[0].clientX,e.touches[0].clientY); heatTarget=1; fadeHint(); } }, {passive:true});
+window.addEventListener('touchmove',  e=>{ if(e.touches[0]) setPointer(e.touches[0].clientX,e.touches[0].clientY); }, {passive:true});
+window.addEventListener('touchend',   ()=>{ heatTarget=0; }, {passive:true});
+
+// scroll/wheel -> morph words + add flow energy
+function bumpScroll(dir){
+  scrollE = Math.min(scrollE + Math.abs(dir)*0.0012, 1.0);
+  if(!morphing){
+    morphing=true; morph=0;
+    nextWord = (curWord + (dir>0?1:WORDS.length-1)) % WORDS.length;
+  }
+  fadeHint();
+}
+window.addEventListener('wheel', e=>{ bumpScroll(e.deltaY); e.preventDefault(); }, {passive:false});
+
+// touch vertical swipe -> morph
+let tY=null;
+window.addEventListener('touchstart', e=>{ if(e.touches[0]) tY=e.touches[0].clientY; }, {passive:true});
+window.addEventListener('touchmove', e=>{
+  if(tY!==null && e.touches[0]){ const dy=tY-e.touches[0].clientY; if(Math.abs(dy)>60){ bumpScroll(dy); tY=e.touches[0].clientY; } }
+}, {passive:true});
+
+// keyboard arrows also morph (and for verification)
+window.addEventListener('keydown', e=>{
+  if(e.key==='ArrowDown'||e.key==='ArrowRight'||e.key===' ') bumpScroll(1);
+  if(e.key==='ArrowUp'||e.key==='ArrowLeft') bumpScroll(-1);
+});
+
+let hintFaded=false;
+function fadeHint(){ if(!hintFaded){ hintFaded=true; hint.style.opacity='0'; } }
+
+/* expose hooks for headless verification */
+window.__flux = {
+  state(){ return {word:curWord, heat:heat, scroll:scrollE, morph:morph, mouse:[mouse.x,mouse.y]}; },
+  move(nx,ny){ setPointer(nx*window.innerWidth,(1-ny)*window.innerHeight); },
+  hold(on){ heatTarget=on?1:0; if(on)ring.classList.add('hot'); else ring.classList.remove('hot'); },
+  scroll(d){ bumpScroll(d); }
+};
+
+/* ---------- render loop ---------- */
+let start=performance.now(), last=start, reveal=0;
+function frame(now){
+  const dt=Math.min((now-last)/1000,0.05); last=now;
+  const t=(now-start)/1000;
+
+  // smooth pointer
+  mouse.px=mouse.x; mouse.py=mouse.y;
+  mouse.x += (mouse.tx-mouse.x)*Math.min(dt*12,1);
+  mouse.y += (mouse.ty-mouse.y)*Math.min(dt*12,1);
+  mouse.vx = mouse.x-mouse.px; mouse.vy = mouse.y-mouse.py;
+
+  heat += (heatTarget-heat)*Math.min(dt*6,1);
+  scrollE *= Math.pow(0.18, dt);   // decay
+  reveal += (1-reveal)*Math.min(dt*0.9,1);
+
+  // morph progression
+  if(morphing){
+    morph += dt*1.6;
+    if(morph>=0.5 && curWord!==nextWord){
+      curWord=nextWord; drawWord(WORDS[curWord]); uploadText();
+      wordEl.innerHTML = WORDS[curWord].replace(/[^\x00-\x7F]/g, m=>m) +
+        ` <span class="dim"> · 0${curWord+1} / 06</span>`;
+    }
+    if(morph>=1){ morph=0; morphing=false; }
+  }
+
+  const ta=texAspect();
+  gl.uniform2f(U.uRes,W,H);
+  gl.uniform1f(U.uTime,t);
+  gl.uniform2f(U.uTexAspect,ta[0],ta[1]);
+  gl.uniform2f(U.uMouse,mouse.x,mouse.y);
+  gl.uniform2f(U.uMouseV,mouse.vx,mouse.vy);
+  gl.uniform1f(U.uHeat,heat);
+  gl.uniform1f(U.uMorph, morphing? Math.sin(morph*Math.PI):0.0);
+  gl.uniform1f(U.uScroll,scrollE);
+  gl.uniform1f(U.uReveal,reveal);
+
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D,tex);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

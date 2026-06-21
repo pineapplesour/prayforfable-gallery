@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>CHRONOFLUX — particle clock</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; width: 100%;
+    background: #04050b; overflow: hidden;
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    cursor: crosshair; -webkit-tap-highlight-color: transparent;
+  }
+  #stage { position: fixed; inset: 0; display: block; touch-action: none; }
+  .hud {
+    position: fixed; pointer-events: none; user-select: none;
+    color: rgba(210,222,255,0.42); letter-spacing: 0.30em;
+    font-size: 11px; text-transform: uppercase; font-weight: 300;
+    text-shadow: 0 0 16px rgba(120,160,255,0.30);
+    z-index: 5;
+  }
+  #title { top: 22px; left: 26px; font-size: 12px; letter-spacing: 0.46em; }
+  #title b { color: rgba(160,205,255,0.92); font-weight: 600; }
+  #hint  { bottom: 20px; left: 26px; }
+  #date  { bottom: 20px; right: 26px; letter-spacing: 0.34em; }
+  #mode  { top: 24px; right: 26px; color: rgba(255,210,150,0.6); }
+  @media (max-width: 560px) {
+    .hud { font-size: 9px; letter-spacing: 0.16em; }
+    #title { font-size: 10px; letter-spacing: 0.30em; top:16px; left:16px;}
+    #hint { bottom: 13px; left: 16px; max-width: 62%; line-height: 1.5; }
+    #date { bottom: 13px; right: 16px; }
+    #mode { top: 18px; right: 16px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="title" class="hud"><b>CHRONO</b>FLUX</div>
+<div id="mode"  class="hud">flow</div>
+<div id="hint"  class="hud">move · hold to scatter · click to pulse · scroll to warp · space</div>
+<div id="date"  class="hud"></div>
+<script>
+(() => {
+"use strict";
+
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', { alpha: false });
+const modeEl = document.getElementById('mode');
+const dateEl = document.getElementById('date');
+
+let W = 0, H = 0, DPR = 1, cssW = 0, cssH = 0, isMobile = false;
+
+function resize() {
+  cssW = window.innerWidth; cssH = window.innerHeight;
+  isMobile = cssW < 560;
+  DPR = Math.min(window.devicePixelRatio || 1, isMobile ? 2 : 1.5);
+  W = Math.round(cssW * DPR); H = Math.round(cssH * DPR);
+  cv.width = W; cv.height = H;
+  cv.style.width = cssW + 'px'; cv.style.height = cssH + 'px';
+  // opaque first paint
+  ctx.fillStyle = '#04050b'; ctx.fillRect(0, 0, W, H);
+  rebuild(true);
+}
+
+// ---------- time ----------
+function pad(v){ return String(v).padStart(2,'0'); }
+function timeString(d){ return pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds()); }
+function dateString(d){
+  const days=['SUN','MON','TUE','WED','THU','FRI','SAT'];
+  return days[d.getDay()]+'  '+d.getFullYear()+'.'+pad(d.getMonth()+1)+'.'+pad(d.getDate());
+}
+
+// ---------- offscreen text sampling, per-character so each digit gets a hue zone ----------
+const off = document.createElement('canvas');
+const offc = off.getContext('2d', { willReadFrequently: true });
+
+let targets = [];          // {x,y,char} device px
+let charBounds = [];       // per char index -> {cx} for hue zoning
+let lastStr = '';
+
+function fitFont(text){
+  let fs = Math.floor(Math.min(W * 0.34, H * 0.50));
+  const targetW = W * (isMobile ? 0.92 : 0.76);
+  for (let i=0;i<10;i++){
+    offc.font = '900 '+fs+'px "Helvetica Neue", Arial, sans-serif';
+    const w = offc.measureText(text).width;
+    if (w > targetW) fs = Math.floor(fs * targetW / w * 0.99);
+    else break;
+  }
+  return fs;
+}
+
+function sampleText(text){
+  const fs = fitFont(text);
+  off.width = W; off.height = H;
+  offc.clearRect(0,0,W,H);
+  offc.fillStyle = '#fff';
+  offc.textAlign = 'left';
+  offc.textBaseline = 'middle';
+  offc.font = '900 '+fs+'px "Helvetica Neue", Arial, sans-serif';
+  // measure total to center
+  let total = offc.measureText(text).width;
+  let cx = (W - total) / 2;
+  const cy = H / 2;
+
+  // draw whole string once (kerning correct), but remember char x-spans for hue zoning
+  const spans = [];
+  let acc = cx;
+  for (let i=0;i<text.length;i++){
+    const cwid = offc.measureText(text[i]).width;
+    spans.push({ x0: acc, x1: acc + cwid, ch: text[i], idx: i });
+    acc += cwid;
+  }
+  offc.fillText(text, cx, cy);
+
+  const img = offc.getImageData(0,0,W,H).data;
+  const pts = [];
+  // sparser, crisper sampling so glyph negative-space (gaps) survives
+  const want = isMobile ? 2800 : 4200;
+  let step = Math.max(3, Math.round(Math.sqrt((W*H)/(want*9)) * DPR));
+  if (step < 3) step = 3;
+  for (let y=0;y<H;y+=step){
+    for (let x=0;x<W;x+=step){
+      if (img[(y*W+x)*4+3] > 130){
+        // which char span?
+        let ci = 0;
+        for (let s=0;s<spans.length;s++){ if (x>=spans[s].x0 && x<=spans[s].x1){ ci=spans[s].idx; break; } }
+        pts.push({ x: x + (Math.random()-0.5)*step, y: y + (Math.random()-0.5)*step, c: ci });
+      }
+    }
+  }
+  return { pts, count: text.length };
+}
+
+// ---------- particles (typed arrays) ----------
+const P = { x:null,y:null,vx:null,vy:null,tx:null,ty:null,sz:null,j:null,role:null,zone:null,n:0 };
+// role: 1 = digit, 0 = ambient. zone: char index (for hue).
+
+function alloc(n){
+  P.x=new Float32Array(n); P.y=new Float32Array(n);
+  P.vx=new Float32Array(n); P.vy=new Float32Array(n);
+  P.tx=new Float32Array(n); P.ty=new Float32Array(n);
+  P.sz=new Float32Array(n); P.j=new Float32Array(n);
+  P.role=new Uint8Array(n); P.zone=new Float32Array(n);
+  P.n=n;
+  for(let i=0;i<n;i++){
+    P.x[i]=Math.random()*W; P.y[i]=Math.random()*H;
+    P.vx[i]=0; P.vy[i]=0; P.tx[i]=P.x[i]; P.ty[i]=P.y[i];
+    P.sz[i]=0.7+Math.random()*1.3; P.j[i]=Math.random();
+    P.role[i]=0; P.zone[i]=Math.random()*8;
+  }
+}
+
+function rebuild(forceFont){
+  const d = new Date();
+  const str = timeString(d);
+  if (str === lastStr && !forceFont) return;
+  lastStr = str;
+  const s = sampleText(str);
+  targets = s.pts;
+  const T = targets.length;
+
+  // small ambient halo: ~6% of digit count (kept subtle so digits dominate)
+  const ambient = Math.round(T * 0.06);
+  const total = T + ambient;
+  if (!P.x || P.n !== total) alloc(total);
+
+  for (let i=0;i<T;i++){
+    P.tx[i]=targets[i].x; P.ty[i]=targets[i].y;
+    P.role[i]=1; P.zone[i]=targets[i].c;
+    P.sz[i]=0.85+Math.random()*1.25;
+  }
+  for (let i=T;i<total;i++){
+    P.tx[i]=Math.random()*W; P.ty[i]=Math.random()*H;
+    P.role[i]=0; P.zone[i]=Math.random()*8;
+    P.sz[i]=0.5+Math.random()*0.9;
+  }
+}
+
+// ---------- palette: curated vivid hues cycled per char zone, drifting over time ----------
+const PAL = [195, 280, 330, 45, 160, 210, 300, 25]; // cyan, violet, magenta, gold, teal, blue, purple, orange
+function zoneHue(zone, t){
+  const base = PAL[((zone|0) % PAL.length + PAL.length) % PAL.length];
+  return (base + Math.sin(t*0.25 + zone) * 22 + t*8) % 360;
+}
+
+// ---------- interaction ----------
+const ptr = { x:-9999, y:-9999, down:false, active:false };
+let warp = 0, modeIndex = 0;
+const MODES = ['flow','orbit','storm'];
+let pulses = [];
+let colonPulse = 0;
+
+function setPtr(cx,cy){ ptr.x=cx*DPR; ptr.y=cy*DPR; ptr.active=true; }
+cv.addEventListener('mousemove', e=>setPtr(e.clientX,e.clientY));
+cv.addEventListener('mouseleave', ()=>{ ptr.active=false; ptr.x=-9999; ptr.y=-9999; });
+cv.addEventListener('mousedown', e=>{ ptr.down=true; setPtr(e.clientX,e.clientY); addPulse(e.clientX*DPR,e.clientY*DPR); });
+window.addEventListener('mouseup', ()=>{ ptr.down=false; });
+cv.addEventListener('touchstart', e=>{ const t=e.touches[0]; ptr.down=true; setPtr(t.clientX,t.clientY); addPulse(t.clientX*DPR,t.clientY*DPR); e.preventDefault(); }, {passive:false});
+cv.addEventListener('touchmove', e=>{ const t=e.touches[0]; setPtr(t.clientX,t.clientY); e.preventDefault(); }, {passive:false});
+cv.addEventListener('touchend', ()=>{ ptr.down=false; ptr.active=false; }, {passive:false});
+window.addEventListener('wheel', e=>{ warp += Math.max(-1,Math.min(1,e.deltaY/500)); warp=Math.max(-2.5,Math.min(2.5,warp)); }, {passive:true});
+window.addEventListener('keydown', e=>{
+  if (e.code==='Space'){ modeIndex=(modeIndex+1)%MODES.length; modeEl.textContent=MODES[modeIndex]; e.preventDefault(); }
+});
+function addPulse(x,y){ pulses.push({x,y,r:0,max:Math.max(W,H)*0.6,a:1}); if(pulses.length>5) pulses.shift(); }
+
+// ---------- loop ----------
+let last = performance.now(), prevSec = -1;
+
+function frame(now){
+  const dt = Math.min(2.4, Math.max(0.25, (now-last)/16.6667));
+  last = now;
+  const t = now/1000;
+
+  const d = new Date();
+  const sec = d.getSeconds();
+  if (sec !== prevSec){ prevSec=sec; rebuild(false); colonPulse=1; dateEl.textContent=dateString(d); }
+  colonPulse *= Math.pow(0.90,dt);
+  warp *= Math.pow(0.93,dt);
+
+  // trail fade (stronger so glyphs stay crisp, not smeared)
+  ctx.globalCompositeOperation='source-over';
+  ctx.fillStyle='rgba(4,5,11,0.40)';
+  ctx.fillRect(0,0,W,H);
+
+  ctx.globalCompositeOperation='lighter';
+
+  const px=ptr.x, py=ptr.y, repel=ptr.down;
+  const interR=(isMobile?140:190)*DPR, interR2=interR*interR;
+  const mode=MODES[modeIndex];
+  // properly-damped spring so digits LOCK crisply (near-critical damping) & self-heal
+  const stiff = mode==='storm'?0.070 : mode==='orbit'?0.090 : 0.130;
+  const damp  = mode==='storm'?0.80  : mode==='orbit'?0.78  : 0.70;
+
+  const n=P.n;
+  for(let i=0;i<n;i++){
+    let x=P.x[i], y=P.y[i], vx=P.vx[i], vy=P.vy[i];
+    const digit = P.role[i]===1;
+
+    if (digit){
+      const dx=P.tx[i]-x, dy=P.ty[i]-y;
+      vx += dx*stiff; vy += dy*stiff;
+      if (mode==='orbit'){ vx += -dy*0.012; vy += dx*0.012; }
+      else if (mode==='storm'){
+        const a=(x*0.005+y*0.004+t*1.4);
+        vx += Math.cos(a)*0.9; vy += Math.sin(a*1.3)*0.9;
+      }
+    } else {
+      const a=(x*0.0015+t*0.22), b=(y*0.0015 - t*0.18);
+      vx += Math.cos(a+b)*0.09; vy += Math.sin(a-b)*0.09;
+      if(x<0)vx+=0.5; if(x>W)vx-=0.5; if(y<0)vy+=0.5; if(y>H)vy-=0.5;
+    }
+
+    if (ptr.active){
+      const dxp=x-px, dyp=y-py, d2=dxp*dxp+dyp*dyp;
+      if (d2<interR2 && d2>1){
+        const dist=Math.sqrt(d2), f=(1-dist/interR);
+        if (repel){
+          const force=f*f*7.0;
+          vx += (dxp/dist)*force; vy += (dyp/dist)*force;
+        } else {
+          // gentle swirl + light attraction, bounded so the spring still wins (digits stay legible)
+          const force=f*0.35;
+          vx += (-dxp/dist)*force; vy += (-dyp/dist)*force;
+          vx += (-dyp/dist)*f*1.4; vy += (dxp/dist)*f*1.4;
+        }
+      }
+    }
+
+    for(let k=0;k<pulses.length;k++){
+      const pu=pulses[k];
+      const dxp=x-pu.x, dyp=y-pu.y, dist=Math.sqrt(dxp*dxp+dyp*dyp)||1;
+      const band=Math.abs(dist-pu.r);
+      if (band < 60*DPR){
+        const f=(1-band/(60*DPR))*pu.a*4.2;
+        vx += (dxp/dist)*f; vy += (dyp/dist)*f;
+      }
+    }
+
+    if (Math.abs(warp)>0.01){
+      const cxp=x-W/2, cyp=y-H/2, dd=Math.sqrt(cxp*cxp+cyp*cyp)||1;
+      const f=warp*0.8;
+      vx += (cxp/dd)*f; vy += (cyp/dd)*f;
+    }
+
+    vx*=damp; vy*=damp;
+    x += vx*dt; y += vy*dt;
+    P.x[i]=x; P.y[i]=y; P.vx[i]=vx; P.vy[i]=vy;
+
+    const speed=Math.sqrt(vx*vx+vy*vy);
+    const hue=zoneHue(P.zone[i], t);
+    let light, sat, sz, alpha;
+    if (digit){
+      light = 56 + Math.min(22, speed*4);   // capped: no white blowout
+      sat = 95;
+      sz = (P.sz[i]*0.85 + Math.min(1.2, speed*0.22))*DPR;
+      alpha = 0.78 + Math.min(0.20, speed*0.04);
+    } else {
+      light = 34; sat = 68;
+      sz = P.sz[i]*0.6*DPR;
+      alpha = 0.06 + Math.min(0.12, speed*0.014);
+    }
+    ctx.beginPath();
+    ctx.fillStyle = 'hsla('+hue.toFixed(0)+','+sat+'%,'+light.toFixed(0)+'%,'+alpha.toFixed(3)+')';
+    ctx.arc(x,y,sz,0,6.2832);
+    ctx.fill();
+  }
+
+  // advance pulses
+  for(let k=pulses.length-1;k>=0;k--){
+    const pu=pulses[k]; pu.r += 15*DPR*dt; pu.a *= Math.pow(0.955,dt);
+    if (pu.r>pu.max || pu.a<0.02) pulses.splice(k,1);
+  }
+
+  // colon heartbeat: vertical glow bars at the two colon gaps approximated as soft center bloom
+  if (colonPulse>0.02){
+    const g=ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,Math.min(W,H)*0.45);
+    const hd=zoneHue(2,t);
+    g.addColorStop(0,'hsla('+hd.toFixed(0)+',90%,62%,'+(colonPulse*0.05).toFixed(3)+')');
+    g.addColorStop(1,'hsla('+hd.toFixed(0)+',90%,62%,0)');
+    ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  }
+
+  // pointer halo
+  if (ptr.active){
+    const rr=(isMobile?64:90)*DPR;
+    const g=ctx.createRadialGradient(px,py,0,px,py,rr);
+    const col = ptr.down ? '8,95%,60%' : '190,95%,66%';
+    g.addColorStop(0,'hsla('+col+',0.32)');
+    g.addColorStop(1,'hsla('+col+',0)');
+    ctx.fillStyle=g; ctx.fillRect(px-rr,py-rr,rr*2,rr*2);
+  }
+
+  requestAnimationFrame(frame);
+}
+
+window.addEventListener('resize', resize);
+resize();
+rebuild(true);
+dateEl.textContent = dateString(new Date());
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

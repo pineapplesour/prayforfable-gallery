@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>AERIAL — endless flight over noise terrain</title>
+<style>
+  :root { color-scheme: dark; }
+  html,body{margin:0;height:100%;background:#05060a;overflow:hidden;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    -webkit-tap-highlight-color:transparent;cursor:crosshair;}
+  #c{display:block;width:100vw;height:100vh;touch-action:none;}
+  .ui{position:fixed;pointer-events:none;user-select:none;z-index:5;}
+  #title{left:clamp(16px,4vw,52px);top:clamp(14px,4vh,40px);}
+  #title h1{margin:0;font-weight:700;letter-spacing:.42em;
+    font-size:clamp(13px,1.9vw,20px);
+    color:rgba(255,255,255,.92);text-shadow:0 2px 24px rgba(0,0,0,.6);}
+  #title p{margin:.55em 0 0;font-weight:400;letter-spacing:.30em;
+    font-size:clamp(8px,1.05vw,10.5px);text-transform:uppercase;
+    color:rgba(255,255,255,.40);}
+  #hint{right:clamp(16px,4vw,52px);bottom:clamp(14px,4vh,36px);text-align:right;
+    font-size:clamp(8px,1vw,10px);letter-spacing:.18em;line-height:1.85;
+    color:rgba(255,255,255,.34);text-transform:uppercase;}
+  #hint b{color:rgba(255,255,255,.62);font-weight:600;}
+  #hud{left:clamp(16px,4vw,52px);bottom:clamp(14px,4vh,36px);
+    font-variant-numeric:tabular-nums;font-size:clamp(8px,1vw,10px);
+    letter-spacing:.16em;color:rgba(255,255,255,.30);line-height:1.9;}
+  #hud b{color:rgba(120,220,255,.85);font-weight:600;}
+  #flash{left:0;right:0;top:48%;text-align:center;font-weight:700;
+    letter-spacing:.5em;font-size:clamp(11px,1.6vw,16px);
+    color:rgba(255,255,255,.0);transition:color .25s,letter-spacing .6s;}
+  @media (max-width:640px){ #hint{display:none;} }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="ui" id="title">
+  <h1>A E R I A L</h1>
+  <p>endless flight · procedural noise terrain</p>
+</div>
+<div class="ui" id="hud">
+  <div>ALT <b id="hAlt">—</b></div>
+  <div>SPD <b id="hSpd">—</b></div>
+  <div>FPS <b id="hFps">—</b></div>
+</div>
+<div class="ui" id="hint">
+  <div><b>drag</b> &nbsp;steer / bank</div>
+  <div><b>scroll</b> &nbsp;altitude</div>
+  <div><b>click</b> &nbsp;warp burst</div>
+  <div><b>1–4</b> &nbsp;biome &nbsp;·&nbsp; <b>space</b> pause</div>
+</div>
+<div class="ui" id="flash"></div>
+
+<script>
+/* =========================================================================
+   AERIAL — single-file WebGL2 raymarched flight over FBM noise terrain.
+   No build step, no deps. Adaptive resolution keeps it smooth.
+   ========================================================================= */
+(()=>{
+"use strict";
+const cv = document.getElementById('c');
+const gl = cv.getContext('webgl2',{antialias:false,alpha:false,depth:false,
+  powerPreference:'high-performance',preserveDrawingBuffer:true});
+if(!gl){ document.body.innerHTML =
+  '<div style="color:#fff;font:14px sans-serif;padding:40px">WebGL2 not available.</div>';
+  return; }
+
+/* ---- shaders ---------------------------------------------------------- */
+const VERT = `#version 300 es
+in vec2 p; void main(){ gl_Position = vec4(p,0.,1.); }`;
+
+const FRAG = `#version 300 es
+precision highp float;
+out vec4 O;
+
+uniform vec2  uRes;       // render resolution
+uniform float uT;         // global time (seconds, advances by speed)
+uniform float uReal;      // wall-clock time (for animated water/sky)
+uniform vec3  uCam;       // camera world position
+uniform vec2  uLook;      // look angles (yaw extra, pitch)
+uniform float uBank;      // roll / banking
+uniform float uSpeed;     // current speed (for fov / motion cues)
+uniform float uWarp;      // 0..1 warp burst envelope
+uniform float uBiome;     // 0..3 biome index (smoothly lerped outside)
+uniform vec3  uBiomeLo;   // lo terrain color
+uniform vec3  uBiomeHi;   // hi terrain color
+uniform vec3  uBiomeFog;  // fog / horizon color
+uniform vec3  uBiomeSun;  // sun tint
+uniform float uSeed;
+
+#define PI 3.14159265359
+#define MAXD 560.0
+
+// --- hash / value noise ---
+float hash(vec2 p){
+  p = fract(p*vec2(123.34, 456.21));
+  p += dot(p, p+45.32);
+  return fract(p.x*p.y);
+}
+float vnoise(vec2 p){
+  vec2 i=floor(p), f=fract(p);
+  vec2 u=f*f*(3.-2.*f);
+  float a=hash(i), b=hash(i+vec2(1,0));
+  float c=hash(i+vec2(0,1)), d=hash(i+vec2(1,1));
+  return mix(mix(a,b,u.x), mix(c,d,u.x), u.y);
+}
+
+// fbm with domain warp; returns height
+float fbm(vec2 p, int oct){
+  float s=0., a=0.5, tot=0.;
+  mat2 m = mat2(1.6,1.2,-1.2,1.6);
+  for(int i=0;i<8;i++){
+    if(i>=oct) break;
+    s += a*vnoise(p);
+    tot += a; a*=0.5; p = m*p;
+  }
+  return s/tot;
+}
+
+// Terrain height field. Larger = mountains. Warp domain for ridges.
+float terrain(vec2 p, int oct){
+  p *= 0.012;
+  // domain warp
+  vec2 w = vec2( fbm(p+vec2(uSeed,0.0),3), fbm(p+vec2(5.2,1.3+uSeed),3) );
+  p += (w-0.5)*1.6;
+  float h = fbm(p, oct);
+  // ridged component for sharp peaks
+  float r = 1.0 - abs(fbm(p*1.9+vec2(7.0),oct-2)-0.5)*2.0;
+  r = r*r;
+  h = mix(h, r, 0.45);
+  // big rolling envelope so there are valleys & ranges
+  float env = fbm(p*0.28+vec2(2.7,9.1),3);
+  h *= mix(0.35, 1.55, env);
+  return h*70.0 - 8.0;
+}
+
+// soft shadow via marching toward sun
+float softShadow(vec3 ro, vec3 rd){
+  float res=1.0, t=2.0;
+  for(int i=0;i<18;i++){
+    vec3 p=ro+rd*t;
+    float h=p.y-terrain(p.xz,5);
+    res=min(res, 9.0*h/t);
+    if(res<0.02) break;
+    t+=clamp(h,1.2,16.0);
+    if(t>180.0) break;
+  }
+  return clamp(res,0.0,1.0);
+}
+
+void main(){
+  vec2 uv = (gl_FragCoord.xy - 0.5*uRes)/uRes.y;
+
+  // camera basis
+  float yaw = uLook.x;
+  float pit = uLook.y;
+  vec3 fwd = normalize(vec3(sin(yaw)*cos(pit), sin(pit), cos(yaw)*cos(pit)));
+  vec3 wup = vec3(0,1,0);
+  vec3 rgt = normalize(cross(fwd,wup));
+  vec3 up  = cross(rgt,fwd);
+  // bank / roll
+  float cb=cos(uBank), sb=sin(uBank);
+  vec3 r2 = rgt*cb + up*sb;
+  vec3 u2 = up*cb - rgt*sb;
+
+  float fov = 1.25 + uSpeed*0.06 + uWarp*0.35;
+  vec3 rd = normalize(uv.x*r2 + uv.y*u2 + fwd*fov);
+
+  vec3 ro = uCam;
+
+  // sun direction
+  vec3 sun = normalize(vec3(-0.55, 0.42, -0.35));
+
+  // ---- raymarch terrain ----
+  float t = 1.0;
+  float hit = -1.0;
+  float dlast = 0.0;
+  // adaptive: low octave for far, high for near via lod by t
+  for(int i=0;i<150;i++){
+    vec3 p = ro + rd*t;
+    int oct = t<60.0?7 : (t<160.0?5 : 3);
+    float h = p.y - terrain(p.xz, oct);
+    if(h < 0.0015*t){ hit=t; break; }
+    dlast=h;
+    t += h*0.46 + t*0.004;     // relaxed + distance-grow for speed
+    if(t>MAXD) break;
+  }
+
+  // sky
+  vec3 col;
+  float sunDotSky = max(dot(rd,sun),0.0);
+  // deep saturated zenith -> warm horizon; keep biome identity strong
+  vec3 zenith = uBiomeFog*0.22 + vec3(0.02,0.03,0.06);
+  vec3 skyHor = uBiomeFog*1.08;
+  float hb = clamp(rd.y*1.5+0.06,0.0,1.0);
+  vec3 sky = mix(skyHor, zenith, pow(hb,0.78));
+  // sun glow + disc
+  sky += uBiomeSun * pow(sunDotSky, 6.0) * 0.6;
+  sky += uBiomeSun * pow(sunDotSky, 240.0) * 3.0;
+  // horizon haze band brightening near skyline
+  sky += uBiomeFog * smoothstep(0.18,0.0,abs(rd.y)) * 0.18;
+  // projected drifting clouds (sky-plane proj — no zenith ring artifact)
+  if(rd.y>0.02){
+    vec2 sp = rd.xz/rd.y;
+    float cl = fbm(sp*0.6 + vec2(uReal*0.015, uReal*0.006), 5);
+    float cmask = smoothstep(0.55,0.82,cl) * smoothstep(0.0,0.25,rd.y) * (1.0-pow(hb,1.5)*0.4);
+    sky = mix(sky, sky*0.6+vec3(0.9,0.92,1.0)*0.5, cmask*0.5);
+  }
+
+  if(hit>0.0){
+    vec3 p = ro + rd*hit;
+    // normal
+    float e = 0.06*hit*0.06 + 0.12;
+    vec2 ex = vec2(e,0.0);
+    float hC = terrain(p.xz,6);
+    vec3 n = normalize(vec3(
+      terrain(p.xz-ex.xy,6)-terrain(p.xz+ex.xy,6),
+      2.0*e,
+      terrain(p.xz-ex.yx,6)-terrain(p.xz+ex.yx,6)));
+
+    // height ratio for coloring
+    float hr = clamp((p.y+12.0)/82.0, 0.0, 1.0);
+    float slope = clamp(1.0 - n.y, 0.0, 1.0);
+
+    // base terrain albedo from biome ramp
+    vec3 lo = uBiomeLo, hi = uBiomeHi;
+    vec3 alb = mix(lo, hi, smoothstep(0.18,0.92,hr));
+    // rock on steep slopes
+    vec3 rock = mix(alb, vec3(0.20,0.19,0.22), smoothstep(0.35,0.7,slope)*0.7);
+    alb = rock;
+    // snow caps on high + flat
+    float snow = smoothstep(0.66,0.86,hr) * smoothstep(0.55,0.2,slope);
+    alb = mix(alb, vec3(0.93,0.95,1.0), snow);
+    // strata banding for richness
+    float band = 0.5+0.5*sin(p.y*0.5 + fbm(p.xz*0.02,3)*8.0);
+    alb *= 0.9 + 0.15*band*(1.0-snow);
+
+    // lighting
+    float dif = clamp(dot(n,sun),0.0,1.0);
+    float sh  = softShadow(p+n*0.6, sun);
+    dif *= sh;
+    float amb = 0.30 + 0.30*clamp(n.y,0.0,1.0);
+    vec3 skyl = uBiomeFog * amb;
+    vec3 sunl = uBiomeSun * dif * 1.35;
+    // rim / fresnel
+    float fres = pow(1.0-max(dot(n,-rd),0.0), 3.0);
+    col = alb*(sunl + skyl);
+    col += uBiomeSun*fres*0.25*sh;
+
+    // specular sparkle on snow
+    vec3 hf = normalize(sun-rd);
+    col += vec3(1.0)*pow(max(dot(n,hf),0.0),60.0)*snow*sh*0.8;
+
+    // distance fog into horizon color (lighter so ridgelines read at depth)
+    float fog = 1.0 - exp(-hit*hit*0.0000072);
+    col = mix(col, sky, fog);
+    // height-based low fog in valleys
+    float lowf = exp(-(p.y+12.0)*0.05) * exp(-hit*0.004);
+    col = mix(col, uBiomeFog*0.8, clamp(lowf*0.5,0.0,0.55));
+  } else {
+    col = sky;
+  }
+
+  // warp burst: radial chroma streaks (punchy but never whites out terrain)
+  if(uWarp>0.001){
+    float rad = length(uv);
+    float streak = sin(atan(uv.y,uv.x)*44.0 + rad*70.0 - uReal*34.0);
+    // streaks live mainly in the outer ring, fade out toward center
+    float ring = smoothstep(0.15,0.9,rad);
+    streak = smoothstep(0.78,1.0,streak)*uWarp*ring;
+    col += uBiomeSun*streak*0.45;
+    // brief speed-line darken at extreme edges, subtle center punch
+    col *= 1.0 + uWarp*0.06;
+  }
+
+  // tone map (ACES-ish) + vignette + grain
+  col *= 1.05;
+  col = (col*(2.51*col+0.03))/(col*(2.43*col+0.59)+0.14);
+  float vig = smoothstep(1.35,0.25,length(uv));
+  col *= 0.55+0.45*vig;
+  float g = (hash(gl_FragCoord.xy+uReal)-0.5)*0.035;
+  col += g;
+  col = pow(clamp(col,0.0,1.0), vec3(0.95));
+  O = vec4(col,1.0);
+}`;
+
+/* ---- gl setup --------------------------------------------------------- */
+function compile(type,src){
+  const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))
+    throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog,compile(gl.VERTEX_SHADER,VERT));
+gl.attachShader(prog,compile(gl.FRAGMENT_SHADER,FRAG));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog,gl.LINK_STATUS))
+  throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+
+const vao=gl.createVertexArray(); gl.bindVertexArray(vao);
+const buf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 3,-1, -1,3]),gl.STATIC_DRAW);
+const pl=gl.getAttribLocation(prog,'p');
+gl.enableVertexAttribArray(pl); gl.vertexAttribPointer(pl,2,gl.FLOAT,false,0,0);
+
+const U={};
+['uRes','uT','uReal','uCam','uLook','uBank','uSpeed','uWarp','uBiome',
+ 'uBiomeLo','uBiomeHi','uBiomeFog','uBiomeSun','uSeed'].forEach(n=>
+  U[n]=gl.getUniformLocation(prog,n));
+
+/* ---- biomes ----------------------------------------------------------- */
+const BIOMES = [
+  { name:'DAWN RIDGE',
+    lo:[0.13,0.06,0.10], hi:[0.62,0.36,0.30],
+    fog:[0.86,0.40,0.40], sun:[1.0,0.66,0.36] },
+  { name:'GLACIER',
+    lo:[0.07,0.12,0.22], hi:[0.55,0.74,0.95],
+    fog:[0.34,0.58,0.86], sun:[0.78,0.90,1.0] },
+  { name:'EMBER WASTE',
+    lo:[0.09,0.03,0.03], hi:[0.58,0.20,0.10],
+    fog:[0.46,0.11,0.08], sun:[1.0,0.50,0.16] },
+  { name:'AURORA MESA',
+    lo:[0.04,0.09,0.12], hi:[0.20,0.58,0.48],
+    fog:[0.08,0.34,0.40], sun:[0.40,1.0,0.70] },
+];
+let biome=0, biomeMix={lo:[...BIOMES[0].lo],hi:[...BIOMES[0].hi],
+  fog:[...BIOMES[0].fog],sun:[...BIOMES[0].sun]};
+function lerpArr(a,b,t){ for(let i=0;i<a.length;i++) a[i]+=(b[i]-a[i])*t; }
+
+/* ---- state ------------------------------------------------------------ */
+const S={
+  t:0, dist:0, alt:34, speed:1.0, targetSpeed:1.0,
+  yaw:0, yawV:0, pitch:-0.075, pitchTarget:-0.075,
+  steer:0, steerTarget:0, bank:0,
+  warp:0, paused:false, seed:Math.random()*40,
+};
+let camX=0, camZ=0;
+
+/* ---- input ------------------------------------------------------------ */
+let dragging=false, lastX=0, lastY=0, pointerX=0, pointerY=0;
+function setSteer(dx,dy){
+  S.steerTarget = Math.max(-1,Math.min(1, S.steerTarget + dx*0.0042));
+  S.pitchTarget = Math.max(-0.32,Math.min(0.34, S.pitchTarget - dy*0.0026));
+}
+cv.addEventListener('pointerdown',e=>{
+  dragging=true; lastX=e.clientX; lastY=e.clientY;
+  cv.setPointerCapture(e.pointerId); cv.style.cursor='grabbing';
+});
+cv.addEventListener('pointermove',e=>{
+  pointerX=e.clientX; pointerY=e.clientY;
+  if(dragging){ setSteer(e.clientX-lastX, e.clientY-lastY);
+    lastX=e.clientX; lastY=e.clientY; }
+});
+function endDrag(){ dragging=false; cv.style.cursor='crosshair'; }
+cv.addEventListener('pointerup',endDrag);
+cv.addEventListener('pointercancel',endDrag);
+cv.addEventListener('pointerleave',()=>{ if(!dragging) pointerX=pointerY=0; });
+
+cv.addEventListener('wheel',e=>{
+  e.preventDefault();
+  S.alt = Math.max(6, Math.min(160, S.alt - e.deltaY*0.05));
+},{passive:false});
+
+cv.addEventListener('click',()=>{ S.warp=1.0; flash('WARP'); });
+
+let pinchD=0;
+cv.addEventListener('touchstart',e=>{
+  if(e.touches.length===2){
+    pinchD=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
+                      e.touches[0].clientY-e.touches[1].clientY);
+  }
+},{passive:false});
+cv.addEventListener('touchmove',e=>{
+  if(e.touches.length===2){
+    const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
+                       e.touches[0].clientY-e.touches[1].clientY);
+    S.alt=Math.max(6,Math.min(160,S.alt+(d-pinchD)*0.18)); pinchD=d;
+    e.preventDefault();
+  }
+},{passive:false});
+
+addEventListener('keydown',e=>{
+  if(e.key===' '){ S.paused=!S.paused; flash(S.paused?'PAUSE':'GO'); e.preventDefault(); }
+  else if(e.key>='1'&&e.key<='4'){ biome=+e.key-1; flash(BIOMES[biome].name); }
+  else if(e.key==='ArrowUp') S.targetSpeed=Math.min(3.2,S.targetSpeed+0.3);
+  else if(e.key==='ArrowDown') S.targetSpeed=Math.max(0.2,S.targetSpeed-0.3);
+});
+
+const flashEl=document.getElementById('flash');
+let flashT=0;
+function flash(txt){ flashEl.textContent=txt; flashEl.style.color='rgba(255,255,255,.9)';
+  flashEl.style.letterSpacing='.5em'; flashT=performance.now(); }
+
+/* ---- resize w/ adaptive scale ----------------------------------------- */
+let scale=1.0; // dynamic resolution scale (0.5..1.0)
+let cssW=0,cssH=0,dpr=1;
+function resize(){
+  dpr=Math.min(devicePixelRatio||1, 2);
+  cssW=innerWidth; cssH=innerHeight;
+  applyRes();
+}
+function applyRes(){
+  const w=Math.max(2,Math.floor(cssW*dpr*scale));
+  const h=Math.max(2,Math.floor(cssH*dpr*scale));
+  if(cv.width!==w||cv.height!==h){
+    cv.width=w; cv.height=h;
+    cv.style.width=cssW+'px'; cv.style.height=cssH+'px';
+    gl.viewport(0,0,w,h);
+  }
+}
+addEventListener('resize',resize); resize();
+
+// defensive: try to recover if context is ever lost (tab switch / GPU reset)
+cv.addEventListener('webglcontextlost',e=>{ e.preventDefault(); },false);
+
+/* ---- HUD -------------------------------------------------------------- */
+const hAlt=document.getElementById('hAlt'),hSpd=document.getElementById('hSpd'),
+      hFps=document.getElementById('hFps');
+let fpsAcc=0,fpsN=0,fpsShown=60,lastHud=0;
+
+/* ---- main loop -------------------------------------------------------- */
+let prev=performance.now(), perfAcc=0, perfN=0, autoT=performance.now();
+function frame(now){
+  let dt=(now-prev)/1000; prev=now;
+  dt=Math.min(dt,0.05);
+  const wall=now*0.001;
+
+  // fps tracking for adaptive res
+  const fps=1/Math.max(dt,1e-4);
+  fpsAcc+=fps; fpsN++;
+  perfAcc+=fps; perfN++;
+  if(perfN>=30){
+    const avg=perfAcc/perfN; perfAcc=0; perfN=0;
+    if(avg<48 && scale>0.6){ scale=Math.max(0.6,scale-0.1); applyRes(); }
+    else if(avg>58 && scale<1.0){ scale=Math.min(1.0,scale+0.06); applyRes(); }
+  }
+
+  if(!S.paused){
+    // speed easing + warp boost
+    S.warp += (0 - S.warp)*Math.min(1,dt*3.4);
+    if(S.warp<0.002)S.warp=0;
+    S.speed += (S.targetSpeed*(1+S.warp*2.4) - S.speed)*Math.min(1,dt*2.2);
+
+    // steering -> yaw rate, with auto-recenter when not dragging
+    S.steer += (S.steerTarget - S.steer)*Math.min(1,dt*5.0);
+    if(!dragging){ S.steerTarget *= (1-Math.min(1,dt*0.8));
+                   S.pitchTarget += (-0.075 - S.pitchTarget)*Math.min(1,dt*0.4); }
+    S.yawV = S.steer*0.9;
+    S.yaw += S.yawV*dt;
+    S.pitch += (S.pitchTarget - S.pitch)*Math.min(1,dt*3.0);
+    // bank into turns
+    const bankTarget = -S.steer*0.55;
+    S.bank += (bankTarget - S.bank)*Math.min(1,dt*4.0);
+
+    // advance flight along heading
+    const adv = S.speed*42.0*dt;
+    S.dist += adv;
+    camX += Math.sin(S.yaw)*adv;
+    camZ += Math.cos(S.yaw)*adv;
+    S.t += dt*S.speed;
+  }
+
+  // terrain-follow: keep camera above ground (sample approx via JS noise-free—use alt + gentle)
+  const camY = groundEstimate(camX,camZ) + S.alt;
+
+  // biome color easing
+  const B=BIOMES[biome], k=Math.min(1,dt*1.5);
+  lerpArr(biomeMix.lo,B.lo,k); lerpArr(biomeMix.hi,B.hi,k);
+  lerpArr(biomeMix.fog,B.fog,k); lerpArr(biomeMix.sun,B.sun,k);
+
+  // mouse parallax look (subtle) when not dragging
+  let lookYaw=S.yaw, lookPit=S.pitch;
+  if(pointerX&&!dragging){
+    lookYaw += ((pointerX/innerWidth)-0.5)*0.18;
+    lookPit += -((pointerY/innerHeight)-0.5)*0.10;
+  }
+
+  // ---- draw ----
+  gl.uniform2f(U.uRes,cv.width,cv.height);
+  gl.uniform1f(U.uT,S.t);
+  gl.uniform1f(U.uReal,wall);
+  gl.uniform3f(U.uCam,camX,camY,camZ);
+  gl.uniform2f(U.uLook,lookYaw,lookPit);
+  gl.uniform1f(U.uBank,S.bank);
+  gl.uniform1f(U.uSpeed,S.speed);
+  gl.uniform1f(U.uWarp,S.warp);
+  gl.uniform1f(U.uBiome,biome);
+  gl.uniform3fv(U.uBiomeLo,biomeMix.lo);
+  gl.uniform3fv(U.uBiomeHi,biomeMix.hi);
+  gl.uniform3fv(U.uBiomeFog,biomeMix.fog);
+  gl.uniform3fv(U.uBiomeSun,biomeMix.sun);
+  gl.uniform1f(U.uSeed,S.seed);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+
+  // HUD update ~5/s
+  if(now-lastHud>200){
+    fpsShown=fpsAcc/Math.max(1,fpsN); fpsAcc=0;fpsN=0; lastHud=now;
+    hAlt.textContent=Math.round(S.alt)+'m';
+    hSpd.textContent=(S.speed*120).toFixed(0)+'kn';
+    hFps.textContent=fpsShown.toFixed(0);
+  }
+  // flash fade
+  if(flashT){ const e=(now-flashT)/900;
+    if(e>1){ flashEl.style.color='rgba(255,255,255,0)'; flashEl.style.letterSpacing='1.1em'; flashT=0; } }
+
+  requestAnimationFrame(frame);
+}
+
+/* JS-side cheap ground estimate so camera floats over ranges without
+   reading the GPU. A coarse multi-octave value noise matching shape. */
+function jhash(x,z){ let h=Math.sin(x*127.1+z*311.7+S.seed*13.0)*43758.5453;
+  return h-Math.floor(h); }
+function jvnoise(x,z){
+  const ix=Math.floor(x),iz=Math.floor(z),fx=x-ix,fz=z-iz;
+  const ux=fx*fx*(3-2*fx),uz=fz*fz*(3-2*fz);
+  const a=jhash(ix,iz),b=jhash(ix+1,iz),c=jhash(ix,iz+1),d=jhash(ix+1,iz+1);
+  return (a*(1-ux)+b*ux)*(1-uz)+(c*(1-ux)+d*ux)*uz;
+}
+function groundEstimate(wx,wz){
+  let p=[wx*0.012,wz*0.012], s=0,a=0.5,tot=0;
+  for(let i=0;i<5;i++){ s+=a*jvnoise(p[0],p[1]); tot+=a; a*=0.5;
+    const nx=p[0]*1.6+p[1]*1.2, nz=-p[0]*1.2+p[1]*1.6; p=[nx,nz]; }
+  let h=s/tot;
+  let env=jvnoise(wx*0.012*0.28+2.7, wz*0.012*0.28+9.1);
+  h*= (0.35+(1.55-0.35)*env);
+  return h*70.0-8.0;
+}
+
+requestAnimationFrame(frame);
+
+// gentle auto-drift in steer for life even with no input
+setInterval(()=>{ if(!dragging&&!S.paused)
+  S.steerTarget += (Math.random()-0.5)*0.10; }, 2600);
+})();
+</script>
+</body>
+</html>

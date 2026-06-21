@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Aether Wallet — Liquid Glass</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,500&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --liquid: 22;          /* blur px, driven by slider */
+    --sat: 1.5;            /* saturate, driven by slider */
+    --edge: 0.42;          /* border alpha, driven by slider */
+    --hl: 0.30;            /* inset top highlight alpha */
+    --glass-bg: rgba(255,255,255,0.055);
+    --ink: #f4f6fb;
+    --muted: rgba(244,246,251,0.62);
+    --faint: rgba(244,246,251,0.40);
+    --accent: #7c93ff;
+    --up: #4fe0a3;
+    --down: #ff6a7d;
+    --mono: "JetBrains Mono", ui-monospace, monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: #000;
+    color: var(--ink);
+    font-family: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    display: grid;
+    place-items: center;
+    padding: 40px 20px;
+    overflow-x: hidden;
+    position: relative;
+  }
+
+  /* ambient deep-space backdrop: subtle nebula blobs on pure black */
+  .ambient {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    overflow: hidden;
+    pointer-events: none;
+  }
+  .ambient::before,
+  .ambient::after {
+    content: "";
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(90px);
+    opacity: 0.55;
+  }
+  .ambient::before {
+    width: 540px; height: 540px;
+    left: -120px; top: -80px;
+    background: radial-gradient(circle at 30% 30%, #2a2f6b, transparent 70%);
+  }
+  .ambient::after {
+    width: 620px; height: 620px;
+    right: -160px; bottom: -140px;
+    background: radial-gradient(circle at 60% 40%, #143b3a, transparent 70%);
+  }
+  /* faint moving aurora streak */
+  .aurora {
+    position: fixed;
+    inset: -20%;
+    z-index: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(ellipse 50% 30% at 50% 20%, rgba(124,147,255,0.10), transparent 60%);
+    mix-blend-mode: screen;
+  }
+
+  /* ---------- the card stage (for mouse-follow glow + tilt) ---------- */
+  .stage {
+    position: relative;
+    z-index: 2;
+    perspective: 1400px;
+    width: min(420px, 100%);
+  }
+
+  /* ---------- main wallet glass card ---------- */
+  .card {
+    position: relative;
+    width: 100%;
+    padding: 26px 24px 22px;
+    border-radius: 30px;
+    background: var(--glass-bg);
+    border: 1px solid rgba(255,255,255,var(--edge));
+    box-shadow:
+      0 40px 80px -20px rgba(0,0,0,0.75),
+      0 12px 30px rgba(0,0,0,0.45),
+      inset 0 1px 0 rgba(255,255,255,var(--hl)),
+      inset 0 0 0 1px rgba(255,255,255,0.03),
+      inset 0 -20px 40px -24px rgba(0,0,0,0.6);
+    backdrop-filter: blur(calc(var(--liquid) * 1px)) saturate(var(--sat));
+    -webkit-backdrop-filter: blur(calc(var(--liquid) * 1px)) saturate(var(--sat));
+    transform-style: preserve-3d;
+    transition: transform 0.25s cubic-bezier(.2,.7,.2,1), box-shadow 0.25s ease;
+    will-change: transform;
+  }
+  /* mouse-follow specular glow */
+  .card .glow {
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background: radial-gradient(
+      220px circle at var(--mx, 50%) var(--my, 0%),
+      rgba(255,255,255,0.16),
+      rgba(255,255,255,0.04) 40%,
+      transparent 70%);
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    z-index: 1;
+  }
+  .stage:hover .card .glow { opacity: 1; }
+  /* top sheen line */
+  .card::before {
+    content: "";
+    position: absolute;
+    inset: 1px 1px auto 1px;
+    height: 40%;
+    border-radius: 29px 29px 60% 60% / 29px 29px 18% 18%;
+    background: linear-gradient(to bottom, rgba(255,255,255,0.10), transparent);
+    pointer-events: none;
+    z-index: 0;
+  }
+  .card > * { position: relative; z-index: 2; }
+
+  /* ---------- header ---------- */
+  .head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 22px;
+  }
+  .brand { display: flex; align-items: center; gap: 11px; }
+  .logo {
+    width: 38px; height: 38px;
+    border-radius: 12px;
+    display: grid; place-items: center;
+    background: linear-gradient(145deg, rgba(124,147,255,0.85), rgba(79,224,163,0.7));
+    box-shadow:
+      0 6px 18px rgba(124,147,255,0.4),
+      inset 0 1px 0 rgba(255,255,255,0.55);
+  }
+  .logo svg { width: 20px; height: 20px; display: block; }
+  .brand .name { font-weight: 800; font-size: 16px; letter-spacing: 0.2px; }
+  .brand .net { font-size: 11px; color: var(--muted); font-weight: 600; }
+
+  .chip {
+    display: inline-flex; align-items: center; gap: 7px;
+    height: 30px; padding: 0 13px;
+    border-radius: 999px;
+    border: 1px solid rgba(255,255,255,0.22);
+    background: rgba(255,255,255,0.05);
+    font-size: 12px; font-weight: 700;
+    color: var(--ink);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.18);
+  }
+  .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--up);
+    box-shadow: 0 0 8px var(--up);
+  }
+
+  /* ---------- balance hero ---------- */
+  .balance-label {
+    font-size: 12px; font-weight: 700; letter-spacing: 1.4px;
+    text-transform: uppercase; color: var(--faint);
+    margin-bottom: 6px;
+  }
+  .balance {
+    display: flex; align-items: flex-start; gap: 8px;
+    font-weight: 800; line-height: 1;
+    margin-bottom: 8px;
+  }
+  .balance .cur { font-size: 22px; margin-top: 6px; color: var(--muted); }
+  .balance .big { font-size: 46px; letter-spacing: -1.5px; }
+  .balance .frac { font-size: 26px; color: var(--muted); margin-top: 4px; }
+  .balance-sub { display: flex; align-items: center; gap: 10px; margin-bottom: 22px; }
+  .pnl {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 13px; font-weight: 700;
+    padding: 4px 10px; border-radius: 999px;
+    color: var(--up);
+    background: rgba(79,224,163,0.12);
+    border: 1px solid rgba(79,224,163,0.28);
+  }
+  .pnl svg { width: 12px; height: 12px; }
+  .balance-sub .span { font-size: 12px; color: var(--faint); font-weight: 600; }
+
+  /* ---------- action row ---------- */
+  .actions { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; margin-bottom: 22px; }
+  .act {
+    border: 1px solid rgba(255,255,255,0.20);
+    background: rgba(255,255,255,0.05);
+    border-radius: 16px;
+    padding: 11px 0 9px;
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    cursor: pointer;
+    color: var(--ink);
+    font: inherit;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.16);
+    transition: transform .14s ease, background .14s ease, border-color .14s ease;
+  }
+  .act:hover { background: rgba(255,255,255,0.11); transform: translateY(-2px); border-color: rgba(255,255,255,0.34); }
+  .act:active { transform: translateY(0); }
+  .act svg { width: 18px; height: 18px; }
+  .act span { font-size: 11px; font-weight: 700; letter-spacing: 0.2px; }
+
+  /* ---------- assets ---------- */
+  .sec-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-bottom: 11px;
+  }
+  .sec-head .t { font-size: 13px; font-weight: 800; letter-spacing: 0.3px; }
+  .sec-head .a { font-size: 12px; font-weight: 700; color: var(--accent); cursor: pointer; }
+
+  .assets { display: flex; flex-direction: column; gap: 9px; }
+  .asset {
+    display: grid;
+    grid-template-columns: 38px 1fr auto auto;
+    align-items: center;
+    gap: 12px;
+    padding: 11px 13px;
+    border-radius: 17px;
+    border: 1px solid rgba(255,255,255,0.13);
+    background: rgba(255,255,255,0.04);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.12),
+      0 6px 16px -10px rgba(0,0,0,0.7);
+    transition: transform .14s ease, background .14s ease, border-color .14s ease;
+  }
+  .asset:hover { background: rgba(255,255,255,0.075); border-color: rgba(255,255,255,0.24); transform: translateX(2px); }
+  .coin {
+    width: 38px; height: 38px; border-radius: 50%;
+    display: grid; place-items: center;
+    font-weight: 800; font-size: 14px; color: #0b0d16;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.55), 0 4px 12px rgba(0,0,0,0.4);
+  }
+  .coin.btc { background: linear-gradient(145deg,#ffd28a,#f7931a); }
+  .coin.eth { background: linear-gradient(145deg,#a7b6ff,#627eea); color:#fff; }
+  .coin.sol { background: linear-gradient(145deg,#9af5d5,#14f195); }
+  .asset .meta { min-width: 0; }
+  .asset .nm { font-size: 14px; font-weight: 700; }
+  .asset .qty { font-size: 11.5px; color: var(--faint); font-weight: 600; font-family: var(--mono); }
+
+  /* sparkline */
+  .spark { width: 60px; height: 26px; display: block; opacity: 0.9; }
+
+  .asset .val { text-align: right; }
+  .asset .usd { font-size: 14px; font-weight: 700; font-family: var(--mono); }
+  .asset .chg { font-size: 11.5px; font-weight: 700; font-family: var(--mono); }
+  .chg.up { color: var(--up); }
+  .chg.down { color: var(--down); }
+
+  /* ---------- footer addr ---------- */
+  .foot {
+    margin-top: 18px;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 14px;
+    border-radius: 16px;
+    border: 1px solid rgba(255,255,255,0.13);
+    background: rgba(255,255,255,0.035);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.10);
+  }
+  .addr { display:flex; align-items:center; gap:9px; min-width:0; }
+  .addr .qr {
+    width: 30px; height: 30px; border-radius: 8px;
+    background:
+      conic-gradient(#0000 0 90deg,#fff3 0 180deg,#0000 0 270deg,#fff3 0) 0 0 / 10px 10px,
+      rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.2);
+    flex: 0 0 auto;
+  }
+  .addr .a { font-family: var(--mono); font-size: 12.5px; font-weight: 600; color: var(--muted); white-space: nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .copy {
+    flex: 0 0 auto;
+    display: inline-flex; align-items:center; gap:6px;
+    height: 30px; padding: 0 12px;
+    border-radius: 999px;
+    border: 1px solid rgba(255,255,255,0.22);
+    background: rgba(255,255,255,0.06);
+    color: var(--ink); font: inherit; font-size: 12px; font-weight: 700;
+    cursor: pointer;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.16);
+    transition: background .14s ease;
+  }
+  .copy:hover { background: rgba(255,255,255,0.14); }
+  .copy svg { width: 13px; height: 13px; }
+
+  /* ---------- liquidness control (floating, glass) ---------- */
+  .control {
+    position: relative;
+    z-index: 2;
+    margin-top: 22px;
+    width: min(420px, 100%);
+    padding: 16px 20px 18px;
+    border-radius: 22px;
+    background: rgba(255,255,255,0.045);
+    border: 1px solid rgba(255,255,255,0.18);
+    box-shadow:
+      0 24px 50px -24px rgba(0,0,0,0.7),
+      inset 0 1px 0 rgba(255,255,255,0.22);
+    backdrop-filter: blur(20px) saturate(1.3);
+    -webkit-backdrop-filter: blur(20px) saturate(1.3);
+  }
+  .control .ch {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-bottom: 10px;
+  }
+  .control .ch .t { font-size: 12.5px; font-weight: 800; letter-spacing: 0.4px; }
+  .control .ch .v { font-size: 12px; font-weight: 700; color: var(--accent); font-family: var(--mono); }
+  input[type="range"] {
+    -webkit-appearance: none; appearance: none;
+    width: 100%; height: 22px; background: transparent; cursor: pointer; margin: 0;
+  }
+  input[type="range"]::-webkit-slider-runnable-track {
+    height: 5px; border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent), rgba(255,255,255,0.18));
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 20px; height: 20px; border-radius: 50%;
+    background: #fff; margin-top: -7.5px;
+    box-shadow: 0 3px 12px rgba(0,0,0,0.5), 0 0 0 4px rgba(124,147,255,0.25);
+    border: 0;
+  }
+  input[type="range"]::-moz-range-track { height: 5px; border-radius: 999px; background: rgba(255,255,255,0.3); }
+  input[type="range"]::-moz-range-thumb {
+    width: 20px; height: 20px; border-radius: 50%; background: #fff; border: 0;
+    box-shadow: 0 3px 12px rgba(0,0,0,0.5), 0 0 0 4px rgba(124,147,255,0.25);
+  }
+  .hint { margin-top: 8px; font-size: 11px; color: var(--faint); font-weight: 600; }
+
+  /* ---------- responsive (mobile 390) ---------- */
+  @media (max-width: 440px) {
+    body { padding: 22px 14px; }
+    .balance .big { font-size: 40px; }
+    .card { padding: 22px 18px 18px; border-radius: 26px; }
+    .act span { font-size: 10px; }
+    .addr .a { font-size: 11px; }
+  }
+
+  .toast {
+    position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%) translateY(20px);
+    z-index: 30;
+    padding: 11px 18px; border-radius: 999px;
+    background: rgba(255,255,255,0.10);
+    border: 1px solid rgba(255,255,255,0.3);
+    box-shadow: 0 12px 30px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.3);
+    backdrop-filter: blur(16px) saturate(1.4);
+    -webkit-backdrop-filter: blur(16px) saturate(1.4);
+    font-size: 13px; font-weight: 700; color: #fff;
+    opacity: 0; pointer-events: none;
+    transition: opacity .25s ease, transform .25s ease;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+  <div class="ambient"></div>
+  <div class="aurora"></div>
+
+  <div class="stage" id="stage">
+    <div class="card" id="card">
+      <div class="glow"></div>
+
+      <!-- header -->
+      <div class="head">
+        <div class="brand">
+          <div class="logo">
+            <svg viewBox="0 0 24 24" fill="none"><path d="M12 2 4 7v10l8 5 8-5V7l-8-5Z" fill="#0b0d16" opacity=".25"/><path d="M12 2v20M12 2 4 7m8-5 8 5M4 17l8-5 8 5" stroke="#0b0d16" stroke-width="1.6" stroke-linejoin="round"/></svg>
+          </div>
+          <div>
+            <div class="name">Aether Wallet</div>
+            <div class="net">Ethereum · Mainnet</div>
+          </div>
+        </div>
+        <span class="chip"><span class="dot"></span>Connected</span>
+      </div>
+
+      <!-- balance -->
+      <div class="balance-label">Total Balance</div>
+      <div class="balance">
+        <span class="cur">$</span>
+        <span class="big">48,217</span>
+        <span class="frac">.93</span>
+      </div>
+      <div class="balance-sub">
+        <span class="pnl">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M5 15l7-7 7 7" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          +4.82% · $2,218
+        </span>
+        <span class="span">past 24h</span>
+      </div>
+
+      <!-- actions -->
+      <div class="actions">
+        <button class="act" data-toast="Send 화면 (목)">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M12 19V5m0 0-6 6m6-6 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>Send</span>
+        </button>
+        <button class="act" data-toast="Receive 화면 (목)">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M12 5v14m0 0 6-6m-6 6-6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>Receive</span>
+        </button>
+        <button class="act" data-toast="Swap 화면 (목)">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M7 8h11l-3-3m3 11H7l3 3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>Swap</span>
+        </button>
+        <button class="act" data-toast="Buy 화면 (목)">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M12 6v12M6 12h12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>Buy</span>
+        </button>
+      </div>
+
+      <!-- assets -->
+      <div class="sec-head">
+        <span class="t">Assets</span>
+        <span class="a" data-toast="전체 자산 보기 (목)">See all</span>
+      </div>
+      <div class="assets">
+        <div class="asset">
+          <div class="coin btc">฿</div>
+          <div class="meta"><div class="nm">Bitcoin</div><div class="qty">0.4129 BTC</div></div>
+          <svg class="spark" viewBox="0 0 60 26" preserveAspectRatio="none" data-up="1"></svg>
+          <div class="val"><div class="usd">$27,940</div><div class="chg up">+3.1%</div></div>
+        </div>
+        <div class="asset">
+          <div class="coin eth">Ξ</div>
+          <div class="meta"><div class="nm">Ethereum</div><div class="qty">5.82 ETH</div></div>
+          <svg class="spark" viewBox="0 0 60 26" preserveAspectRatio="none" data-up="1"></svg>
+          <div class="val"><div class="usd">$16,431</div><div class="chg up">+1.8%</div></div>
+        </div>
+        <div class="asset">
+          <div class="coin sol">◎</div>
+          <div class="meta"><div class="nm">Solana</div><div class="qty">24.5 SOL</div></div>
+          <svg class="spark" viewBox="0 0 60 26" preserveAspectRatio="none" data-up="0"></svg>
+          <div class="val"><div class="usd">$3,846</div><div class="chg down">-0.9%</div></div>
+        </div>
+      </div>
+
+      <!-- footer address -->
+      <div class="foot">
+        <div class="addr">
+          <div class="qr"></div>
+          <div class="a">0x7C3a…9fE2</div>
+        </div>
+        <button class="copy" id="copyBtn">
+          <svg viewBox="0 0 24 24" fill="none"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15V6a2 2 0 0 1 2-2h9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          Copy
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- liquidness control -->
+  <div class="control">
+    <div class="ch">
+      <span class="t">Card liquidness</span>
+      <span class="v" id="liqVal">44%</span>
+    </div>
+    <input type="range" id="liq" min="0" max="100" value="44" />
+    <div class="hint">유리의 흐림·채도·가장자리 광택을 실시간으로 조절합니다.</div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ---- sparklines (deterministic mock 7d series) ---- */
+  function drawSpark(svg) {
+    var up = svg.getAttribute("data-up") === "1";
+    var seed = Array.prototype.indexOf.call(svg.parentNode.parentNode.children, svg.parentNode) || 1;
+    var n = 18, pts = [], v = 13;
+    for (var i = 0; i < n; i++) {
+      // pseudo-random but stable
+      var r = Math.sin(i * (1.7 + seed) + seed * 2.1) * 3.4
+            + Math.sin(i * 0.6) * 1.6;
+      v += r * 0.55 + (up ? 0.35 : -0.30);
+      v = Math.max(3, Math.min(23, v));
+      pts.push([ (i / (n - 1)) * 60, 26 - v ]);
+    }
+    var d = pts.map(function (p, i) { return (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1); }).join(" ");
+    var color = up ? "var(--up)" : "var(--down)";
+    var gid = "g" + seed + "_" + (up ? "u" : "d");
+    svg.innerHTML =
+      '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0" stop-color="' + (up ? "#4fe0a3" : "#ff6a7d") + '" stop-opacity="0.35"/>' +
+      '<stop offset="1" stop-color="' + (up ? "#4fe0a3" : "#ff6a7d") + '" stop-opacity="0"/></linearGradient></defs>' +
+      '<path d="' + d + ' L60 26 L0 26 Z" fill="url(#' + gid + ')"/>' +
+      '<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>';
+  }
+  document.querySelectorAll(".spark").forEach(drawSpark);
+
+  /* ---- mouse-follow glow + 3D tilt ---- */
+  var stage = document.getElementById("stage");
+  var card = document.getElementById("card");
+  function onMove(e) {
+    var r = card.getBoundingClientRect();
+    var px = (e.clientX - r.left) / r.width;   // 0..1
+    var py = (e.clientY - r.top) / r.height;   // 0..1
+    card.style.setProperty("--mx", (px * 100) + "%");
+    card.style.setProperty("--my", (py * 100) + "%");
+    var rx = (0.5 - py) * 9;   // tilt deg
+    var ry = (px - 0.5) * 11;
+    card.style.transform = "rotateX(" + rx.toFixed(2) + "deg) rotateY(" + ry.toFixed(2) + "deg)";
+  }
+  function reset() { card.style.transform = "rotateX(0) rotateY(0)"; }
+  stage.addEventListener("pointermove", onMove);
+  stage.addEventListener("pointerleave", reset);
+
+  /* ---- liquidness slider ---- */
+  var liq = document.getElementById("liq");
+  var liqVal = document.getElementById("liqVal");
+  var root = document.documentElement;
+  function applyLiquid() {
+    var t = liq.value / 100;                 // 0..1
+    var blur = (6 + t * 36).toFixed(1);      // 6 .. 42 px
+    var sat  = (1.0 + t * 1.1).toFixed(2);   // 1.0 .. 2.1
+    var edge = (0.22 + t * 0.45).toFixed(3); // border alpha
+    var hl   = (0.14 + t * 0.34).toFixed(3); // inset highlight
+    root.style.setProperty("--liquid", blur);
+    root.style.setProperty("--sat", sat);
+    root.style.setProperty("--edge", edge);
+    root.style.setProperty("--hl", hl);
+    liqVal.textContent = liq.value + "%";
+  }
+  liq.addEventListener("input", applyLiquid);
+  applyLiquid();
+
+  /* ---- toast for mock actions / copy ---- */
+  var toast = document.getElementById("toast");
+  var toastT;
+  function showToast(msg) {
+    toast.textContent = msg;
+    toast.classList.add("show");
+    clearTimeout(toastT);
+    toastT = setTimeout(function () { toast.classList.remove("show"); }, 1600);
+  }
+  document.querySelectorAll("[data-toast]").forEach(function (el) {
+    el.addEventListener("click", function () { showToast(el.getAttribute("data-toast")); });
+  });
+  document.getElementById("copyBtn").addEventListener("click", function () {
+    var addr = "0x7C3a4B1d2eF8a09C7b5D3a1f4E2c8B6a90d9fE2";
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(addr).then(function(){ showToast("주소 복사됨 ✓"); }, function(){ showToast("주소 복사됨 ✓"); });
+    } else { showToast("주소 복사됨 ✓"); }
+  });
+})();
+</script>
+</body>
+</html>

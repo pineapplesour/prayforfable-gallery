@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>湖の白鳥</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400&family=Zen+Maru+Gothic:wght@300&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#3b4642;}
+  #scene{position:fixed;inset:0;width:100%;height:100%;display:block;}
+  #cap{
+    position:fixed;left:50%;bottom:26px;transform:translateX(-50%);
+    color:rgba(232,236,231,.62);
+    font:300 11px/1.6 "JetBrains Mono",ui-monospace,monospace;
+    letter-spacing:.34em;
+    background:rgba(28,38,34,.30);
+    padding:7px 22px;border-radius:99px;
+    backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px);
+    pointer-events:none;white-space:nowrap;user-select:none;
+    transition:opacity 2s ease;
+  }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<div id="cap">湖をただよう ─ 白鳥と水のしずく</div>
+<script>
+'use strict';
+(()=>{
+const TAU=Math.PI*2;
+const cv=document.getElementById('scene');
+const cap=document.getElementById('cap');
+const ctx=cv.getContext('2d',{alpha:false});
+
+let W=0,H=0,DPR=1;
+// ----- offscreen layers -----
+const bottom=document.createElement('canvas'),bx=bottom.getContext('2d'); // muddy lake bottom (static, painterly)
+const grain=document.createElement('canvas'),gx=grain.getContext('2d');   // fine noise tile
+const work=document.createElement('canvas'),wx=work.getContext('2d');     // composite live layer (for grain blend)
+
+const rnd=(a,b)=>a+Math.random()*(b-a);
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const lerp=(a,b,t)=>a+(b-a)*t;
+
+/* =========================================================
+   LAKE BOTTOM — painterly murky water, seen from above.
+   Muted teal/olive radial base + soft depth blobs + silt.
+   ========================================================= */
+function paintBottom(){
+  const w=bottom.width,h=bottom.height,c=bx;
+  c.setTransform(1,0,0,1,0,0);
+  c.clearRect(0,0,w,h);
+  // base radial: lighter shallow center, darker deep edges
+  const g=c.createRadialGradient(w*0.46,h*0.40,0,w*0.5,h*0.52,Math.max(w,h)*0.82);
+  g.addColorStop(0.00,'#5c6b5f');
+  g.addColorStop(0.42,'#49564c');
+  g.addColorStop(0.74,'#3a463e');
+  g.addColorStop(1.00,'#2b352f');
+  c.fillStyle=g;c.fillRect(0,0,w,h);
+
+  // large soft depth blobs (cloudy underwater masses)
+  for(let i=0;i<14;i++){
+    const x=rnd(0,w),y=rnd(0,h),r=rnd(w*0.10,w*0.34);
+    const bg=c.createRadialGradient(x,y,0,x,y,r);
+    const dark=Math.random()<0.55;
+    if(dark){
+      bg.addColorStop(0,'rgba(28,40,32,0.30)');
+      bg.addColorStop(1,'rgba(28,40,32,0)');
+    }else{
+      bg.addColorStop(0,'rgba(120,128,108,0.16)');
+      bg.addColorStop(1,'rgba(120,128,108,0)');
+    }
+    c.fillStyle=bg;c.beginPath();c.arc(x,y,r,0,TAU);c.fill();
+  }
+  // faint mossy strands / sediment streaks
+  c.lineCap='round';
+  for(let i=0;i<26;i++){
+    const x=rnd(0,w),y=rnd(0,h),len=rnd(w*0.04,w*0.18),ang=rnd(0,TAU);
+    c.strokeStyle='rgba(70,86,64,'+rnd(0.04,0.12).toFixed(3)+')';
+    c.lineWidth=rnd(2,7);
+    c.beginPath();
+    let px=x,py=y;c.moveTo(px,py);
+    const seg=6;
+    for(let s=1;s<=seg;s++){
+      px+=Math.cos(ang)*len/seg+rnd(-6,6);
+      py+=Math.sin(ang)*len/seg+rnd(-6,6);
+      c.lineTo(px,py);
+    }
+    c.stroke();
+  }
+  // fine silt speckle
+  const sp=Math.round(w*h/2600);
+  for(let i=0;i<sp;i++){
+    const x=rnd(0,w),y=rnd(0,h),r=rnd(0.4,1.8);
+    c.fillStyle=Math.random()<0.5
+      ?'rgba(214,222,196,'+rnd(0,0.06).toFixed(3)+')'
+      :'rgba(18,26,18,'+rnd(0,0.10).toFixed(3)+')';
+    c.beginPath();c.arc(x,y,r,0,TAU);c.fill();
+  }
+  // gentle vignette baked in
+  const vg=c.createRadialGradient(w*0.5,h*0.5,Math.min(w,h)*0.30,w*0.5,h*0.5,Math.max(w,h)*0.72);
+  vg.addColorStop(0,'rgba(0,0,0,0)');
+  vg.addColorStop(1,'rgba(14,20,16,0.42)');
+  c.fillStyle=vg;c.fillRect(0,0,w,h);
+}
+
+/* =========================================================
+   GRAIN — static fine noise tile, blended each frame.
+   ========================================================= */
+function makeGrain(){
+  const s=200;grain.width=s;grain.height=s;
+  const id=gx.createImageData(s,s);const d=id.data;
+  for(let i=0;i<d.length;i+=4){
+    const v=128+(Math.random()*2-1)*36;
+    d[i]=d[i+1]=d[i+2]=v;d[i+3]=15; // low alpha
+  }
+  gx.putImageData(id,0,0);
+}
+
+/* =========================================================
+   FLOATING WATER DISCS — translucent round droplet-discs
+   drifting slowly across the surface, with depth blur.
+   ========================================================= */
+let discs=[];
+function makeDiscs(){
+  discs=[];
+  const n=clamp(Math.round(W*H/95000),9,20);
+  for(let i=0;i<n;i++){
+    const depth=Math.random();           // 0 far(blurred,small,dim) .. 1 near
+    discs.push({
+      x:rnd(-0.1,1.1)*W, y:rnd(-0.1,1.1)*H,
+      r:lerp(W*0.018,W*0.085,depth)*rnd(0.7,1.25),
+      depth,
+      vx:rnd(-1,1)*lerp(2,9,depth), vy:rnd(-1,1)*lerp(2,9,depth),
+      ph:rnd(0,TAU), pr:rnd(0.4,1.0)
+    });
+  }
+}
+function drawDisc(d,t){
+  const a=lerp(0.05,0.20,d.depth);
+  const blur=lerp(7,0.6,d.depth);
+  const wob=Math.sin(t*d.pr+d.ph)*d.r*0.04;
+  const rr=d.r+wob;
+  ctx.save();
+  ctx.filter='blur('+blur.toFixed(2)+'px)';
+  // ring + soft fill — looks like a bubble disc / water lens
+  const g=ctx.createRadialGradient(d.x-rr*0.3,d.y-rr*0.3,rr*0.1,d.x,d.y,rr);
+  g.addColorStop(0,'rgba(226,234,224,'+(a*0.9).toFixed(3)+')');
+  g.addColorStop(0.55,'rgba(170,184,170,'+(a*0.35).toFixed(3)+')');
+  g.addColorStop(0.88,'rgba(150,165,150,'+(a*0.10).toFixed(3)+')');
+  g.addColorStop(1,'rgba(150,165,150,0)');
+  ctx.fillStyle=g;
+  ctx.beginPath();ctx.arc(d.x,d.y,rr,0,TAU);ctx.fill();
+  // bright rim arc
+  ctx.strokeStyle='rgba(235,242,233,'+(a*1.1).toFixed(3)+')';
+  ctx.lineWidth=Math.max(0.6,rr*0.035);
+  ctx.beginPath();ctx.arc(d.x,d.y,rr*0.94,Math.PI*1.05,Math.PI*1.9);ctx.stroke();
+  // tiny specular highlight
+  ctx.fillStyle='rgba(245,250,242,'+(a*1.3).toFixed(3)+')';
+  ctx.beginPath();ctx.arc(d.x-rr*0.34,d.y-rr*0.34,rr*0.12,0,TAU);ctx.fill();
+  ctx.restore();
+}
+function updateDisc(d,dt){
+  d.x+=d.vx*dt; d.y+=d.vy*dt;
+  const m=d.r+40;
+  if(d.x<-m)d.x=W+m; else if(d.x>W+m)d.x=-m;
+  if(d.y<-m)d.y=H+m; else if(d.y>H+m)d.y=-m;
+}
+
+/* =========================================================
+   SWANS — seen from above. Body ellipse, curved S-neck,
+   small head, slowly beating wings. Painterly white with
+   soft shadow on the water. Each swims a calm wandering path.
+   ========================================================= */
+let swans=[];
+function makeSwan(scale,depth){
+  return {
+    x:rnd(0.2,0.8)*W, y:rnd(0.2,0.8)*H,
+    a:rnd(0,TAU),
+    scale, depth,
+    speed:rnd(10,20)*scale, spT:rnd(12,22)*scale,
+    turn:0, changeT:rnd(1,4),
+    wing:rnd(0,TAU), wingSp:rnd(0.7,1.1),
+    neckPh:rnd(0,TAU),
+    glide:rnd(0,TAU)
+  };
+}
+function makeSwans(){
+  swans=[
+    makeSwan(1.00,0.95),
+    makeSwan(0.82,0.70),
+    makeSwan(0.62,0.42),
+    makeSwan(0.48,0.22)
+  ];
+}
+const angDiff=(a,b)=>{let d=a-b;while(d>Math.PI)d-=TAU;while(d<-Math.PI)d+=TAU;return d;};
+
+function updateSwan(s,dt){
+  s.changeT-=dt;
+  if(s.changeT<=0){
+    s.spT=rnd(8,22)*s.scale;
+    s.changeT=rnd(2.5,6);
+  }
+  // gentle meander
+  s.turn+=(Math.random()-0.5)*1.4*dt;
+  s.turn*=Math.exp(-dt*1.1);
+  let ta=s.a+s.turn;
+  // steer away from edges, back toward center softly
+  const L=180*s.scale;
+  if(s.x<L||s.y<L||s.x>W-L||s.y>H-L){
+    const toC=Math.atan2(H*0.5-s.y,W*0.5-s.x);
+    ta=toC;
+  }
+  // avoid other swans a little
+  for(const o of swans){
+    if(o===s)continue;
+    const dx=s.x-o.x,dy=s.y-o.y,dd=dx*dx+dy*dy;
+    const rad=(150*(s.scale+o.scale));
+    if(dd<rad*rad){ta=Math.atan2(dy,dx);break;}
+  }
+  const da=angDiff(ta,s.a);
+  const mt=0.7*dt;
+  s.a+=clamp(da,-mt,mt);
+  s.speed+=(s.spT-s.speed)*Math.min(1,dt*1.2);
+  s.x+=Math.cos(s.a)*s.speed*dt;
+  s.y+=Math.sin(s.a)*s.speed*dt;
+  s.x=clamp(s.x,-60,W+60);
+  s.y=clamp(s.y,-60,H+60);
+  s.wing+=dt*s.wingSp;
+  s.neckPh+=dt*0.6;
+  s.glide+=dt;
+  // occasional wake ripple behind
+  if(Math.random()<dt*1.6){
+    addWake(s.x-Math.cos(s.a)*70*s.scale, s.y-Math.sin(s.a)*70*s.scale, 8*s.scale, 0.14*s.depth);
+  }
+}
+
+// draw one swan in local space (heading +x)
+function drawSwan(s,t){
+  const sc=s.scale;
+  const blur=lerp(4.5,0,s.depth);
+  const op=lerp(0.55,1.0,s.depth);
+  const wingBeat=(Math.sin(s.wing)*0.5+0.5); // 0..1
+  ctx.save();
+  ctx.globalAlpha=op;
+  if(blur>0.15)ctx.filter='blur('+blur.toFixed(2)+'px)';
+
+  // --- soft shadow on water (offset) ---
+  ctx.save();
+  ctx.translate(s.x+10*sc,s.y+14*sc);
+  ctx.rotate(s.a);
+  ctx.fillStyle='rgba(18,26,20,0.20)';
+  ctx.beginPath();
+  ctx.ellipse(-8*sc,0,58*sc,30*sc,0,0,TAU);
+  ctx.fill();
+  ctx.restore();
+
+  ctx.translate(s.x,s.y);
+  ctx.rotate(s.a);
+
+  // body palette (painterly off-white, muted)
+  // teardrop body: wide round chest (front, +x), tapering to pointed tail (-x)
+  const bodyL=64*sc;   // half-length
+  const bodyH=27*sc;   // half-width
+
+  // --- wings (folded over the back, gently lifting) drawn first ---
+  const lift=wingBeat;           // 0..1
+  drawWing(sc,bodyL,bodyH, 1, lift);
+  drawWing(sc,bodyL,bodyH,-1, lift);
+
+  // --- teardrop body path ---
+  function bodyPath(){
+    ctx.beginPath();
+    // front (chest) at +x rounded, tail at -x pointed
+    ctx.moveTo(bodyL*0.66, -bodyH*0.18);           // upper chest
+    ctx.bezierCurveTo(bodyL*0.92,-bodyH*0.9, bodyL*0.18,-bodyH*1.06, -bodyL*0.18,-bodyH*0.92); // upper back
+    ctx.bezierCurveTo(-bodyL*0.62,-bodyH*0.7, -bodyL*1.02,-bodyH*0.18, -bodyL*1.18,bodyH*0.02); // upper tail
+    ctx.bezierCurveTo(-bodyL*1.02,bodyH*0.22, -bodyL*0.62,bodyH*0.74, -bodyL*0.18,bodyH*0.94); // lower tail
+    ctx.bezierCurveTo(bodyL*0.18,bodyH*1.08, bodyL*0.92,bodyH*0.92, bodyL*0.66,bodyH*0.18);    // lower back to chest
+    ctx.bezierCurveTo(bodyL*0.80,bodyH*0.05, bodyL*0.80,-bodyH*0.05, bodyL*0.66,-bodyH*0.18); // close round chest
+    ctx.closePath();
+  }
+  const bg=ctx.createRadialGradient(bodyL*0.18,-bodyH*0.3,bodyH*0.2, bodyL*0.05,0,bodyL*1.1);
+  bg.addColorStop(0,'#f6f4ee');
+  bg.addColorStop(0.5,'#e6e1d6');
+  bg.addColorStop(1,'#c1bbab');
+  ctx.fillStyle=bg;
+  bodyPath();ctx.fill();
+
+  // soft top highlight on the back
+  ctx.save();bodyPath();ctx.clip();
+  ctx.fillStyle='rgba(255,255,255,0.28)';
+  ctx.beginPath();ctx.ellipse(bodyL*0.05,-bodyH*0.4,bodyL*0.55,bodyH*0.5,0,0,TAU);ctx.fill();
+  // faint feather seam down the center line
+  ctx.strokeStyle='rgba(150,142,124,0.14)';ctx.lineWidth=1.4*sc;
+  ctx.beginPath();ctx.moveTo(bodyL*0.4,0);ctx.lineTo(-bodyL*1.0,0);ctx.stroke();
+  ctx.restore();
+
+  // --- S-neck: long graceful curve from chest, up and forward, dipping to head ---
+  const nb=Math.sin(s.neckPh)*6*sc;     // gentle neck sway
+  const baseX=bodyL*0.62, baseY=-bodyH*0.05;
+  // classic swan S: rises, arches forward, head tips slightly down/forward
+  const c1x=baseX+30*sc, c1y=-34*sc+nb*0.3;
+  const c2x=baseX+70*sc, c2y=-28*sc+nb*0.8;
+  const c3x=baseX+90*sc, c3y= -2*sc+nb;
+  const hx =baseX+96*sc, hy =  8*sc+nb*0.9;   // head center
+  // neck ribbon (cubic via two beziers chained) — thick base to thin head
+  ctx.fillStyle='#efeadf';
+  ribbon4(baseX,baseY, c1x,c1y, c2x,c2y, c3x,c3y, hx,hy, 10*sc, 3.6*sc);
+  // neck core shadow line
+  ctx.strokeStyle='rgba(150,142,124,0.22)';ctx.lineWidth=1.8*sc;
+  ctx.beginPath();ctx.moveTo(baseX,baseY);
+  ctx.bezierCurveTo(c1x,c1y,c2x,c2y,c3x,c3y);
+  ctx.quadraticCurveTo((c3x+hx)/2,(c3y+hy)/2,hx,hy);
+  ctx.stroke();
+
+  // --- head ---
+  const hg=ctx.createRadialGradient(hx-2*sc,hy-2*sc,1,hx,hy,8*sc);
+  hg.addColorStop(0,'#f7f4ed');hg.addColorStop(1,'#d8d1c3');
+  ctx.fillStyle=hg;
+  ctx.beginPath();ctx.ellipse(hx,hy,8*sc,6.5*sc,0.3,0,TAU);ctx.fill();
+  // beak forward, along neck end tangent
+  const beakA=Math.atan2(hy-c3y,hx-c3x);
+  ctx.save();ctx.translate(hx,hy);ctx.rotate(beakA);
+  ctx.fillStyle='#d2862f';
+  ctx.beginPath();
+  ctx.moveTo(5*sc,-2.2*sc);
+  ctx.lineTo(15*sc,0);
+  ctx.lineTo(5*sc,2.2*sc);
+  ctx.closePath();ctx.fill();
+  ctx.fillStyle='rgba(38,28,22,0.6)';  // black base knob
+  ctx.beginPath();ctx.ellipse(4*sc,0,2.2*sc,1.9*sc,0,0,TAU);ctx.fill();
+  ctx.restore();
+
+  ctx.restore();
+}
+
+// neck ribbon (4 control pts as two chained beziers): thick base -> thin head
+function ribbon4(x0,y0,c1x,c1y,c2x,c2y,c3x,c3y,x1,y1,wBase,wHead){
+  const steps=24;
+  const pts=[];
+  // sample a cubic bezier (x0..c3) then a quadratic (c3..x1) tangent join
+  const mx=(c3x+x1)/2, my=(c3y+y1)/2;
+  for(let i=0;i<=steps;i++){
+    const u=i/steps;
+    let x,y;
+    if(u<0.75){
+      const v=u/0.75, iv=1-v;
+      x=iv*iv*iv*x0+3*iv*iv*v*c1x+3*iv*v*v*c2x+v*v*v*c3x;
+      y=iv*iv*iv*y0+3*iv*iv*v*c1y+3*iv*v*v*c2y+v*v*v*c3y;
+    }else{
+      const v=(u-0.75)/0.25, iv=1-v;
+      x=iv*iv*c3x+2*iv*v*mx+v*v*x1;
+      y=iv*iv*c3y+2*iv*v*my+v*v*y1;
+    }
+    pts.push({x,y,w:lerp(wBase,wHead,u)});
+  }
+  const top=[],bot=[];
+  for(let i=0;i<pts.length;i++){
+    const p=pts[i];
+    const a=pts[Math.max(0,i-1)],b=pts[Math.min(pts.length-1,i+1)];
+    let dx=b.x-a.x,dy=b.y-a.y;const l=Math.hypot(dx,dy)||1;dx/=l;dy/=l;
+    top.push({x:p.x-dy*p.w,y:p.y+dx*p.w});
+    bot.push({x:p.x+dy*p.w,y:p.y-dx*p.w});
+  }
+  ctx.beginPath();
+  ctx.moveTo(top[0].x,top[0].y);
+  for(let i=1;i<top.length;i++)ctx.lineTo(top[i].x,top[i].y);
+  for(let i=bot.length-1;i>=0;i--)ctx.lineTo(bot[i].x,bot[i].y);
+  ctx.closePath();ctx.fill();
+}
+
+// wing: folded over the back, arching from chest along the side toward the tail.
+// side=+1 / -1; lift 0..1 raises the wing tips outward (gentle beat).
+function drawWing(sc,bodyL,bodyH,side,lift){
+  ctx.save();
+  const cols=['#efeae0','#e5dfd3','#d4cdbe'];
+  const out=(1+lift*0.30);                  // gentle outward breathe when lifting
+  // two soft feather lobes that hug the back and meet at a rounded tail tuft.
+  for(let k=0;k<2;k++){
+    const reach=(0.86-k*0.20);              // how far back this lobe sweeps
+    const bulge=bodyH*(0.74+k*0.10)*out;    // modest outward width (rounded, not pointed)
+    ctx.fillStyle=cols[k];
+    ctx.beginPath();
+    ctx.moveTo(bodyL*0.46, side*bodyH*0.18);            // shoulder near chest
+    ctx.bezierCurveTo(
+      bodyL*0.34, side*bulge,                            // arch gently out over the back
+      -bodyL*0.30, side*bulge,
+      -bodyL*reach, side*bodyH*0.22);                    // ease toward the tail
+    ctx.bezierCurveTo(
+      -bodyL*(reach-0.30), side*bodyH*0.06,              // inner return hugging the spine
+      bodyL*0.08, side*bodyH*0.06,
+      bodyL*0.46, side*bodyH*0.18);
+    ctx.closePath();
+    ctx.fill();
+  }
+  // soft feather rim highlight along the back ridge
+  ctx.strokeStyle='rgba(255,255,255,0.18)';
+  ctx.lineWidth=1.1*sc;
+  ctx.beginPath();
+  ctx.moveTo(bodyL*0.46, side*bodyH*0.18);
+  ctx.bezierCurveTo(bodyL*0.34, side*bodyH*0.74*out, -bodyL*0.30, side*bodyH*0.74*out, -bodyL*0.86, side*bodyH*0.22);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/* =========================================================
+   WAKE RIPPLES — subtle expanding soft rings on the surface,
+   from swans gliding. Pure 2D, very faint.
+   ========================================================= */
+let wakes=[];
+function addWake(x,y,r0,strength){
+  if(wakes.length>40)wakes.shift();
+  wakes.push({x,y,r:r0,r0,grow:rnd(22,34),life:1,fade:rnd(0.18,0.30),str:strength});
+}
+function updateWakes(dt){
+  for(let i=wakes.length-1;i>=0;i--){
+    const w=wakes[i];
+    w.r+=w.grow*dt;
+    w.life-=w.fade*dt;
+    if(w.life<=0)wakes.splice(i,1);
+  }
+}
+function drawWakes(){
+  ctx.save();
+  ctx.filter='blur(1.2px)';
+  for(const w of wakes){
+    const a=clamp(w.life,0,1)*w.str;
+    ctx.strokeStyle='rgba(225,232,222,'+(a*0.5).toFixed(3)+')';
+    ctx.lineWidth=1.6;
+    ctx.beginPath();ctx.arc(w.x,w.y,w.r,0,TAU);ctx.stroke();
+    ctx.strokeStyle='rgba(40,52,42,'+(a*0.30).toFixed(3)+')';
+    ctx.lineWidth=2.4;
+    ctx.beginPath();ctx.arc(w.x,w.y,w.r*0.86,0,TAU);ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/* =========================================================
+   SURFACE SHEEN — slow drifting light bands for that
+   "murky water seen from above with faint reflections" feel.
+   ========================================================= */
+function drawSheen(t){
+  ctx.save();
+  ctx.globalCompositeOperation='soft-light';
+  ctx.filter='blur(28px)';
+  const n=3;
+  for(let i=0;i<n;i++){
+    const px=( (Math.sin(t*0.04+i*2.1)*0.5+0.5) )*W;
+    const py=( (Math.cos(t*0.03+i*1.7)*0.5+0.5) )*H;
+    const r=Math.max(W,H)*0.36;
+    const g=ctx.createRadialGradient(px,py,0,px,py,r);
+    g.addColorStop(0,'rgba(190,205,180,0.16)');
+    g.addColorStop(1,'rgba(190,205,180,0)');
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(px,py,r,0,TAU);ctx.fill();
+  }
+  ctx.restore();
+}
+
+/* =========================================================
+   LAYOUT
+   ========================================================= */
+function resize(){
+  W=window.innerWidth; H=window.innerHeight;
+  DPR=Math.min(window.devicePixelRatio||1,2);
+  cv.width=Math.round(W*DPR); cv.height=Math.round(H*DPR);
+  cv.style.width=W+'px'; cv.style.height=H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+
+  bottom.width=Math.round(W); bottom.height=Math.round(H);
+  paintBottom();
+
+  work.width=cv.width; work.height=cv.height;
+
+  if(!discs.length)makeDiscs(); else makeDiscs();
+  if(!swans.length)makeSwans(); else{
+    for(const s of swans){s.x=clamp(s.x,0,W);s.y=clamp(s.y,0,H);}
+  }
+}
+window.addEventListener('resize',()=>{clearTimeout(window.__rt);window.__rt=setTimeout(resize,150);});
+
+// interaction: click drops a swan-attracting ripple + disc shimmer
+cv.addEventListener('pointerdown',e=>{
+  addWake(e.clientX,e.clientY,10,0.6);
+  addWake(e.clientX,e.clientY,4,0.5);
+  cap.style.opacity=0.0;setTimeout(()=>{cap.style.opacity=0.6;},2600);
+});
+
+/* =========================================================
+   MAIN LOOP
+   ========================================================= */
+makeGrain();
+resize();
+makeDiscs();
+makeSwans();
+for(let i=0;i<3;i++)addWake(rnd(0,W),rnd(0,H),rnd(20,60),0.2);
+
+// guarantee first paint synchronously (scene IS the first paint — no loader/gate)
+(function firstPaint(){
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.globalAlpha=1;ctx.filter='none';ctx.globalCompositeOperation='source-over';
+  ctx.drawImage(bottom,0,0,W,H);
+  drawSheen(0);
+  const items=[];
+  for(const d of discs)items.push({z:d.depth,kind:'d',o:d});
+  for(const s of swans)items.push({z:s.depth,kind:'s',o:s});
+  items.sort((a,b)=>a.z-b.z);
+  for(const it of items){
+    ctx.globalAlpha=1;ctx.filter='none';ctx.globalCompositeOperation='source-over';
+    if(it.kind==='d')drawDisc(it.o,0); else drawSwan(it.o,0);
+  }
+})();
+
+let last=0, ambT=2.5;
+function frame(ts){
+  requestAnimationFrame(frame);
+  const t=ts/1000;
+  let dt=t-last; last=t;
+  if(!(dt>0))dt=0.016;
+  dt=Math.min(dt,0.05);
+
+  ambT-=dt;
+  if(ambT<=0){addWake(rnd(0,W),rnd(0,H),rnd(8,18),0.18);ambT=rnd(3,7);}
+
+  // background
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.globalAlpha=1;ctx.filter='none';ctx.globalCompositeOperation='source-over';
+  ctx.drawImage(bottom,0,0,W,H);
+
+  // slow surface sheen
+  drawSheen(t);
+
+  // far→near painter's algorithm: sort discs+swans by depth
+  // draw far discs, then swans by depth interleaved with discs near them
+  const items=[];
+  for(const d of discs){updateDisc(d,dt);items.push({z:d.depth,kind:'d',o:d});}
+  for(const s of swans){updateSwan(s,dt);items.push({z:s.depth,kind:'s',o:s});}
+  items.sort((a,b)=>a.z-b.z);
+
+  // wakes sit on water under everything floating but above bottom
+  updateWakes(dt);
+  ctx.globalCompositeOperation='source-over';
+  drawWakes();
+
+  for(const it of items){
+    ctx.globalAlpha=1;ctx.filter='none';ctx.globalCompositeOperation='source-over';
+    if(it.kind==='d')drawDisc(it.o,t);
+    else drawSwan(it.o,t);
+  }
+
+  // grain overlay
+  ctx.globalAlpha=1;ctx.filter='none';
+  ctx.globalCompositeOperation='overlay';
+  const gs=200;
+  for(let y=0;y<H;y+=gs)for(let x=0;x<W;x+=gs)ctx.drawImage(grain,x,y);
+  ctx.globalCompositeOperation='source-over';
+
+  // final soft vignette for depth
+  const vg=ctx.createRadialGradient(W*0.5,H*0.5,Math.min(W,H)*0.34,W*0.5,H*0.5,Math.max(W,H)*0.78);
+  vg.addColorStop(0,'rgba(0,0,0,0)');
+  vg.addColorStop(1,'rgba(12,18,14,0.36)');
+  ctx.fillStyle=vg;ctx.fillRect(0,0,W,H);
+}
+requestAnimationFrame(frame);
+
+setTimeout(()=>{cap.style.opacity=0.38;},11000);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Phase Garden — Double Pendulum Chaos</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%;
+    background: #04060a;
+    overflow: hidden;
+    font-family: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+    cursor: crosshair;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+  }
+  #stage { position: fixed; inset: 0; display: block; }
+
+  /* glass HUD */
+  .hud {
+    position: fixed; z-index: 5;
+    color: rgba(228,238,255,0.82);
+    pointer-events: none;
+    user-select: none;
+    text-shadow: 0 1px 14px rgba(0,0,0,0.85);
+  }
+  #title {
+    top: 26px; left: 30px;
+    line-height: 1.18;
+  }
+  #title b {
+    display: block;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    background: linear-gradient(92deg,#7fe9ff 0%,#b69cff 48%,#ff8fd0 100%);
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: #b69cff;
+  }
+  #title span {
+    display: block;
+    margin-top: 5px;
+    font-size: 10.5px;
+    letter-spacing: 0.34em;
+    text-transform: uppercase;
+    color: rgba(150,170,205,0.62);
+  }
+  #stat {
+    bottom: 24px; left: 30px;
+    font-size: 10.5px;
+    letter-spacing: 0.16em;
+    color: rgba(150,170,205,0.62);
+    line-height: 1.7;
+  }
+  #stat b { color: rgba(190,210,245,0.92); font-weight: 600; }
+  #hint {
+    bottom: 24px; right: 30px;
+    text-align: right;
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: rgba(120,140,175,0.5);
+    line-height: 1.95;
+    transition: opacity 1.2s ease;
+  }
+  #hint kbd {
+    color: rgba(200,220,255,0.78);
+    font-weight: 600;
+    font-family: inherit;
+  }
+  @media (max-width: 560px) {
+    #title { top: 18px; left: 18px; }
+    #title b { font-size: 17px; letter-spacing: 0.08em; }
+    #title span { font-size: 8.5px; letter-spacing: 0.24em; }
+    #stat { bottom: 16px; left: 18px; font-size: 9px; }
+    #hint { display: none; }
+  }
+  .fade { opacity: 0 !important; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div id="title" class="hud">
+  <b>PHASE&nbsp;GARDEN</b>
+  <span>chaotic double-pendulum bloom</span>
+</div>
+<div id="stat" class="hud">
+  <div>SEEDS&nbsp;&nbsp;<b id="s_n">—</b>&nbsp;&nbsp;·&nbsp;&nbsp;DIVERGENCE&nbsp;&nbsp;<b id="s_div">—</b></div>
+  <div>TIME&nbsp;×<b id="s_time">1.00</b>&nbsp;&nbsp;·&nbsp;&nbsp;<b id="s_fps">— fps</b></div>
+</div>
+<div id="hint" class="hud">
+  <div><kbd>MOVE</kbd> bend the field</div>
+  <div><kbd>DRAG</kbd> tilt gravity</div>
+  <div><kbd>CLICK</kbd> re-bloom</div>
+  <div><kbd>SCROLL</kbd> dilate time</div>
+  <div><kbd>SPACE</kbd> palette · <kbd>T</kbd> trails</div>
+</div>
+
+<script>
+"use strict";
+(function () {
+  const cv  = document.getElementById("stage");
+  const ctx = cv.getContext("2d", { alpha: false });
+
+  // ---- DPR / size with resolution cap (perf) -------------------------------
+  let DPR = 1, W = 0, H = 0, CX = 0, CY = 0, SCALE = 1;
+  function resize() {
+    const cssW = window.innerWidth, cssH = window.innerHeight;
+    // cap backing-store so big monitors stay at 60fps
+    const cap = (cssW * cssH > 2300000) ? 1 : Math.min(window.devicePixelRatio || 1, 2);
+    DPR = cap;
+    W = Math.round(cssW * DPR);
+    H = Math.round(cssH * DPR);
+    cv.width = W; cv.height = H;
+    cv.style.width = cssW + "px";
+    cv.style.height = cssH + "px";
+    CX = W * 0.5;
+    CY = H * 0.40;
+    SCALE = Math.min(W, H) * 0.205;     // pendulum arm length in px-space
+    // clear backing buffer hard on resize
+    ctx.fillStyle = "#04060a";
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // ---- palettes ------------------------------------------------------------
+  // each palette is a hue function of "energy" e in [0,1] -> [h,s,l]
+  const PALETTES = [
+    { name: "aurora",  base: 188, span: 150 },   // cyan -> violet -> pink
+    { name: "ember",   base: 8,   span: 70  },   // red -> orange -> gold
+    { name: "abyss",   base: 210, span: 90  },   // deep blue -> teal
+    { name: "spectra", base: 200, span: 180 },   // cyan -> green -> gold prism
+  ];
+  let palIdx = 0;
+
+  // ---- pendulum ensemble ---------------------------------------------------
+  // double pendulum state per seed: a1,a2 (angles), p1,p2 (ang. momenta)
+  const G0 = 1.0;            // base gravity magnitude (sim units)
+  const L1 = 1.0, L2 = 1.0;  // arm lengths (sim units)
+  const M1 = 1.0, M2 = 1.0;  // masses
+  let SEEDS = 0;
+  const MAX_SEEDS = 22;
+  let pend = [];   // each: {a1,a2,w1,w2, px,py, hue, alive}
+
+  // gravity vector (interaction-tilted). default = straight down (+y in canvas)
+  let gx = 0, gy = 1;
+  let gxT = 0, gyT = 1;
+
+  function seedBloom() {
+    // pick number of seeds based on screen real-estate
+    SEEDS = (W * H > 900000) ? MAX_SEEDS : 14;
+    pend.length = 0;
+    // a near-horizontal, high-energy start so it goes chaotic fast & looks alive
+    const baseA1 = Math.PI * (0.78 + 0.34 * Math.random());
+    const baseA2 = Math.PI * (0.70 + 0.5 * Math.random());
+    // give a kick of angular velocity so the bloom is energetic from frame 1
+    const kick = (Math.random() < 0.5 ? -1 : 1) * (2.0 + Math.random() * 1.5);
+    for (let i = 0; i < SEEDS; i++) {
+      // a small angle delta -> sensitive dependence. Wide enough that the
+      // fan visibly opens within ~1-2s (the signature chaos "bloom").
+      const d = (i - (SEEDS - 1) / 2) * 9.0e-3;
+      pend.push({
+        a1: baseA1 + d,
+        a2: baseA2 + d * 1.7,
+        w1: kick + d * 4.0,
+        w2: -kick * 0.6 + d * 6.0,
+        px: NaN, py: NaN,
+        hue: i / Math.max(1, SEEDS - 1),
+        spawn: performance.now(),
+      });
+    }
+    divergence = 0;
+    ripple.t = 0; ripple.x = CX; ripple.y = CY; ripple.on = true;
+  }
+
+  // ---- double pendulum derivatives (Lagrangian eqs of motion) --------------
+  // gravity is a vector (gx,gy); standard eqs assume down. We rotate the
+  // pendulum into the gravity frame by offsetting angles by the gravity angle.
+  // Effective: treat "down" direction as atan2(gy,gx)-PI/2 reference.
+  function deriv(a1, a2, w1, w2, gmag, gAng) {
+    // shift so that gravity acts along the conventional "down"
+    const A1 = a1 - gAng;
+    const A2 = a2 - gAng;
+    const da = A1 - A2;
+    const c = Math.cos(da), s = Math.sin(da);
+    const denom = (M1 + M2) - M2 * c * c;
+
+    const num1 = -M2 * L1 * w1 * w1 * s * c
+                 + M2 * gmag * Math.sin(A2) * c
+                 - M2 * L2 * w2 * w2 * s
+                 - (M1 + M2) * gmag * Math.sin(A1);
+    const dw1 = num1 / (L1 * denom);
+
+    const num2 = M2 * L2 * w2 * w2 * s * c
+                 + (M1 + M2) * (gmag * Math.sin(A1) * c
+                 + L1 * w1 * w1 * s
+                 - gmag * Math.sin(A2));
+    const dw2 = num2 / (L2 * denom);
+
+    return [w1, w2, dw1, dw2];
+  }
+
+  function rk4(p, dt, gmag, gAng) {
+    const a1 = p.a1, a2 = p.a2, w1 = p.w1, w2 = p.w2;
+    const k1 = deriv(a1, a2, w1, w2, gmag, gAng);
+    const k2 = deriv(a1 + 0.5*dt*k1[0], a2 + 0.5*dt*k1[1], w1 + 0.5*dt*k1[2], w2 + 0.5*dt*k1[3], gmag, gAng);
+    const k3 = deriv(a1 + 0.5*dt*k2[0], a2 + 0.5*dt*k2[1], w1 + 0.5*dt*k2[2], w2 + 0.5*dt*k2[3], gmag, gAng);
+    const k4 = deriv(a1 + dt*k3[0], a2 + dt*k3[1], w1 + dt*k3[2], w2 + dt*k3[3], gmag, gAng);
+    p.a1 += dt/6 * (k1[0] + 2*k2[0] + 2*k3[0] + k4[0]);
+    p.a2 += dt/6 * (k1[1] + 2*k2[1] + 2*k3[1] + k4[1]);
+    p.w1 += dt/6 * (k1[2] + 2*k2[2] + 2*k3[2] + k4[2]);
+    p.w2 += dt/6 * (k1[3] + 2*k2[3] + 2*k3[3] + k4[3]);
+  }
+
+  // ---- interaction state ---------------------------------------------------
+  const mouse = { x: CX, y: CY, has: false, down: false, dragMoved: false,
+                  downX: 0, downY: 0 };
+  let timeScale = 1.0, timeScaleT = 1.0;
+  let trailFade = 0.030;          // lower = longer trails (richer ribbons)
+  let trailsOn = true;
+  let divergence = 0;
+  const ripple = { x: 0, y: 0, t: 999, on: false };
+
+  // ---- pointer events ------------------------------------------------------
+  function pos(e) {
+    const t = (e.touches && e.touches[0]) || e;
+    return { x: t.clientX * DPR, y: t.clientY * DPR };
+  }
+  function onMove(e) {
+    const p = pos(e);
+    mouse.x = p.x; mouse.y = p.y; mouse.has = true;
+    if (mouse.down) {
+      const dx = p.x - mouse.downX, dy = p.y - mouse.downY;
+      if (dx*dx + dy*dy > (12*DPR)*(12*DPR)) mouse.dragMoved = true;
+      // tilt gravity: drag direction = new "down"
+      gxT = dx; gyT = dy;
+      const m = Math.hypot(gxT, gyT) || 1;
+      gxT /= m; gyT /= m;
+    }
+    hideHint();
+  }
+  function onDown(e) {
+    const p = pos(e);
+    mouse.down = true; mouse.dragMoved = false;
+    mouse.downX = p.x; mouse.downY = p.y;
+    mouse.x = p.x; mouse.y = p.y; mouse.has = true;
+    if (e.cancelable) e.preventDefault();
+  }
+  function onUp() {
+    if (mouse.down && !mouse.dragMoved) {
+      // pure click (no drag) -> re-bloom at default vertical gravity
+      gxT = 0; gyT = 1;
+      seedBloom();
+    }
+    mouse.down = false;
+  }
+  function onWheel(e) {
+    e.preventDefault();
+    const k = Math.exp(-e.deltaY * 0.0012);
+    timeScaleT = Math.min(3.0, Math.max(0.12, timeScaleT * k));
+    hideHint();
+  }
+  function onKey(e) {
+    if (e.code === "Space") {
+      e.preventDefault();
+      palIdx = (palIdx + 1) % PALETTES.length;
+    } else if (e.key === "t" || e.key === "T") {
+      trailsOn = !trailsOn;
+      if (!trailsOn) { ctx.fillStyle="#04060a"; ctx.fillRect(0,0,W,H); }
+    } else if (e.code === "Enter") {
+      seedBloom();
+    }
+    hideHint();
+  }
+
+  cv.addEventListener("mousemove", onMove);
+  cv.addEventListener("mousedown", onDown);
+  window.addEventListener("mouseup", onUp);
+  cv.addEventListener("touchstart", onDown, { passive: false });
+  cv.addEventListener("touchmove", (e)=>{ onMove(e); if(e.cancelable)e.preventDefault(); }, { passive: false });
+  window.addEventListener("touchend", onUp);
+  cv.addEventListener("wheel", onWheel, { passive: false });
+  window.addEventListener("keydown", onKey);
+
+  // ---- hint auto-hide ------------------------------------------------------
+  const hintEl = document.getElementById("hint");
+  let hintHidden = false, hintTimer = null;
+  function hideHint() {
+    if (hintHidden) return;
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => { hintEl.classList.add("fade"); hintHidden = true; }, 2600);
+  }
+
+  // ---- HUD refs ------------------------------------------------------------
+  const eN = document.getElementById("s_n");
+  const eDiv = document.getElementById("s_div");
+  const eTime = document.getElementById("s_time");
+  const eFps = document.getElementById("s_fps");
+  let fps = 60, hudT = 0;
+
+  // ---- color helper --------------------------------------------------------
+  function hsl(h, s, l, a) { return "hsla(" + h + "," + s + "%," + l + "%," + a + ")"; }
+
+  // ---- main loop -----------------------------------------------------------
+  let last = performance.now();
+  let acc = 0;
+  const SUBSTEP = 0.0045;   // fixed physics substep (sim time) for stability
+
+  function frame(now) {
+    let real = (now - last) / 1000;
+    last = now;
+    if (real > 0.05) real = 0.05;   // clamp after tab-away
+    fps += ((1 / Math.max(real, 1e-3)) - fps) * 0.08;
+
+    // smooth interaction params
+    timeScale += (timeScaleT - timeScale) * 0.10;
+    gx += (gxT - gx) * 0.06;
+    gy += (gyT - gy) * 0.06;
+    const gm = Math.hypot(gx, gy) || 1;
+    const gAng = Math.atan2(gx, gy);  // angle of gravity off vertical
+    // pointer field: stronger gravity when pointer is low, lighter when high
+    let gFieldMag = G0;
+    if (mouse.has) {
+      const ny = mouse.y / H;            // 0 top .. 1 bottom
+      gFieldMag = G0 * (0.45 + ny * 1.25);
+    }
+
+    // ---- physics: fixed substeps, scaled by user time + screen scaling ----
+    // sim runs ~independent of arm length; we advance "acc" sim-seconds
+    acc += real * timeScale * 1.6;
+    let steps = 0;
+    while (acc >= SUBSTEP && steps < 80) {
+      for (let i = 0; i < pend.length; i++) {
+        rk4(pend[i], SUBSTEP, gFieldMag * gm, gAng);
+      }
+      acc -= SUBSTEP; steps++;
+    }
+    if (acc > 0.5) acc = 0;  // safety
+    // NaN/blowup guard: clamp angular velocity, sanitize any non-finite state
+    for (let i = 0; i < pend.length; i++) {
+      const p = pend[i];
+      if (!isFinite(p.a1) || !isFinite(p.a2) || !isFinite(p.w1) || !isFinite(p.w2)) {
+        // respawn this seed near the ensemble (keeps the bloom alive)
+        const ref = pend[(i + 1) % pend.length] || p;
+        p.a1 = isFinite(ref.a1) ? ref.a1 : 0;
+        p.a2 = isFinite(ref.a2) ? ref.a2 : 0;
+        p.w1 = isFinite(ref.w1) ? ref.w1 : 0;
+        p.w2 = isFinite(ref.w2) ? ref.w2 : 0;
+        p.px = NaN; p.py = NaN;
+      }
+      // hard velocity clamp prevents the RK4 from exploding visually
+      if (p.w1 >  60) p.w1 =  60; else if (p.w1 < -60) p.w1 = -60;
+      if (p.w2 >  60) p.w2 =  60; else if (p.w2 < -60) p.w2 = -60;
+    }
+
+    // ---- compute divergence metric (spread of bob2 positions) -------------
+    // (also used for the stat readout)
+    let spread = 0;
+    if (pend.length > 1) {
+      let mx = 0, my = 0, pts = [];
+      for (let i = 0; i < pend.length; i++) {
+        const p = pend[i];
+        const x = Math.sin(p.a1) * L1 + Math.sin(p.a2) * L2;
+        const y = Math.cos(p.a1) * L1 + Math.cos(p.a2) * L2;
+        pts.push(x, y); mx += x; my += y;
+      }
+      mx /= pend.length; my /= pend.length;
+      for (let i = 0; i < pts.length; i += 2) {
+        const dx = pts[i]-mx, dy = pts[i+1]-my;
+        spread += Math.sqrt(dx*dx + dy*dy);
+      }
+      spread /= pend.length;   // mean radial spread (sim units, ~0..2)
+    }
+    divergence += (spread - divergence) * 0.1;
+
+    // ---- RENDER ----------------------------------------------------------
+    // fade buffer (motion-blur persistence) instead of full clear
+    if (trailsOn) {
+      ctx.globalCompositeOperation = "source-over";
+      ctx.fillStyle = "rgba(4,6,10," + trailFade + ")";
+      ctx.fillRect(0, 0, W, H);
+    } else {
+      ctx.globalCompositeOperation = "source-over";
+      ctx.fillStyle = "#04060a";
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    const PAL = PALETTES[palIdx];
+
+    // faint atmospheric core glow so the void has depth (additive, very low)
+    {
+      const rg = ctx.createRadialGradient(CX, CY + SCALE*0.4, 0, CX, CY + SCALE*0.4, Math.max(W,H)*0.65);
+      const bh = (PAL.base + PAL.span*0.4) % 360;
+      ctx.globalCompositeOperation = "lighter";
+      rg.addColorStop(0, hsl(bh, 60, 30, 0.018));
+      rg.addColorStop(0.5, hsl(bh, 55, 22, 0.010));
+      rg.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = rg;
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    // additive glow trails for the painted heads
+    ctx.globalCompositeOperation = "lighter";
+
+    // gravity reference: rotate world so paint follows tilted gravity
+    const cg = Math.cos(gAng), sg = Math.sin(gAng);
+
+    for (let i = 0; i < pend.length; i++) {
+      const p = pend[i];
+      // local coords (gravity-down frame)
+      const lx1 = Math.sin(p.a1) * L1, ly1 = Math.cos(p.a1) * L1;
+      const lx2 = lx1 + Math.sin(p.a2) * L2, ly2 = ly1 + Math.cos(p.a2) * L2;
+      // rotate into screen frame by gravity angle, then to pixels
+      const rx2 =  lx2 * cg - ly2 * sg;
+      const ry2 =  lx2 * sg + ly2 * cg;
+      const x2 = CX + rx2 * SCALE;
+      const y2 = CY + ry2 * SCALE;
+
+      // energy-ish from tip speed for brightness only
+      const speed = Math.abs(p.w1) + Math.abs(p.w2);
+      const e = Math.min(1, speed * 0.12);
+      // hue is dominated by the SEED so each ribbon keeps its colour identity
+      // across the chaotic fan (only a tiny energy tint, kept positive via +360)
+      const hue = (PAL.base + PAL.span * p.hue + e * 8 + 360) % 360;
+      const li = 50 + e * 18;
+
+      // draw segment of the tip trajectory (the artwork)
+      if (!isNaN(p.px)) {
+        const dx = x2 - p.px, dy = y2 - p.py;
+        const segLen = Math.hypot(dx, dy);
+        // skip absurd jumps (e.g. right after reseed)
+        if (segLen < SCALE * 0.9) {
+          const lw = (1.0 + e * 1.6) * DPR;
+          // outer glow stroke (saturated, low lightness -> hue survives overlap)
+          ctx.strokeStyle = hsl(hue, 95, Math.min(46, li - 6), 0.09 + e * 0.08);
+          ctx.lineWidth = lw * 4.2;
+          ctx.lineCap = "round";
+          ctx.beginPath(); ctx.moveTo(p.px, p.py); ctx.lineTo(x2, y2); ctx.stroke();
+          // core stroke (kept mid-lightness so additive overlap reads as colour)
+          ctx.strokeStyle = hsl(hue, 96, Math.min(64, li + 6), 0.5);
+          ctx.lineWidth = lw;
+          ctx.beginPath(); ctx.moveTo(p.px, p.py); ctx.lineTo(x2, y2); ctx.stroke();
+        }
+      }
+      p.px = x2; p.py = y2;
+
+      // glowing head dot
+      const r = Math.max(0.4, (1.6 + e * 2.2) * DPR);
+      const g = ctx.createRadialGradient(x2, y2, 0, x2, y2, r * 5);
+      g.addColorStop(0, hsl(hue, 96, 88, 0.9));
+      g.addColorStop(0.4, hsl(hue, 96, 66, 0.42));
+      g.addColorStop(1, hsl(hue, 96, 50, 0));
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(x2, y2, r * 5, 0, Math.PI * 2); ctx.fill();
+    }
+
+    // ---- draw a single "guide" pendulum skeleton (the mean) for structure --
+    if (pend.length) {
+      // mean angles for the skeleton
+      let ma1 = 0, ma2 = 0;
+      // average using sin/cos to avoid wrap issues
+      let s1=0,c1=0,s2=0,c2=0;
+      for (const p of pend){ s1+=Math.sin(p.a1); c1+=Math.cos(p.a1); s2+=Math.sin(p.a2); c2+=Math.cos(p.a2); }
+      ma1 = Math.atan2(s1,c1); ma2 = Math.atan2(s2,c2);
+      const lx1 = Math.sin(ma1)*L1, ly1 = Math.cos(ma1)*L1;
+      const lx2 = lx1 + Math.sin(ma2)*L2, ly2 = ly1 + Math.cos(ma2)*L2;
+      const j1x = CX + (lx1*cg - ly1*sg)*SCALE, j1y = CY + (lx1*sg + ly1*cg)*SCALE;
+      const j2x = CX + (lx2*cg - ly2*sg)*SCALE, j2y = CY + (lx2*sg + ly2*cg)*SCALE;
+      const PAL2 = PALETTES[palIdx];
+      const hh = (PAL2.base + PAL2.span*0.5) % 360;
+      ctx.globalCompositeOperation = "lighter";
+      // arms
+      ctx.strokeStyle = hsl(hh, 40, 70, 0.16);
+      ctx.lineWidth = 1.2 * DPR;
+      ctx.beginPath();
+      ctx.moveTo(CX, CY); ctx.lineTo(j1x, j1y); ctx.lineTo(j2x, j2y);
+      ctx.stroke();
+      // pivot
+      ctx.fillStyle = hsl(hh, 30, 80, 0.5);
+      ctx.beginPath(); ctx.arc(CX, CY, 2.6*DPR, 0, Math.PI*2); ctx.fill();
+      // joint
+      ctx.fillStyle = hsl(hh, 60, 78, 0.4);
+      ctx.beginPath(); ctx.arc(j1x, j1y, 2.2*DPR, 0, Math.PI*2); ctx.fill();
+    }
+
+    // ---- re-bloom ripple ---------------------------------------------------
+    if (ripple.on) {
+      ripple.t += real;
+      const rt = ripple.t / 0.9;
+      if (rt >= 1) ripple.on = false;
+      else {
+        const rad = Math.max(0.5, rt * SCALE * 2.6);
+        const a = (1 - rt) * 0.5;
+        const PAL3 = PALETTES[palIdx];
+        ctx.globalCompositeOperation = "lighter";
+        ctx.strokeStyle = hsl((PAL3.base + 40) % 360, 90, 72, a);
+        ctx.lineWidth = Math.max(0.5, (1 - rt) * 4 * DPR + 0.5);
+        ctx.beginPath(); ctx.arc(ripple.x, ripple.y, rad, 0, Math.PI*2); ctx.stroke();
+      }
+    }
+
+    // ---- pointer field marker ---------------------------------------------
+    if (mouse.has && !mouse.down) {
+      ctx.globalCompositeOperation = "lighter";
+      const g = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, 26*DPR);
+      g.addColorStop(0, "rgba(150,190,255,0.16)");
+      g.addColorStop(1, "rgba(150,190,255,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(mouse.x, mouse.y, 26*DPR, 0, Math.PI*2); ctx.fill();
+    }
+    // gravity-tilt indicator while dragging
+    if (mouse.down && mouse.dragMoved) {
+      ctx.globalCompositeOperation = "lighter";
+      ctx.strokeStyle = "rgba(180,210,255,0.5)";
+      ctx.lineWidth = 1.4 * DPR;
+      ctx.setLineDash([6*DPR, 6*DPR]);
+      ctx.beginPath();
+      ctx.moveTo(CX, CY);
+      ctx.lineTo(CX + gx * SCALE * 1.4, CY + gy * SCALE * 1.4);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    ctx.globalCompositeOperation = "source-over";
+
+    // ---- HUD ---------------------------------------------------------------
+    hudT += real;
+    if (hudT > 0.18) {
+      hudT = 0;
+      eN.textContent = SEEDS;
+      eDiv.textContent = (divergence * 100).toFixed(0) + "%";
+      eTime.textContent = timeScale.toFixed(2);
+      eFps.textContent = Math.round(fps) + " fps";
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  // ---- boot ----------------------------------------------------------------
+  resize();
+  window.addEventListener("resize", () => { const old = trailsOn; resize(); }, { passive: true });
+  mouse.x = CX; mouse.y = CY;
+  seedBloom();
+  hideHint();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

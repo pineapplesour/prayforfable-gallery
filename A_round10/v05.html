@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>심해 발광 해파리 군무 · Abyssal Bloom</title>
+<style>
+  :root { color-scheme: dark; }
+  html,body{margin:0;height:100%;background:#01040a;overflow:hidden;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    -webkit-tap-highlight-color:transparent;touch-action:none;}
+  #stage{position:fixed;inset:0;display:block;}
+  /* depth pressure vignette + bioluminescent rim, all pure CSS so first paint is the artwork */
+  #vig{position:fixed;inset:0;pointer-events:none;
+    background:
+      radial-gradient(120% 90% at 50% 18%, rgba(20,80,140,0.10), rgba(0,0,0,0) 42%),
+      radial-gradient(140% 120% at 50% 115%, rgba(0,0,0,0.0), rgba(0,2,8,0.92) 78%),
+      radial-gradient(120% 100% at 50% 50%, rgba(0,0,0,0) 55%, rgba(0,1,5,0.6) 100%);
+    mix-blend-mode:normal;}
+  #hud{position:fixed;left:18px;bottom:16px;pointer-events:none;
+    font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+    color:rgba(150,210,255,0.42);text-shadow:0 0 12px rgba(40,120,200,0.45);
+    line-height:1.7;font-weight:500;user-select:none;}
+  #hud b{color:rgba(190,235,255,0.7);font-weight:600;}
+  #title{position:fixed;right:20px;top:16px;text-align:right;pointer-events:none;user-select:none;}
+  #title .k{font-size:21px;letter-spacing:.34em;color:rgba(180,225,255,0.78);
+    text-shadow:0 0 22px rgba(60,150,230,0.6);font-weight:300;}
+  #title .e{font-size:9.5px;letter-spacing:.5em;color:rgba(110,170,220,0.4);margin-top:6px;font-weight:600;}
+  #depth{position:fixed;left:50%;top:14px;transform:translateX(-50%);pointer-events:none;user-select:none;
+    font-size:10px;letter-spacing:.22em;color:rgba(120,180,230,0.34);font-weight:600;
+    font-variant-numeric:tabular-nums;}
+  @media (max-width:520px){
+    #title .k{font-size:16px;letter-spacing:.26em;}
+    #hud{font-size:9.5px;letter-spacing:.1em;bottom:12px;left:12px;}
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="vig"></div>
+<div id="depth">DEPTH 0820 M · 4&deg;C · ABYSS</div>
+<div id="title"><div class="k">심해 군무</div><div class="e">ABYSSAL&nbsp;&nbsp;BLOOM</div></div>
+<div id="hud">
+  <div>MOVE <b>해류 유도</b> · CLICK <b>발광 파동</b></div>
+  <div>SCROLL <b>심도 잠수</b> · DRAG <b>난류</b></div>
+</div>
+<script>
+(()=>{
+"use strict";
+const cv=document.getElementById('stage'), ctx=cv.getContext('2d',{alpha:false});
+let W=0,H=0,DPR=1,CAP=2;
+function resize(){
+  DPR=Math.min(window.devicePixelRatio||1, CAP);
+  W=Math.floor(innerWidth*DPR); H=Math.floor(innerHeight*DPR);
+  cv.width=W; cv.height=H; cv.style.width=innerWidth+'px'; cv.style.height=innerHeight+'px';
+}
+addEventListener('resize',resize,{passive:true}); resize();
+
+// ---- input / world state ----
+const mouse={x:W*0.5,y:H*0.45,px:W*0.5,py:H*0.45,vx:0,vy:0,active:false,down:false};
+let depth=0;            // scroll-driven dive, eased
+let depthTarget=0;
+let turb=0;             // drag turbulence energy
+const rnd=(a,b)=>a+Math.random()*(b-a);
+const TAU=Math.PI*2;
+
+function setMouse(x,y){ mouse.x=x*DPR; mouse.y=y*DPR; mouse.active=true; }
+addEventListener('mousemove',e=>setMouse(e.clientX,e.clientY),{passive:true});
+addEventListener('mousedown',e=>{mouse.down=true; pulse(e.clientX*DPR,e.clientY*DPR);},{passive:true});
+addEventListener('mouseup',()=>mouse.down=false,{passive:true});
+addEventListener('mouseleave',()=>mouse.active=false,{passive:true});
+addEventListener('wheel',e=>{ depthTarget+=e.deltaY*0.0016; e.preventDefault(); },{passive:false});
+addEventListener('touchstart',e=>{const t=e.touches[0];setMouse(t.clientX,t.clientY);mouse.down=true;pulse(t.clientX*DPR,t.clientY*DPR);},{passive:true});
+addEventListener('touchmove',e=>{const t=e.touches[0];setMouse(t.clientX,t.clientY);
+  depthTarget+=(mouse.py- t.clientY*DPR)*0.0010;},{passive:true});
+addEventListener('touchend',()=>{mouse.down=false;mouse.active=false;},{passive:true});
+
+// ---- bioluminescent pulse rings (on click/tap) ----
+const rings=[];
+function pulse(x,y){
+  rings.push({x,y,r:6*DPR,life:1});
+  turb=Math.min(2.4,turb+1.1);
+  // wake nearby jellies — they flash & dart
+  for(const j of jellies){
+    const dx=j.x-x, dy=j.y-y, d=Math.hypot(dx,dy);
+    if(d<240*DPR*j.scale){ j.flash=Math.min(1.6,j.flash+ (1-d/(260*DPR))*1.5);
+      const f=(1-d/(260*DPR))* 2.4; j.vx+=dx/(d+1)*f; j.vy+=dy/(d+1)*f - 0.6; }
+  }
+}
+
+// ---- color palettes per depth band (lerp between) ----
+const bands=[
+  {top:[6,26,52],  bot:[2,8,22],  glow:[90,200,255]},   // upper twilight - cyan
+  {top:[10,18,46], bot:[2,5,18],  glow:[120,150,255]},  // mid - violet/blue
+  {top:[18,10,40], bot:[3,2,14],  glow:[200,110,255]},  // deep - magenta
+  {top:[26,8,30],  bot:[4,1,10],  glow:[255,120,160]},  // abyss - rose
+];
+const lerp=(a,b,t)=>a+(b-a)*t;
+function bandColor(d){
+  const n=bands.length-1;
+  let p=((d%1)+1)%1; // wrap so endless dive
+  let f=p*n, i=Math.floor(f), t=f-i, a=bands[i], b=bands[(i+1)%bands.length];
+  const mix=(k)=>[Math.round(lerp(a[k][0],b[k][0],t)),Math.round(lerp(a[k][1],b[k][1],t)),Math.round(lerp(a[k][2],b[k][2],t))];
+  return {top:mix('top'),bot:mix('bot'),glow:mix('glow')};
+}
+
+// ============ JELLYFISH ============
+class Jelly{
+  constructor(layer){
+    this.layer=layer;                       // 0 far .. 1 near
+    this.scale=lerp(0.34,1.25,layer)*rnd(0.8,1.18);
+    this.x=rnd(0,W); this.y=rnd(-H*0.2,H*1.1);
+    this.vx=rnd(-0.2,0.2); this.vy=rnd(-0.55,-0.18); // generally rising
+    this.phase=rnd(0,TAU);
+    this.pulseSpeed=rnd(0.9,1.45);
+    this.hue=rnd(-0.18,0.18);                // local hue jitter
+    this.flash=0;
+    this.nTent=Math.round(lerp(5,9,this.scale/1.3));
+    this.tent=[];
+    for(let i=0;i<this.nTent;i++) this.tent.push({off:rnd(0,TAU),seg:[]});
+    this.wob=rnd(0,TAU);
+    this.spark=rnd(0,TAU);
+  }
+  reset(){
+    this.x=rnd(0,W); this.y=H*1.12+rnd(0,H*0.2);
+    this.vx=rnd(-0.2,0.2); this.vy=rnd(-0.6,-0.2);
+  }
+  update(dt,t,col){
+    const sc=this.scale;
+    // gentle ambient current (perlin-ish via sin layering)
+    const cx=Math.sin(this.y*0.0016+t*0.18+this.wob)*0.10
+            +Math.sin(this.y*0.004 - t*0.07)*0.05;
+    this.vx+=cx*dt*60*0.02;
+    // jet propulsion: bell contraction gives upward thrust pulse
+    this.phase+=dt*this.pulseSpeed;
+    const contract=Math.max(0,Math.sin(this.phase));        // 0..1 bell squeeze
+    const thrust=Math.pow(contract,3)*0.9*sc;
+    this.vy-=thrust*dt*60*0.04;
+    // buoyancy / drag
+    this.vy+=0.012*dt*60*(0.6);     // slight sink between pulses
+    this.vx*=0.985; this.vy*=0.985;
+    // mouse = water current that pushes/pulls jellies (parallax by layer)
+    if(mouse.active){
+      const infl=lerp(0.25,1,this.layer);
+      const dx=this.x-mouse.x, dy=this.y-mouse.y, d=Math.hypot(dx,dy)+1;
+      const R=300*DPR;
+      if(d<R){
+        const k=(1-d/R);
+        // swirl: perpendicular component + gentle push
+        const ux=dx/d, uy=dy/d;
+        this.vx+= (-uy*0.9 + ux*0.35)*k*infl*dt*60*0.10;
+        this.vy+= ( ux*0.9 + uy*0.35)*k*infl*dt*60*0.10;
+      }
+    }
+    // turbulence from drag
+    if(turb>0.01){
+      this.vx+=Math.sin(this.x*0.01+t*5+this.phase)*turb*0.10*dt*60*0.1;
+      this.vy+=Math.cos(this.y*0.01+t*4)*turb*0.08*dt*60*0.1;
+    }
+    // depth parallax drift (dive feeling): far layers scroll slower
+    const par=lerp(0.15,1.0,this.layer);
+    this.y+=(depth-this._lastDepth||0); // handled below
+    this.x+=this.vx*dt*60; this.y+=this.vy*dt*60;
+    // wrap
+    if(this.y<-H*0.25) this.reset();
+    if(this.y>H*1.3) this.reset();
+    if(this.x<-120*DPR) this.x=W+100*DPR;
+    if(this.x>W+120*DPR) this.x=-100*DPR;
+    this.flash*=Math.pow(0.06,dt);   // decay flash
+    this.spark+=dt*2;
+    this.wob+=dt*0.5;
+  }
+  draw(g,t,col){
+    const sc=this.scale, r=46*DPR*sc;
+    const contract=Math.sin(this.phase);
+    const squash=lerp(1.0,0.74,Math.max(0,contract));  // bell narrows when contracting
+    const stretch=lerp(1.0,1.22,Math.max(0,contract));
+    const bx=this.x, by=this.y;
+    const glow=col.glow;
+    const baseA=lerp(0.42,1.15,this.layer)*(0.82+this.flash*1.0);
+    // hue shift per jelly
+    const hr=Math.round(glow[0]*(1+this.hue*0.4));
+    const hg=Math.round(glow[1]*(1-this.hue*0.2));
+    const hb=Math.round(glow[2]);
+    const C=(a)=>`rgba(${clamp(hr)},${clamp(hg)},${clamp(hb)},${a})`;
+
+    g.save();
+    g.translate(bx,by);
+
+    // ---- outer aura (volumetric glow) ----
+    const auraR=r*3.4*(1+this.flash*0.7);
+    const ag=g.createRadialGradient(0,0,r*0.2,0,0,auraR);
+    ag.addColorStop(0, C(0.34*baseA));
+    ag.addColorStop(0.35, C(0.13*baseA));
+    ag.addColorStop(1, C(0));
+    g.globalCompositeOperation='lighter';
+    g.fillStyle=ag;
+    g.beginPath(); g.arc(0,0,auraR,0,TAU); g.fill();
+
+    // ---- tentacles (drawn first, behind bell) ----
+    const tentLen=r*lerp(3.2,5.5,this.layer)*(1+contract*0.15);
+    const sway=Math.sin(t*1.4+this.wob);
+    g.lineCap='round';
+    for(let i=0;i<this.nTent;i++){
+      const tt=this.tent[i];
+      const ang=(i/this.nTent-0.5)*Math.PI*0.9;  // spread under bell
+      const rootX=Math.sin(ang)*r*0.62*squash;
+      const rootY=r*0.42;
+      const segs=7;
+      g.beginPath();
+      g.moveTo(rootX,rootY);
+      let px=rootX, py=rootY;
+      for(let s=1;s<=segs;s++){
+        const f=s/segs;
+        const wave=Math.sin(t*2.0 + tt.off + f*4.5 + this.vx*0.3)*r*0.5*f
+                  + sway*r*0.4*f + this.vx*-6*f;
+        const nx=rootX+wave*0.6 + Math.sin(ang)*tentLen*f*0.25;
+        const ny=rootY+ tentLen*f + Math.sin(t*1.5+f*3)*r*0.12;
+        const mx=(px+nx)/2, my=(py+ny)/2;
+        g.quadraticCurveTo(px,py,mx,my);
+        px=nx; py=ny;
+      }
+      const tw=Math.max(0.6, r*0.10*(1-0));
+      g.lineWidth=tw;
+      g.strokeStyle=C(0.16*baseA);
+      g.stroke();
+      // glowing tip beads
+      g.fillStyle=C(0.5*baseA*(0.6+0.4*Math.sin(t*3+tt.off)));
+      g.beginPath(); g.arc(px,py,tw*0.9,0,TAU); g.fill();
+    }
+
+    // ---- oral arms (frilly center strands) ----
+    g.lineWidth=Math.max(0.8,r*0.06);
+    for(let i=0;i<4;i++){
+      const ph=i/4*TAU;
+      g.beginPath(); g.moveTo(0,r*0.3);
+      const armLen=r*lerp(1.8,3.0,this.layer);
+      let px=0,py=r*0.3;
+      for(let s=1;s<=6;s++){
+        const f=s/6;
+        const nx=Math.sin(t*2.2+ph+f*5)*r*0.5*f;
+        const ny=r*0.3+armLen*f;
+        g.quadraticCurveTo(px,py,(px+nx)/2,(py+ny)/2);
+        px=nx;py=ny;
+      }
+      g.strokeStyle=C(0.22*baseA);
+      g.stroke();
+    }
+
+    // ---- the bell (dome) ----
+    g.scale(stretch,squash);
+    // bell body gradient
+    const bg=g.createRadialGradient(0,-r*0.25,r*0.1,0,0,r*1.15);
+    bg.addColorStop(0, C(0.42*baseA));
+    bg.addColorStop(0.5, C(0.20*baseA));
+    bg.addColorStop(0.85, C(0.07*baseA));
+    bg.addColorStop(1, C(0));
+    g.fillStyle=bg;
+    g.beginPath();
+    // dome shape: top half ellipse + flared skirt
+    g.moveTo(-r,r*0.12);
+    g.bezierCurveTo(-r*1.05,-r*0.9, -r*0.35,-r*1.18, 0,-r*1.18);
+    g.bezierCurveTo(r*0.35,-r*1.18, r*1.05,-r*0.9, r,r*0.12);
+    // scalloped skirt
+    const lobes=6;
+    for(let i=0;i<=lobes;i++){
+      const f=i/lobes;
+      const xx=lerp(r,-r,f);
+      const dip=Math.sin(t*3+this.phase+f*TAU)*r*0.08;
+      g.quadraticCurveTo(xx, r*(0.30+ (i%2?0.10:-0.02))+dip, lerp(r,-r,(i+0.5)/lobes), r*0.20+dip);
+    }
+    g.closePath();
+    g.fill();
+
+    // inner luminous core
+    const cg=g.createRadialGradient(0,-r*0.2,0,0,-r*0.2,r*0.75);
+    cg.addColorStop(0, `rgba(255,255,255,${Math.min(1,0.7*baseA*(0.7+this.flash*1.3))})`);
+    cg.addColorStop(0.28, C(0.62*baseA));
+    cg.addColorStop(1, C(0));
+    g.fillStyle=cg;
+    g.beginPath(); g.ellipse(0,-r*0.2,r*0.55,r*0.65,0,0,TAU); g.fill();
+
+    // rim light highlight (top crescent)
+    g.globalCompositeOperation='lighter';
+    g.strokeStyle=`rgba(255,255,255,${0.30*baseA})`;
+    g.lineWidth=Math.max(0.8,r*0.05);
+    g.beginPath();
+    g.ellipse(0,-r*0.5,r*0.7,r*0.5,0,Math.PI*1.08,Math.PI*1.92);
+    g.stroke();
+
+    // radial canals (the spokes glowing inside the bell)
+    g.lineWidth=Math.max(0.5,r*0.035);
+    for(let i=0;i<8;i++){
+      const a=(i/8)*TAU;
+      g.strokeStyle=C(0.22*baseA);
+      g.beginPath();
+      g.moveTo(0,-r*0.1);
+      g.lineTo(Math.cos(a)*r*0.92, -r*0.1+Math.sin(a)*r*0.6);
+      g.stroke();
+    }
+
+    // marginal glow dots around skirt (the classic photophores)
+    const dots=12;
+    for(let i=0;i<dots;i++){
+      const a=Math.PI + (i/(dots-1))*Math.PI;
+      const dx=Math.cos(a)*r*0.96, dy=r*0.18+Math.sin(a)*r*0.55;
+      const tw=0.5+0.5*Math.sin(t*4+i*0.7+this.spark);
+      g.fillStyle=`rgba(255,255,255,${(0.25+0.5*tw)*baseA})`;
+      g.beginPath(); g.arc(dx,dy,r*0.05*(0.7+tw),0,TAU); g.fill();
+    }
+
+    g.restore();
+  }
+}
+function clamp(v){return v<0?0:v>255?255:v|0;}
+
+// build school — capped count, layered
+let jellies=[];
+function buildSchool(){
+  const area=innerWidth*innerHeight;
+  let n=Math.round(Math.min(46, Math.max(16, area/26000)));
+  jellies=[];
+  for(let i=0;i<n;i++) jellies.push(new Jelly(Math.random()));
+  jellies.sort((a,b)=>a.layer-b.layer); // far first
+}
+buildSchool();
+let _rebuildTO;
+addEventListener('resize',()=>{clearTimeout(_rebuildTO);_rebuildTO=setTimeout(buildSchool,300);},{passive:true});
+
+// ---- marine snow particles (drifting motes) ----
+const SNOW=Math.min(220,Math.round(innerWidth*innerHeight/9000));
+const snow=[];
+for(let i=0;i<SNOW;i++) snow.push({x:rnd(0,W),y:rnd(0,H),z:rnd(0.2,1),
+  s:rnd(0.4,1.8),vy:rnd(0.1,0.5),ph:rnd(0,TAU)});
+
+// ---- caustic light shafts (top) ----
+function drawShafts(g,t,col){
+  g.globalCompositeOperation='lighter';
+  const n=5;
+  for(let i=0;i<n;i++){
+    const cx=(i/n+0.08)*W + Math.sin(t*0.2+i)*W*0.05;
+    const w=W*0.16*(0.6+0.4*Math.sin(t*0.3+i*1.7));
+    const a=0.05*(0.5+0.5*Math.sin(t*0.4+i*2.1))*(1-depthClamp());
+    if(a<=0.002) continue;
+    const lg=g.createLinearGradient(cx,0,cx+w*0.3,H*0.9);
+    lg.addColorStop(0,`rgba(${col.glow[0]},${col.glow[1]},${col.glow[2]},${a})`);
+    lg.addColorStop(1,`rgba(${col.glow[0]},${col.glow[1]},${col.glow[2]},0)`);
+    g.fillStyle=lg;
+    g.beginPath();
+    g.moveTo(cx-w*0.5,0); g.lineTo(cx+w*0.5,0);
+    g.lineTo(cx+w*0.5+w*0.6,H*0.95); g.lineTo(cx-w*0.5+w*0.6,H*0.95);
+    g.closePath(); g.fill();
+  }
+}
+function depthClamp(){ // 0 at surface band, ->1 deeper, for fading shafts
+  let p=((depth%1)+1)%1; return Math.min(1, Math.abs(((p+0.0)*2)%2 -1) );
+}
+
+// ---- background gradient ----
+function drawBG(g,col){
+  const lg=g.createLinearGradient(0,0,0,H);
+  lg.addColorStop(0,`rgb(${col.top[0]},${col.top[1]},${col.top[2]})`);
+  lg.addColorStop(1,`rgb(${col.bot[0]},${col.bot[1]},${col.bot[2]})`);
+  g.fillStyle=lg; g.fillRect(0,0,W,H);
+}
+
+// ---- pulse rings render ----
+function drawRings(g,dt,col){
+  g.globalCompositeOperation='lighter';
+  const G=col.glow;
+  for(let i=rings.length-1;i>=0;i--){
+    const rg=rings[i];
+    rg.r+=(340*DPR-rg.r)*0.07 + 3.0*DPR;
+    rg.life-=dt*0.65;
+    if(rg.life<=0){rings.splice(i,1);continue;}
+    const a=rg.life*0.85;
+    // leading shock ring (white-hot)
+    g.strokeStyle=`rgba(${clamp(G[0]+90)},${clamp(G[1]+70)},255,${a})`;
+    g.lineWidth=3.0*DPR*rg.life;
+    g.beginPath(); g.arc(rg.x,rg.y,rg.r,0,TAU); g.stroke();
+    // trailing soft ring
+    g.strokeStyle=`rgba(${G[0]},${G[1]},${G[2]},${a*0.55})`;
+    g.lineWidth=8*DPR*rg.life;
+    g.beginPath(); g.arc(rg.x,rg.y,rg.r*0.82,0,TAU); g.stroke();
+    // central shock bloom
+    const bloomR=rg.r*0.9;
+    const bg=g.createRadialGradient(rg.x,rg.y,0,rg.x,rg.y,bloomR);
+    bg.addColorStop(0,`rgba(255,255,255,${a*0.30})`);
+    bg.addColorStop(0.25,`rgba(${G[0]},${G[1]},${G[2]},${a*0.22})`);
+    bg.addColorStop(1,`rgba(${G[0]},${G[1]},${G[2]},0)`);
+    g.fillStyle=bg; g.beginPath(); g.arc(rg.x,rg.y,bloomR,0,TAU); g.fill();
+  }
+}
+
+// ---- HUD depth readout ----
+const depthEl=document.getElementById('depth');
+let lastDepthTxt='';
+
+// ============ MAIN LOOP ============
+let last=performance.now(), tSec=0, frame=0, prevDepth=0;
+function loop(now){
+  let dt=(now-last)/1000; last=now;
+  if(dt>0.05) dt=0.05;       // clamp big gaps (tab switch)
+  tSec+=dt; frame++;
+
+  // ease depth toward target
+  depth+=(depthTarget-depth)*Math.min(1,dt*3);
+  const dDepth=(depth-prevDepth); prevDepth=depth;
+  // turbulence decay
+  turb*=Math.pow(0.25,dt);
+  // mouse velocity for drag turbulence
+  mouse.vx=mouse.x-mouse.px; mouse.vy=mouse.y-mouse.py;
+  mouse.px=mouse.x; mouse.py=mouse.y;
+  if(mouse.down){ const sp=Math.hypot(mouse.vx,mouse.vy); if(sp>4*DPR) turb=Math.min(2.6,turb+sp*0.006); }
+
+  const col=bandColor(depth);
+
+  // BG (opaque, so alpha:false ok)
+  drawBG(ctx,col);
+  drawShafts(ctx,tSec,col);
+
+  // marine snow (parallax with depth dive)
+  ctx.globalCompositeOperation='lighter';
+  for(const p of snow){
+    p.y+=(p.vy*DPR + dDepth*lerp(40,160,p.z))*1;
+    p.x+=Math.sin(tSec*0.5+p.ph)*0.2*p.z*DPR;
+    if(p.y>H+4){p.y=-4;p.x=rnd(0,W);}
+    if(p.y<-4){p.y=H+4;p.x=rnd(0,W);}
+    const tw=0.4+0.6*Math.sin(tSec*2+p.ph);
+    ctx.fillStyle=`rgba(${col.glow[0]},${col.glow[1]},${col.glow[2]},${0.12*p.z*tw})`;
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.s*DPR*p.z,0,TAU); ctx.fill();
+  }
+
+  // jellies: apply dive parallax + update
+  for(const j of jellies){
+    j.y+=dDepth*lerp(50,200,j.layer); // dive parallax
+    j.update(dt,tSec,col);
+  }
+  // constellation links between nearby bells (the "군무" web)
+  ctx.globalCompositeOperation='lighter';
+  const LINK=150*DPR;
+  for(let a=0;a<jellies.length;a++){
+    const ja=jellies[a];
+    for(let b=a+1;b<jellies.length;b++){
+      const jb=jellies[b];
+      const dx=jb.x-ja.x, dy=jb.y-ja.y;
+      const lr=LINK*((ja.scale+jb.scale)*0.5);
+      if(Math.abs(dx)>lr||Math.abs(dy)>lr) continue;
+      const dist=Math.hypot(dx,dy);
+      if(dist>lr) continue;
+      const al=(1-dist/lr);
+      const aw=al*al*0.16*Math.min(1,(ja.layer+jb.layer)*0.7)*(1+(ja.flash+jb.flash)*0.5);
+      if(aw<0.01) continue;
+      ctx.strokeStyle=`rgba(${col.glow[0]},${col.glow[1]},${col.glow[2]},${aw})`;
+      ctx.lineWidth=Math.max(0.4,1.0*DPR*al);
+      ctx.beginPath(); ctx.moveTo(ja.x,ja.y-6*DPR); ctx.lineTo(jb.x,jb.y-6*DPR); ctx.stroke();
+    }
+  }
+  // draw jellies (far -> near, already sorted)
+  for(const j of jellies){ j.draw(ctx,tSec,col); }
+
+  drawRings(ctx,dt,col);
+
+  ctx.globalCompositeOperation='source-over';
+
+  // depth readout (throttled)
+  if(frame%8===0){
+    const m=820+Math.round(depth*640);
+    const temp=(4 - depth*0.3).toFixed(1);
+    const zone= (((depth%1)+1)%1)<0.5 ? 'TWILIGHT':'ABYSS';
+    const txt=`DEPTH ${String(Math.max(0,m)).padStart(4,'0')} M · ${temp}°C · ${zone}`;
+    if(txt!==lastDepthTxt){ depthEl.textContent=txt; lastDepthTxt=txt; }
+  }
+
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// expose for self-verification
+window.__bloom={
+  state:()=>({jellies:jellies.length,snow:snow.length,rings:rings.length,depth,turb,frame}),
+  pulse:(x,y)=>pulse((x||W*0.5),(y||H*0.5)),
+  dive:(d)=>{depthTarget+=d;},
+  drag:()=>{turb=2.0;},
+  fp:()=>{ // first-paint check: is there non-background luminance already?
+    return jellies.length>0;
+  }
+};
+})();
+</script>
+</body>
+</html>

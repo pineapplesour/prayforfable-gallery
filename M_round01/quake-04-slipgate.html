@@ -1,0 +1,899 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>SLIPGATE :: 차원 균열</title>
+<style>
+  :root{ --ink:#d8ffe0; --bg:#070b08; --dim:#3a5c44; --warn:#ff6a3d; --gold:#ffd24a; --rail:#7be0ff; }
+  html,body{ margin:0; height:100%; overflow:hidden; background:#000; color:var(--ink);
+    font-family: ui-monospace,"SF Mono",Menlo,Consolas,"Courier New",monospace; }
+  #wrap{ position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:#000; }
+  #view{ margin:0; white-space:pre; line-height:1.0; letter-spacing:0; user-select:none;
+    cursor:crosshair; color:var(--ink); text-shadow:0 0 6px rgba(120,255,160,.18);
+    background:#040705; }
+  /* HUD */
+  #hud{ position:fixed; left:0; right:0; bottom:0; pointer-events:none; z-index:6;
+    display:flex; justify-content:space-between; align-items:flex-end; padding:10px 16px;
+    font-size:13px; text-shadow:0 0 5px rgba(0,0,0,.9); }
+  .hudbox{ background:rgba(6,12,8,.55); border:1px solid rgba(120,255,160,.25); border-radius:6px;
+    padding:6px 12px; backdrop-filter:blur(2px); }
+  .big{ font-size:26px; font-weight:700; line-height:1; }
+  .lab{ font-size:10px; letter-spacing:2px; color:var(--dim); }
+  #hpc{ color:#7bff9a; } #arc{ color:var(--rail); } #amc{ color:var(--gold); }
+  #wpn{ color:var(--ink); }
+  #wpn .sel{ color:var(--gold); }
+  #cred{ position:fixed; left:0; right:0; bottom:64px; text-align:center; z-index:5;
+    font-size:10px; color:var(--dim); letter-spacing:1px; pointer-events:none; opacity:.8; }
+  /* minimap */
+  #mini{ position:fixed; right:12px; top:12px; z-index:6; background:rgba(4,8,5,.62);
+    border:1px solid rgba(120,255,160,.3); border-radius:6px; padding:4px; image-rendering:pixelated; }
+  /* frag feed */
+  #feed{ position:fixed; left:50%; top:8px; transform:translateX(-50%); z-index:7; text-align:center;
+    font-size:12px; pointer-events:none; }
+  #feed .l{ opacity:0; transition:opacity .3s; color:var(--warn); }
+  #frags{ position:fixed; left:12px; top:12px; z-index:6; }
+  #frags .row{ background:rgba(6,12,8,.6); border:1px solid rgba(120,255,160,.22);
+    border-radius:5px; padding:3px 9px; margin-bottom:4px; font-size:12px; display:flex; gap:10px; min-width:120px; }
+  #frags .nm{ flex:1; } #frags .you{ color:var(--gold); }
+  /* damage flash + center crosshair */
+  #flash{ position:fixed; inset:0; z-index:8; pointer-events:none; background:radial-gradient(circle, transparent 40%, rgba(255,40,20,0) 100%); }
+  #xh{ position:fixed; left:50%; top:50%; transform:translate(-50%,-50%); z-index:7; pointer-events:none;
+    color:rgba(180,255,200,.85); font-size:18px; text-shadow:0 0 4px #000; }
+  /* overlays */
+  .panel{ position:fixed; inset:0; z-index:20; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; text-align:center; padding:24px;
+    background:radial-gradient(circle at 50% 35%, rgba(10,30,18,.92), rgba(2,4,3,.97)); }
+  .panel h1{ font-size:46px; margin:0 0 6px; letter-spacing:10px; color:#aaffc4;
+    text-shadow:0 0 22px rgba(80,255,140,.5); }
+  .panel h1 small{ display:block; font-size:13px; letter-spacing:6px; color:var(--warn); margin-top:8px; font-weight:400; }
+  .panel p{ max-width:560px; line-height:1.9; font-size:14px; color:#bfe9cc; margin:6px 0; }
+  .panel .keys{ font-size:12px; color:#7fd49a; margin-top:14px; line-height:1.9;
+    border:1px solid rgba(120,255,160,.25); border-radius:8px; padding:12px 18px; background:rgba(6,14,9,.5); }
+  .panel button{ margin-top:22px; font-family:inherit; font-size:15px; letter-spacing:2px;
+    color:#04130a; background:linear-gradient(#9dffbe,#3fdd7d); border:0; border-radius:8px;
+    padding:13px 30px; cursor:pointer; box-shadow:0 0 22px rgba(80,255,140,.4); font-weight:700; }
+  .panel button:active{ transform:translateY(1px); }
+  .panel .credit{ position:absolute; bottom:18px; font-size:10px; color:#4c6b56; letter-spacing:1px; }
+  .hidden{ display:none !important; }
+  /* touch controls */
+  #touch{ position:fixed; inset:0; z-index:9; pointer-events:none; display:none; }
+  #touch .pad{ position:absolute; pointer-events:auto; }
+  #stick{ left:14px; bottom:96px; width:128px; height:128px; border-radius:50%;
+    border:1px solid rgba(120,255,160,.3); background:rgba(6,14,9,.4); }
+  #stick .nub{ position:absolute; left:42px; top:42px; width:44px; height:44px; border-radius:50%;
+    background:rgba(120,255,160,.4); }
+  #look{ right:0; top:0; width:55%; height:78%; }
+  .tbtn{ position:absolute; pointer-events:auto; width:64px; height:64px; border-radius:50%;
+    border:1px solid rgba(120,255,160,.4); background:rgba(8,18,11,.6); color:#bfe9cc;
+    font-family:inherit; font-size:11px; display:flex; align-items:center; justify-content:center; text-align:center; }
+  #fire{ right:18px; bottom:120px; width:88px; height:88px; background:rgba(40,12,8,.6); border-color:rgba(255,106,61,.6); color:#ffd0c0; }
+  #jump{ right:118px; bottom:70px; }
+  #swap{ right:30px; bottom:36px; }
+  @media (max-width:760px){ #cred{ bottom:80px; font-size:9px; } }
+</style>
+</head>
+<body>
+<div id="wrap"><pre id="view"></pre></div>
+
+<div id="xh">+</div>
+<div id="flash"></div>
+
+<canvas id="mini" width="120" height="120"></canvas>
+
+<div id="frags"></div>
+<div id="feed"></div>
+
+<div id="hud">
+  <div class="hudbox"><div class="lab">HEALTH</div><div class="big" id="hpc">100</div></div>
+  <div class="hudbox"><div class="lab">ARMOR</div><div class="big" id="arc">0</div></div>
+  <div class="hudbox" style="text-align:right">
+    <div class="lab">WEAPON</div>
+    <div id="wpn"></div>
+    <div class="lab" style="margin-top:4px">AMMO</div><div class="big" id="amc">∞</div>
+  </div>
+</div>
+<div id="cred">Quake (id Software)에서 영감 — © id Software. 오리지널 구현 — SLIPGATE: 차원 균열</div>
+
+<!-- touch -->
+<div id="touch">
+  <div id="stick" class="pad"><div class="nub"></div></div>
+  <div id="look" class="pad"></div>
+  <button id="fire" class="tbtn">FIRE</button>
+  <button id="jump" class="tbtn">JUMP</button>
+  <button id="swap" class="tbtn">WPN</button>
+</div>
+
+<!-- intro -->
+<div id="intro" class="panel">
+  <h1>SLIPGATE<small>차원 균열 · DIMENSION RIFT</small></h1>
+  <p>슬립게이트가 잘못 열렸다. 아스키로 응고된 차원의 아레나에서
+  적대 개체(<b>WRAITH</b>)들이 끊임없이 리스폰된다. 먼저 <b>15 프래그</b>를 따내는 쪽이 균열을 닫는다.</p>
+  <p class="keys">
+    <b>WASD</b> 이동 · <b>마우스</b> 조준(클릭=포인터락) · <b>←→</b> 회전<br>
+    <b>클릭 / 좌Ctrl</b> 발사 · <b>Space</b> 점프(점프패드+로켓점프) · <b>1 2 3 / 휠</b> 무기교체<br>
+    무기: <b>RIFT-9 로켓</b> · <b>SWARM 블래스터</b> · <b>SLIVER 레일건</b>
+  </p>
+  <button id="startBtn">슬립게이트 진입</button>
+  <div class="credit">Quake (id Software)에서 영감 — © id Software. 이것은 오리지널 구현이다.</div>
+</div>
+
+<!-- end -->
+<div id="end" class="panel hidden">
+  <h1 id="endTitle">균열 봉인</h1>
+  <p id="endText"></p>
+  <button id="againBtn">다시 진입</button>
+  <div class="credit">Quake (id Software)에서 영감 — © id Software. 오리지널 구현.</div>
+</div>
+
+<script>
+(() => {
+"use strict";
+/* =========================================================================
+   SLIPGATE :: 차원 균열  —  원본 DDA 레이캐스트 ASCII FPS
+   "2_내부"의 DDA 레이캐스터를 계승하되, 미로가 아닌 아레나 데스매치로 재해석.
+   Quake(id Software)에서 영감받은 오리지널 게임. 맵/적/무기/이름 전부 자작.
+   ========================================================================= */
+
+  // ---------- 아스키 텍스처 자재: 이 문서 자체 ----------
+  const RAW = document.documentElement.outerHTML;
+  const SRC = (RAW.replace(/[^\x21-\x7E]/g,"") || "SLIPGATE#RIFT").slice(0, 60000);
+
+  // ---------- 아레나 맵 (오리지널 레이아웃) ----------
+  // 1 = 벽, 0 = 바닥. 'P'=점프패드. 외곽 닫힘. 비대칭 아레나 + 중앙 코어.
+  const W_MAP = 24, H_MAP = 24;
+  const grid = []; const padCells = [];
+  (function normalize(){
+    const fixed = [
+      "111111111111111111111111",
+      "100000000010000000000001",
+      "101111000001000011110101",
+      "100000000000000000000001",
+      "100011100000000011100001",
+      "100010000000P0000000P101",
+      "100010001111111000001001",
+      "100000001000001000000001",
+      "101110001000001000111101",
+      "100000000000001000000001",
+      "10000P000000000000P00001",
+      "100000000011110000000001",
+      "101111000010010000111101",
+      "100001000010010000100001",
+      "100001000000000000100001",
+      "100000000P000000P0000001",
+      "100011110000000000111001",
+      "100010000011110000010001",
+      "100010000010010000010001",
+      "100000000010010000000001",
+      "101111000000000000111P01",
+      "100000000010000000000001",
+      "100000000010000000000001",
+      "111111111111111111111111",
+    ];
+    for(let y=0;y<H_MAP;y++){
+      const row=[]; const s=fixed[y];
+      for(let x=0;x<W_MAP;x++){
+        const c=s[x];
+        if(c==='1'){ row.push(1); }
+        else if(c==='P'){ row.push(0); padCells.push([x,y]); }
+        else row.push(0);
+      }
+      grid.push(row);
+    }
+  })();
+  function isWall(x,y){ if(x<0||y<0||x>=W_MAP||y>=H_MAP) return true; return grid[y|0][x|0]===1; }
+  function isPad(x,y){ for(const[px,py] of padCells){ if((x|0)===px&&(y|0)===py) return true; } return false; }
+
+  function emptyCell(){
+    for(let t=0;t<400;t++){
+      const x=1+Math.floor(Math.random()*(W_MAP-2));
+      const y=1+Math.floor(Math.random()*(H_MAP-2));
+      if(!isWall(x+0.5,y+0.5)) return {x:x+0.5,y:y+0.5};
+    }
+    return {x:2.5,y:2.5};
+  }
+
+  // ---------- 무기 정의 (오리지널) ----------
+  const WEAPONS = [
+    { id:0, name:"RIFT-9 로켓",   short:"RIFT-9", glyph:"◢", ammoName:"rkt", maxAmmo:30, ammo:10,
+      cd:0.78, dmg:80, splash:2.4, splashDmg:55, speed:9.5, kind:"rocket", color:"#ff6a3d" },
+    { id:1, name:"SWARM 블래스터", short:"SWARM",  glyph:"≡", ammoName:"cell", maxAmmo:200, ammo:60,
+      cd:0.085, dmg:9, splash:0, splashDmg:0, speed:17, kind:"proj", color:"#ffd24a" },
+    { id:2, name:"SLIVER 레일건",  short:"SLIVER", glyph:"│", ammoName:"slug", maxAmmo:25, ammo:8,
+      cd:1.15, dmg:95, splash:0, splashDmg:0, speed:0, kind:"hitscan", color:"#7be0ff" },
+  ];
+
+  // ---------- 상태 ----------
+  const TARGET_FRAGS = 15;
+  const P = { x:3.5, y:3.5, dir:0.6, vz:0, z:0, onGround:true, hp:100, armor:0,
+              weapon:0, lastFire:[0,0,0], alive:true, frags:0, deaths:0, respawnAt:0 };
+  const NBOTS = 4;
+  const BOT_NAMES = ["WRAITH-Δ","WRAITH-Σ","REVENANT","SHADE"];
+  const bots = [];
+  const projectiles = []; // {x,y,z,vx,vy,owner,kind,dmg,splash,splashDmg,life,color,glyph}
+  const sprites = [];     // bots+pickups rendered as billboards
+  const pickups = [];     // {x,y,type,active,respawnAt}
+  let railFlash = [];     // [{x0,y0,x1,y1,t}]
+  let particles = [];     // hit/death bursts (world billboards)
+  let gameOver=false, started=false, paused=false;
+  let lastFrag = 0;
+
+  function spawnBots(){
+    bots.length=0;
+    for(let i=0;i<NBOTS;i++){
+      const c=emptyCell();
+      bots.push({ x:c.x,y:c.y, dir:Math.random()*6.28, hp:100, name:BOT_NAMES[i%BOT_NAMES.length],
+        alive:true, frags:0, target:null, state:"roam", nextTurn:0, fireCd:0, wx:c.x,wy:c.y,
+        strafe: Math.random()<0.5?1:-1, color:["#ff6a3d","#ffd24a","#7be0ff","#c08bff"][i%4] });
+    }
+  }
+  function setupPickups(){
+    pickups.length=0;
+    const def=[
+      {type:"health", count:3}, {type:"armor", count:2},
+      {type:"rkt", count:2}, {type:"cell", count:2}, {type:"slug", count:2},
+      {type:"mega", count:1},
+    ];
+    for(const d of def){ for(let i=0;i<d.count;i++){ const c=emptyCell(); pickups.push({x:c.x,y:c.y,type:d.type,active:true,respawnAt:0}); } }
+  }
+
+  // ---------- 화면 / 렌더 버퍼 ----------
+  const view=document.getElementById("view");
+  let W=110,H=46,CW=7.0,CH=12, FOV=0.72;
+  const charBuf=[], depth=[], colBuf=[];
+  function fit(){
+    const probe=document.createElement("span");
+    probe.style.cssText="position:absolute;visibility:hidden;font:13px/13px ui-monospace,Menlo,monospace;white-space:pre";
+    probe.textContent="M".repeat(100); document.body.appendChild(probe);
+    CW=probe.getBoundingClientRect().width/100||7; probe.remove();
+    const availW=innerWidth, availH=innerHeight;
+    // pick a font size so it fills nicely
+    let fs = innerWidth<760 ? 11 : 13;
+    view.style.font = fs+"px/"+(fs)+"px ui-monospace, Menlo, monospace";
+    CW = fs*0.6; CH = fs;
+    W=Math.max(60,Math.min(200,Math.floor(availW/CW)-1));
+    H=Math.max(28,Math.min(70,Math.floor(availH/CH)-1));
+    depth.length=0;
+  }
+  fit(); addEventListener("resize",()=>{fit();});
+
+  // floor/ceiling palettes for the rift
+  const CEIL=" .:^*".split("");        // dark rift ceiling
+  const FLOORP=" .,-=+".split("");      // floor texture toward viewer
+  function wallChar(ix,iy,tx,ty,d,side){
+    if(d>16) return "·";
+    const seed=((ix*73856093)^(iy*19349663))>>>0;
+    const idx=(seed + ((tx*256)|0)*131 + ((ty*64)|0)*37)%SRC.length;
+    let ch=SRC[idx];
+    if(d>11) return /[a-z0-9]/i.test(ch)?":":".";
+    if(d>7)  return /[a-z0-9]/i.test(ch)? ch.toLowerCase() : ":";
+    return ch;
+  }
+
+  // shading helper -> brightness 0..1 to color
+  function shade(b, base){ // base [r,g,b]
+    b=Math.max(0,Math.min(1,b));
+    return "rgb("+(base[0]*b|0)+","+(base[1]*b|0)+","+(base[2]*b|0)+")";
+  }
+
+  // We render with per-cell color via building HTML spans grouped by run.
+  // To keep it fast we build per-row strings with color runs.
+  const WALL_BASE=[150,255,170], WALL_SIDE=[95,175,120], FLOOR_BASE=[60,110,80], CEIL_BASE=[40,70,90];
+
+  function render(){
+    const horizon=(H>>1);
+    // column raycast
+    const cols=new Array(W);
+    for(let x=0;x<W;x++){
+      const cam=(2*x)/W-1;
+      const rdx=Math.cos(P.dir)+Math.cos(P.dir+Math.PI/2)*FOV*cam;
+      const rdy=Math.sin(P.dir)+Math.sin(P.dir+Math.PI/2)*FOV*cam;
+      let mx=P.x|0,my=P.y|0;
+      const ddx=Math.abs(1/(rdx||1e-9)),ddy=Math.abs(1/(rdy||1e-9));
+      let sx,sy,sdx,sdy,side=0;
+      if(rdx<0){sx=-1;sdx=(P.x-mx)*ddx;}else{sx=1;sdx=(mx+1-P.x)*ddx;}
+      if(rdy<0){sy=-1;sdy=(P.y-my)*ddy;}else{sy=1;sdy=(my+1-P.y)*ddy;}
+      let hit=0,guard=0;
+      while(!hit&&guard++<80){
+        if(sdx<sdy){sdx+=ddx;mx+=sx;side=0;}else{sdy+=ddy;my+=sy;side=1;}
+        if(isWall(mx,my)) hit=1;
+      }
+      let dist=Math.max(0.05, side===0?sdx-ddx:sdy-ddy);
+      // vertical bob from jump
+      const pitch=(P.z*0.5);
+      const lh=Math.min(H*4,(H/dist)|0);
+      const cy = horizon + (P.z*H*0.18); // jump lowers view
+      const ds=Math.max(0,(cy-(lh>>1))|0);
+      const de=Math.min(H-1,(cy+(lh>>1))|0);
+      let wallX=side===0?P.y+dist*rdy:P.x+dist*rdx; wallX-=wallX|0;
+      cols[x]={ds,de,mx,my,wallX,dist,lh,side,cy};
+      depth[x]=dist;
+    }
+
+    // build rows with color runs -> HTML
+    let html="";
+    for(let y=0;y<H;y++){
+      let row="";
+      let curColor=null, run="";
+      const flush=()=>{ if(run){ row+="<span style=\"color:"+curColor+"\">"+esc(run)+"</span>"; run=""; } };
+      for(let x=0;x<W;x++){
+        const c=cols[x];
+        let ch=" ", color="#0a0f0c";
+        if(y<c.ds){ // ceiling (rift sky)
+          const t=(c.cy-y)/Math.max(1,c.cy);
+          const ci=Math.min(CEIL.length-1,(t*CEIL.length)|0);
+          ch=CEIL[ci]||" ";
+          const b=0.25+0.5*(1-t);
+          color=shade(b,CEIL_BASE);
+        } else if(y>c.de){ // floor
+          const fd=(y-c.cy)/Math.max(1,(H-c.cy));
+          const fi=Math.min(FLOORP.length-1,(fd*FLOORP.length)|0);
+          ch=FLOORP[fi]||" ";
+          const b=0.3+0.55*fd;
+          color=shade(b,FLOOR_BASE);
+        } else { // wall
+          const ty=c.lh>0?(y-(c.cy-c.lh/2))/c.lh:0;
+          ch=wallChar(c.mx,c.my,c.wallX,Math.abs(ty%1),c.dist,c.side);
+          let b=Math.max(0.16, 1.12 - c.dist*0.11);
+          // rim: darken top & bottom edge rows of the wall for shape definition
+          if(y<=c.ds+0+0 || y>=c.de-0) b*=0.6;
+          if(c.side) b*=0.62;          // side faces clearly darker -> readable corners
+          const base = c.side? WALL_SIDE : WALL_BASE;
+          color=shade(b,base);
+        }
+        if(color!==curColor){ flush(); curColor=color; }
+        run+=ch;
+      }
+      flush();
+      html += row + "\n";
+    }
+
+    // ---- sprite pass (bots, pickups, projectiles, particles, rail) over the ascii buffer ----
+    // We overlay sprites by drawing into a sparse map of (x,y)->{ch,color,depth}, then re-merge.
+    // For performance & simplicity, we re-render text mode plus an absolutely-positioned canvas overlay
+    // is avoided; instead we splice characters. Build a 2D grid first (no color) for overlay merge.
+    // -> Simpler approach: compute overlay glyphs and inject as a second layered <pre>. Use overlayDraw().
+    view.innerHTML = html;
+    overlayDraw(cols, horizon);
+  }
+
+  function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+  // overlay canvas-free: maintain a second <pre> sized identically, absolutely positioned
+  let ovl=document.getElementById("ovl");
+  if(!ovl){
+    ovl=document.createElement("pre"); ovl.id="ovl";
+    ovl.style.cssText="position:absolute; margin:0; pointer-events:none; white-space:pre; color:#fff;";
+    view.parentElement.appendChild(ovl);
+  }
+  function syncOvl(){
+    const r=view.getBoundingClientRect();
+    ovl.style.left=r.left+"px"; ovl.style.top=r.top+"px";
+    ovl.style.font=getComputedStyle(view).font;
+    ovl.style.lineHeight=getComputedStyle(view).lineHeight;
+  }
+
+  function overlayDraw(cols, horizon){
+    syncOvl();
+    // grid of overlay cells
+    const cell=new Array(W*H).fill(null);
+    const put=(sx,sy,ch,color,d)=>{
+      sx|=0; sy|=0; if(sx<0||sy<0||sx>=W||sy>=H) return;
+      const i=sy*W+sx; const cur=cell[i];
+      if(!cur || d<cur.d){ cell[i]={ch,color,d}; }
+    };
+
+    // collect billboards: bots (alive), pickups (active), projectiles, particles
+    const bills=[];
+    for(const b of bots) if(b.alive) bills.push({x:b.x,y:b.y,kind:"bot",ref:b});
+    for(const pk of pickups) if(pk.active) bills.push({x:pk.x,y:pk.y,kind:"pickup",ref:pk});
+    for(const pr of projectiles) bills.push({x:pr.x,y:pr.y,kind:"proj",ref:pr});
+    for(const pt of particles) bills.push({x:pt.x,y:pt.y,kind:"part",ref:pt});
+
+    const cosd=Math.cos(P.dir), sind=Math.sin(P.dir);
+    for(const s of bills){
+      const dx=s.x-P.x, dy=s.y-P.y;
+      // transform into camera space
+      const camDepth = dx*cosd + dy*sind;        // forward
+      const camX     = dx*sind - dy*cosd;        // right (note sign)
+      if(camDepth<=0.15) continue;
+      const screenX = (W/2)*(1 + (camX/(camDepth*FOV)));
+      const d=Math.hypot(dx,dy);
+      let glyphSet, color, size;
+      if(s.kind==="bot"){
+        glyphSet=["W","M","#"]; color=s.ref.color;
+        const hpr=s.ref.hp/100; color = s.ref.hp<35 ? "#ff5a4a" : s.ref.color;
+        size=Math.max(2,Math.min(18,(H*0.9/d)|0));
+        drawBot(put, screenX, horizon, size, color, d, depth);
+        continue;
+      } else if(s.kind==="pickup"){
+        const map={health:"+",armor:"▣",rkt:"◢",cell:"≡",slug:"│",mega:"✦"};
+        const cmap={health:"#7bff9a",armor:"#7be0ff",rkt:"#ff6a3d",cell:"#ffd24a",slug:"#7be0ff",mega:"#c08bff"};
+        color=cmap[s.ref.type]||"#fff";
+        const ch=map[s.ref.type]||"?";
+        // pickups sit on the floor: vertical pos near floor
+        size=Math.max(1,Math.min(6,(H*0.5/d)|0));
+        const sy=horizon + (H/Math.max(0.3,d))*0.35;
+        if(camDepth < (depth[Math.max(0,Math.min(W-1,screenX|0))]||99)){
+          put(screenX, sy, ch, color, camDepth);
+          if(size>2){ put(screenX-1,sy,"(",color,camDepth); put(screenX+1,sy,")",color,camDepth); }
+        }
+        continue;
+      } else if(s.kind==="proj"){
+        const ch=s.ref.glyph||"•"; color=s.ref.color||"#fff";
+        const sy=horizon + (P.z*H*0.18);
+        if(camDepth < (depth[Math.max(0,Math.min(W-1,screenX|0))]||99))
+          put(screenX, sy, ch, color, camDepth);
+        continue;
+      } else if(s.kind==="part"){
+        const sy=horizon + (P.z*H*0.18) + (s.ref.dy||0);
+        const ch=s.ref.ch||"*"; color=s.ref.color||"#fff";
+        if(camDepth < (depth[Math.max(0,Math.min(W-1,screenX|0))]||99)+0.4)
+          put(screenX, sy, ch, color, camDepth);
+        continue;
+      }
+    }
+
+    // rail beams (recent shots): draw a line of '·' from muzzle outward in screen space
+    const now=performance.now()/1000;
+    railFlash=railFlash.filter(rf=>now-rf.t<0.18);
+    for(const rf of railFlash){
+      // project a few points along the beam
+      for(let k=0;k<rf.len;k+=0.4){
+        const wx=rf.x0+Math.cos(rf.a)*k, wy=rf.y0+Math.sin(rf.a)*k;
+        const dx=wx-P.x, dy=wy-P.y;
+        const camDepth=dx*cosd+dy*sind; if(camDepth<=0.2) continue;
+        const camX=dx*sind-dy*cosd;
+        const sx=(W/2)*(1+(camX/(camDepth*FOV)));
+        const sy=horizon + (P.z*H*0.18);
+        if(camDepth < (depth[Math.max(0,Math.min(W-1,sx|0))]||99))
+          put(sx, sy, "═", "#aef2ff", camDepth);
+      }
+    }
+
+    // build overlay html (only non-null cells; transparent elsewhere via spaces)
+    let out="";
+    for(let y=0;y<H;y++){
+      let curColor=null, run="", line="";
+      const flush=()=>{ if(run){ line+="<span style=\"color:"+curColor+"\">"+esc(run)+"</span>"; run=""; } };
+      let any=false;
+      for(let x=0;x<W;x++){
+        const c=cell[y*W+x];
+        if(!c){ // transparent -> space, but flush color
+          if(curColor!==null){ flush(); curColor=null; }
+          if(run){ flush(); }
+          run+=" ";
+        } else {
+          any=true;
+          if(c.color!==curColor){ flush(); curColor=c.color; }
+          run+=c.ch;
+        }
+      }
+      flush();
+      out+=line+"\n";
+    }
+    ovl.innerHTML=out;
+  }
+
+  function drawBot(put, cx, horizon, size, color, d, depthArr){
+    // simple humanoid wraith made of ascii, scaled by size, depth-tested per column
+    cx=cx|0;
+    const baseY = horizon + (P.z*H*0.18) + (H/Math.max(0.4,d))*0.30; // feet near floor-ish
+    const top = baseY - size;
+    const colDepth = (xx)=> depthArr[Math.max(0,Math.min(W-1,xx))]||99;
+    const visible = (xx)=> d < colDepth(xx)+0.3;
+    const halfW=Math.max(1,(size*0.35)|0);
+    // head
+    if(visible(cx)) put(cx, top, "▟", color, d);
+    if(size>=4){ if(visible(cx-1))put(cx-1,top,"▙",color,d); if(visible(cx+1))put(cx+1,top,"▜",color,d); }
+    // body rows
+    for(let r=1;r<=size;r++){
+      const yy=top+r;
+      const w=Math.max(0,Math.round(halfW*(1 - Math.abs(r-size*0.4)/(size))));
+      const glyph = r<size*0.5 ? "█" : (r<size*0.8?"▓":"░");
+      for(let xx=cx-w;xx<=cx+w;xx++){
+        if(visible(xx)) put(xx,yy,glyph,color,d);
+      }
+    }
+    // glowing eyes
+    if(size>=5){ if(visible(cx-1))put(cx-1,top+1,"•","#fff",d-0.01); if(visible(cx+1))put(cx+1,top+1,"•","#fff",d-0.01); }
+  }
+
+  // ---------- combat ----------
+  function fireWeapon(){
+    if(!P.alive) return;
+    const w=WEAPONS[P.weapon]; const now=performance.now()/1000;
+    if(now-P.lastFire[w.id] < w.cd) return;
+    if(w.kind!=="x" && w.ammo<=0){ flashMsg("탄약 없음 — "+w.short, "#ff8a6a"); return; }
+    P.lastFire[w.id]=now;
+    if(w.ammo>0) w.ammo--;
+    const fx=Math.cos(P.dir), fy=Math.sin(P.dir);
+    if(w.kind==="hitscan"){
+      // rail: instant, pierce-to-first-wall, hit nearest bot along ray
+      railHit(P.x,P.y,P.dir,w.dmg,"player");
+      railFlash.push({x0:P.x+fx*0.4,y0:P.y+fy*0.4,a:P.dir,len:18,t:now});
+      kick(0.9);
+    } else {
+      projectiles.push({ x:P.x+fx*0.5,y:P.y+fy*0.5,z:0,vx:fx*w.speed,vy:fy*w.speed,
+        owner:"player",kind:w.kind,dmg:w.dmg,splash:w.splash,splashDmg:w.splashDmg,
+        life:2.0,color:w.color, glyph: w.kind==="rocket"?"◆":"•" });
+      kick(w.kind==="rocket"?0.6:0.18);
+    }
+    updateHUD();
+  }
+
+  function railHit(ox,oy,ang,dmg,owner){
+    const dx=Math.cos(ang),dy=Math.sin(ang);
+    // wall distance
+    let wallDist=999;
+    { let t=0; for(;t<24;t+=0.05){ if(isWall(ox+dx*t,oy+dy*t)){ wallDist=t; break; } } }
+    if(owner==="player"){
+      let best=null,bd=wallDist;
+      for(const b of bots){ if(!b.alive)continue;
+        const t=(b.x-ox)*dx+(b.y-oy)*dy; if(t<0||t>wallDist)continue;
+        const px=ox+dx*t, py=oy+dy*t; const perp=Math.hypot(b.x-px,b.y-py);
+        if(perp<0.5 && t<bd){ bd=t; best=b; } }
+      if(best){ damageBot(best,dmg,"player"); spawnBurst(best.x,best.y,"#7be0ff"); }
+    } else {
+      // bot rail toward player
+      const t=(P.x-ox)*dx+(P.y-oy)*dy;
+      if(t>0&&t<wallDist){ const px=ox+dx*t,py=oy+dy*t; if(Math.hypot(P.x-px,P.y-py)<0.45){ damagePlayer(dmg,owner); } }
+      railFlash.push({x0:ox,y0:oy,a:ang,len:Math.min(18,wallDist),t:performance.now()/1000});
+    }
+  }
+
+  function damageBot(b,dmg,who){
+    if(!b.alive)return;
+    b.hp-=dmg;
+    if(b.hp<=0){ b.alive=false; b.respawnT=performance.now()/1000+2.0;
+      spawnBurst(b.x,b.y,"#ffb000",14);
+      if(who==="player"){ P.frags++; frag(`YOU 프래그 ▶ ${b.name}`); checkWin(); }
+      updateFragList();
+    }
+  }
+  function damagePlayer(dmg,who){
+    if(!P.alive)return;
+    // armor soaks 2/3
+    if(P.armor>0){ const soak=Math.min(P.armor, dmg*0.66|0); P.armor-=soak; dmg-=soak; }
+    P.hp-=dmg; redFlash();
+    if(P.hp<=0){ P.hp=0; P.alive=false; P.deaths++; P.respawnAt=performance.now()/1000+1.6;
+      frag(`${who} 프래그 ▶ YOU`, true);
+      spawnBurst(P.x,P.y,"#ff3a2a",16);
+    }
+    updateHUD();
+  }
+
+  function splashDamage(x,y,radius,dmg,who){
+    // player
+    const dp=Math.hypot(P.x-x,P.y-y);
+    if(dp<radius && P.alive){
+      const f=1-dp/radius;
+      if(who==="player"){
+        // rocket jump: self-splash launches you + small self dmg
+        P.vz += f*6.2;
+        damagePlayer(Math.round(dmg*f*0.45), "균열압");
+        const ang=Math.atan2(P.y-y,P.x-x); P.x+=Math.cos(ang)*f*0.3; P.y+=Math.sin(ang)*f*0.3;
+      } else {
+        damagePlayer(Math.round(dmg*f), who);
+      }
+    }
+    for(const b of bots){ if(!b.alive)continue;
+      const d=Math.hypot(b.x-x,b.y-y);
+      if(d<radius){ damageBot(b,Math.round(dmg*(1-d/radius)), who); }
+    }
+  }
+
+  function spawnBurst(x,y,color,n=8){
+    for(let i=0;i<n;i++){
+      const a=Math.random()*6.28, sp=0.4+Math.random()*1.2;
+      particles.push({x,y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,dy:(Math.random()*4-2)|0,
+        ch:["*","•","✦","°","'"][i%5], color, life:0.4+Math.random()*0.4});
+    }
+  }
+
+  // ---------- bot AI ----------
+  function botThink(b,dt){
+    const now=performance.now()/1000;
+    if(!b.alive){ if(now>=b.respawnT){ const c=emptyCell(); b.x=c.x;b.y=c.y;b.hp=100;b.alive=true; } return; }
+    const dpx=P.x-b.x, dpy=P.y-b.y; const distP=Math.hypot(dpx,dpy);
+    const sees = P.alive && distP<11 && lineClear(b.x,b.y,P.x,P.y);
+    if(sees){
+      b.state="hunt"; b.dir=Math.atan2(dpy,dpx);
+      // strafe + approach
+      const fx=Math.cos(b.dir),fy=Math.sin(b.dir);
+      const sx=-fy*b.strafe, sy=fx*b.strafe;
+      const approach = distP>3?1: (distP<2?-0.8:0);
+      const mv=2.3*dt;
+      botMove(b, (fx*approach+sx*0.7)*mv, (fy*approach+sy*0.7)*mv);
+      if(Math.random()<0.012) b.strafe*=-1;
+      // fire
+      b.fireCd-=dt;
+      if(b.fireCd<=0 && distP<10){
+        b.fireCd=0.7+Math.random()*0.7;
+        const choice=Math.random();
+        if(choice<0.5){ // projectile blast toward player
+          const lead=0.0;
+          projectiles.push({x:b.x+fx*0.5,y:b.y+fy*0.5,vx:fx*12,vy:fy*12,owner:b.name,
+            kind:"proj",dmg:11,splash:0,splashDmg:0,life:1.4,color:b.color,glyph:"•"});
+        } else if(choice<0.8){ // rocket
+          projectiles.push({x:b.x+fx*0.5,y:b.y+fy*0.5,vx:fx*8,vy:fy*8,owner:b.name,
+            kind:"rocket",dmg:55,splash:2.2,splashDmg:40,life:1.8,color:"#ff6a3d",glyph:"◆"});
+        } else { // rail
+          railHit(b.x,b.y,b.dir,40,b.name);
+        }
+      }
+    } else {
+      // roam toward random target
+      if(now>b.nextTurn){ b.nextTurn=now+1+Math.random()*2;
+        b.tx=1+Math.random()*(W_MAP-2); b.ty=1+Math.random()*(H_MAP-2); }
+      const a=Math.atan2((b.ty||b.y)-b.y,(b.tx||b.x)-b.x); b.dir=a;
+      botMove(b,Math.cos(a)*1.6*dt,Math.sin(a)*1.6*dt);
+    }
+  }
+  function botMove(b,mx,my){
+    if(!isWall(b.x+mx,b.y)) b.x+=mx; else b.strafe*=-1;
+    if(!isWall(b.x,b.y+my)) b.y+=my; else b.strafe*=-1;
+  }
+  function lineClear(x0,y0,x1,y1){
+    const d=Math.hypot(x1-x0,y1-y0); const steps=Math.ceil(d/0.18);
+    for(let i=1;i<steps;i++){ const t=i/steps; if(isWall(x0+(x1-x0)*t,y0+(y1-y0)*t)) return false; }
+    return true;
+  }
+
+  // ---------- projectiles update ----------
+  function updateProjectiles(dt){
+    for(let i=projectiles.length-1;i>=0;i--){
+      const p=projectiles[i];
+      const nx=p.x+p.vx*dt, ny=p.y+p.vy*dt;
+      p.life-=dt;
+      let dead=false;
+      if(isWall(nx,ny)){ dead=true; if(p.splash>0) splashDamage(p.x,p.y,p.splash,p.splashDmg,p.owner); else spawnBurst(p.x,p.y,p.color,5); }
+      else {
+        p.x=nx;p.y=ny;
+        // hit player
+        if(p.owner!=="player" && P.alive && Math.hypot(p.x-P.x,p.y-P.y)<0.45){
+          if(p.splash>0){ splashDamage(p.x,p.y,p.splash,p.splashDmg,p.owner); }
+          else damagePlayer(p.dmg,p.owner);
+          dead=true; spawnBurst(p.x,p.y,p.color,6);
+        }
+        // hit bots (player projectiles)
+        if(p.owner==="player"){
+          for(const b of bots){ if(!b.alive)continue;
+            if(Math.hypot(p.x-b.x,p.y-b.y)<0.5){
+              if(p.splash>0){ splashDamage(p.x,p.y,p.splash,p.splashDmg,"player"); }
+              else damageBot(b,p.dmg,"player");
+              dead=true; spawnBurst(p.x,p.y,p.color,6); break;
+            }
+          }
+        }
+      }
+      if(p.life<=0) dead=true;
+      if(dead) projectiles.splice(i,1);
+    }
+  }
+  function updateParticles(dt){
+    for(let i=particles.length-1;i>=0;i--){
+      const pt=particles[i]; pt.x+=pt.vx*dt; pt.y+=pt.vy*dt; pt.life-=dt;
+      if(pt.life<=0) particles.splice(i,1);
+    }
+  }
+
+  // ---------- pickups ----------
+  function updatePickups(){
+    const now=performance.now()/1000;
+    for(const pk of pickups){
+      if(!pk.active){ if(now>=pk.respawnAt) pk.active=true; continue; }
+      if(P.alive && Math.hypot(pk.x-P.x,pk.y-P.y)<0.55){
+        let took=true;
+        switch(pk.type){
+          case "health": if(P.hp>=100){took=false;break;} P.hp=Math.min(100,P.hp+25); flashMsg("+25 HEALTH","#7bff9a"); break;
+          case "armor": if(P.armor>=100){took=false;break;} P.armor=Math.min(100,P.armor+50); flashMsg("+50 ARMOR","#7be0ff"); break;
+          case "mega": P.hp=Math.min(150,P.hp+75); P.armor=Math.min(100,P.armor+50); flashMsg("✦ 메가코어 +75/+50 ✦","#c08bff"); break;
+          case "rkt": WEAPONS[0].ammo=Math.min(WEAPONS[0].maxAmmo,WEAPONS[0].ammo+5); flashMsg("+5 로켓","#ff6a3d"); break;
+          case "cell": WEAPONS[1].ammo=Math.min(WEAPONS[1].maxAmmo,WEAPONS[1].ammo+40); flashMsg("+40 셀","#ffd24a"); break;
+          case "slug": WEAPONS[2].ammo=Math.min(WEAPONS[2].maxAmmo,WEAPONS[2].ammo+5); flashMsg("+5 슬러그","#7be0ff"); break;
+        }
+        if(took){ pk.active=false; pk.respawnAt=now+ (pk.type==="mega"?20:8); updateHUD(); }
+      }
+    }
+  }
+
+  // ---------- player movement / physics ----------
+  const keys={};
+  function moveTry(nx,ny){
+    const m=0.18;
+    if(!isWall(nx+Math.sign(nx-P.x)*m, P.y)) P.x=nx;
+    if(!isWall(P.x, ny+Math.sign(ny-P.y)*m)) P.y=ny;
+  }
+  function physics(dt){
+    if(!P.alive){
+      if(performance.now()/1000>=P.respawnAt){ respawnPlayer(); }
+      return;
+    }
+    const rs=2.6*dt;
+    if(keys["arrowleft"]) P.dir-=rs;
+    if(keys["arrowright"]) P.dir+=rs;
+    const fx=Math.cos(P.dir),fy=Math.sin(P.dir);
+    let ms=3.1*dt;
+    let mvx=0,mvy=0;
+    if(keys["w"]||keys["arrowup"]){ mvx+=fx; mvy+=fy; }
+    if(keys["s"]||keys["arrowdown"]){ mvx-=fx; mvy-=fy; }
+    if(keys["a"]){ mvx+=fy; mvy-=fx; }
+    if(keys["d"]){ mvx-=fy; mvy+=fx; }
+    if(joy.active){ mvx+=fx*(-joy.y)+fy*joy.x; mvy+=fy*(-joy.y)-fx*joy.x; }
+    const len=Math.hypot(mvx,mvy); if(len>0){ mvx/=len; mvy/=len; moveTry(P.x+mvx*ms, P.y+mvy*ms); }
+    // jump / gravity (z is vertical view offset)
+    P.vz -= 16*dt; P.z += P.vz*dt;
+    if(P.z<=0){ P.z=0; if(P.vz<0) P.vz=0; P.onGround=true; } else P.onGround=false;
+    // jump pad
+    if(isPad(P.x,P.y) && P.onGround){ P.vz=7.5; flashMsg("⤒ 점프패드","#9dffbe"); }
+  }
+  function jump(){ if(P.alive && P.onGround){ P.vz=6.2; } }
+
+  function respawnPlayer(){
+    const c=emptyCell(); P.x=c.x;P.y=c.y;P.hp=100;P.armor=0;P.alive=true;P.vz=0;P.z=0;
+    flashMsg("리스폰","#9dffbe"); updateHUD();
+  }
+
+  // ---------- HUD ----------
+  const hpEl=document.getElementById("hpc"),arEl=document.getElementById("arc"),
+        amEl=document.getElementById("amc"),wpnEl=document.getElementById("wpn");
+  function updateHUD(){
+    hpEl.textContent=P.hp; hpEl.style.color = P.hp<30?"#ff5a4a":"#7bff9a";
+    arEl.textContent=P.armor;
+    const w=WEAPONS[P.weapon]; amEl.textContent=w.ammo; amEl.style.color=w.color;
+    wpnEl.innerHTML=WEAPONS.map(ww=>`<span class="${ww.id===P.weapon?'sel':''}">${ww.id+1}:${ww.short}</span>`).join("  ");
+  }
+  function updateFragList(){
+    const rows=[{nm:"YOU",f:P.frags,you:true}, ...bots.map(b=>({nm:b.name,f:b.frags}))];
+    rows.sort((a,b)=>b.f-a.f);
+    document.getElementById("frags").innerHTML = rows.slice(0,5).map(r=>
+      `<div class="row"><span class="nm ${r.you?'you':''}">${r.nm}</span><span>${r.f}</span></div>`).join("");
+  }
+
+  const feedEl=document.getElementById("feed");
+  function frag(text,bad){
+    const l=document.createElement("div"); l.className="l"; l.textContent=text;
+    l.style.color = bad? "#ff7a5a":"#9dffbe"; feedEl.appendChild(l);
+    requestAnimationFrame(()=>l.style.opacity="1");
+    setTimeout(()=>{ l.style.opacity="0"; setTimeout(()=>l.remove(),400); },1800);
+  }
+  let msgT=0;
+  function flashMsg(text,color){
+    const l=document.createElement("div"); l.className="l"; l.textContent=text;
+    l.style.color=color||"#9dffbe"; l.style.fontSize="13px"; feedEl.appendChild(l);
+    requestAnimationFrame(()=>l.style.opacity="1");
+    setTimeout(()=>{ l.style.opacity="0"; setTimeout(()=>l.remove(),400); },1100);
+  }
+  const flashEl=document.getElementById("flash");
+  function redFlash(){ flashEl.style.background="radial-gradient(circle, transparent 30%, rgba(255,30,15,.45) 100%)";
+    setTimeout(()=>flashEl.style.background="radial-gradient(circle, transparent 40%, rgba(255,40,20,0) 100%)",110); }
+  let kickAmt=0; function kick(a){ kickAmt=a; }
+
+  // ---------- minimap ----------
+  const mini=document.getElementById("mini"), mctx=mini.getContext("2d");
+  function drawMini(){
+    const s=mini.width/W_MAP;
+    mctx.clearRect(0,0,mini.width,mini.height);
+    for(let y=0;y<H_MAP;y++)for(let x=0;x<W_MAP;x++){
+      if(grid[y][x]===1){ mctx.fillStyle="rgba(120,255,160,.35)"; mctx.fillRect(x*s,y*s,s,s); }
+    }
+    mctx.fillStyle="#7be0ff";
+    for(const[px,py] of padCells){ mctx.fillRect(px*s+s*0.3,py*s+s*0.3,s*0.4,s*0.4); }
+    for(const pk of pickups){ if(pk.active){ mctx.fillStyle="#ffd24a"; mctx.fillRect(pk.x*s-1,pk.y*s-1,2,2);} }
+    for(const b of bots){ if(b.alive){ mctx.fillStyle=b.color; mctx.beginPath(); mctx.arc(b.x*s,b.y*s,2,0,7); mctx.fill(); } }
+    // player
+    mctx.fillStyle="#fff"; mctx.beginPath(); mctx.arc(P.x*s,P.y*s,2.5,0,7); mctx.fill();
+    mctx.strokeStyle="#fff"; mctx.beginPath(); mctx.moveTo(P.x*s,P.y*s);
+    mctx.lineTo(P.x*s+Math.cos(P.dir)*7,P.y*s+Math.sin(P.dir)*7); mctx.stroke();
+  }
+
+  // ---------- win/lose ----------
+  function checkWin(){
+    if(P.frags>=TARGET_FRAGS){ endGame(true); }
+  }
+  function endGame(win){
+    gameOver=true; started=false; paused=true; releaseLock();
+    document.getElementById("endTitle").textContent = win?"균열 봉인 — 승리":"균열 잠식 — 패배";
+    document.getElementById("endText").innerHTML = win
+      ? `당신은 <b>${P.frags}</b> 프래그로 슬립게이트를 닫았다.<br>차원은 다시 침묵한다... 잠시 동안은.`
+      : `WRAITH 무리가 균열을 넓혔다.<br>당신 ${P.frags} 프래그 · 사망 ${P.deaths}.`;
+    document.getElementById("end").classList.remove("hidden");
+  }
+
+  // ---------- input ----------
+  addEventListener("keydown",e=>{
+    const k=e.key.toLowerCase();
+    if(["arrowup","arrowdown","arrowleft","arrowright"," "].includes(k)) e.preventDefault();
+    keys[k]=true;
+    if(k==="1")selectWeapon(0); if(k==="2")selectWeapon(1); if(k==="3")selectWeapon(2);
+    if(k===" ") jump();
+    if(k==="control") fireHeld=true;
+  });
+  addEventListener("keyup",e=>{ const k=e.key.toLowerCase(); keys[k]=false; if(k==="control")fireHeld=false; });
+  function selectWeapon(i){ if(i>=0&&i<WEAPONS.length){ P.weapon=i; updateHUD(); flashMsg(WEAPONS[i].name, WEAPONS[i].color); } }
+  addEventListener("wheel",e=>{ if(!started)return; P.weapon=(P.weapon+(e.deltaY>0?1:WEAPONS.length-1))%WEAPONS.length; updateHUD(); },{passive:true});
+
+  // mouse look + fire (pointer lock)
+  let fireHeld=false, locked=false;
+  view.parentElement.addEventListener("click",()=>{ if(started && !locked) requestLock(); });
+  function requestLock(){ const el=view.parentElement; const fn=el.requestPointerLock||el.mozRequestPointerLock; if(fn) try{ fn.call(el); }catch(e){} }
+  function releaseLock(){ if(document.pointerLockElement) document.exitPointerLock(); }
+  document.addEventListener("pointerlockchange",()=>{ locked=!!document.pointerLockElement; });
+  addEventListener("mousemove",e=>{ if(locked){ P.dir += e.movementX*0.0024; } });
+  addEventListener("mousedown",e=>{ if(locked){ fireHeld=true; } });
+  addEventListener("mouseup",()=>{ fireHeld=false; });
+
+  // touch
+  const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints>0;
+  const joy={active:false,x:0,y:0,id:null,cx:0,cy:0};
+  function setupTouch(){
+    const t=document.getElementById("touch"); t.style.display="block";
+    const stick=document.getElementById("stick"), nub=stick.querySelector(".nub");
+    const look=document.getElementById("look");
+    stick.addEventListener("touchstart",e=>{ e.preventDefault(); const r=stick.getBoundingClientRect();
+      joy.active=true; joy.cx=r.left+r.width/2; joy.cy=r.top+r.height/2; joy.id=e.changedTouches[0].identifier; },{passive:false});
+    stick.addEventListener("touchmove",e=>{ e.preventDefault();
+      for(const tch of e.changedTouches){ if(tch.identifier!==joy.id)continue;
+        let dx=tch.clientX-joy.cx, dy=tch.clientY-joy.cy; const m=Math.hypot(dx,dy)||1; const cap=Math.min(m,48);
+        dx=dx/m*cap; dy=dy/m*cap; joy.x=dx/48; joy.y=dy/48;
+        nub.style.transform=`translate(${dx}px,${dy}px)`; } },{passive:false});
+    const endJoy=e=>{ for(const tch of e.changedTouches){ if(tch.identifier===joy.id){ joy.active=false;joy.x=0;joy.y=0; nub.style.transform=""; } } };
+    stick.addEventListener("touchend",endJoy); stick.addEventListener("touchcancel",endJoy);
+    // look drag
+    let lookId=null,lx=0;
+    look.addEventListener("touchstart",e=>{ e.preventDefault(); lookId=e.changedTouches[0].identifier; lx=e.changedTouches[0].clientX; },{passive:false});
+    look.addEventListener("touchmove",e=>{ e.preventDefault(); for(const tch of e.changedTouches){ if(tch.identifier!==lookId)continue; P.dir+=(tch.clientX-lx)*0.006; lx=tch.clientX; } },{passive:false});
+    look.addEventListener("touchend",e=>{ for(const tch of e.changedTouches){ if(tch.identifier===lookId)lookId=null; } });
+    const fb=document.getElementById("fire");
+    fb.addEventListener("touchstart",e=>{e.preventDefault();fireHeld=true;},{passive:false});
+    fb.addEventListener("touchend",e=>{e.preventDefault();fireHeld=false;},{passive:false});
+    document.getElementById("jump").addEventListener("touchstart",e=>{e.preventDefault();jump();},{passive:false});
+    document.getElementById("swap").addEventListener("touchstart",e=>{e.preventDefault();P.weapon=(P.weapon+1)%WEAPONS.length;updateHUD();flashMsg(WEAPONS[P.weapon].name,WEAPONS[P.weapon].color);},{passive:false});
+  }
+
+  // ---------- main loop ----------
+  let lastT=performance.now(), acc=0, accBot=0;
+  function loop(t){
+    const dt=Math.min(0.05,(t-lastT)/1000); lastT=t;
+    if(started && !paused){
+      physics(dt);
+      for(const b of bots) botThink(b,dt);
+      updateProjectiles(dt);
+      updateParticles(dt);
+      updatePickups();
+      if(fireHeld) fireWeapon();
+      // bot frag tracking on player death already handled; bots can frag each other? keep simple.
+      // periodic HUD
+      kickAmt*=0.85;
+    }
+    acc+=dt;
+    if(acc>1/40){ acc=0;
+      if(started){ render(); drawMini(); }
+    }
+    requestAnimationFrame(loop);
+  }
+
+  // ---------- start ----------
+  function startGame(){
+    spawnBots(); setupPickups();
+    P.x=3.5;P.y=3.5;P.dir=0.6;P.hp=100;P.armor=0;P.frags=0;P.deaths=0;P.alive=true;P.weapon=0;P.vz=0;P.z=0;
+    WEAPONS[0].ammo=10; WEAPONS[1].ammo=60; WEAPONS[2].ammo=8;
+    projectiles.length=0; particles.length=0; railFlash=[];
+    gameOver=false; started=true; paused=false;
+    document.getElementById("intro").classList.add("hidden");
+    document.getElementById("end").classList.add("hidden");
+    updateHUD(); updateFragList();
+    if(isTouch){ setupTouch(); } else { setTimeout(requestLock,100); }
+    flashMsg("슬립게이트 진입 — 15 프래그 목표","#9dffbe");
+  }
+  document.getElementById("startBtn").addEventListener("click",startGame);
+  document.getElementById("againBtn").addEventListener("click",startGame);
+
+  // first paint of the world behind the intro so it isn't blank
+  fit(); render();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

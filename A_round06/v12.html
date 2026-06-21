@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>SYNAPSE — living neural organism</title>
+<style>
+  :root { --bg:#04060d; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { height:100%; background:var(--bg); overflow:hidden; }
+  body {
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    cursor: crosshair;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+  }
+  #stage { position:fixed; inset:0; display:block; }
+  /* soft vignette + chromatic frame */
+  #vignette {
+    position:fixed; inset:0; pointer-events:none; z-index:2;
+    background:
+      radial-gradient(120% 120% at 50% 42%, rgba(0,0,0,0) 55%, rgba(0,0,0,0.55) 100%);
+    mix-blend-mode:normal;
+  }
+  .ui { position:fixed; z-index:4; pointer-events:none; color:#cfe8ff;
+        font-weight:300; letter-spacing:.18em; }
+  #title {
+    top:26px; left:30px; font-size:13px; line-height:1.7;
+    text-transform:uppercase; opacity:.0;
+    animation:fadeIn 2.2s 0.4s forwards cubic-bezier(.2,.7,.2,1);
+    text-shadow:0 0 18px rgba(80,180,255,.35);
+  }
+  #title b { font-weight:600; letter-spacing:.34em; }
+  #title span { color:#5fb7ff; }
+  #hint {
+    bottom:24px; left:50%; transform:translateX(-50%);
+    font-size:11px; opacity:0; text-align:center;
+    color:#7fa8d8;
+    animation:fadeIn 2.4s 1.2s forwards;
+  }
+  #readout {
+    top:26px; right:30px; text-align:right; font-size:10.5px;
+    line-height:1.9; opacity:0; color:#74c0ff;
+    animation:fadeIn 2.4s 1s forwards;
+    font-variant-numeric: tabular-nums;
+  }
+  #readout .v { color:#eaf6ff; font-weight:400; }
+  @keyframes fadeIn { to { opacity:1; } }
+  @media (max-width:480px){
+    #title{font-size:11px; top:18px; left:18px;}
+    #readout{font-size:9px; top:18px; right:18px;}
+    #hint{font-size:10px;}
+  }
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <div id="vignette"></div>
+  <div class="ui" id="title">
+    <b>SYNAPSE</b><br><span>living neural organism</span>
+  </div>
+  <div class="ui" id="readout">
+    NEURONS&nbsp;<span class="v" id="rN">0</span><br>
+    SIGNALS&nbsp;<span class="v" id="rS">0</span><br>
+    AROUSAL&nbsp;<span class="v" id="rA">0%</span>
+  </div>
+  <div class="ui" id="hint">move &middot; hold &middot; click to ignite the mind</div>
+
+<script>
+(() => {
+"use strict";
+
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', { alpha:false });
+
+let W=0, H=0, DPR=1, AREA=0, MOBILE=false;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  MOBILE = Math.min(W,H) < 560;
+  cv.width = Math.floor(W*DPR);
+  cv.height = Math.floor(H*DPR);
+  cv.style.width = W+'px';
+  cv.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  AREA = W*H;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ---------- pointer ----------
+const ptr = { x:W*0.5, y:H*0.5, px:W*0.5, py:H*0.5,
+              vx:0, vy:0, down:false, active:false, energy:0 };
+function setPtr(x,y){
+  ptr.px = ptr.x; ptr.py = ptr.y;
+  ptr.x = x; ptr.y = y; ptr.active = true;
+}
+cv.addEventListener('mousemove', e => setPtr(e.clientX, e.clientY));
+cv.addEventListener('mousedown', e => { ptr.down=true; setPtr(e.clientX,e.clientY); ignite(e.clientX,e.clientY); });
+window.addEventListener('mouseup', () => ptr.down=false);
+cv.addEventListener('mouseleave', () => ptr.active=false);
+cv.addEventListener('touchstart', e => { e.preventDefault(); const t=e.touches[0]; ptr.down=true; setPtr(t.clientX,t.clientY); ignite(t.clientX,t.clientY);}, {passive:false});
+cv.addEventListener('touchmove', e => { e.preventDefault(); const t=e.touches[0]; setPtr(t.clientX,t.clientY);}, {passive:false});
+window.addEventListener('touchend', () => ptr.down=false);
+// scroll => global arousal pulse
+let scrollPulse = 0;
+window.addEventListener('wheel', e => { scrollPulse = Math.min(1, scrollPulse + Math.abs(e.deltaY)*0.0009); }, {passive:true});
+
+// ---------- palette ----------
+// bioluminescent: deep teal -> cyan -> violet -> hot magenta on arousal
+function hsl(h,s,l,a){ return `hsla(${h},${s}%,${l}%,${a})`; }
+
+// ---------- neurons ----------
+const NODES = [];
+const EDGES = [];
+let targetCount = 0;
+
+function neuronCount(){
+  // density scaled by area, capped for perf
+  const base = Math.round(AREA / 14000);
+  return Math.max(46, Math.min(MOBILE?72:140, base));
+}
+
+function rand(a,b){ return a + Math.random()*(b-a); }
+
+class Node {
+  constructor(x,y){
+    this.x=x; this.y=y;
+    this.ox=x; this.oy=y;           // organic anchor (drifts slowly)
+    this.vx=0; this.vy=0;
+    this.r = rand(1.4, 3.4);
+    this.baseR = this.r;
+    this.hue = rand(170, 205);       // teal/cyan resting
+    this.phase = Math.random()*Math.PI*2;
+    this.freq = rand(0.6, 1.5);
+    this.charge = 0;                 // 0..1 membrane potential glow
+    this.fireCd = rand(0, 4);        // cooldown before it can fire
+    this.id = NODES.length;
+    this.links = [];                 // edge indices
+  }
+}
+
+function seed(){
+  NODES.length=0; EDGES.length=0;
+  const n = neuronCount();
+  // poisson-ish scatter with margin
+  const m = 40;
+  for(let i=0;i<n;i++){
+    let x,y,tries=0,ok;
+    do {
+      x = rand(m, W-m); y = rand(m, H-m); ok=true;
+      const md = MOBILE?34:42;
+      for(let j=0;j<NODES.length;j++){
+        const dx=NODES[j].x-x, dy=NODES[j].y-y;
+        if(dx*dx+dy*dy < md*md){ ok=false; break; }
+      }
+      tries++;
+    } while(!ok && tries<30);
+    NODES.push(new Node(x,y));
+  }
+  buildEdges();
+  targetCount = NODES.length;
+}
+
+function buildEdges(){
+  EDGES.length=0;
+  for(const nd of NODES) nd.links=[];
+  const maxD = MOBILE?150:170;
+  for(let i=0;i<NODES.length;i++){
+    // connect to nearest k neighbours
+    const a = NODES[i];
+    const cand = [];
+    for(let j=0;j<NODES.length;j++){
+      if(i===j) continue;
+      const dx=NODES[j].x-a.x, dy=NODES[j].y-a.y;
+      const d2=dx*dx+dy*dy;
+      if(d2 < maxD*maxD) cand.push([d2,j]);
+    }
+    cand.sort((p,q)=>p[0]-q[0]);
+    const k = Math.min(cand.length, 3 + (Math.random()<0.4?1:0));
+    for(let c=0;c<k;c++){
+      const j = cand[c][1];
+      if(j<i){
+        // avoid dup: only add if not present
+        let dup=false;
+        for(const ei of a.links){ const e=EDGES[ei]; if(e.a===j||e.b===j){dup=true;break;} }
+        if(dup) continue;
+      }
+      const eIdx = EDGES.length;
+      EDGES.push({ a:i, b:j, len:Math.sqrt(cand[c][0]), flow:0 });
+      a.links.push(eIdx);
+      NODES[j].links.push(eIdx);
+    }
+  }
+  // remap in-flight signals to the rebuilt edge array (from/to node ids are stable)
+  if(typeof SIGNALS !== 'undefined'){
+    for(let i=SIGNALS.length-1;i>=0;i--){
+      const s = SIGNALS[i];
+      const nd = NODES[s.from];
+      let found = -1;
+      if(nd){
+        for(const ei of nd.links){
+          const e = EDGES[ei];
+          if((e.a===s.from && e.b===s.to) || (e.a===s.to && e.b===s.from)){ found=ei; break; }
+        }
+      }
+      if(found<0) SIGNALS.splice(i,1); else s.edge = found;
+    }
+  }
+}
+
+// ---------- signals (electric pulses travelling along edges) ----------
+const SIGNALS = [];
+const MAXSIG = MOBILE?160:300;
+
+function fireNode(i, amp){
+  const nd = NODES[i];
+  if(nd.fireCd>0) return;
+  nd.charge = Math.min(1.6, nd.charge + amp);
+  nd.fireCd = rand(0.18,0.45);
+  // propagate to neighbours
+  for(const ei of nd.links){
+    if(SIGNALS.length>=MAXSIG) break;
+    const e = EDGES[ei];
+    const toward = (e.a===i)?e.b:e.a;
+    SIGNALS.push({
+      edge: ei, from:i, to:toward, t:0,
+      speed: rand(70,130)/(e.len+1),
+      hue: nd.hue,
+    });
+    e.flow = Math.min(1, e.flow+0.6);
+  }
+}
+
+// click ignites a radial wave of firing
+function ignite(x,y){
+  ptr.energy = 1;
+  // find nearest node, fire it, then cascade outward in time
+  let best=-1, bd=1e9;
+  for(let i=0;i<NODES.length;i++){
+    const dx=NODES[i].x-x, dy=NODES[i].y-y, d=dx*dx+dy*dy;
+    if(d<bd){bd=d;best=i;}
+  }
+  if(best>=0){
+    fireNode(best, 1.4);
+    // schedule ring ignition by distance
+    for(let i=0;i<NODES.length;i++){
+      const dx=NODES[i].x-x, dy=NODES[i].y-y;
+      const dist=Math.hypot(dx,dy);
+      if(dist < (MOBILE?260:380)){
+        igniteQueue.push({ node:i, at:performance.now()+dist*1.4 });
+      }
+    }
+  }
+}
+const igniteQueue = [];
+
+seed();
+
+// ---------- ambient autonomous firing ----------
+let lastAuto = 0;
+
+// ---------- arousal (drives colour shift + speed) ----------
+let arousal = 0;       // 0..1
+let sigCount = 0;
+
+// ---------- main loop ----------
+let last = performance.now();
+let tGlobal = 0;
+
+function frame(now){
+  let dt = (now - last)/1000;
+  if(dt>0.05) dt=0.05;          // clamp on tab refocus
+  last = now; tGlobal += dt;
+
+  // pointer velocity
+  ptr.vx = ptr.x - ptr.px; ptr.vy = ptr.y - ptr.py;
+  ptr.px = ptr.x; ptr.py = ptr.y;
+  const speed = Math.hypot(ptr.vx, ptr.vy);
+  ptr.energy *= 0.94;
+  scrollPulse *= 0.96;
+
+  // arousal target from motion + holding + scroll + signal density
+  const target = Math.min(1,
+      (ptr.down?0.55:0) + Math.min(0.5, speed*0.012) +
+      scrollPulse*0.9 + ptr.energy*0.4 +
+      Math.min(0.3, SIGNALS.length/MAXSIG*0.45));
+  arousal += (target - arousal) * Math.min(1, dt*3.2);
+
+  update(dt, speed);
+  render();
+
+  requestAnimationFrame(frame);
+}
+
+function update(dt, speed){
+  const warm = arousal;        // 0 calm teal .. 1 hot magenta
+  // process ignite queue
+  const tnow = performance.now();
+  for(let i=igniteQueue.length-1;i>=0;i--){
+    if(igniteQueue[i].at <= tnow){
+      fireNode(igniteQueue[i].node, 0.9);
+      igniteQueue.splice(i,1);
+    }
+  }
+
+  // ambient autonomous firing — the brain thinks on its own
+  const rate = (0.6 + warm*6.0); // fires per second-ish
+  if(Math.random() < rate*dt){
+    fireNode((Math.random()*NODES.length)|0, rand(0.5,1.0));
+  }
+
+  // nodes
+  const px=ptr.x, py=ptr.y;
+  const reach = MOBILE?150:200;
+  for(const nd of NODES){
+    nd.phase += dt*nd.freq*(0.7+warm*0.9);
+    // organic breathing of anchor
+    nd.ox += Math.sin(tGlobal*0.3 + nd.id)*0.06;
+    nd.oy += Math.cos(tGlobal*0.27 + nd.id*1.3)*0.06;
+
+    // spring back to organic anchor (gentle)
+    nd.vx += (nd.ox - nd.x)*0.6*dt*6;
+    nd.vy += (nd.oy - nd.y)*0.6*dt*6;
+
+    // pointer interaction: nodes are attracted toward a halo ring,
+    // repelled if very close (push), pulled if pointer holds (gather)
+    if(ptr.active){
+      const dx = nd.x - px, dy = nd.y - py;
+      const d = Math.hypot(dx,dy)+0.001;
+      if(d < reach){
+        const f = (1 - d/reach);
+        if(ptr.down){
+          // gather toward cursor
+          nd.vx -= dx/d * f*f * 900*dt;
+          nd.vy -= dy/d * f*f * 900*dt;
+        } else {
+          // gentle push aside (parting the field)
+          nd.vx += dx/d * f*f * 260*dt;
+          nd.vy += dy/d * f*f * 260*dt;
+        }
+        // moving fast near a node makes it fire
+        if(speed>3 && Math.random()< (f*speed*0.02)){
+          fireNode(nd.id, 0.5+f*0.6);
+        }
+        nd.charge = Math.min(1.6, nd.charge + f*dt*1.4);
+      }
+    }
+
+    nd.vx *= 0.86; nd.vy *= 0.86;
+    nd.x += nd.vx*dt; nd.y += nd.vy*dt;
+
+    // keep on screen
+    const m=10;
+    if(nd.x<m){nd.x=m;nd.vx*=-0.5;} if(nd.x>W-m){nd.x=W-m;nd.vx*=-0.5;}
+    if(nd.y<m){nd.y=m;nd.vy*=-0.5;} if(nd.y>H-m){nd.y=H-m;nd.vy*=-0.5;}
+
+    nd.charge *= 0.94;
+    if(nd.fireCd>0) nd.fireCd -= dt;
+  }
+
+  // edges flow decay
+  for(const e of EDGES) e.flow *= 0.93;
+
+  // signals
+  for(let i=SIGNALS.length-1;i>=0;i--){
+    const s = SIGNALS[i];
+    s.t += s.speed*dt*(0.8+warm*1.3);
+    const se = EDGES[s.edge];
+    if(se) se.flow = Math.min(1, se.flow+0.04);
+    if(s.t>=1){
+      // arrived: charge target node, maybe re-fire (cascade)
+      fireNode(s.to, 0.55);
+      SIGNALS.splice(i,1);
+    }
+  }
+  sigCount = SIGNALS.length;
+}
+
+// soft trail: instead of full clear, paint translucent bg => glow trails
+function render(){
+  const warm = arousal;
+  // background fade (trail). darker = longer trails
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = 'rgba(4,6,13,' + (0.20 + (1-warm)*0.05) + ')';
+  ctx.fillRect(0,0,W,H);
+
+  // ---- edges ----
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap='round';
+  for(const e of EDGES){
+    const a=NODES[e.a], b=NODES[e.b];
+    const act = Math.max(e.flow, (a.charge+b.charge)*0.25);
+    const baseA = 0.045 + act*0.5;
+    if(baseA<0.02) continue;
+    const hue = 185 + warm*120 + act*30;   // shift toward magenta with arousal/activity
+    ctx.strokeStyle = hsl(hue, 90, 55+act*15, baseA);
+    ctx.lineWidth = 0.5 + act*1.8;
+    ctx.beginPath();
+    ctx.moveTo(a.x,a.y);
+    ctx.lineTo(b.x,b.y);
+    ctx.stroke();
+  }
+
+  // ---- signals (travelling pulses) ----
+  for(const s of SIGNALS){
+    const a=NODES[s.from], b=NODES[s.to];
+    const t=s.t;
+    const x=a.x+(b.x-a.x)*t, y=a.y+(b.y-a.y)*t;
+    const hue = 190 + warm*130;
+    // comet: bright head + faint tail back along edge
+    const tt = Math.max(0, t-0.18);
+    const tx=a.x+(b.x-a.x)*tt, ty=a.y+(b.y-a.y)*tt;
+    const g = ctx.createLinearGradient(tx,ty,x,y);
+    g.addColorStop(0, hsl(hue,95,60,0));
+    g.addColorStop(1, hsl(hue,95,72,0.9));
+    ctx.strokeStyle=g; ctx.lineWidth=2.0;
+    ctx.beginPath(); ctx.moveTo(tx,ty); ctx.lineTo(x,y); ctx.stroke();
+    // head glow
+    const r=2.6;
+    const rg = ctx.createRadialGradient(x,y,0,x,y,r*4);
+    rg.addColorStop(0, hsl(hue,100,85,0.95));
+    rg.addColorStop(0.4, hsl(hue,100,65,0.5));
+    rg.addColorStop(1, hsl(hue,100,60,0));
+    ctx.fillStyle=rg;
+    ctx.beginPath(); ctx.arc(x,y,r*4,0,6.283); ctx.fill();
+  }
+
+  // ---- nodes ----
+  for(const nd of NODES){
+    const breathe = 0.5 + 0.5*Math.sin(nd.phase);
+    const c = nd.charge;
+    const hue = nd.hue + warm*120 + c*40;
+    const r = nd.baseR*(0.85 + breathe*0.35) + c*2.6;
+    // outer glow (bigger when charged)
+    const glow = r + 4 + c*14 + warm*4;
+    const rg = ctx.createRadialGradient(nd.x,nd.y,0,nd.x,nd.y,glow);
+    const ga = 0.10 + c*0.55 + breathe*0.06;
+    rg.addColorStop(0, hsl(hue,95,72, Math.min(1,0.5+c*0.6)));
+    rg.addColorStop(0.25, hsl(hue,95,60, ga));
+    rg.addColorStop(1, hsl(hue,90,55,0));
+    ctx.fillStyle=rg;
+    ctx.beginPath(); ctx.arc(nd.x,nd.y,glow,0,6.283); ctx.fill();
+    // bright core
+    ctx.fillStyle = hsl(hue,100,90, Math.min(1,0.55+c*0.5));
+    ctx.beginPath(); ctx.arc(nd.x,nd.y,Math.max(0.6,r*0.55),0,6.283); ctx.fill();
+  }
+
+  // ---- pointer aura ----
+  if(ptr.active){
+    const r = (ptr.down?70:36) + arousal*30;
+    const hue = 195 + arousal*120;
+    const rg = ctx.createRadialGradient(ptr.x,ptr.y,0,ptr.x,ptr.y,r);
+    rg.addColorStop(0, hsl(hue,100,80, 0.18+ptr.energy*0.3));
+    rg.addColorStop(1, hsl(hue,100,60,0));
+    ctx.fillStyle=rg;
+    ctx.beginPath(); ctx.arc(ptr.x,ptr.y,r,0,6.283); ctx.fill();
+  }
+
+  ctx.globalCompositeOperation='source-over';
+
+  // HUD numbers (throttled)
+  hudAcc += 1;
+  if(hudAcc>=10){
+    hudAcc=0;
+    rN.textContent = NODES.length;
+    rS.textContent = sigCount;
+    rA.textContent = Math.round(arousal*100)+'%';
+  }
+}
+let hudAcc=0;
+const rN=document.getElementById('rN'),
+      rS=document.getElementById('rS'),
+      rA=document.getElementById('rA');
+
+// rebuild graph layout occasionally as nodes drift (keeps topology alive)
+setInterval(()=>{ buildEdges(); }, 2600);
+// on resize, reseed to fill space
+let rT;
+window.addEventListener('resize', ()=>{ clearTimeout(rT); rT=setTimeout(seed,250); });
+
+// kick a few signals at start so first paint is alive
+for(let i=0;i<8;i++) fireNode((Math.random()*NODES.length)|0, 1);
+
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

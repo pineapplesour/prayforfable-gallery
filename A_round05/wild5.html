@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>심해우편국 · ABYSSAL POST OFFICE</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Gowun+Batang:wght@400;700&family=JetBrains+Mono:wght@300;400;700&family=Noto+Sans+KR:wght@300;500;900&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --abyss:#02060c;
+    --deep:#04111d;
+    --teal:#1ef0d4;
+    --cyan:#36c8ff;
+    --jelly:#ff5fb0;
+    --jelly2:#9d6cff;
+    --gold:#ffd98a;
+    --ink:#cfe9ff;
+    --mute:#5a7d92;
+    --line:rgba(120,200,230,.14);
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    background:radial-gradient(120% 90% at 50% -10%, #06182a 0%, #03101c 38%, var(--abyss) 78%);
+    color:var(--ink);
+    font-family:'Noto Sans KR',sans-serif;
+    overflow-x:hidden;
+    -webkit-font-smoothing:antialiased;
+    cursor:none;
+  }
+  body.touch{cursor:auto}
+  ::selection{background:var(--jelly);color:#0a0a12}
+
+  /* ---------- custom cursor ---------- */
+  #cursor{position:fixed;left:0;top:0;width:34px;height:34px;border:1px solid var(--teal);border-radius:50%;transform:translate(-50%,-50%);pointer-events:none;z-index:9999;mix-blend-mode:screen;transition:width .25s,height .25s,border-color .25s,background .25s}
+  #cursor::after{content:"";position:absolute;left:50%;top:50%;width:4px;height:4px;background:var(--teal);border-radius:50%;transform:translate(-50%,-50%);box-shadow:0 0 12px var(--teal)}
+  #cursor.hot{width:64px;height:64px;border-color:var(--jelly);background:rgba(255,95,176,.06)}
+  #cursor.hot::after{background:var(--jelly);box-shadow:0 0 18px var(--jelly)}
+
+  /* ---------- intro (non-blocking, <0.8s) ---------- */
+  #intro{position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;pointer-events:none;
+    background:radial-gradient(60% 60% at 50% 50%, rgba(4,17,29,.0), var(--abyss) 75%);
+    animation:introOut .8s .55s forwards cubic-bezier(.7,0,.2,1)}
+  @keyframes introOut{to{opacity:0;visibility:hidden}}
+  #intro .ix{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.5em;color:var(--teal);text-transform:uppercase;
+    opacity:0;animation:ixIn .5s .05s forwards}
+  @keyframes ixIn{from{opacity:0;letter-spacing:1.4em}to{opacity:.9;letter-spacing:.5em}}
+  #intro .ring{position:absolute;width:120px;height:120px;border-radius:50%;border:1px solid var(--teal);opacity:.0;animation:pulseRing 1s ease-out forwards}
+  @keyframes pulseRing{0%{transform:scale(.2);opacity:.6}100%{transform:scale(2.4);opacity:0}}
+
+  /* ---------- WebGL canvas ---------- */
+  #scene{position:fixed;inset:0;z-index:0;display:block}
+  #bio{position:fixed;inset:0;z-index:1;pointer-events:none}
+  .vignette{position:fixed;inset:0;z-index:2;pointer-events:none;
+    background:radial-gradient(120% 80% at 50% 40%, transparent 45%, rgba(0,0,0,.55) 100%);
+    box-shadow:inset 0 0 220px 40px rgba(0,0,0,.8)}
+  .caustics{position:fixed;inset:-20%;z-index:1;pointer-events:none;opacity:.08;mix-blend-mode:screen;
+    background:
+      radial-gradient(40% 30% at 30% 20%, rgba(54,200,255,.6), transparent 60%),
+      radial-gradient(35% 28% at 75% 35%, rgba(30,240,212,.5), transparent 60%);
+    filter:blur(30px);animation:drift 18s ease-in-out infinite alternate}
+  @keyframes drift{to{transform:translate(4%,3%) scale(1.08)}}
+
+  /* ---------- frame / HUD ---------- */
+  .hud{position:fixed;z-index:30;font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:.28em;color:var(--mute);text-transform:uppercase;pointer-events:none}
+  .hud b{color:var(--teal);font-weight:400}
+  .hud.tl{top:26px;left:30px}
+  .hud.tr{top:26px;right:30px;text-align:right}
+  .hud.bl{bottom:24px;left:30px}
+  .hud.br{bottom:24px;right:30px;text-align:right}
+  .corner{position:fixed;z-index:30;width:26px;height:26px;border:1px solid var(--line);pointer-events:none}
+  .corner.a{top:18px;left:18px;border-right:0;border-bottom:0}
+  .corner.b{top:18px;right:18px;border-left:0;border-bottom:0}
+  .corner.c{bottom:18px;left:18px;border-right:0;border-top:0}
+  .corner.d{bottom:18px;right:18px;border-left:0;border-top:0}
+
+  /* depth gauge (left rail) */
+  #gauge{position:fixed;left:30px;top:50%;transform:translateY(-50%);z-index:30;pointer-events:none;font-family:'JetBrains Mono',monospace}
+  #gauge .track{position:relative;width:1px;height:240px;background:linear-gradient(var(--line),transparent)}
+  #gauge .fill{position:absolute;left:0;top:0;width:1px;background:linear-gradient(var(--teal),var(--cyan));box-shadow:0 0 8px var(--teal)}
+  #gauge .knob{position:absolute;left:-3px;width:7px;height:7px;border-radius:50%;background:var(--teal);box-shadow:0 0 12px var(--teal);transform:translateY(-50%)}
+  #gauge .dval{position:absolute;left:14px;font-size:10px;letter-spacing:.2em;color:var(--teal);white-space:nowrap;transform:translateY(-50%)}
+  #gauge .lab{position:absolute;left:14px;bottom:-2px;font-size:8.5px;letter-spacing:.3em;color:var(--mute);text-transform:uppercase}
+  #gauge .lab.top{top:-2px;bottom:auto}
+  @media(max-width:760px){#gauge{display:none}}
+
+  /* ---------- layout ---------- */
+  main{position:relative;z-index:10}
+  section{position:relative;min-height:100vh;display:flex;flex-direction:column;justify-content:center;padding:0 6vw}
+  .reveal{opacity:0;transform:translateY(34px);transition:opacity 1s cubic-bezier(.2,.7,.2,1),transform 1s cubic-bezier(.2,.7,.2,1)}
+  .reveal.in{opacity:1;transform:none}
+  .d1{transition-delay:.08s}.d2{transition-delay:.18s}.d3{transition-delay:.3s}.d4{transition-delay:.42s}
+
+  .kicker{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.45em;color:var(--teal);text-transform:uppercase;display:flex;align-items:center;gap:14px}
+  .kicker::before{content:"";width:46px;height:1px;background:linear-gradient(90deg,var(--teal),transparent)}
+
+  /* HERO */
+  #hero{padding-top:8vh}
+  .hero-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:40px;align-items:end}
+  .htitle{font-family:'Black Han Sans',sans-serif;line-height:.92;letter-spacing:-.01em}
+  .htitle .l1{font-size:clamp(54px,9.4vw,150px);color:#eaf7ff;text-shadow:0 0 40px rgba(54,200,255,.25)}
+  .htitle .l2{font-size:clamp(54px,9.4vw,150px);background:linear-gradient(100deg,var(--jelly),var(--jelly2) 60%,var(--cyan));-webkit-background-clip:text;background-clip:text;color:transparent;filter:drop-shadow(0 0 26px rgba(255,95,176,.35))}
+  .htitle .en{display:block;font-family:'JetBrains Mono',monospace;font-weight:300;font-size:clamp(11px,1.1vw,14px);letter-spacing:.5em;color:var(--mute);margin-top:18px}
+  .lede{font-family:'Gowun Batang',serif;font-size:clamp(14px,1.35vw,19px);line-height:2;color:#a9c8da;max-width:38ch}
+  .lede em{font-style:normal;color:var(--gold)}
+  .cta-row{display:flex;gap:14px;align-items:center;margin-top:30px;flex-wrap:wrap}
+  .btn{pointer-events:auto;cursor:none;font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.28em;text-transform:uppercase;
+    padding:14px 26px;border:1px solid var(--teal);color:var(--teal);background:rgba(30,240,212,.04);border-radius:2px;position:relative;overflow:hidden;transition:color .3s}
+  .btn:hover{color:#03121a}
+  .btn::before{content:"";position:absolute;inset:0;background:var(--teal);transform:scaleX(0);transform-origin:left;transition:transform .35s cubic-bezier(.6,0,.2,1);z-index:-1}
+  .btn:hover::before{transform:scaleX(1)}
+  .btn.ghost{border-color:var(--line);color:var(--mute)}
+  .btn.ghost::before{background:var(--ink)}
+  .btn.ghost:hover{color:#0a1018}
+
+  .scrollcue{position:absolute;bottom:30px;left:50%;transform:translateX(-50%);font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.4em;color:var(--mute);text-transform:uppercase;display:flex;flex-direction:column;align-items:center;gap:10px}
+  .scrollcue .bar{width:1px;height:42px;background:linear-gradient(var(--teal),transparent);animation:cue 2.2s infinite}
+  @keyframes cue{0%{transform:scaleY(0);transform-origin:top}50%{transform:scaleY(1);transform-origin:top}51%{transform:scaleY(1);transform-origin:bottom}100%{transform:scaleY(0);transform-origin:bottom}}
+
+  /* STATS strip */
+  .statbar{display:grid;grid-template-columns:repeat(4,1fr);gap:0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin-top:6vh}
+  .stat{padding:22px 18px;border-right:1px solid var(--line);position:relative}
+  .stat:last-child{border-right:0}
+  .stat .n{font-family:'Black Han Sans',sans-serif;font-size:clamp(28px,3.4vw,46px);color:#eaf7ff;line-height:1}
+  .stat .n .u{font-family:'JetBrains Mono',monospace;font-size:.4em;color:var(--teal);letter-spacing:.1em;margin-left:4px}
+  .stat .c{font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.26em;color:var(--mute);text-transform:uppercase;margin-top:10px}
+
+  /* SECTION: process */
+  .twocol{display:grid;grid-template-columns:.8fr 1.2fr;gap:60px;align-items:center}
+  .bigword{font-family:'Black Han Sans',sans-serif;font-size:clamp(40px,6.2vw,98px);line-height:.96;color:#eaf7ff}
+  .bigword .accent{color:var(--jelly)}
+  .steps{display:flex;flex-direction:column;gap:2px}
+  .step{display:grid;grid-template-columns:64px 1fr;gap:18px;padding:22px 0;border-bottom:1px solid var(--line);align-items:start;transition:padding-left .4s,background .4s}
+  .step:hover{padding-left:14px;background:linear-gradient(90deg,rgba(30,240,212,.05),transparent)}
+  .step .no{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--teal);letter-spacing:.2em;padding-top:4px}
+  .step h4{font-family:'Noto Sans KR';font-weight:900;font-size:clamp(17px,1.7vw,23px);color:#dff2ff;margin-bottom:8px}
+  .step p{font-size:13.5px;line-height:1.8;color:var(--mute);max-width:46ch}
+
+  /* SECTION: drop interaction */
+  #drop{align-items:center;text-align:center}
+  .dropwrap{max-width:560px;width:100%;display:flex;flex-direction:column;align-items:center;gap:24px}
+  .bottle-card{width:100%;border:1px solid var(--line);background:linear-gradient(180deg,rgba(8,28,44,.55),rgba(4,14,24,.4));backdrop-filter:blur(10px);border-radius:6px;padding:30px 28px;position:relative;overflow:hidden}
+  .bottle-card::before{content:"";position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,var(--teal),transparent);opacity:.6}
+  .bottle-card label{display:block;font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.3em;color:var(--mute);text-transform:uppercase;margin-bottom:10px;text-align:left}
+  .bottle-card textarea{width:100%;min-height:96px;background:rgba(2,9,16,.6);border:1px solid var(--line);border-radius:4px;color:var(--ink);
+    font-family:'Gowun Batang',serif;font-size:16px;line-height:1.8;padding:14px;resize:none;outline:none;transition:border-color .3s,box-shadow .3s;cursor:none}
+  .bottle-card textarea::placeholder{color:#3c576a}
+  .bottle-card textarea:focus{border-color:var(--teal);box-shadow:0 0 0 1px rgba(30,240,212,.25),0 0 28px rgba(30,240,212,.12)}
+  .drop-meta{display:flex;justify-content:space-between;font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.2em;color:var(--mute);margin-top:12px}
+  .sendbtn{margin-top:18px;width:100%;cursor:none;font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.3em;text-transform:uppercase;padding:16px;border:1px solid var(--jelly);color:var(--jelly);background:rgba(255,95,176,.05);border-radius:3px;position:relative;overflow:hidden;transition:color .3s}
+  .sendbtn::before{content:"";position:absolute;inset:0;background:var(--jelly);transform:scaleX(0);transform-origin:left;transition:transform .4s cubic-bezier(.6,0,.2,1);z-index:-1}
+  .sendbtn:hover{color:#1a0410}.sendbtn:hover::before{transform:scaleX(1)}
+  .sendbtn:disabled{opacity:.4;cursor:none}
+  #sendStatus{min-height:18px;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.25em;color:var(--teal);text-transform:uppercase;margin-top:14px}
+  .log{width:100%;text-align:left;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.1em;color:var(--mute);max-height:120px;overflow:hidden}
+  .log .line{padding:5px 0;border-bottom:1px dashed rgba(120,200,230,.08);opacity:0;animation:logIn .5s forwards}
+  .log .line b{color:var(--jelly)}
+  @keyframes logIn{to{opacity:1}}
+
+  /* manifesto */
+  #manifesto .quote{font-family:'Gowun Batang',serif;font-size:clamp(22px,3.6vw,52px);line-height:1.5;color:#dff2ff;max-width:18ch}
+  #manifesto .quote .g{color:var(--gold)}
+  #manifesto .sig{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:.35em;color:var(--mute);margin-top:34px;text-transform:uppercase}
+
+  /* footer */
+  footer{position:relative;z-index:10;padding:60px 6vw 120px;border-top:1px solid var(--line)}
+  .footgrid{display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:30px;align-items:start}
+  .footmark{font-family:'Black Han Sans',sans-serif;font-size:clamp(30px,4vw,56px);color:#eaf7ff;line-height:.95}
+  .footmark span{color:var(--jelly)}
+  .footcol h5{font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.3em;color:var(--teal);text-transform:uppercase;margin-bottom:16px}
+  .footcol a{display:block;color:var(--mute);text-decoration:none;font-size:13px;padding:6px 0;transition:color .3s,padding-left .3s}
+  .footcol a:hover{color:var(--ink);padding-left:8px}
+  .footbottom{margin-top:50px;display:flex;justify-content:space-between;font-family:'JetBrains Mono',monospace;font-size:9.5px;letter-spacing:.25em;color:var(--mute);text-transform:uppercase;flex-wrap:wrap;gap:10px}
+
+  @media(max-width:900px){
+    .hero-grid{grid-template-columns:1fr;gap:30px}
+    .twocol{grid-template-columns:1fr;gap:36px}
+    .footgrid{grid-template-columns:1fr;gap:34px}
+  }
+  @media(max-width:480px){
+    section{padding:0 7vw}
+    .statbar{grid-template-columns:1fr 1fr}
+    .stat:nth-child(2){border-right:0}
+    .stat:nth-child(1),.stat:nth-child(2){border-bottom:1px solid var(--line)}
+    .hud.tl,.hud.tr,.hud.bl,.hud.br{font-size:9px;letter-spacing:.18em}
+    .step{grid-template-columns:42px 1fr;gap:12px}
+  }
+</style>
+</head>
+<body>
+  <div id="cursor"></div>
+
+  <!-- non-blocking intro: content paints under it immediately -->
+  <div id="intro">
+    <div class="ring"></div>
+    <div class="ix">하강 시퀀스 · DESCENT INITIATED</div>
+  </div>
+
+  <canvas id="scene"></canvas>
+  <canvas id="bio"></canvas>
+  <div class="caustics"></div>
+  <div class="vignette"></div>
+
+  <div class="corner a"></div><div class="corner b"></div>
+  <div class="corner c"></div><div class="corner d"></div>
+
+  <div class="hud tl">심해우편국 <b>/ ABYSSAL POST</b><br>STATION NO. 06 · 마리아나 지구</div>
+  <div class="hud tr">SIGNAL <b id="hudSig">●●●○</b><br>수심 <b id="hudDepth">0,000</b> m</div>
+  <div class="hud bl">건네지 못한 말의 보관소</div>
+  <div class="hud br">EST. 심연 · 2026<br>발신 가능 <b>∞</b></div>
+
+  <div id="gauge">
+    <div class="track">
+      <div class="fill" id="gFill" style="height:0%"></div>
+      <div class="knob" id="gKnob" style="top:0%"></div>
+      <div class="dval" id="gVal" style="top:0%">0 m</div>
+      <div class="lab top">표층 · SURFACE</div>
+      <div class="lab">해연 · TRENCH</div>
+    </div>
+  </div>
+
+  <main>
+    <!-- HERO -->
+    <section id="hero">
+      <div class="hero-grid">
+        <div>
+          <div class="kicker reveal">전송 매체 : 빛 · 압력 · 침묵</div>
+          <h1 class="htitle">
+            <span class="l1 reveal d1">닿지 못한</span><br>
+            <span class="l2 reveal d2">말의 심해</span>
+            <span class="en reveal d3">THE ABYSSAL POST OFFICE — WHERE WORDS SINK TO BE HEARD</span>
+          </h1>
+          <div class="cta-row">
+            <a class="btn reveal d4" id="goDrop">편지를 내려보낸다 ↓</a>
+            <a class="btn ghost reveal d4" id="goManifesto">심연의 규칙</a>
+          </div>
+        </div>
+        <div>
+          <p class="lede reveal d3">
+            수신인은 더 이상 이 세계에 없다.<br>
+            그래서 우리는 말을 <em>바다 밑</em>으로 보낸다.<br>
+            빛을 내는 병에 담아, 압력이 모든 걸<br>
+            지워버리는 곳까지 — 끝내 <em>들리도록</em>.
+          </p>
+        </div>
+      </div>
+
+      <div class="statbar reveal d4">
+        <div class="stat"><div class="n" data-to="10924"><span class="u">m</span></div><div class="c">최대 하강 심도</div></div>
+        <div class="stat"><div class="n" data-to="1108"><span class="u">기압</span></div><div class="c">병에 걸리는 압력</div></div>
+        <div class="stat"><div class="n" data-to="47">건<span class="u">/일</span></div><div class="c">오늘 발신된 편지</div></div>
+        <div class="stat"><div class="n" data-to="0" data-suffix="회"></div><div class="c">반송 · 영원히</div></div>
+      </div>
+
+      <div class="scrollcue">
+        <span>SCROLL TO DESCEND</span>
+        <span class="bar"></span>
+      </div>
+    </section>
+
+    <!-- PROCESS -->
+    <section id="process">
+      <div class="twocol">
+        <div>
+          <div class="kicker reveal">발송 절차 · PROTOCOL</div>
+          <h2 class="bigword reveal d1">어떻게<br><span class="accent">가라앉히나</span></h2>
+          <p class="lede reveal d2" style="margin-top:24px">
+            모든 편지는 빛으로 봉인되고, 압력으로 부쳐진다.
+            도착 확인은 없다. 그것이 이곳의 약속이다.
+          </p>
+        </div>
+        <div class="steps">
+          <div class="step reveal d1"><div class="no">01</div><div><h4>발광 봉인 (Bioluminescent Seal)</h4><p>당신의 문장이 살아있는 플랑크톤의 빛으로 코팅된다. 어둠 속에서만 읽히는 잉크 — 햇빛 아래선 영원히 보이지 않는다.</p></div></div>
+          <div class="step reveal d2"><div class="no">02</div><div><h4>압력 강하 (Pressure Descent)</h4><p>병은 자유낙하로 해연을 향한다. 1km마다 100기압씩 말이 압축되고, 불필요한 수식어는 수압에 으스러져 핵심만 남는다.</p></div></div>
+          <div class="step reveal d3"><div class="no">03</div><div><h4>침묵 정착 (Silent Berth)</h4><p>해저 11km, 빛도 소리도 없는 곳에 병이 안착한다. 수신인이 오지 않아도 좋다 — 보냈다는 사실만이 남는다.</p></div></div>
+          <div class="step reveal d4"><div class="no">04</div><div><h4>무반송 보장 (No Return Clause)</h4><p>한 번 내려간 편지는 결코 떠오르지 않는다. 후회도, 정정도 불가능하다. 가장 정직한 말만 보내라.</p></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- DROP INTERACTION -->
+    <section id="drop">
+      <div class="dropwrap">
+        <div class="kicker reveal" style="justify-content:center">발신 단말 · DROP TERMINAL</div>
+        <h2 class="bigword reveal d1" style="text-align:center">지금, <span class="accent">내려보낸다</span></h2>
+        <div class="bottle-card reveal d2">
+          <label>수신인 — 더 이상 닿을 수 없는 이에게</label>
+          <textarea id="msg" maxlength="280" placeholder="여기에 끝내 하지 못한 말을 적습니다. 압력이 나머지를 정리할 것입니다…"></textarea>
+          <div class="drop-meta">
+            <span>봉인 잉크 : <span style="color:var(--teal)">발광 플랑크톤</span></span>
+            <span><span id="charCount">0</span> / 280 자</span>
+          </div>
+          <button class="sendbtn" id="sendBtn">▼ 심연으로 봉인·발송</button>
+          <div id="sendStatus"></div>
+          <div class="log" id="dropLog"></div>
+        </div>
+        <p class="lede reveal d3" style="text-align:center;max-width:40ch">
+          전송된 글은 어디에도 저장되지 않는다. 화면에서 가라앉는 순간, 그것은 오직 바다의 것이 된다.
+        </p>
+      </div>
+    </section>
+
+    <!-- MANIFESTO -->
+    <section id="manifesto">
+      <div class="kicker reveal">심연의 규칙 · CREED</div>
+      <p class="quote reveal d1">
+        “답장이 오지 않는다는 걸<br>알면서도 보내는 말이<br><span class="g">가장 진실하다.</span>”
+      </p>
+      <div class="sig reveal d2">— 심해우편국 제 06 관측소, 수심 10,924m 기록</div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="footgrid">
+      <div>
+        <div class="footmark reveal">심해<span>우편국</span></div>
+        <p class="lede reveal d1" style="margin-top:18px;max-width:32ch">빛으로 봉인하고, 압력으로 부친다. 도착은 보장하지 않는다 — 오직 보냈다는 사실만을.</p>
+      </div>
+      <div class="footcol reveal d2">
+        <h5>관측소</h5>
+        <a id="lnk1">발신 단말</a>
+        <a id="lnk2">발송 절차</a>
+        <a id="lnk3">심연의 규칙</a>
+      </div>
+      <div class="footcol reveal d3">
+        <h5>좌표</h5>
+        <a>11°21′N · 142°12′E</a>
+        <a>수심 −10,924 m</a>
+        <a>수온 1.1 ℃ · 압력 1,108 atm</a>
+      </div>
+    </div>
+    <div class="footbottom">
+      <span>© 2026 ABYSSAL POST OFFICE · 닿지 못한 말의 보관소</span>
+      <span>BUILT IN THE DARK · NO BACKEND · NO RETURN</span>
+    </div>
+  </footer>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+  <script>
+  (function(){
+    "use strict";
+    const isTouch = window.matchMedia('(pointer:coarse)').matches;
+    if(isTouch) document.body.classList.add('touch');
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    /* ---------------- custom cursor ---------------- */
+    const cur = document.getElementById('cursor');
+    let cx=window.innerWidth/2, cy=window.innerHeight/2, tx=cx, ty=cy;
+    if(!isTouch){
+      window.addEventListener('pointermove',e=>{tx=e.clientX;ty=e.clientY;});
+      (function loop(){ cx+=(tx-cx)*.2; cy+=(ty-cy)*.2; cur.style.left=cx+'px'; cur.style.top=cy+'px'; requestAnimationFrame(loop);})();
+      document.querySelectorAll('a,button,textarea,.step').forEach(el=>{
+        el.addEventListener('pointerenter',()=>cur.classList.add('hot'));
+        el.addEventListener('pointerleave',()=>cur.classList.remove('hot'));
+      });
+    } else { cur.style.display='none'; }
+
+    /* ---------------- WebGL trench scene ---------------- */
+    let renderer, scene, camera, jelly, motes, beams, raf;
+    const canvas = document.getElementById('scene');
+    function initGL(){
+      if(!window.THREE){ return false; }
+      renderer = new THREE.WebGLRenderer({canvas, antialias:true, alpha:true});
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      scene = new THREE.Scene();
+      scene.fog = new THREE.FogExp2(0x02060c, 0.055);
+      camera = new THREE.PerspectiveCamera(55, window.innerWidth/window.innerHeight, 0.1, 120);
+      camera.position.set(0,0,18);
+
+      const amb = new THREE.AmbientLight(0x1a3a55, 0.7); scene.add(amb);
+      const key = new THREE.PointLight(0x36c8ff, 2.2, 60); key.position.set(-8,10,14); scene.add(key);
+      const rim = new THREE.PointLight(0xff5fb0, 1.6, 50); rim.position.set(10,-6,8); scene.add(rim);
+
+      /* ---- the message bottle / jellyfish hybrid ---- */
+      jelly = new THREE.Group();
+      // glass bell
+      const bellGeo = new THREE.SphereGeometry(3.0, 48, 32, 0, Math.PI*2, 0, Math.PI*0.62);
+      const bellMat = new THREE.MeshPhysicalMaterial({
+        color:0x9d6cff, transparent:true, opacity:0.34, roughness:0.08, metalness:0.0,
+        transmission:0.9, thickness:1.5, clearcoat:1, clearcoatRoughness:0.1,
+        emissive:0x4a2a7a, emissiveIntensity:0.5, side:THREE.DoubleSide
+      });
+      const bell = new THREE.Mesh(bellGeo, bellMat); jelly.add(bell);
+      // inner glow core (the "letter")
+      const coreGeo = new THREE.IcosahedronGeometry(1.1, 1);
+      const coreMat = new THREE.MeshBasicMaterial({color:0xffd98a, transparent:true, opacity:0.9});
+      const core = new THREE.Mesh(coreGeo, coreMat); core.position.y=0.6; jelly.add(core);
+      jelly.userData.core = core;
+      // bioluminescent rim ring
+      const ringGeo = new THREE.TorusGeometry(2.95, 0.06, 12, 80);
+      const ringMat = new THREE.MeshBasicMaterial({color:0x1ef0d4, transparent:true, opacity:0.85});
+      const ring = new THREE.Mesh(ringGeo, ringMat); ring.rotation.x=Math.PI/2; ring.position.y=-0.05; jelly.add(ring);
+      // tentacles (glowing lines)
+      const tentMat = new THREE.LineBasicMaterial({color:0xff5fb0, transparent:true, opacity:0.55});
+      const tents=[];
+      for(let i=0;i<22;i++){
+        const a=(i/22)*Math.PI*2, r=2.4;
+        const pts=[];
+        for(let j=0;j<14;j++){
+          pts.push(new THREE.Vector3(
+            Math.cos(a)*r*(1-j*0.01),
+            -0.1 - j*0.55,
+            Math.sin(a)*r*(1-j*0.01)
+          ));
+        }
+        const g=new THREE.BufferGeometry().setFromPoints(pts);
+        const ln=new THREE.Line(g, tentMat.clone());
+        ln.userData={a, base:pts};
+        jelly.add(ln); tents.push(ln);
+      }
+      jelly.userData.tents = tents;
+      jelly.scale.set(0.9,0.9,0.9);
+      scene.add(jelly);
+
+      /* ---- floating bioluminescent motes ---- */
+      const N = isTouch?420:900;
+      const pg = new THREE.BufferGeometry();
+      const pos = new Float32Array(N*3), spd = new Float32Array(N), col = new Float32Array(N*3);
+      const palette=[[0.12,0.94,0.83],[0.21,0.78,1.0],[1.0,0.37,0.69],[1.0,0.85,0.54]];
+      for(let i=0;i<N;i++){
+        pos[i*3]=(Math.random()-0.5)*60;
+        pos[i*3+1]=(Math.random()-0.5)*70;
+        pos[i*3+2]=(Math.random()-0.5)*40-10;
+        spd[i]=0.4+Math.random()*1.6;
+        const c=palette[(Math.random()*palette.length)|0];
+        col[i*3]=c[0];col[i*3+1]=c[1];col[i*3+2]=c[2];
+      }
+      pg.setAttribute('position', new THREE.BufferAttribute(pos,3));
+      pg.setAttribute('color', new THREE.BufferAttribute(col,3));
+      const pm = new THREE.PointsMaterial({size:0.16, vertexColors:true, transparent:true, opacity:0.9, depthWrite:false, blending:THREE.AdditiveBlending});
+      motes = new THREE.Points(pg, pm); motes.userData={spd, N}; scene.add(motes);
+
+      /* ---- god-ray light beams from above ---- */
+      beams = new THREE.Group();
+      for(let i=0;i<5;i++){
+        const bg=new THREE.PlaneGeometry(1.2, 60);
+        const bm=new THREE.MeshBasicMaterial({color:0x36c8ff, transparent:true, opacity:0.05, blending:THREE.AdditiveBlending, depthWrite:false, side:THREE.DoubleSide});
+        const b=new THREE.Mesh(bg,bm);
+        b.position.set(-18+i*9, 8, -14-i*2);
+        b.rotation.z=0.18;
+        beams.add(b);
+      }
+      scene.add(beams);
+      return true;
+    }
+
+    let mouseX=0, mouseY=0, scrollDepth=0;
+    window.addEventListener('pointermove',e=>{ mouseX=(e.clientX/window.innerWidth-0.5); mouseY=(e.clientY/window.innerHeight-0.5); });
+
+    function animate(t){
+      raf=requestAnimationFrame(animate);
+      t*=0.001;
+      if(jelly){
+        jelly.rotation.y = t*0.18 + mouseX*0.4;
+        jelly.rotation.x = Math.sin(t*0.4)*0.06 + mouseY*0.25;
+        // pulse the bell (jellyfish breathing)
+        const pulse = 0.9 + Math.sin(t*1.6)*0.05;
+        jelly.scale.set(pulse,1.0-(pulse-0.9),pulse);
+        jelly.userData.core.material.opacity = 0.7+Math.sin(t*2.4)*0.3;
+        jelly.userData.core.rotation.x = t*0.6; jelly.userData.core.rotation.y=t*0.4;
+        // descend jelly with scroll
+        jelly.position.y = 1.5 - scrollDepth*8 + Math.sin(t*0.8)*0.4;
+        jelly.position.x = 3.2 + mouseX*1.2;
+        // wave tentacles
+        jelly.userData.tents.forEach((ln,ix)=>{
+          const arr=ln.geometry.attributes.position.array, base=ln.userData.base;
+          for(let j=0;j<base.length;j++){
+            const sway=Math.sin(t*2 + j*0.5 + ix)* (0.04*j);
+            arr[j*3]   = base[j].x + sway;
+            arr[j*3+2] = base[j].z + Math.cos(t*1.7 + j*0.4 + ix)*(0.03*j);
+          }
+          ln.geometry.attributes.position.needsUpdate=true;
+        });
+      }
+      if(motes){
+        const arr=motes.geometry.attributes.position.array, spd=motes.userData.spd, N=motes.userData.N;
+        for(let i=0;i<N;i++){
+          arr[i*3+1]+=spd[i]*0.012;            // drift up
+          arr[i*3]+=Math.sin(t*0.5+i)*0.004;   // shimmer
+          if(arr[i*3+1]>36){ arr[i*3+1]=-36; arr[i*3]=(Math.random()-0.5)*60; }
+        }
+        motes.geometry.attributes.position.needsUpdate=true;
+        motes.rotation.y = mouseX*0.15;
+      }
+      if(beams){ beams.rotation.z = Math.sin(t*0.2)*0.02; beams.children.forEach((b,i)=>{ b.material.opacity=0.04+Math.abs(Math.sin(t*0.4+i))*0.04; }); }
+      if(camera){
+        camera.position.x += (mouseX*3 - camera.position.x)*0.04;
+        camera.position.y += (-mouseY*2 - scrollDepth*4 - camera.position.y)*0.04;
+        camera.lookAt(0, -scrollDepth*5, 0);
+      }
+      renderer.render(scene, camera);
+    }
+
+    function onResize(){
+      if(!renderer) return;
+      camera.aspect=window.innerWidth/window.innerHeight; camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+    window.addEventListener('resize', onResize);
+
+    try{
+      if(initGL()){ animate(0); }
+    }catch(err){ console.warn('GL fallback', err); }
+
+    /* ---------------- bioluminescent 2D layer (cursor reactive creatures) ---------------- */
+    const bio = document.getElementById('bio'), bctx = bio.getContext('2d');
+    let critters=[];
+    function sizeBio(){ bio.width=window.innerWidth; bio.height=window.innerHeight; }
+    sizeBio(); window.addEventListener('resize', sizeBio);
+    const COL=['#1ef0d4','#36c8ff','#ff5fb0','#ffd98a'];
+    for(let i=0;i<(isTouch?30:60);i++){
+      critters.push({x:Math.random()*window.innerWidth,y:Math.random()*window.innerHeight,
+        vx:(Math.random()-.5)*.3,vy:(Math.random()-.5)*.3,r:1+Math.random()*2.4,
+        c:COL[(Math.random()*COL.length)|0],ph:Math.random()*6.28});
+    }
+    function drawBio(tt){
+      bctx.clearRect(0,0,bio.width,bio.height);
+      const time=tt*0.001;
+      for(const c of critters){
+        // flee/attract from cursor
+        const dx=c.x-tx, dy=c.y-ty, d=Math.hypot(dx,dy);
+        if(d<140){ const f=(140-d)/140*0.6; c.vx+=dx/d*f; c.vy+=dy/d*f; }
+        c.vx*=0.96; c.vy*=0.96;
+        c.x+=c.vx+Math.sin(time+c.ph)*0.2; c.y+=c.vy+Math.cos(time*0.8+c.ph)*0.2;
+        if(c.x<0)c.x=bio.width; if(c.x>bio.width)c.x=0;
+        if(c.y<0)c.y=bio.height; if(c.y>bio.height)c.y=0;
+        const glow=0.4+Math.sin(time*2+c.ph)*0.3;
+        bctx.beginPath();
+        bctx.fillStyle=c.c;
+        bctx.globalAlpha=glow*0.9;
+        bctx.shadowColor=c.c; bctx.shadowBlur=14;
+        bctx.arc(c.x,c.y,c.r,0,6.283); bctx.fill();
+      }
+      bctx.globalAlpha=1; bctx.shadowBlur=0;
+      requestAnimationFrame(drawBio);
+    }
+    if(!reduce) requestAnimationFrame(drawBio); else { /* draw one static frame */ drawBio(0); }
+
+    /* ---------------- scroll-driven depth gauge + parallax ---------------- */
+    const gFill=document.getElementById('gFill'), gKnob=document.getElementById('gKnob'),
+          gVal=document.getElementById('gVal'), hudDepth=document.getElementById('hudDepth'), hudSig=document.getElementById('hudSig');
+    const MAXDEPTH=10924;
+    function onScroll(){
+      const max=document.body.scrollHeight-window.innerHeight;
+      const p=max>0? window.scrollY/max : 0;
+      scrollDepth=p;
+      const pct=(p*100).toFixed(1);
+      gFill.style.height=pct+'%'; gKnob.style.top=pct+'%'; gVal.style.top=pct+'%';
+      const d=Math.round(p*MAXDEPTH);
+      gVal.textContent=d.toLocaleString()+' m';
+      hudDepth.textContent=d.toLocaleString().padStart(6,'0').replace(/^0/,'0');
+      hudDepth.textContent=d.toLocaleString();
+      const sig=['●○○○','●●○○','●●●○','●●●●'][Math.min(3,Math.floor(p*4))];
+      hudSig.textContent=sig;
+    }
+    window.addEventListener('scroll', onScroll, {passive:true}); onScroll();
+
+    /* ---------------- reveal on scroll ---------------- */
+    const io=new IntersectionObserver((es)=>{es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in'); io.unobserve(e.target);}});},{threshold:0.18});
+    document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+
+    /* ---------------- count-up stats ---------------- */
+    const statIO=new IntersectionObserver((es)=>{es.forEach(e=>{
+      if(!e.isIntersecting) return;
+      e.target.querySelectorAll('.n[data-to]').forEach(n=>{
+        const to=+n.dataset.to, suf=n.dataset.suffix||'';
+        const unit=n.querySelector('.u'); const unitHTML=unit?unit.outerHTML:'';
+        let cur=0; const dur=1400, t0=performance.now();
+        function step(now){ const k=Math.min(1,(now-t0)/dur); const v=Math.round(to*(1-Math.pow(1-k,3)));
+          n.innerHTML=v.toLocaleString()+suf+unitHTML; if(k<1) requestAnimationFrame(step); }
+        requestAnimationFrame(step);
+      });
+      statIO.unobserve(e.target);
+    });},{threshold:0.4});
+    document.querySelectorAll('.statbar').forEach(s=>statIO.observe(s));
+
+    /* ---------------- smooth nav ---------------- */
+    function go(sel){ const t=document.querySelector(sel); if(t) t.scrollIntoView({behavior:'smooth'}); }
+    document.getElementById('goDrop').onclick=()=>go('#drop');
+    document.getElementById('goManifesto').onclick=()=>go('#manifesto');
+    document.getElementById('lnk1').onclick=()=>go('#drop');
+    document.getElementById('lnk2').onclick=()=>go('#process');
+    document.getElementById('lnk3').onclick=()=>go('#manifesto');
+
+    /* ---------------- DROP terminal interaction ---------------- */
+    const msg=document.getElementById('msg'), charCount=document.getElementById('charCount'),
+          sendBtn=document.getElementById('sendBtn'), sendStatus=document.getElementById('sendStatus'),
+          dropLog=document.getElementById('dropLog');
+    msg.addEventListener('input',()=>{ charCount.textContent=msg.value.length; });
+
+    const SEQ=[
+      '발광 플랑크톤 도포 중… 봉인 완료',
+      '압력실 가압 : 0 → 1,108 atm',
+      '자유낙하 시작 — 수심 −2,400 m',
+      '수식어 압축… 핵심 문장만 잔존',
+      '−7,800 m · 빛 소실 · 잉크 점등',
+      '−10,924 m 해저 안착 · 무반송 확정'
+    ];
+    let sending=false;
+    sendBtn.addEventListener('click',()=>{
+      if(sending) return;
+      if(!msg.value.trim()){ sendStatus.textContent='⚠ 빈 병은 가라앉지 않는다 — 한 줄이라도 적어라'; sendStatus.style.color='var(--jelly)'; return; }
+      sending=true; sendBtn.disabled=true; sendStatus.style.color='var(--teal)';
+      sendStatus.textContent='봉인 시퀀스 개시…'; dropLog.innerHTML='';
+      // launch a 3D core ejection effect
+      ejectBottle();
+      let i=0;
+      const tick=()=>{
+        if(i<SEQ.length){
+          const line=document.createElement('div');
+          line.className='line';
+          line.innerHTML='<b>›</b> '+SEQ[i];
+          dropLog.appendChild(line);
+          while(dropLog.children.length>5) dropLog.removeChild(dropLog.firstChild);
+          i++; setTimeout(tick, 620);
+        } else {
+          sendStatus.textContent='✓ 편지는 심연에 닿았다 · 어디에도 저장되지 않음';
+          // sink the textarea text away
+          gsap && gsap.to(msg,{opacity:0,y:40,duration:1.1,ease:'power2.in',onComplete:()=>{
+            msg.value=''; charCount.textContent='0'; gsap.set(msg,{opacity:1,y:0});
+            sending=false; sendBtn.disabled=false;
+          }});
+          if(!window.gsap){ setTimeout(()=>{msg.value='';charCount.textContent='0';sending=false;sendBtn.disabled=false;},1100); }
+        }
+      };
+      tick();
+    });
+
+    function ejectBottle(){
+      if(!jelly||!window.gsap) return;
+      const core=jelly.userData.core;
+      gsap.timeline()
+        .to(core.scale,{x:1.8,y:1.8,z:1.8,duration:.4,ease:'power2.out'})
+        .to(core.material,{opacity:1,duration:.3},0)
+        .to(jelly.position,{y:'-=14',duration:2.6,ease:'power2.in'},0.4)
+        .to(core.scale,{x:1,y:1,z:1,duration:.6},0.6)
+        .call(()=>{ /* reset position after sink */ gsap.set(jelly.position,{y:1.5}); });
+    }
+
+    /* clean stop if tab hidden (perf) */
+    document.addEventListener('visibilitychange',()=>{
+      if(document.hidden){ if(raf) cancelAnimationFrame(raf); }
+      else { if(renderer) animate(0); }
+    });
+  })();
+  </script>
+</body>
+</html>

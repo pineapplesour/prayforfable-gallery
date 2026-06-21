@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Lumen Hollow — 빛의 동굴</title>
+<style>
+  :root { color-scheme: dark; }
+  html,body{margin:0;height:100%;background:#04060a;overflow:hidden;
+    font-family:"Helvetica Neue",-apple-system,system-ui,sans-serif;
+    -webkit-tap-highlight-color:transparent;touch-action:none;cursor:crosshair;}
+  #stage{position:fixed;inset:0;display:block;}
+  .hud{position:fixed;left:18px;bottom:16px;color:#bfe9ff;mix-blend-mode:screen;
+    pointer-events:none;font-size:11px;letter-spacing:.18em;line-height:1.9;
+    text-transform:uppercase;opacity:.62;text-shadow:0 0 14px rgba(120,210,255,.5);
+    transition:opacity 1.2s ease;}
+  .hud b{color:#fff8d8;font-weight:600;}
+  .title{position:fixed;left:18px;top:16px;color:#eaf7ff;mix-blend-mode:screen;
+    pointer-events:none;text-shadow:0 0 22px rgba(140,200,255,.55);}
+  .title .k{font-size:22px;letter-spacing:.34em;font-weight:300;}
+  .title .s{font-size:10px;letter-spacing:.5em;opacity:.5;margin-top:5px;text-transform:uppercase;}
+  .fade{animation:fadein 2.6s ease both;}
+  @keyframes fadein{from{opacity:0}to{opacity:.62}}
+  @keyframes fadeinT{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
+  .title{animation:fadeinT 2.2s ease both;}
+  @media (max-width:480px){
+    .title .k{font-size:16px;letter-spacing:.26em}
+    .hud{font-size:9px;letter-spacing:.12em;line-height:1.7}
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div class="title">
+  <div class="k">LUMEN&nbsp;HOLLOW</div>
+  <div class="s">volumetric god-rays · drag · scroll · click</div>
+</div>
+<div class="hud fade" id="hud">
+  <div>드래그 — <b>빛의 근원을 움직인다</b></div>
+  <div>스크롤 — <b>안개 농도</b> · 클릭 — <b>반딧불</b></div>
+</div>
+<script>
+"use strict";
+/* ============================================================
+   LUMEN HOLLOW
+   Volumetric god-ray cave/forest, single canvas, hand-rolled.
+   Layers (back→front), all composited with 'screen'/'lighter':
+     0. depth gradient + cave silhouette
+     1. background pillar/tree forest (parallax)
+     2. VOLUMETRIC LIGHT SHAFTS  (radial accumulation through an
+        occlusion mask sampled from the canopy)
+     3. dust motes drifting in the beams (lit by proximity to rays)
+     4. firefly sprites (spawned on click/tap)
+     5. foreground canopy gaps + vignette
+   Interaction: drag = move light source; scroll = fog density;
+                click/tap = burst fireflies; idle = gentle sway.
+   ============================================================ */
+(function(){
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', { alpha:false });
+
+let W=0,H=0,DPR=1,DIAG=1;
+// Performance caps
+const MOTE_CAP = 360;
+const FLY_CAP  = 90;
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width  = Math.floor(W*DPR);
+  cv.height = Math.floor(H*DPR);
+  cv.style.width=W+'px'; cv.style.height=H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  DIAG = Math.hypot(W,H);
+  buildCanopy();
+}
+window.addEventListener('resize', resize, {passive:true});
+
+/* ---------- light source (the sun behind the canopy) ---------- */
+const light = {
+  x: 0.5, y: 0.12,          // normalized
+  tx: 0.5, ty: 0.12,        // target (eased)
+  hue: 46                    // warm gold
+};
+
+/* ---------- fog / atmosphere ---------- */
+let fog = 0.55;             // 0..1, scroll controlled
+let fogTarget = 0.55;
+
+/* ---------- canopy occlusion mask ----------
+   We build a low-res offscreen "occluder" silhouette: the tree
+   trunks + canopy that the light must squeeze between. The volumetric
+   shafts are produced by accumulating brightness radially from the
+   sun outward, attenuated wherever the occluder is opaque.        */
+const occ = document.createElement('canvas');
+const octx = occ.getContext('2d');
+const OCC_W = 220;          // low-res for cheap volumetric sampling
+let OCC_H = 130;
+let occData = null;         // Uint8 alpha-ish luminance buffer
+
+// Structural description of the cavern/forest (regenerated on resize)
+let trees = [];
+let stalac = [];            // hanging rock / canopy lumps
+let gaps = [];              // bright canopy gaps
+
+function rnd(a,b){return a+Math.random()*(b-a);}
+
+function buildCanopy(){
+  OCC_H = Math.max(90, Math.round(OCC_W * (H/W)));
+  occ.width = OCC_W; occ.height = OCC_H;
+
+  // vertical pillars / tree trunks across the scene at varied depth.
+  // Portrait → fewer, chunkier, more-bowed trunks so the grove reads close;
+  // landscape → more, slimmer trunks for a wider receding forest.
+  const portrait = H>W;
+  trees = [];
+  const n = portrait?6:8;
+  const wBase = portrait?0.05:0.02, wTop = portrait?0.11:0.07;
+  const bowAmt = portrait?0.06:0.04;
+  for(let i=0;i<n;i++){
+    const depth = i/(n-1);                  // 0 far .. 1 near
+    trees.push({
+      x: (i+ rnd(-0.3,0.3))/(n-1),          // normalized x
+      w: rnd(wBase,wTop)*(0.55+depth),      // trunk half-width frac
+      taper: rnd(0.35,0.62),                // top width relative to base
+      depth,
+      lean: rnd(-0.05,0.05),
+      bow: rnd(-bowAmt,bowAmt),             // mid-bend for organic curve
+      sway: rnd(0,Math.PI*2),
+      swaySpd: rnd(0.15,0.4)
+    });
+  }
+  // hanging stalactite / heavy canopy lumps along the top
+  stalac=[];
+  const m=14;
+  for(let i=0;i<m;i++){
+    stalac.push({
+      x:(i+rnd(-0.4,0.4))/(m-1),
+      drop: rnd(0.08,0.34),
+      w: rnd(0.03,0.09)
+    });
+  }
+  // bright gaps where shafts punch through (near the sun get bigger)
+  gaps=[];
+  const g=10;
+  for(let i=0;i<g;i++){
+    gaps.push({ x:rnd(0.05,0.95), y:rnd(0.02,0.30), r:rnd(0.01,0.045), ph:rnd(0,6.28) });
+  }
+}
+
+// Render the occluder silhouette into the low-res buffer.
+// White-ish = light passes (gaps), dark = blocked (rock/trunk).
+function renderOccluder(t){
+  const w=OCC_W,h=OCC_H;
+  // start fully blocked (dark) then carve light-passing regions
+  octx.globalCompositeOperation='source-over';
+  octx.fillStyle='#000';
+  octx.fillRect(0,0,w,h);
+
+  // The "open sky / glowing membrane" — a soft band near the top that
+  // light radiates from. Brighter toward the sun position.
+  const lx=light.x*w, ly=light.y*h;
+  let grd=octx.createRadialGradient(lx,ly,0,lx,ly,h*0.9);
+  grd.addColorStop(0,'#ffffff');
+  grd.addColorStop(0.5,'rgba(255,255,255,0.5)');
+  grd.addColorStop(1,'rgba(255,255,255,0)');
+  octx.globalCompositeOperation='lighter';
+  octx.fillStyle=grd;
+  octx.fillRect(0,0,w,h);
+
+  // canopy gaps as bright pinholes (twinkle)
+  for(const gp of gaps){
+    const gx=gp.x*w, gy=gp.y*h, r=(gp.r*w)*(0.7+0.3*Math.sin(t*1.3+gp.ph));
+    const gg=octx.createRadialGradient(gx,gy,0,gx,gy,r);
+    gg.addColorStop(0,'#ffffff');
+    gg.addColorStop(1,'rgba(255,255,255,0)');
+    octx.fillStyle=gg;
+    octx.fillRect(gx-r,gy-r,r*2,r*2);
+  }
+
+  // OCCLUDERS (carve darkness back in) — trunks + stalactites
+  octx.globalCompositeOperation='destination-out';
+
+  // hanging canopy/stalactites from the top edge
+  for(const s of stalac){
+    const sx=s.x*w, sw=s.w*w, dh=s.drop*h*(0.9+0.1*Math.sin(t*0.6+s.x*10));
+    octx.beginPath();
+    octx.moveTo(sx-sw,0);
+    octx.quadraticCurveTo(sx, dh*0.5, sx, dh);
+    octx.quadraticCurveTo(sx, dh*0.5, sx+sw,0);
+    octx.closePath();
+    octx.fillStyle='rgba(0,0,0,0.92)';
+    octx.fill();
+  }
+  // tree trunks (tapered, bowed, with sway) — curved organic silhouette
+  for(const tr of trees){
+    const sway=Math.sin(t*tr.swaySpd+tr.sway)*0.012*(0.4+tr.depth);
+    const x=(tr.x+sway)*w;
+    const halfw=tr.w*w*0.5;
+    const topw=halfw*tr.taper;
+    const lean=(tr.lean+sway)*w;
+    const bow=tr.bow*w;
+    const topY=h*0.12, baseY=h;
+    const midY=(topY+baseY)*0.5;
+    octx.beginPath();
+    octx.moveTo(x-halfw, baseY);
+    octx.quadraticCurveTo(x-halfw*0.7+bow, midY, x-topw+lean, topY);
+    octx.lineTo(x+topw+lean, topY);
+    octx.quadraticCurveTo(x+halfw*0.7+bow, midY, x+halfw, baseY);
+    octx.closePath();
+    octx.fillStyle='rgba(0,0,0,0.97)';
+    octx.fill();
+  }
+
+  occData = octx.getImageData(0,0,w,h).data;
+}
+
+/* sample occluder luminance (0..1) at normalized coord */
+function occAt(nx,ny){
+  if(!occData) return 0;
+  let ix=(nx*OCC_W)|0, iy=(ny*OCC_H)|0;
+  if(ix<0)ix=0; else if(ix>=OCC_W)ix=OCC_W-1;
+  if(iy<0)iy=0; else if(iy>=OCC_H)iy=OCC_H-1;
+  return occData[(iy*OCC_W+ix)*4]/255;   // red channel = luminance
+}
+
+/* ---------- VOLUMETRIC SHAFT BUFFER ----------
+   Radial light scattering: for each pixel of a low-res shaft buffer,
+   march from the sun toward the pixel, accumulating the occluder's
+   transmittance. This is the classic "screen-space god ray" but done
+   on CPU at low res then upscaled with blur via canvas smoothing.   */
+const shaft = document.createElement('canvas');
+const sctx = shaft.getContext('2d');
+let SHW=180, SHH=110;
+let shaftImg=null;
+
+function setupShaft(){
+  SHW = 180;
+  SHH = Math.max(70, Math.round(SHW*(H/W)));
+  shaft.width=SHW; shaft.height=SHH;
+  shaftImg = sctx.createImageData(SHW,SHH);
+}
+
+let SAMPLES = 22;          // march steps (auto-tuned by perf)
+function renderShaft(t){
+  if(!shaftImg || shaftImg.width!==SHW) setupShaft();
+  const d=shaftImg.data;
+  const lx=light.x, ly=light.y;
+  // hue → rgb (warm gold core, cooler at edges handled by compositing)
+  // We bake a warm color; cool teal added as a separate cheap layer.
+  const decay = 0.93;
+  const exposure = 0.55 + fog*0.85;       // fog boosts visible scatter
+  const density = 0.55 + fog*0.6;
+  const weight = exposure / SAMPLES;
+  for(let py=0; py<SHH; py++){
+    const ny=py/SHH;
+    for(let px=0; px<SHW; px++){
+      const nx=px/SHW;
+      // vector from pixel back toward the light
+      let dx=(lx-nx), dy=(ly-ny);
+      const stepX=dx/SAMPLES, stepY=dy/SAMPLES;
+      let sx=nx, sy=ny;
+      let illum=0, illumDecay=1;
+      for(let s=0;s<SAMPLES;s++){
+        sx+=stepX; sy+=stepY;
+        const samp=occAt(sx,sy);          // transmittance at this step
+        illum += samp*illumDecay;
+        illumDecay*=decay;
+      }
+      illum *= weight*density;
+      if(illum>1) illum=1;
+      // distance falloff from light so the source glows
+      const dist=Math.hypot(dx,dy);
+      const core=Math.max(0,1-dist*1.15);
+      let v=illum + core*core*0.6;
+      if(v>1)v=1;
+      v=v*v*(1.05);                         // gamma-ish punch
+      const i=(py*SHW+px)*4;
+      // warm gold: R high, G mid, B low; carry brightness in alpha-as-rgb
+      d[i  ]=Math.min(255, v*255*1.0 *1.0);
+      d[i+1]=Math.min(255, v*255*0.82);
+      d[i+2]=Math.min(255, v*255*0.52);
+      d[i+3]=255;
+    }
+  }
+  sctx.putImageData(shaftImg,0,0);
+}
+
+/* ---------- dust motes ---------- */
+let motes=[];
+function seedMotes(){
+  motes=[];
+  for(let i=0;i<MOTE_CAP;i++){
+    motes.push({
+      x:Math.random(), y:Math.random(),
+      z:rnd(0.2,1),              // depth → size/speed
+      vx:rnd(-0.004,0.004), vy:rnd(-0.012,-0.002),
+      ph:rnd(0,6.28), spd:rnd(0.3,1.1)
+    });
+  }
+}
+
+/* ---------- fireflies (interaction) ---------- */
+let flies=[];
+function burstFlies(nx,ny){
+  const count=14;
+  for(let i=0;i<count;i++){
+    if(flies.length>=FLY_CAP) flies.shift();
+    const a=Math.random()*6.28, sp=rnd(0.001,0.02);
+    flies.push({
+      x:nx, y:ny,
+      vx:Math.cos(a)*sp, vy:Math.sin(a)*sp-0.004,
+      life:1, decay:rnd(0.0015,0.004),
+      hue: rnd(60,170), ph:rnd(0,6.28),
+      size:rnd(1.2,3.2)
+    });
+  }
+}
+
+/* ---------- background depth + silhouettes ---------- */
+function drawBackdrop(){
+  // deep cavern gradient
+  const g=ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#0a1422');
+  g.addColorStop(0.45,'#06101c');
+  g.addColorStop(1,'#020407');
+  ctx.fillStyle=g;
+  ctx.fillRect(0,0,W,H);
+
+  // a soft cool ambient glow pooling at the bottom (subterranean water)
+  const pool=ctx.createRadialGradient(W*0.5,H*1.05,0,W*0.5,H*1.05,H*0.8);
+  pool.addColorStop(0,'rgba(30,90,120,0.35)');
+  pool.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.globalCompositeOperation='lighter';
+  ctx.fillStyle=pool;
+  ctx.fillRect(0,0,W,H);
+  ctx.globalCompositeOperation='source-over';
+}
+
+/* parallax silhouettes of trunks (foreground darks) for depth */
+function drawSilhouettes(t,mx,my){
+  ctx.globalCompositeOperation='source-over';
+  for(const tr of trees){
+    const par=(0.5+tr.depth);                       // near moves more
+    const sway=Math.sin(t*tr.swaySpd+tr.sway)*8*(0.4+tr.depth);
+    const px=tr.x*W + (mx-0.5)*30*par + sway;
+    const halfw=tr.w*W*0.5*par;
+    const topw=halfw*tr.taper;
+    const lean=tr.lean*W*par;
+    const bow=tr.bow*W*par;
+    const topY=H*0.11, baseY=H, midY=(topY+baseY)*0.5;
+    const shade=Math.round(5+tr.depth*9);
+    function trunkPath(){
+      ctx.beginPath();
+      ctx.moveTo(px-halfw, baseY);
+      ctx.quadraticCurveTo(px-halfw*0.7+bow, midY, px-topw+lean, topY);
+      ctx.lineTo(px+topw+lean, topY);
+      ctx.quadraticCurveTo(px+halfw*0.7+bow, midY, px+halfw, baseY);
+      ctx.closePath();
+    }
+    // body fill (very dark, slightly cool)
+    ctx.fillStyle=`rgb(${shade},${shade+4},${shade+9})`;
+    trunkPath(); ctx.fill();
+
+    // bark texture: a few subtle vertical streaks of darker tone
+    ctx.save(); trunkPath(); ctx.clip();
+    ctx.globalCompositeOperation='source-over';
+    for(let s=0;s<3;s++){
+      const sxp=px-halfw + (s+0.5)/3*halfw*2 + Math.sin(t*0.2+s+tr.sway)*2;
+      ctx.fillStyle=`rgba(0,0,0,0.25)`;
+      ctx.fillRect(sxp-halfw*0.06, topY, halfw*0.12, baseY-topY);
+    }
+    ctx.restore();
+
+    // rim light on the side facing the sun (warm, bright edge)
+    const sunSide = (light.x*W > px) ? 1 : -1;
+    const rimGrad=ctx.createLinearGradient(px-halfw,0,px+halfw,0);
+    const intensity=0.18+0.22*tr.depth;
+    const c=`rgba(255,214,${130+tr.depth*70|0},${intensity})`;
+    const c0='rgba(255,214,150,0)';
+    if(sunSide>0){rimGrad.addColorStop(0,c0);rimGrad.addColorStop(0.55,c0);rimGrad.addColorStop(0.92,c);rimGrad.addColorStop(1,c);}
+    else{rimGrad.addColorStop(0,c);rimGrad.addColorStop(0.08,c);rimGrad.addColorStop(0.45,c0);rimGrad.addColorStop(1,c0);}
+    ctx.save(); trunkPath(); ctx.clip();
+    ctx.globalCompositeOperation='lighter';
+    ctx.fillStyle=rimGrad;
+    ctx.fillRect(px-halfw,topY,halfw*2,baseY-topY);
+    ctx.restore();
+    ctx.globalCompositeOperation='source-over';
+  }
+}
+
+/* ---------- main composite ---------- */
+function drawMotes(t,sunX,sunY){
+  ctx.globalCompositeOperation='lighter';
+  for(let mi=0; mi<motes.length; mi++){
+    const m=motes[mi];
+    // drift + gentle turbulence
+    m.x += m.vx*(0.4+m.z) ;
+    m.y += m.vy*(0.4+m.z);
+    m.x += Math.sin(t*m.spd+m.ph)*0.0006;
+    if(m.y<-0.02){m.y=1.02;m.x=Math.random();}
+    if(m.x<-0.02)m.x=1.02; else if(m.x>1.02)m.x=-0.02;
+    const sx=m.x*W, sy=m.y*H;
+    // brightness = how lit this mote is by the shaft buffer
+    const lit = sampleShaft(m.x,m.y);
+    if(lit<0.02) continue;
+    const tw=0.6+0.4*Math.sin(t*2.2+m.ph);
+    const r=(0.6+m.z*1.7)*(0.8+lit*1.2);
+    const a=Math.min(1, lit*1.5*tw);
+    ctx.fillStyle=`rgba(255,${235},${190},${a*0.9})`;
+    ctx.beginPath();
+    ctx.arc(sx,sy,r,0,6.283);
+    ctx.fill();
+  }
+  ctx.globalCompositeOperation='source-over';
+}
+
+// sample upscaled shaft brightness from the low-res buffer luminance
+function sampleShaft(nx,ny){
+  if(!shaftImg) return 0;
+  let ix=(nx*SHW)|0, iy=(ny*SHH)|0;
+  if(ix<0||iy<0||ix>=SHW||iy>=SHH) return 0;
+  const d=shaftImg.data; const i=(iy*SHW+ix)*4;
+  return (d[i]*0.4+d[i+1]*0.4+d[i+2]*0.2)/255;
+}
+
+function drawFlies(t){
+  ctx.globalCompositeOperation='lighter';
+  for(let k=flies.length-1;k>=0;k--){
+    const f=flies[k];
+    f.x+=f.vx; f.y+=f.vy;
+    f.vy+=0.00006;                 // slight gravity
+    f.vx*=0.985; f.vy*=0.985;
+    f.x+=Math.sin(t*1.7+f.ph)*0.0009;
+    f.life-=f.decay;
+    if(f.life<=0){flies.splice(k,1);continue;}
+    const sx=f.x*W, sy=f.y*H;
+    const pulse=0.55+0.45*Math.sin(t*5+f.ph);
+    const a=f.life*pulse;
+    const rad=f.size*(1+ (1-f.life)*0.5);
+    const col=`hsla(${f.hue},90%,70%,`;
+    // glow halo
+    const hr = rad*(lowMode?5:7);
+    const gg=ctx.createRadialGradient(sx,sy,0,sx,sy,hr);
+    gg.addColorStop(0, col+(a*0.9)+')');
+    gg.addColorStop(0.4, col+(a*0.25)+')');
+    gg.addColorStop(1, col+'0)');
+    ctx.fillStyle=gg;
+    ctx.fillRect(sx-hr,sy-hr,hr*2,hr*2);
+    // hot core
+    ctx.fillStyle=`hsla(${f.hue},100%,92%,${a})`;
+    ctx.beginPath(); ctx.arc(sx,sy,rad*0.6,0,6.283); ctx.fill();
+  }
+  ctx.globalCompositeOperation='source-over';
+}
+
+/* draw the volumetric shafts upscaled with smooth blur + a cool
+   secondary tint and the glowing sun core */
+function drawShafts(){
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  ctx.imageSmoothingEnabled=true;
+  // main warm pass (low-res buffer upscaled → built-in bilinear gives soft blur)
+  ctx.globalAlpha=0.95;
+  ctx.drawImage(shaft,0,0,W,H);
+  // a second cooler pass, hue-rotated for chromatic richness.
+  // Skip the costly blur filter in lowMode; the upscale already softens it.
+  ctx.globalAlpha=0.30;
+  ctx.globalCompositeOperation='lighter';
+  ctx.filter = lowMode ? 'hue-rotate(150deg)' : 'hue-rotate(150deg) blur(2px)';
+  ctx.drawImage(shaft, -4, 2, W, H);
+  ctx.filter='none';
+  ctx.globalAlpha=1;
+  ctx.restore();
+
+  // glowing sun membrane
+  const sx=light.x*W, sy=light.y*H;
+  const r=DIAG*0.22;
+  const sun=ctx.createRadialGradient(sx,sy,0,sx,sy,r);
+  sun.addColorStop(0,'rgba(255,250,225,0.95)');
+  sun.addColorStop(0.18,'rgba(255,225,150,0.55)');
+  sun.addColorStop(0.55,'rgba(255,180,90,0.12)');
+  sun.addColorStop(1,'rgba(255,160,80,0)');
+  ctx.globalCompositeOperation='lighter';
+  ctx.fillStyle=sun;
+  ctx.fillRect(sx-r,sy-r,r*2,r*2);
+  ctx.globalCompositeOperation='source-over';
+}
+
+function vignette(){
+  const v=ctx.createRadialGradient(W*0.5,H*0.45,H*0.2,W*0.5,H*0.5,DIAG*0.62);
+  v.addColorStop(0,'rgba(0,0,0,0)');
+  v.addColorStop(1,'rgba(0,0,0,0.72)');
+  ctx.globalCompositeOperation='source-over';
+  ctx.fillStyle=v;
+  ctx.fillRect(0,0,W,H);
+}
+
+/* ---------- interaction ---------- */
+let pointerDown=false;
+let lastMoveT=performance.now();
+let mx=0.5,my=0.5;            // smoothed pointer for parallax
+
+function setLightFromClient(cx,cy){
+  light.tx = cx/W;
+  light.ty = Math.max(0.02, Math.min(0.5, cy/H));
+}
+
+cv.addEventListener('pointerdown',e=>{
+  pointerDown=true; cv.setPointerCapture(e.pointerId);
+  setLightFromClient(e.clientX,e.clientY);
+  burstFlies(e.clientX/W, e.clientY/H);
+  hudFade();
+  lastMoveT=performance.now();
+});
+cv.addEventListener('pointermove',e=>{
+  mx=e.clientX/W; my=e.clientY/H;
+  if(pointerDown) setLightFromClient(e.clientX,e.clientY);
+  lastMoveT=performance.now();
+});
+window.addEventListener('pointerup',()=>{pointerDown=false;});
+cv.addEventListener('pointercancel',()=>{pointerDown=false;});
+
+window.addEventListener('wheel',e=>{
+  fogTarget = Math.max(0.05, Math.min(1, fogTarget + (e.deltaY>0?0.06:-0.06)));
+  hudFade();
+},{passive:true});
+
+// touch pinch → fog
+let pinchStart=null;
+cv.addEventListener('touchmove',e=>{
+  if(e.touches.length===2){
+    const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
+                        e.touches[0].clientY-e.touches[1].clientY);
+    if(pinchStart==null) pinchStart=d;
+    fogTarget=Math.max(0.05,Math.min(1, fogTarget + (d-pinchStart)*0.0008));
+    pinchStart=d;
+  }
+},{passive:true});
+cv.addEventListener('touchend',()=>{pinchStart=null;});
+
+let hudT=null;
+function hudFade(){
+  const h=document.getElementById('hud');
+  h.style.opacity='.62';
+  clearTimeout(hudT);
+  hudT=setTimeout(()=>{h.style.opacity='0';},4200);
+}
+
+/* ---------- timing / loop ---------- */
+let last=performance.now();
+let frameCount=0;
+let heavyTick=0;
+let fpsAvg=60, lowMode=false, perfChecked=false;
+let perfT0=performance.now(), perfFrames=0;
+function frame(now){
+  const dt=Math.min(0.05,(now-last)/1000); last=now;
+  const t=now*0.001;
+
+  // --- adaptive perf: measure fps over first ~1.2s, drop quality if needed ---
+  perfFrames++;
+  if(!perfChecked && now-perfT0>1200){
+    fpsAvg=perfFrames/((now-perfT0)/1000);
+    if(fpsAvg<40){
+      lowMode=true; SAMPLES=16;
+      motes.length=Math.floor(motes.length*0.55);   // thin the dust
+    }
+    perfChecked=true;
+  }
+
+  // ease light + fog
+  // idle drift: if no input for a while, light sways gently like sun through leaves
+  const idle = (now-lastMoveT)>2600;
+  if(idle && !pointerDown){
+    light.tx += Math.sin(t*0.18)*0.00035;
+    light.ty = 0.12 + Math.sin(t*0.13)*0.02;
+  }
+  light.x += (light.tx-light.x)*0.06;
+  light.y += (light.ty-light.y)*0.06;
+  fog += (fogTarget-fog)*0.05;
+
+  // smooth parallax pointer
+  // (mx,my already updated by events; nothing extra needed)
+
+  // Heavy buffers: full res but on every frame normally; in lowMode update
+  // every other frame (light eases smoothly so the gap is invisible).
+  heavyTick++;
+  if(!lowMode || (heavyTick&1)){
+    renderOccluder(t);
+    renderShaft(t);
+  }
+
+  // ---- composite ----
+  drawBackdrop();
+  drawShafts();
+  drawMotes(t);
+  drawSilhouettes(t,mx,my);
+  drawFlies(t);
+  vignette();
+
+  frameCount++;
+  window.__lumen.frames=frameCount;
+  requestAnimationFrame(frame);
+}
+
+/* test/inspection hook */
+window.__lumen={
+  frames:0,
+  state(){return {lx:light.x,ly:light.y,fog:fog,motes:motes.length,flies:flies.length};},
+  low(){return lowMode;},
+  fpsAvg(){return Math.round(fpsAvg);},
+  drag(nx,ny){ setLightFromClient(nx*W, ny*H); },
+  scrollFog(dir){ fogTarget=Math.max(0.05,Math.min(1,fogTarget+(dir>0?0.2:-0.2))); },
+  click(nx,ny){ burstFlies(nx,ny); }
+};
+
+resize();
+seedMotes();
+setupShaft();
+hudFade();
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

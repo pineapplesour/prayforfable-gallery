@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>SLINKWAVE</title>
+<style>
+  html,body{margin:0;height:100%;background:#04050a;overflow:hidden;
+    font-family:'Helvetica Neue',Arial,sans-serif;cursor:none;
+    -webkit-tap-highlight-color:transparent;touch-action:none;}
+  #c{display:block;position:fixed;inset:0;width:100vw;height:100vh;}
+  #hud{position:fixed;left:24px;top:22px;z-index:5;pointer-events:none;
+    mix-blend-mode:screen;user-select:none;}
+  #hud h1{margin:0;font-size:13px;letter-spacing:.62em;font-weight:300;
+    color:#e3ecff;text-indent:.62em;}
+  #hud p{margin:7px 0 0;font-size:10px;letter-spacing:.34em;font-weight:300;
+    color:#5d6b8c;text-indent:.34em;}
+  #tip{position:fixed;left:0;right:0;bottom:18px;z-index:5;text-align:center;
+    font-size:10px;letter-spacing:.36em;color:#46527a;pointer-events:none;
+    user-select:none;font-weight:300;transition:opacity 1.2s;}
+  @media (max-width:560px){
+    #hud h1{font-size:11px;letter-spacing:.42em;}
+    #hud p{letter-spacing:.24em;}
+    #tip{font-size:9px;letter-spacing:.2em;}
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"><h1>SLINKWAVE</h1><p>CHROME &middot; COIL &middot; PHYSICS</p></div>
+<div id="tip">DRAG THE COIL &nbsp;&middot;&nbsp; FLICK TO CASCADE &nbsp;&middot;&nbsp; CLICK TO PLUCK</div>
+<script>
+(()=>{
+'use strict';
+const cv=document.getElementById('c'), ctx=cv.getContext('2d',{alpha:false});
+let W=0,H=0,DPR=1,small=false;
+const _gradCache=new Map();
+function resize(){
+  W=window.innerWidth; H=window.innerHeight; small=W<560;
+  // cap backing-store resolution so huge/retina screens stay fill-rate friendly
+  DPR=Math.min(window.devicePixelRatio||1, 2);
+  const MAXPX=2.6e6;                          // ~ render budget in device pixels
+  if(W*H*DPR*DPR > MAXPX) DPR=Math.max(1, Math.sqrt(MAXPX/(W*H)));
+  cv.width=Math.round(W*DPR); cv.height=Math.round(H*DPR);
+  cv.style.width=W+'px'; cv.style.height=H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+}
+window.addEventListener('resize',()=>{resize();_gradCache&&_gradCache.clear();rebuild();}); resize();
+
+const lerp=(a,b,t)=>a+(b-a)*t;
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+
+// ---------- pointer ----------
+const P={x:0,y:0,px:0,py:0,vx:0,vy:0,down:false,active:false};
+function setP(x,y){P.px=P.x;P.py=P.y;P.x=x;P.y=y;P.vx=x-P.px;P.vy=y-P.py;P.active=true;}
+cv.addEventListener('pointermove',e=>{setP(e.clientX,e.clientY);lastInteract=performance.now();});
+cv.addEventListener('pointerdown',e=>{setP(e.clientX,e.clientY);P.down=true;grab(e.clientX,e.clientY);lastInteract=performance.now();try{cv.setPointerCapture(e.pointerId)}catch(_){}});
+cv.addEventListener('pointerup',()=>{P.down=false;release();});
+cv.addEventListener('pointerleave',()=>{P.down=false;P.active=false;release();});
+window.addEventListener('blur',()=>{P.down=false;release();});
+
+// ---------- physics chain (centreline of the slinky) ----------
+let N=0, nodes=[], REST_LEN=10, anchorX=0, anchorY=0, grabbed=-1, plucks=[], baseAnchorX=0;
+let coilGap=0; // visual gap between loops (vertical pitch baseline)
+
+function rebuild(){
+  N = small? 42 : 58;
+  nodes=[]; grabbed=-1; plucks=[];
+  baseAnchorX=anchorX=W*0.5; anchorY=H*0.12;
+  const span = Math.min(H*0.66, 600);
+  REST_LEN = span / N;
+  coilGap = REST_LEN;
+  for(let i=0;i<N;i++){
+    const y=anchorY+i*REST_LEN;
+    nodes.push({x:anchorX,ox:anchorX,y,oy:y,
+      rad: lerp(small?34:52, small?20:30, Math.pow(i/(N-1),0.85)) });
+  }
+  // immediate life so first paint is already a living slinky
+  for(let i=1;i<N;i++){ nodes[i].x += Math.sin(i*0.45)*(small?14:22); }
+  plucks.push({i:N-4,amp:small?20:30,t:0});
+}
+
+function grab(x,y){
+  let best=-1,bd=1e9;
+  for(let i=0;i<N;i++){const dx=nodes[i].x-x,dy=nodes[i].y-y,d=dx*dx+dy*dy;if(d<bd){bd=d;best=i;}}
+  if(bd < (small?80:110)**2) grabbed=best;
+}
+function release(){
+  if(grabbed>=0){ const n=nodes[grabbed]; n.x+=P.vx*0.85; n.y+=P.vy*0.85; }
+  grabbed=-1;
+}
+cv.addEventListener('click',e=>{
+  if(Math.abs(P.vx)+Math.abs(P.vy)<6){
+    let best=-1,bd=1e9;
+    for(let i=0;i<N;i++){const dx=nodes[i].x-e.clientX,dy=nodes[i].y-e.clientY,d=dx*dx+dy*dy;if(d<bd){bd=d;best=i;}}
+    if(bd<(small?140:170)**2) plucks.push({i:best,amp:(Math.random()<.5?-1:1)*(small?34:50),t:0});
+  }
+});
+
+const GRAV=0.40, DAMP=0.986, ITER=12;
+function physics(){
+  for(let i=0;i<N;i++){
+    const n=nodes[i];
+    if(i===0){ n.x=anchorX; n.y=anchorY; n.ox=n.x; n.oy=n.y; continue; }
+    if(i===grabbed){ n.x=P.x; n.y=P.y; n.ox=P.x-P.vx; n.oy=P.y-P.vy; continue; }
+    let vx=(n.x-n.ox)*DAMP, vy=(n.y-n.oy)*DAMP;
+    n.ox=n.x; n.oy=n.y;
+    n.x+=vx; n.y+=vy+GRAV;
+  }
+  // travelling pluck ripples (the "boing")
+  for(const pk of plucks){
+    pk.t+=1;
+    const head=pk.i - pk.t*0.85;
+    for(let i=0;i<N;i++){
+      const d=Math.abs(i-head);
+      if(d<6){
+        const env=Math.exp(-d*d*0.2)*Math.exp(-pk.t*0.045);
+        nodes[i].x += pk.amp*0.05*env;
+        nodes[i].y += Math.sin(pk.t*0.6+i)*pk.amp*0.02*env;
+      }
+    }
+  }
+  plucks=plucks.filter(pk=>pk.t<95);
+
+  for(let it=0;it<ITER;it++){
+    nodes[0].x=anchorX; nodes[0].y=anchorY;
+    for(let i=0;i<N-1;i++){
+      const a=nodes[i], b=nodes[i+1];
+      let dx=b.x-a.x, dy=b.y-a.y, d=Math.hypot(dx,dy)||1e-4;
+      const corr=(d-REST_LEN)/d;
+      const ka=(i===0)?0:0.5, kb=0.5;
+      if(i!==0){a.x+=dx*corr*ka;a.y+=dy*corr*ka;}
+      b.x-=dx*corr*kb; b.y-=dy*corr*kb;
+    }
+    for(let i=1;i<N-1;i++){ // bending -> lazy slinky S
+      const a=nodes[i-1],b=nodes[i],c=nodes[i+1];
+      const mx=(a.x+c.x)*0.5,my=(a.y+c.y)*0.5,k=0.06;
+      b.x+=(mx-b.x)*k; b.y+=(my-b.y)*k;
+    }
+    if(grabbed>0){nodes[grabbed].x=P.x;nodes[grabbed].y=P.y;}
+    const floor=H*0.94;
+    for(let i=1;i<N;i++){ if(nodes[i].y>floor){ nodes[i].y=floor-(nodes[i].y-floor)*0.4; } }
+  }
+}
+
+// ---------- centreline resampling (smooth) ----------
+function cr(p0,p1,p2,p3,t){
+  const t2=t*t,t3=t2*t;
+  return {
+    x:0.5*((2*p1.x)+(-p0.x+p2.x)*t+(2*p0.x-5*p1.x+4*p2.x-p3.x)*t2+(-p0.x+3*p1.x-3*p2.x+p3.x)*t3),
+    y:0.5*((2*p1.y)+(-p0.y+p2.y)*t+(2*p0.y-5*p1.y+4*p2.y-p3.y)*t2+(-p0.y+3*p1.y-3*p2.y+p3.y)*t3),
+  };
+}
+
+// ---------- chrome helix renderer ----------
+// We sweep a HELIX around the physics centreline. The helix angle advances so that
+// each full turn is one visible loop. We project the 3D coil (centreline + circular
+// offset in a frame perpendicular to the centreline) to 2D, then draw it as a single
+// continuous polyline whose stroke is a moving chrome gradient, with per-vertex depth
+// used for occlusion shading (front of loop bright, back of loop dim).
+let lightPhase=0;
+
+function buildSamples(){
+  const SUB=small?6:6;
+  const s=[];
+  for(let i=0;i<N-1;i++){
+    const p0=nodes[Math.max(0,i-1)],p1=nodes[i],p2=nodes[i+1],p3=nodes[Math.min(N-1,i+2)];
+    for(let k=0;k<SUB;k++){
+      const t=k/SUB, c=cr(p0,p1,p2,p3,t);
+      s.push({x:c.x,y:c.y,rad:lerp(p1.rad,p2.rad,t),u:(i+t)/(N-1)});
+    }
+  }
+  s.push({x:nodes[N-1].x,y:nodes[N-1].y,rad:nodes[N-1].rad,u:1});
+  // tangent + 2D normal
+  for(let k=0;k<s.length;k++){
+    const a=s[Math.max(0,k-1)], b=s[Math.min(s.length-1,k+1)];
+    let tx=b.x-a.x, ty=b.y-a.y; const l=Math.hypot(tx,ty)||1; tx/=l; ty/=l;
+    s[k].tx=tx; s[k].ty=ty; s[k].nx=-ty; s[k].ny=tx; // normal in screen plane
+  }
+  return s;
+}
+
+// chrome environment lookup -> high-contrast polished metal.
+// Maps a vertical reflection environment: near-black floor, warm horizon, bright sky.
+function chromeColor(facing, depth, lit){
+  // facing in [-1,1]: which way this point on the loop faces in the reflection band
+  const f=(facing+1)*0.5; // 0..1  (0 = down/floor reflection, 1 = up/sky reflection)
+  // brightness profile of the reflected world
+  let env = 0.04
+      + 0.62*Math.pow(Math.max(0,Math.sin(f*Math.PI)),1.1)     // bright sky band (top)
+      + 0.30*Math.pow(Math.max(0,Math.cos(f*Math.PI)),4.0);    // warm horizon glint (bottom)
+  env *= (0.5+0.6*depth);          // near side reflects more
+  env *= (0.7+0.55*lit);           // travelling shimmer
+  const v=clamp(env,0,1.6);
+  // ramp: near-black -> steel blue -> cyan-white -> white; warm amber glint at horizon
+  let r,g,b;
+  const warm = Math.pow(Math.max(0,Math.cos(f*Math.PI)),4.0);  // horizon warmth (bottom)
+  const sky  = Math.pow(Math.max(0,Math.sin(f*Math.PI)),2.0);  // cyan sky tint (top)
+  if(v>0.92){ const t=clamp((v-0.92)/0.68,0,1);
+    r=lerp(208,255,t); g=lerp(232,255,t); b=lerp(255,255,t);
+  } else { const t=v/0.92;
+    r=lerp(5,208,Math.pow(t,1.18)) + warm*46*t - sky*14*t;
+    g=lerp(9,232,Math.pow(t,1.08)) + warm*22*t + sky*6*t;
+    b=lerp(18,255,Math.pow(t,0.92)) - warm*10*t + sky*10*t;
+  }
+  return [clamp(r,0,255)|0, clamp(g,0,255)|0, clamp(b,0,255)|0, v];
+}
+
+function bgGrad(){
+  const g=ctx.createRadialGradient(W*0.5,H*0.30,30,W*0.5,H*0.6,Math.max(W,H)*0.9);
+  g.addColorStop(0,'#161d31'); g.addColorStop(0.45,'#0a0e1a'); g.addColorStop(1,'#04050a');
+  return g;
+}
+
+// A slinky reads as a STACK OF HORIZONTAL CHROME ELLIPSES with vertical pitch between
+// them. We place one loop per centreline sample. Each loop is a horizontal ellipse
+// (width=coil radius, height=perspective squash) whose tilt = the centreline's local
+// slope. We draw the BACK arc (occluded, dim) first, then the FRONT arc (bright) on top.
+// A helical phase makes the brightest specular point spiral down the body -> coil look.
+function drawSlinky(samples, reflection){
+  const squash=0.30;
+  // back arcs first (all loops), then front arcs -> correct overlap/occlusion
+  // reflection only needs the bright front arcs (back arcs invisible at low alpha)
+  const passStart = reflection? 1 : 0;
+  for(let pass=passStart;pass<2;pass++){
+    const step = reflection? 3*LOD : LOD;
+    for(let k=0;k<samples.length;k+=step){
+      drawLoop(samples[k], pass, squash, reflection);
+    }
+  }
+}
+
+function arcStroke(rw,rh,a0,a1){
+  ctx.beginPath();
+  ctx.ellipse(0,0,rw,Math.max(rh,1.2),0,a0,a1);
+  ctx.stroke();
+}
+
+// cached vertical chrome reflection-band gradient, keyed by quantized shimmer + height.
+function chromeGrad(shimmer, rh){
+  const sb=Math.round(shimmer*20), hb=Math.max(1,Math.round(rh));
+  const key=sb*4096+hb;
+  let g=_gradCache.get(key);
+  if(g) return g;
+  const sh=sb/20, h=hb;
+  g=ctx.createLinearGradient(0,-h,0,h);
+  const cTop=chromeColor( 0.85,0.9,sh);
+  const cUp =chromeColor( 0.25,0.95,sh);
+  const cMid=chromeColor(-0.15,0.85,sh*0.9);
+  const cLo =chromeColor( 0.55,0.8,sh*0.95);
+  g.addColorStop(0.00,`rgb(${cTop[0]},${cTop[1]},${cTop[2]})`);
+  g.addColorStop(0.30,`rgb(${cUp[0]},${cUp[1]},${cUp[2]})`);
+  g.addColorStop(0.58,`rgb(${cMid[0]},${cMid[1]},${cMid[2]})`);
+  g.addColorStop(1.00,`rgb(${cLo[0]},${cLo[1]},${cLo[2]})`);
+  if(_gradCache.size<4000) _gradCache.set(key,g);
+  return g;
+}
+
+function drawLoop(sp,pass,squash,reflection){
+  const rw=sp.rad;
+  const rh=rw*squash;
+  // local slope of the centreline -> small tilt of the horizontal loop
+  const slope=Math.atan2(sp.ny,sp.nx)-Math.PI/2;
+  const tilt=clamp(slope,-0.9,0.9)*0.6;
+  const lw=clamp(rw*0.24*(LOD>1?1.5:1), reflection?2:3, reflection?12:18);
+  const shimmer = 0.55+0.45*Math.sin(sp.u*Math.PI*5 - lightPhase*3.0);
+  // helical specular: bright point spirals around each loop and down the body.
+  // High winding rate -> the hotspot rotates a lot between neighbours = continuous spiral.
+  const helix = sp.u*Math.PI*2*(small?30:44) - lightPhase*2.6;
+
+  ctx.save();
+  ctx.translate(sp.x,sp.y);
+  ctx.rotate(tilt);
+  ctx.lineCap='round';
+
+  if(pass===0){
+    // BACK arc (far side of the loop): dim steel, slightly thinner
+    const c=chromeColor(-0.55,0.30,shimmer*0.65);
+    ctx.strokeStyle='rgb('+c[0]+','+c[1]+','+c[2]+')';
+    ctx.lineWidth=lw*0.7;
+    arcStroke(rw,rh,Math.PI,Math.PI*2);
+  } else {
+    // FRONT arc (near side): a vertical chrome reflection band (cached gradient).
+    ctx.strokeStyle=chromeGrad(shimmer, rh);
+    ctx.lineWidth=lw;
+    arcStroke(rw,rh,0,Math.PI);
+
+    // deep dark contour band -> the near-black zone that makes metal read as chrome
+    ctx.strokeStyle='rgba(2,4,10,0.6)';
+    ctx.lineWidth=lw*0.4;
+    arcStroke(rw,rh,Math.PI*0.40,Math.PI*0.84);
+
+    // travelling specular: a soft spiral hotspot + a tight bright core
+    const center=(Math.sin(helix)*0.5+0.5)*Math.PI;
+    if(!reflection){
+      ctx.globalCompositeOperation='lighter';
+      ctx.strokeStyle='rgba(140,180,250,0.42)';
+      ctx.lineWidth=lw*0.85;
+      arcStroke(rw,rh,center-0.55,center+0.55);
+      ctx.strokeStyle='rgba(245,250,255,0.85)';
+      ctx.lineWidth=lw*0.26;
+      arcStroke(rw,rh,center-0.14,center+0.14);
+      ctx.globalCompositeOperation='source-over';
+    } else {
+      ctx.strokeStyle='rgba(180,210,255,0.5)';
+      ctx.lineWidth=lw*0.4;
+      arcStroke(rw,rh,center-0.45,center+0.45);
+    }
+  }
+  ctx.restore();
+}
+
+// ---------- adaptive level-of-detail (keeps motion smooth on weak hardware) ----------
+let LOD=1, _lastT=performance.now(), _avg=16.7;
+function tuneLOD(){
+  const now=performance.now(), dt=now-_lastT; _lastT=now;
+  if(dt<100){ _avg=_avg*0.9+dt*0.1; }       // ignore tab-switch spikes
+  if(_avg>26 && LOD<2) LOD=2;                // < ~38fps -> halve loop density
+  else if(_avg<19 && LOD>1) LOD=1;          // recovered -> full quality
+}
+
+// ---------- frame ----------
+function frame(){
+  tuneLOD();
+  physics();
+  lightPhase+=0.013;
+  ctx.fillStyle=bgGrad(); ctx.fillRect(0,0,W,H);
+
+  // floor glow band
+  const floorY=H*0.94;
+  const fg=ctx.createLinearGradient(0,floorY-80,0,floorY+30);
+  fg.addColorStop(0,'rgba(90,120,200,0)'); fg.addColorStop(1,'rgba(70,105,190,0.12)');
+  ctx.fillStyle=fg; ctx.fillRect(0,floorY-80,W,110);
+
+  // contact glow under the slinky's lowest point -> grounds it on the floor
+  let lowX=anchorX, lowY=anchorY;
+  for(let i=0;i<N;i++){ if(nodes[i].y>lowY){lowY=nodes[i].y;lowX=nodes[i].x;} }
+  const cg=ctx.createRadialGradient(lowX,floorY,2,lowX,floorY,small?120:190);
+  cg.addColorStop(0,'rgba(150,185,255,0.18)'); cg.addColorStop(1,'rgba(150,185,255,0)');
+  ctx.fillStyle=cg; ctx.beginPath();ctx.ellipse(lowX,floorY,small?120:190,small?22:34,0,0,7);ctx.fill();
+
+  const samples=buildSamples();
+
+  // soft ambient bloom: one cheap radial glow centred on the body's bounding centre
+  let cxs=0,cys=0,minY=1e9,maxY=-1e9;
+  for(let i=0;i<N;i++){cxs+=nodes[i].x;cys+=nodes[i].y;if(nodes[i].y<minY)minY=nodes[i].y;if(nodes[i].y>maxY)maxY=nodes[i].y;}
+  cxs/=N; cys/=N;
+  const glowR=clamp((maxY-minY)*0.7,140,small?280:420);
+  const bl=ctx.createRadialGradient(cxs,cys,1,cxs,cys,glowR);
+  bl.addColorStop(0,'rgba(70,110,205,0.14)'); bl.addColorStop(0.6,'rgba(60,95,185,0.05)'); bl.addColorStop(1,'rgba(60,95,185,0)');
+  ctx.save(); ctx.globalCompositeOperation='lighter';
+  ctx.fillStyle=bl; ctx.beginPath();ctx.arc(cxs,cys,glowR,0,7);ctx.fill();
+  ctx.restore();
+
+  // reflection
+  ctx.save();
+  ctx.translate(0,floorY*2); ctx.scale(1,-1); ctx.globalAlpha=0.18;
+  drawSlinky(samples,true);
+  ctx.restore();
+
+  // main
+  drawSlinky(samples,false);
+
+  // pointer bead
+  if(P.active){
+    const r=grabbed>=0?15:9;
+    const g=ctx.createRadialGradient(P.x-2,P.y-3,1,P.x,P.y,r);
+    g.addColorStop(0,'#ffffff'); g.addColorStop(0.5,'rgba(185,210,255,0.9)'); g.addColorStop(1,'rgba(120,150,220,0)');
+    ctx.fillStyle=g; ctx.beginPath();ctx.arc(P.x,P.y,r,0,7);ctx.fill();
+    if(grabbed>=0){ ctx.strokeStyle='rgba(200,222,255,0.35)';ctx.lineWidth=1;
+      ctx.beginPath();ctx.arc(P.x,P.y,r+8+Math.sin(lightPhase*6)*2,0,7);ctx.stroke(); }
+  }
+  P.vx*=0.6; P.vy*=0.6;
+  requestAnimationFrame(frame);
+}
+
+// ---------- idle sway ----------
+let lastInteract=performance.now(), idle=0;
+(function sway(){
+  const now=performance.now();
+  idle = now-lastInteract>2600 ? Math.min(idle+0.01,1) : Math.max(idle-0.05,0);
+  anchorX = baseAnchorX + Math.sin(now*0.0006)*W*0.05*idle;
+  requestAnimationFrame(sway);
+})();
+
+const tip=document.getElementById('tip');
+setTimeout(()=>tip.style.opacity=0, 8000);
+cv.addEventListener('pointerdown',()=>tip.style.opacity=0,{once:true});
+
+rebuild();
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

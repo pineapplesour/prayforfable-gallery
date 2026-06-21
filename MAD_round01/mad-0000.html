@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>CHORUS — gyroid cathedral drift</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { height:100%; overflow:hidden; background:#03040a; }
+  body {
+    font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    cursor: crosshair;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #gl { position:fixed; inset:0; width:100vw; height:100vh; display:block; }
+
+  .ui { position:fixed; pointer-events:none; z-index:5; color:#dfe7ff; mix-blend-mode:screen; }
+
+  /* top-left wordmark */
+  .brand {
+    top: clamp(18px, 3.4vh, 40px);
+    left: clamp(18px, 3vw, 44px);
+    line-height:1.35;
+  }
+  .brand .t1 {
+    font-size: clamp(13px, 1.15vw, 17px);
+    letter-spacing:.42em;
+    font-weight:600;
+    text-transform:uppercase;
+  }
+  .brand .t2 {
+    margin-top:8px;
+    font-size: clamp(9px, .72vw, 11px);
+    letter-spacing:.30em;
+    opacity:.55;
+    text-transform:uppercase;
+  }
+
+  /* bottom-left readout */
+  .meta {
+    bottom: clamp(18px, 3.4vh, 40px);
+    left: clamp(18px, 3vw, 44px);
+    font-size: clamp(9px, .72vw, 11px);
+    letter-spacing:.18em;
+    opacity:.62;
+    line-height:1.9;
+  }
+  .meta b { color:#9fd2ff; font-weight:600; }
+  .meta .bar {
+    display:inline-block; width:74px; height:3px; margin-left:8px;
+    vertical-align:middle; background:rgba(255,255,255,.14); border-radius:2px; overflow:hidden;
+  }
+  .meta .bar i { display:block; height:100%; width:30%; background:linear-gradient(90deg,#6df,#b9f); border-radius:2px; }
+
+  /* bottom-right hint */
+  .hint {
+    right: clamp(18px, 3vw, 44px);
+    bottom: clamp(18px, 3.4vh, 40px);
+    text-align:right;
+    font-size: clamp(9px, .72vw, 11px);
+    letter-spacing:.22em;
+    text-transform:uppercase;
+    opacity:.5;
+    line-height:1.9;
+    animation: breathe 5.5s ease-in-out infinite;
+  }
+  @keyframes breathe { 0%,100%{opacity:.32} 50%{opacity:.62} }
+
+  /* corner ticks */
+  .frame { position:fixed; inset:0; pointer-events:none; z-index:4; mix-blend-mode:screen; }
+  .frame span { position:absolute; width:13px; height:13px; border:1px solid rgba(180,205,255,.30); }
+  .frame .tl { top:14px; left:14px; border-right:0; border-bottom:0; }
+  .frame .tr { top:14px; right:14px; border-left:0; border-bottom:0; }
+  .frame .bl { bottom:14px; left:14px; border-right:0; border-top:0; }
+  .frame .br { bottom:14px; right:14px; border-left:0; border-top:0; }
+
+  .fail {
+    position:fixed; inset:0; display:none; place-items:center; z-index:9;
+    color:#9fb2d8; font-size:13px; letter-spacing:.1em; text-align:center; padding:24px;
+  }
+
+  @media (max-width:480px){
+    .brand .t1{ letter-spacing:.30em; }
+    .hint{ display:none; }
+  }
+</style>
+</head>
+<body>
+  <canvas id="gl"></canvas>
+
+  <div class="ui brand">
+    <div class="t1">C&nbsp;H&nbsp;O&nbsp;R&nbsp;U&nbsp;S</div>
+    <div class="t2">gyroid cathedral · raymarch SDF</div>
+  </div>
+
+  <div class="ui meta">
+    <div>DRIFT&nbsp; <b id="m_spd">+1.00x</b><span class="bar"><i id="m_bar"></i></span></div>
+    <div>DEPTH&nbsp; <b id="m_dep">0000.0</b></div>
+    <div>FPS&nbsp;&nbsp; <b id="m_fps">60</b></div>
+  </div>
+
+  <div class="ui hint">
+    drag · look<br>scroll · accelerate
+  </div>
+
+  <div class="frame"><span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span></div>
+
+  <div class="fail" id="fail">WebGL을 사용할 수 없는 환경입니다.<br>다른 브라우저에서 열어 주세요.</div>
+
+<script type="x-shader/x-fragment" id="frag">
+precision highp float;
+
+uniform vec2  uRes;
+uniform float uTime;
+uniform float uTravel;
+uniform vec2  uMouse;   // smoothed, -1..1
+uniform float uHue;
+uniform float uBoost;   // -1..1 drift accent
+
+#define STEPS 104
+#define PI 3.14159265
+
+mat2 rot(float a){ float c=cos(a), s=sin(a); return mat2(c,-s,s,c); }
+
+// curving flight path through the lattice
+vec2 path(float z){
+  return vec2(
+    sin(z*0.118)*2.7 + sin(z*0.051)*1.6,
+    cos(z*0.097)*2.3 + sin(z*0.073)*1.15
+  );
+}
+
+// layered gyroid field (cheap, organic)
+float gy(vec3 p){
+  p += 0.42*sin(p.yzx*0.7 + uTime*0.16);
+  float g  = dot(sin(p),          cos(p.yzx));
+  float g2 = dot(sin(p*2.04 + uTime*0.32), cos(p.yzx*2.04));
+  return g + 0.5*g2;
+}
+
+float gGlow; // last sampled emission strength
+
+float map(vec3 p){
+  vec2 pa = path(p.z);
+  vec3 q = p; q.xy -= pa;
+  q.xy *= rot(p.z*0.045 + sin(uTime*0.10)*0.22);   // slow torsion
+  float freq = 1.16;
+  float g = gy(q*freq);
+  float sheets = abs(g)/freq*0.62 - 0.05;          // thin gyroid membranes
+  float tube   = 2.65 - length(q.xy);              // hollow the flight corridor
+  gGlow = 1.0 - smoothstep(0.0, 0.55, abs(g));     // bright along zero-crossings
+  return max(sheets, tube);
+}
+
+vec3 calcNormal(vec3 p){
+  vec2 e = vec2(0.0022, 0.0);
+  return normalize(vec3(
+    map(p+e.xyy)-map(p-e.xyy),
+    map(p+e.yxy)-map(p-e.yxy),
+    map(p+e.yyx)-map(p-e.yyx)
+  ));
+}
+
+vec3 pal(float t){
+  return 0.5 + 0.5*cos(6.28318*(t + vec3(0.0, 0.33, 0.67) + uHue));
+}
+
+void main(){
+  vec2 uv = (gl_FragCoord.xy - 0.5*uRes) / uRes.y;
+
+  // camera rides the path, looks forward
+  float z  = uTravel;
+  vec3 ro  = vec3(path(z), z);
+  vec2 ah  = path(z + 2.0);
+  vec3 fwd = normalize(vec3(ah - path(z), 2.0));
+  vec3 rt  = normalize(cross(vec3(0.0,1.0,0.0), fwd));
+  vec3 up  = cross(fwd, rt);
+
+  float yaw =  uMouse.x*0.55;
+  float pit =  uMouse.y*0.45;
+  float fov = 1.42;
+  vec3 rd = normalize(fwd*fov + (uv.x + yaw)*rt + (uv.y - pit)*up);
+
+  float t = 0.02, acc = 0.0, steps = 0.0;
+  bool hit = false;
+  for(int i=0;i<STEPS;i++){
+    steps += 1.0;
+    vec3 p = ro + rd*t;
+    float d = map(p);
+    acc += clamp(gGlow,0.0,1.0) * exp(-t*0.075) * 0.034;   // volumetric veins
+    if(d < 0.0022){ hit = true; break; }
+    t += d*0.82;
+    if(t > 44.0) break;
+  }
+
+  vec3 col;
+  if(hit){
+    vec3 p = ro + rd*t;
+    vec3 n = calcNormal(p);
+
+    // headlight + a cool fill from above
+    vec3 lp = ro + fwd*0.6 + up*0.4;
+    vec3 l  = normalize(lp - p);
+    float dif  = clamp(dot(n,l), 0.0, 1.0);
+    float fres = pow(1.0 - clamp(dot(n,-rd),0.0,1.0), 3.0);
+
+    // cheap ambient occlusion
+    float ao = 0.0, sca = 1.0;
+    for(int j=0;j<4;j++){
+      float h = 0.05 + 0.13*float(j);
+      ao += (h - map(p + n*h))*sca;
+      sca *= 0.62;
+    }
+    ao = clamp(1.0 - 1.9*ao, 0.0, 1.0);
+
+    vec3 base = pal(p.z*0.018 + length(p.xy)*0.05 + uTravel*0.004);
+    col  = base*(0.14 + 0.95*dif)*ao;
+    col += fres*pal(uHue + 0.30)*1.25;          // rim iridescence
+    col += pow(clamp(gGlow,0.0,1.0),2.0)*pal(uHue+0.12)*0.6; // surface emission
+
+    float fog = exp(-t*0.095);
+    col *= fog;
+    col += (1.0-fog)*pal(uHue+0.55)*0.10;       // atmospheric tint into distance
+  } else {
+    col  = pal(uHue+0.55)*0.035;
+    col += pow(max(0.0, rd.y*0.5+0.5), 3.0)*pal(uHue)*0.06;
+  }
+
+  col += acc*pal(uHue+0.15)*1.45;               // glowing membranes everywhere
+  col += abs(uBoost)*acc*pal(uHue+0.4)*0.8;     // accent surge while accelerating
+
+  // grade
+  col = col/(1.0+col);                          // reinhard
+  col = pow(col, vec3(0.86));
+  col = mix(col, col*col*(3.0-2.0*col), 0.20);  // gentle contrast
+
+  float vig = smoothstep(1.30, 0.25, length(uv));
+  col *= vig;
+
+  // fine grain
+  float gr = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898,78.233)) + uTime)*43758.5453);
+  col += (gr-0.5)*0.028;
+
+  gl_FragColor = vec4(max(col,0.0), 1.0);
+}
+</script>
+
+<script>
+(function(){
+  "use strict";
+  var canvas = document.getElementById('gl');
+  var gl = canvas.getContext('webgl', {antialias:false, alpha:false, powerPreference:'high-performance'})
+        || canvas.getContext('experimental-webgl');
+  if(!gl){ document.getElementById('fail').style.display='grid'; return; }
+
+  var VERT = "attribute vec2 p; void main(){ gl_Position = vec4(p,0.0,1.0); }";
+  var FRAG = document.getElementById('frag').textContent;
+
+  function compile(type, src){
+    var s = gl.createShader(type);
+    gl.shaderSource(s, src); gl.compileShader(s);
+    if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+      console.error(gl.getShaderInfoLog(s)); return null;
+    }
+    return s;
+  }
+  var vs = compile(gl.VERTEX_SHADER, VERT);
+  var fs = compile(gl.FRAGMENT_SHADER, FRAG);
+  if(!vs || !fs){ document.getElementById('fail').style.display='grid'; return; }
+
+  var prog = gl.createProgram();
+  gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
+  if(!gl.getProgramParameter(prog, gl.LINK_STATUS)){
+    console.error(gl.getProgramInfoLog(prog));
+    document.getElementById('fail').style.display='grid'; return;
+  }
+  gl.useProgram(prog);
+
+  var buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+  var loc = gl.getAttribLocation(prog, 'p');
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+
+  var U = {
+    res:    gl.getUniformLocation(prog,'uRes'),
+    time:   gl.getUniformLocation(prog,'uTime'),
+    travel: gl.getUniformLocation(prog,'uTravel'),
+    mouse:  gl.getUniformLocation(prog,'uMouse'),
+    hue:    gl.getUniformLocation(prog,'uHue'),
+    boost:  gl.getUniformLocation(prog,'uBoost')
+  };
+
+  // ---- state ----
+  var isMobile = Math.min(window.innerWidth, window.innerHeight) <= 540;
+  var scale = isMobile ? 0.85 : 1.0;       // adaptive render scale
+  var dprCap = isMobile ? 1.0 : 1.5;
+  var W=1, H=1;
+
+  function resize(){
+    var dpr = Math.min(window.devicePixelRatio || 1, dprCap);
+    W = Math.max(1, Math.floor(window.innerWidth  * dpr * scale));
+    H = Math.max(1, Math.floor(window.innerHeight * dpr * scale));
+    canvas.width = W; canvas.height = H;
+    canvas.style.width = window.innerWidth + 'px';
+    canvas.style.height = window.innerHeight + 'px';
+    gl.viewport(0,0,W,H);
+  }
+  window.addEventListener('resize', resize, {passive:true});
+  resize();
+
+  // ---- interaction ----
+  var mTarget = {x:0, y:0}, mSmooth = {x:0, y:0};
+  var boost = 0;          // decays toward 0
+  var baseSpeed = 2.6;    // units / sec
+  var travel = 0;
+  var dragging = false, lastTouchY = 0;
+
+  function setPointer(cx, cy){
+    mTarget.x = (cx / window.innerWidth)  * 2 - 1;
+    mTarget.y = (cy / window.innerHeight) * 2 - 1;
+  }
+  window.addEventListener('mousemove', function(e){ setPointer(e.clientX, e.clientY); }, {passive:true});
+  window.addEventListener('wheel', function(e){
+    boost += e.deltaY * 0.0016;
+    boost = Math.max(-3.0, Math.min(4.5, boost));
+  }, {passive:true});
+
+  window.addEventListener('touchstart', function(e){
+    dragging = true;
+    if(e.touches.length){ setPointer(e.touches[0].clientX, e.touches[0].clientY); lastTouchY = e.touches[0].clientY; }
+  }, {passive:true});
+  window.addEventListener('touchmove', function(e){
+    if(!e.touches.length) return;
+    var ty = e.touches[0].clientY;
+    setPointer(e.touches[0].clientX, ty);
+    boost += (lastTouchY - ty) * 0.010;     // swipe up = accelerate
+    boost = Math.max(-3.0, Math.min(4.5, boost));
+    lastTouchY = ty;
+  }, {passive:true});
+  window.addEventListener('touchend', function(){ dragging = false; }, {passive:true});
+
+  // ---- readout ----
+  var elSpd = document.getElementById('m_spd');
+  var elDep = document.getElementById('m_dep');
+  var elFps = document.getElementById('m_fps');
+  var elBar = document.getElementById('m_bar');
+
+  // ---- loop ----
+  var t0 = performance.now(), tPrev = t0;
+  var fpsAvg = 60, slowAcc = 0, fastAcc = 0, uiClock = 0;
+
+  function frame(now){
+    var dt = (now - tPrev) / 1000;
+    if(dt > 0.05) dt = 0.05;            // clamp big gaps
+    tPrev = now;
+    var time = (now - t0) / 1000;
+
+    // physics
+    var speed = baseSpeed + boost * 4.0;
+    travel += speed * dt;
+    boost *= Math.pow(0.90, dt*60.0);   // frame-rate independent decay
+    if(Math.abs(boost) < 0.0006) boost = 0;
+
+    // smooth look
+    var k = 1 - Math.pow(0.001, dt);    // ~ easeing
+    mSmooth.x += (mTarget.x - mSmooth.x) * Math.min(1, k*4.0);
+    mSmooth.y += (mTarget.y - mSmooth.y) * Math.min(1, k*4.0);
+
+    var hue = time*0.018 + travel*0.0028 + mSmooth.x*0.04;
+
+    gl.uniform2f(U.res, W, H);
+    gl.uniform1f(U.time, time);
+    gl.uniform1f(U.travel, travel);
+    gl.uniform2f(U.mouse, mSmooth.x, mSmooth.y);
+    gl.uniform1f(U.hue, hue);
+    gl.uniform1f(U.boost, Math.max(-1, Math.min(1, boost*0.35)));
+
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    // adaptive resolution to defend 60fps
+    var fps = 1 / Math.max(dt, 0.0001);
+    fpsAvg += (fps - fpsAvg) * 0.08;
+    if(fpsAvg < 50){ slowAcc++; fastAcc = 0; } else if(fpsAvg > 58){ fastAcc++; slowAcc = 0; } else { slowAcc = fastAcc = 0; }
+    if(slowAcc > 40 && scale > 0.62){ scale = Math.max(0.62, scale - 0.08); slowAcc = 0; resize(); }
+    else if(fastAcc > 120 && scale < (isMobile?0.85:1.0)){ scale = Math.min(isMobile?0.85:1.0, scale + 0.06); fastAcc = 0; resize(); }
+
+    // ui (throttled)
+    uiClock += dt;
+    if(uiClock > 0.12){
+      uiClock = 0;
+      var mult = (speed / baseSpeed);
+      elSpd.textContent = (mult>=0? '+' : '') + mult.toFixed(2) + 'x';
+      elDep.textContent = (travel % 10000).toFixed(1).padStart(6,'0');
+      elFps.textContent = Math.round(fpsAvg);
+      var bw = Math.max(8, Math.min(100, 30 + boost*22));
+      elBar.style.width = bw + '%';
+    }
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

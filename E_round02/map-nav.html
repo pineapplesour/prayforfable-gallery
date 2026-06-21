@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RUST CARTO // 486 DITHER NAV</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<style>
+  :root{
+    /* restricted warm 486 palette */
+    --c-void:#1a0f12;
+    --c-maroon:#3b1a1f;
+    --c-rust:#8a3b22;
+    --c-rust2:#a8502a;
+    --c-salmon:#c87145;
+    --c-peach:#e6a36a;
+    --c-cream:#f2cf9b;
+    --c-teal-d:#143b3a;
+    --c-teal:#1f6b5f;
+    --c-green:#3f9a6e;
+    --c-ink:#160c0e;
+    --c-amber:#e7b15a;
+    --c-hud:#62d3a6;
+    --bezel:#241318;
+    --bezel-hi:#4a2a26;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:
+      radial-gradient(120% 80% at 50% 0%, #2a1518 0%, #160c0e 60%, #0c0608 100%);
+    color:var(--c-cream);
+    font-family:'VT323',monospace;
+    font-size:18px;
+    -webkit-font-smoothing:none;
+    image-rendering:pixelated;
+    display:flex;align-items:center;justify-content:center;
+    min-height:100%;
+    padding:18px;
+    overflow-x:hidden;
+  }
+  /* ---------------- window chrome ---------------- */
+  .app{
+    width:100%;
+    max-width:1180px;
+    background:linear-gradient(180deg,#2b181c,#1d0f12);
+    border:2px solid #0b0708;
+    box-shadow:0 0 0 2px var(--bezel-hi) inset, 0 22px 60px rgba(0,0,0,.7);
+    border-radius:4px;
+    overflow:hidden;
+  }
+  .titlebar{
+    display:flex;align-items:center;gap:10px;
+    background:linear-gradient(180deg,#4a2723,#33191b);
+    border-bottom:2px solid #0b0708;
+    padding:7px 10px;
+  }
+  .dots{display:flex;gap:6px}
+  .dot{width:12px;height:12px;border-radius:50%;border:2px solid #1a0c0d}
+  .dot.r{background:#c8503a}.dot.y{background:#e0a850}.dot.g{background:#4fae7a}
+  .title-txt{
+    font-family:'Press Start 2P',monospace;
+    font-size:9px;letter-spacing:1px;color:var(--c-peach);
+    text-shadow:1px 1px 0 #1a0c0d;
+  }
+  .title-sub{
+    margin-left:auto;font-size:16px;color:var(--c-salmon);
+    letter-spacing:1px;opacity:.9;
+  }
+  .winbtns{display:flex;gap:5px;margin-left:10px}
+  .winbtn{
+    width:18px;height:16px;border:2px solid #0b0708;
+    background:#5a2f2a;color:#f2cf9b;font-family:'Press Start 2P';
+    font-size:7px;display:flex;align-items:center;justify-content:center;
+    line-height:1;
+  }
+  /* ---------------- body grid ---------------- */
+  .body{
+    display:grid;
+    grid-template-columns:1fr 286px;
+    gap:0;
+  }
+  .map-wrap{
+    position:relative;
+    border-right:2px solid #0b0708;
+    background:#0c0608;
+    min-width:0;
+  }
+  .screen{
+    position:relative;
+    width:100%;
+    aspect-ratio:16/10;
+    display:block;
+    background:#160c0e;
+  }
+  #map{
+    position:absolute;inset:0;
+    width:100%;height:100%;
+    display:block;
+    image-rendering:pixelated;
+  }
+  /* CRT scanlines + vignette overlay */
+  .crt{
+    position:absolute;inset:0;pointer-events:none;
+    background:
+      repeating-linear-gradient(0deg, rgba(0,0,0,.18) 0px, rgba(0,0,0,.18) 1px, rgba(0,0,0,0) 2px, rgba(0,0,0,0) 4px);
+    mix-blend-mode:multiply;
+  }
+  .vig{
+    position:absolute;inset:0;pointer-events:none;
+    box-shadow: inset 0 0 90px 18px rgba(10,4,6,.75), inset 0 0 18px rgba(0,0,0,.5);
+  }
+  /* ---------- GPS HUD floating over map ---------- */
+  .hud{
+    position:absolute;left:12px;top:12px;
+    display:flex;gap:8px;flex-wrap:wrap;max-width:62%;
+    pointer-events:none;
+  }
+  .chip{
+    background:rgba(20,11,13,.78);
+    border:2px solid #0b0708;
+    box-shadow:0 0 0 1px var(--bezel-hi) inset;
+    padding:5px 8px 4px;
+    min-width:74px;
+  }
+  .chip .lab{
+    font-family:'Press Start 2P';font-size:6px;
+    color:var(--c-amber);letter-spacing:1px;display:block;margin-bottom:3px;
+    text-shadow:1px 1px 0 #1a0c0d;
+  }
+  .chip .val{
+    font-size:22px;line-height:.9;color:var(--c-hud);
+    text-shadow:0 0 6px rgba(98,211,166,.35);
+  }
+  .chip .val small{font-size:13px;color:var(--c-peach)}
+  /* compass chip top-right */
+  .compass{
+    position:absolute;right:12px;top:12px;
+    width:96px;height:96px;
+    background:rgba(20,11,13,.8);
+    border:2px solid #0b0708;
+    box-shadow:0 0 0 1px var(--bezel-hi) inset;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .compass canvas{image-rendering:pixelated}
+  /* FORWARD status pill bottom-left of map */
+  .nav-pill{
+    position:absolute;left:12px;bottom:12px;
+    display:flex;align-items:center;gap:7px;
+    background:rgba(20,57,58,.85);
+    border:2px solid #0b0708;
+    box-shadow:0 0 0 1px #2f6f63 inset;
+    padding:5px 9px;
+  }
+  .nav-pill .arw{font-size:18px;color:var(--c-hud)}
+  .nav-pill .tx{font-family:'Press Start 2P';font-size:7px;color:#bff0d8;letter-spacing:1px}
+  .nav-pill .dist{font-size:18px;color:var(--c-cream);margin-left:4px}
+  /* ----------- right CONTROL panel ----------- */
+  .panel{
+    background:linear-gradient(180deg,#241317,#1a0f12);
+    padding:10px 11px 12px;
+    display:flex;flex-direction:column;gap:10px;
+    min-width:0;
+  }
+  .pnl-head{
+    font-family:'Press Start 2P';font-size:9px;color:var(--c-peach);
+    background:#33191b;border:2px solid #0b0708;
+    padding:7px 8px;letter-spacing:1px;text-align:center;
+    box-shadow:0 0 0 1px var(--bezel-hi) inset;
+  }
+  .rows{display:flex;flex-direction:column;gap:6px}
+  .row{
+    display:flex;justify-content:space-between;align-items:center;
+    border:2px solid #0b0708;background:#1d1014;
+    padding:5px 8px;box-shadow:0 0 0 1px #2c1a1e inset;
+  }
+  .row .k{font-family:'Press Start 2P';font-size:6px;color:var(--c-amber);letter-spacing:1px}
+  .row .v{font-size:18px;color:var(--c-hud)}
+  .row .v.warm{color:var(--c-salmon)}
+  /* palette swatch strip */
+  .pal{
+    display:grid;grid-template-columns:repeat(8,1fr);gap:0;
+    border:2px solid #0b0708;height:18px;
+  }
+  .pal i{display:block}
+  /* matrix preview (bayer) */
+  .matrix{
+    border:2px solid #0b0708;background:#120a0c;
+    padding:8px;display:flex;gap:9px;align-items:center;
+  }
+  .matrix canvas{image-rendering:pixelated;border:1px solid #0b0708}
+  .matrix .mtx-info{display:flex;flex-direction:column;gap:3px}
+  .matrix .mtx-info b{font-family:'Press Start 2P';font-size:6px;color:var(--c-amber);letter-spacing:1px}
+  .matrix .mtx-info span{font-size:15px;color:var(--c-peach)}
+  /* control buttons */
+  .ctrls{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}
+  .btn{
+    font-family:'Press Start 2P';font-size:7px;
+    background:linear-gradient(180deg,#5a2f2a,#3d1f1d);
+    color:#f2cf9b;border:2px solid #0b0708;
+    box-shadow:0 0 0 1px var(--bezel-hi) inset;
+    padding:8px 0;cursor:pointer;letter-spacing:1px;
+    transition:transform .04s;
+  }
+  .btn:hover{background:linear-gradient(180deg,#6c3a33,#46241f)}
+  .btn:active{transform:translateY(1px)}
+  .btn.on{background:linear-gradient(180deg,#1f6b5f,#143b3a);color:#bff0d8;box-shadow:0 0 0 1px #2f6f63 inset}
+  .legend{
+    border:2px solid #0b0708;background:#160c0e;padding:7px 8px;
+    display:flex;flex-direction:column;gap:5px;
+  }
+  .legend .lg-h{font-family:'Press Start 2P';font-size:6px;color:var(--c-amber);letter-spacing:1px;margin-bottom:2px}
+  .legend .lg{display:flex;align-items:center;gap:7px;font-size:15px;color:var(--c-cream)}
+  .legend .sw{width:12px;height:12px;border:1px solid #0b0708}
+  /* ------------- bottom ticker ------------- */
+  .ticker{
+    border-top:2px solid #0b0708;
+    background:linear-gradient(180deg,#33191b,#221013);
+    overflow:hidden;white-space:nowrap;
+    padding:6px 0;
+  }
+  .ticker .tk{
+    display:inline-block;
+    font-family:'Press Start 2P';font-size:7px;color:var(--c-peach);
+    letter-spacing:1px;
+    animation:slide 26s linear infinite;
+    padding-left:100%;
+  }
+  .ticker .tk b{color:var(--c-hud)}
+  .ticker .tk .sep{color:var(--c-rust2)}
+  @keyframes slide{from{transform:translateX(0)}to{transform:translateX(-100%)}}
+
+  /* ----------------- responsive ----------------- */
+  @media (max-width:760px){
+    body{padding:8px;font-size:17px}
+    .body{grid-template-columns:1fr}
+    .map-wrap{border-right:none;border-bottom:2px solid #0b0708}
+    .screen{aspect-ratio:5/6}
+    .hud{max-width:none;left:8px;top:8px}
+    .compass{width:74px;height:74px;right:8px;top:8px}
+    .panel{padding:9px}
+    .ctrls{grid-template-columns:repeat(4,1fr)}
+    .title-sub{display:none}
+  }
+</style>
+</head>
+<body>
+  <div class="app">
+    <!-- title bar -->
+    <div class="titlebar">
+      <div class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
+      <span class="title-txt">RUST&nbsp;CARTO.EXE</span>
+      <span class="title-sub">// 486 DITHER NAV &nbsp;v2.3</span>
+      <div class="winbtns"><span class="winbtn">_</span><span class="winbtn">▢</span><span class="winbtn">x</span></div>
+    </div>
+
+    <div class="body">
+      <!-- ==================== MAP ==================== -->
+      <div class="map-wrap">
+        <div class="screen">
+          <canvas id="map" width="640" height="400"></canvas>
+
+          <!-- GPS HUD -->
+          <div class="hud">
+            <div class="chip"><span class="lab">HEADING</span><span class="val" id="hudHead">041<small>°NE</small></span></div>
+            <div class="chip"><span class="lab">DISTANCE</span><span class="val" id="hudDist">12.4<small>KM</small></span></div>
+            <div class="chip"><span class="lab">ETA</span><span class="val" id="hudEta">00:18<small>M</small></span></div>
+            <div class="chip"><span class="lab">SPEED</span><span class="val" id="hudSpd">42<small>KPH</small></span></div>
+          </div>
+
+          <div class="compass"><canvas id="compass" width="80" height="80"></canvas></div>
+
+          <div class="nav-pill">
+            <span class="arw" id="navArw">▲</span>
+            <span class="tx" id="navTx">CONTINUE&nbsp;NORTH</span>
+            <span class="dist" id="navDist">320 M</span>
+          </div>
+
+          <div class="crt"></div>
+          <div class="vig"></div>
+        </div>
+      </div>
+
+      <!-- ==================== CONTROL PANEL ==================== -->
+      <div class="panel">
+        <div class="pnl-head">CONTROL</div>
+
+        <div class="rows">
+          <div class="row"><span class="k">RENDER</span><span class="v warm">DITHER</span></div>
+          <div class="row"><span class="k">PALETTE</span><span class="v">RUST/12</span></div>
+          <div class="row"><span class="k">MATRIX</span><span class="v" id="rowMtx">BAYER 8×8</span></div>
+          <div class="row"><span class="k">ZOOM</span><span class="v" id="rowZoom">x1.0</span></div>
+          <div class="row"><span class="k">GRID</span><span class="v" id="rowGrid">ON</span></div>
+        </div>
+
+        <div class="pal" id="palStrip"></div>
+
+        <div class="matrix">
+          <canvas id="mtxView" width="48" height="48"></canvas>
+          <div class="mtx-info">
+            <b>ORDERED</b>
+            <span id="mtxLabel">8×8 BAYER</span>
+            <b>THRESHOLD MAP</b>
+          </div>
+        </div>
+
+        <div class="ctrls">
+          <button class="btn" id="bMtx">MTX</button>
+          <button class="btn" id="bGrid">GRID</button>
+          <button class="btn" id="bScan">SCAN</button>
+          <button class="btn on" id="bRun">RUN</button>
+        </div>
+        <div class="ctrls" style="grid-template-columns:repeat(3,1fr)">
+          <button class="btn" id="bZoomIn">ZM+</button>
+          <button class="btn" id="bZoomOut">ZM-</button>
+          <button class="btn" id="bRe">RESEED</button>
+        </div>
+
+        <div class="legend">
+          <span class="lg-h">LEGEND</span>
+          <div class="lg"><span class="sw" style="background:#e6a36a"></span>HIGHLAND&nbsp;/&nbsp;RIDGE</div>
+          <div class="lg"><span class="sw" style="background:#a8502a"></span>LOWLAND&nbsp;/&nbsp;RUST&nbsp;FLAT</div>
+          <div class="lg"><span class="sw" style="background:#1f6b5f"></span>WATER&nbsp;/&nbsp;TEAL&nbsp;BASIN</div>
+          <div class="lg"><span class="sw" style="background:#62d3a6"></span>ROUTE&nbsp;/&nbsp;ACTIVE&nbsp;LEG</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ticker -->
+    <div class="ticker">
+      <span class="tk" id="tkTxt"></span>
+    </div>
+  </div>
+
+<script>
+/* ============================================================
+   RUST CARTO — real Bayer ordered dithering map/nav renderer
+   Everything draws to an internal hi-precision buffer, then is
+   quantized to a fixed warm palette via an ordered-dither
+   threshold matrix. No CSS filter fakery.
+   ============================================================ */
+(function(){
+  "use strict";
+
+  // ---- canvas (logical res; pixelated upscale by CSS) ----
+  var W = 640, H = 400;          // dither buffer resolution
+  var cv = document.getElementById('map');
+  var ctx = cv.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+
+  // ---------- restricted warm 486 palette (RGB) ----------
+  // ordered roughly dark -> light for terrain ramp, plus teal/green band
+  var PAL = [
+    [26,15,18],    // 0 void
+    [40,18,22],    // 1 deep maroon
+    [70,28,26],    // 2 maroon
+    [110,46,34],   // 3 rust dark
+    [138,59,34],   // 4 rust
+    [168,80,42],   // 5 rust2
+    [200,113,69],  // 6 salmon
+    [230,163,106], // 7 peach
+    [242,207,155], // 8 cream
+    [20,59,58],    // 9 teal dark
+    [31,107,95],   // 10 teal
+    [63,154,110]   // 11 green
+  ];
+  // fill palette swatch strip + a subset for display
+  (function(){
+    var strip = document.getElementById('palStrip');
+    var idx = [1,2,3,4,5,6,7,8,9,10,11,8];
+    idx.slice(0,8).forEach(function(i){
+      var el = document.createElement('i');
+      var c = PAL[i];
+      el.style.background = 'rgb('+c[0]+','+c[1]+','+c[2]+')';
+      strip.appendChild(el);
+    });
+  })();
+
+  // ---------- Bayer ordered dither matrices ----------
+  function genBayer(n){
+    // recursive Bayer; n is power of two
+    if(n===1) return [[0]];
+    var s = genBayer(n/2), m=[], i,j;
+    for(i=0;i<n;i++){ m[i]=[]; for(j=0;j<n;j++) m[i][j]=0; }
+    for(i=0;i<n/2;i++) for(j=0;j<n/2;j++){
+      var b = s[i][j]*4;
+      m[i][j]           = b+0;
+      m[i][j+n/2]       = b+2;
+      m[i+n/2][j]       = b+3;
+      m[i+n/2][j+n/2]   = b+1;
+    }
+    return m;
+  }
+  function normMatrix(m){
+    var n=m.length, max=n*n, out=[];
+    for(var i=0;i<n;i++){ out[i]=[]; for(var j=0;j<n;j++) out[i][j]=(m[i][j]+0.5)/max - 0.5; }
+    return out;
+  }
+  var BAYER = {
+    2: normMatrix(genBayer(2)),
+    4: normMatrix(genBayer(4)),
+    8: normMatrix(genBayer(8))
+  };
+  var matrixSizes = [4,8,2];
+  var matrixIdx = 1;             // start at 8x8
+  function curMtx(){ return matrixSizes[matrixIdx]; }
+
+  // ---------- find nearest palette entry ----------
+  function nearest(r,g,b){
+    var best=0, bd=1e12;
+    for(var k=0;k<PAL.length;k++){
+      var p=PAL[k];
+      var dr=r-p[0], dg=g-p[1], db=b-p[2];
+      var d=dr*dr+dg*dg+db*db;
+      if(d<bd){bd=d;best=k;}
+    }
+    return best;
+  }
+
+  // ---------- value-noise heightfield ----------
+  var seed = 1337;
+  function rand(){ // deterministic LCG
+    seed = (seed*1664525 + 1013904223) & 0x7fffffff;
+    return seed / 0x7fffffff;
+  }
+  var GRID=64, gp=[];
+  function buildField(){
+    gp=[];
+    for(var y=0;y<=GRID;y++){ gp[y]=[]; for(var x=0;x<=GRID;x++) gp[y][x]=rand(); }
+  }
+  function smooth(t){ return t*t*(3-2*t); }
+  function lerpf(a,b,t){return a+(b-a)*t;}
+  // sample stored grid at integer cells with given period (wrapped)
+  function cell(ix,iy){
+    return gp[((iy%GRID)+GRID)%GRID][((ix%GRID)+GRID)%GRID];
+  }
+  // smooth value noise at a chosen frequency (cells across the world)
+  function noiseAt(fx,fy,freq){
+    var gx=fx*freq, gy=fy*freq;
+    var x0=Math.floor(gx), y0=Math.floor(gy);
+    var tx=smooth(gx-x0), ty=smooth(gy-y0);
+    var a=cell(x0,y0), b=cell(x0+1,y0), c=cell(x0,y0+1), d=cell(x0+1,y0+1);
+    var top=lerpf(a,b,tx), bot=lerpf(c,d,tx);
+    return lerpf(top,bot,ty);
+  }
+  // fBm with LOW base frequency => big smooth landforms (dither shows as texture)
+  // weighted so detail octaves stay subtle.
+  var BASE_FREQ = 4.5;          // ~4-5 landmasses across the world
+  function fieldAt(fx,fy){
+    var sum=0, norm=0, amp=1, freq=BASE_FREQ;
+    for(var o=0;o<5;o++){
+      sum  += noiseAt(fx,fy,freq)*amp;
+      norm += amp;
+      amp  *= 0.46;              // strong falloff -> gentle high-freq detail
+      freq *= 1.95;
+    }
+    var v = sum/norm;
+    // gentle contrast curve to widen flat basins & plateaus
+    v = clampN(v*1.25 - 0.12, 0, 1);
+    return v;
+  }
+  function clampN(v,a,b){return v<a?a:(v>b?b:v);}
+
+  // ---------- map / nav state ----------
+  var zoom = 1.6;                       // zoomed so few large landforms fill view
+  var camX = 0.42, camY = 0.46;        // camera center in field-space (0..1)
+  var t0 = performance.now();
+  var routeT = 0;                       // 0..1 progress along the route
+
+  // a fixed route (polyline) in screen-normalized coords; we scroll it
+  // route is defined in WORLD space (0..1) so it lives on the terrain.
+  var ROUTE = [
+    [0.12,0.86],[0.20,0.74],[0.30,0.70],[0.36,0.58],
+    [0.30,0.46],[0.40,0.38],[0.52,0.40],[0.58,0.30],
+    [0.66,0.24],[0.78,0.22],[0.86,0.14]
+  ];
+
+  // POI markers (world coords)
+  var POIS = [
+    {x:0.20,y:0.74,t:'A',c:11},
+    {x:0.52,y:0.40,t:'B',c:6},
+    {x:0.86,y:0.14,t:'X',c:7}
+  ];
+
+  // toggles
+  var showGrid = true, showScan = true, running = true, showMtxOverlay=false;
+
+  // ---------- world->screen mapping ----------
+  function worldToScreen(wx,wy){
+    var sx = (wx - camX)*zoom*W + W*0.5;
+    var sy = (wy - camY)*zoom*H + H*0.5;
+    return [sx,sy];
+  }
+
+  // ============ MAIN RENDER ============
+  var buf = ctx.createImageData(W,H);
+  var data = buf.data;
+
+  function render(now){
+    var mtx = BAYER[curMtx()], mn = curMtx();
+    // 1) paint continuous terrain into a float-ish buffer then dither
+    for(var py=0; py<H; py++){
+      for(var px=0; px<W; px++){
+        // map pixel -> world
+        var wx = camX + (px - W*0.5)/(zoom*W);
+        var wy = camY + (py - H*0.5)/(zoom*H);
+        // wrap world for infinite-ish terrain
+        var fx = ((wx%1)+1)%1, fy=((wy%1)+1)%1;
+        var h = fieldAt(fx,fy);          // 0..1 height
+
+        // base color ramp (warm). water below threshold => teal band
+        var r,g,b;
+        if(h < 0.30){
+          // water basin: teal gradient, deeper = darker
+          var wt = h/0.30;               // 0..1
+          r = lerp(18,33,wt); g = lerp(44,112,wt); b = lerp(44,98,wt);
+          // slow shimmer band
+          var sh = Math.sin((fx*22 + fy*15) + now*0.0006)*0.5+0.5;
+          g += sh*14; b += sh*9; r += sh*3;
+        } else if(h < 0.345){
+          // coastline / shore: warm cream-sand band hugging the water
+          var ct=(h-0.30)/0.045;
+          r = lerp(150,214,ct); g = lerp(120,168,ct); b = lerp(96,122,ct);
+        } else {
+          // land: maroon -> rust -> salmon -> peach -> cream
+          var lt = (h-0.345)/0.655;        // 0..1
+          // cheap directional relief: compare against a coarse offset sample
+          var slope = noiseAt(fx+0.012,fy+0.012,BASE_FREQ) - noiseAt(fx-0.012,fy-0.012,BASE_FREQ);
+          var sun = clamp(0.62 + slope*4.2, 0.32, 1.05);
+          r = lerp(74,242, lt);
+          g = lerp(28,207, lt*lt*0.85+lt*0.15);
+          b = lerp(26,155, lt*lt);
+          r*=sun; g*=sun; b*=sun;
+        }
+
+        // 2) ordered dither: add the SAME threshold to all channels (ordered
+        //    dithering) then snap to nearest palette colour. Spread is tuned so
+        //    the 8x8 Bayer pattern is clearly visible inside smooth bands.
+        var tv = mtx[py & (mn-1)][px & (mn-1)] * 58;
+        var pi = nearest(clamp(r+tv,0,255), clamp(g+tv,0,255), clamp(b+tv,0,255));
+        var pc = PAL[pi];
+        var o = (py*W+px)*4;
+        data[o]=pc[0]; data[o+1]=pc[1]; data[o+2]=pc[2]; data[o+3]=255;
+      }
+    }
+    ctx.putImageData(buf,0,0);
+
+    // 3) road grid (dithered look via 1px checker on lines)
+    if(showGrid) drawGrid(now);
+
+    // 4) route polyline (dithered glowing leg) + markers
+    drawRoute(now);
+
+    // 5) optional matrix overlay (debug: show raw threshold tiling)
+    if(showMtxOverlay) drawMtxOverlay();
+
+    // ---- HUD updates ----
+    updateHUD(now);
+    drawCompass(now);
+
+    if(running){
+      // advance camera along route + route progress (slow, calm glide)
+      routeT += 0.00012;
+      if(routeT>1) routeT=0;
+      var p = pointOnRoute(routeT);
+      camX = lerp(camX, p[0], 0.025);
+      camY = lerp(camY, p[1], 0.025);
+    }
+    requestAnimationFrame(render);
+  }
+
+  function lerp(a,b,t){return a+(b-a)*t;}
+  function clamp(v,a,b){return v<a?a:(v>b?b:v);}
+
+  // ---------- pixel-checker dithered grid roads ----------
+  function drawGrid(now){
+    ctx.save();
+    // major grid every 0.1 world; minor every 0.05
+    var step=0.05;
+    // verticals
+    for(var gx=0; gx<=1.0001; gx+=step){
+      var major = Math.abs((gx/0.1)-Math.round(gx/0.1))<0.001;
+      drawDitherLineWorld(gx, 0, gx, 1, major);
+    }
+    for(var gy=0; gy<=1.0001; gy+=step){
+      var major = Math.abs((gy/0.1)-Math.round(gy/0.1))<0.001;
+      drawDitherLineWorld(0, gy, 1, gy, major);
+    }
+    ctx.restore();
+  }
+  // draw a dithered (checker-stippled) line between two world points
+  function drawDitherLineWorld(wx0,wy0,wx1,wy1,major){
+    var a=worldToScreen(wx0,wy0), b=worldToScreen(wx1,wy1);
+    var dx=b[0]-a[0], dy=b[1]-a[1];
+    var len=Math.hypot(dx,dy);
+    if(len<1) return;
+    var steps=Math.ceil(len);
+    var col = major ? [60,30,30] : [44,24,26];
+    var img = ctx.getImageData(0,0,1,1); // not used; we draw via fillRect for speed
+    ctx.fillStyle = major ? 'rgba(36,18,20,0.85)' : 'rgba(28,16,18,0.55)';
+    for(var i=0;i<=steps;i++){
+      var px = a[0]+dx*(i/steps), py=a[1]+dy*(i/steps);
+      // stipple: skip every other pixel -> dithered dotted road
+      var on = ((Math.round(px)+Math.round(py)) & 1)===0;
+      if(major) on = (i % 2 === 0);          // denser dashes on majors
+      if(!on) continue;
+      if(px<0||px>=W||py<0||py>=H) continue;
+      ctx.fillRect(Math.round(px),Math.round(py),1,1);
+      if(major) ctx.fillRect(Math.round(px),Math.round(py)+1,1,1);
+    }
+  }
+
+  // ---------- route + markers ----------
+  function pointOnRoute(t){
+    var n=ROUTE.length-1;
+    var ft=t*n, i=Math.min(n-1,Math.floor(ft)), f=ft-i;
+    var a=ROUTE[i], b=ROUTE[i+1];
+    return [a[0]+(b[0]-a[0])*f, a[1]+(b[1]-a[1])*f];
+  }
+  function drawRoute(now){
+    // active leg = bright teal/green dithered; passed = dim
+    var n=ROUTE.length;
+    for(var i=0;i<n-1;i++){
+      var a=worldToScreen(ROUTE[i][0],ROUTE[i][1]);
+      var b=worldToScreen(ROUTE[i+1][0],ROUTE[i+1][1]);
+      var segT = i/(n-1);
+      var passed = segT < routeT;
+      drawRouteSeg(a,b, passed, now);
+    }
+    // POI markers
+    POIS.forEach(function(p){
+      var s=worldToScreen(p.x,p.y);
+      drawMarker(s[0],s[1],p.t,p.c);
+    });
+    // moving "you are here" cursor
+    var pos=worldToScreen.apply(null, pointOnRoute(routeT));
+    drawCursor(pos[0],pos[1],now);
+  }
+  function drawRouteSeg(a,b,passed,now){
+    var dx=b[0]-a[0], dy=b[1]-a[1];
+    var len=Math.hypot(dx,dy); if(len<1)return;
+    var steps=Math.ceil(len);
+    for(var i=0;i<=steps;i++){
+      var px=a[0]+dx*(i/steps), py=a[1]+dy*(i/steps);
+      if(px<0||px>=W||py<0||py>=H) continue;
+      // marching ants on active legs
+      var phase = (i + Math.floor(now*0.03)) & 3;
+      var draw = passed ? ((i&1)===0) : (phase<2);
+      if(!draw) continue;
+      ctx.fillStyle = passed ? 'rgba(168,80,42,0.8)' : '#62d3a6';
+      ctx.fillRect(Math.round(px),Math.round(py),2,2);
+      if(!passed){ ctx.fillStyle='rgba(98,211,166,0.35)'; ctx.fillRect(Math.round(px)-1,Math.round(py)-1,4,4); }
+    }
+  }
+  function drawMarker(x,y,letter,colIdx){
+    if(x<-12||x>W+12||y<-12||y>H+12) return;
+    var c=PAL[colIdx];
+    var col='rgb('+c[0]+','+c[1]+','+c[2]+')';
+    // pixel pin: diamond + stem, drawn blocky
+    ctx.fillStyle='#160c0e';
+    ctx.fillRect(Math.round(x)-6,Math.round(y)-12,12,12);
+    ctx.fillStyle=col;
+    ctx.fillRect(Math.round(x)-5,Math.round(y)-11,10,10);
+    ctx.fillStyle='#160c0e';
+    ctx.fillRect(Math.round(x)-1,Math.round(y),2,5); // stem
+    // letter
+    ctx.fillStyle='#160c0e';
+    ctx.font='bold 9px monospace';
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(letter, Math.round(x), Math.round(y)-5);
+  }
+  function drawCursor(x,y,now){
+    if(x<0||x>W||y<0||y>H) return;
+    var pulse = (Math.floor(now*0.006)&1);
+    // outer ring
+    ctx.strokeStyle = pulse?'#bff0d8':'#62d3a6';
+    ctx.lineWidth=2;
+    ctx.beginPath(); ctx.arc(x,y,9,0,Math.PI*2); ctx.stroke();
+    // core
+    ctx.fillStyle='#f2cf9b';
+    ctx.fillRect(Math.round(x)-2,Math.round(y)-2,4,4);
+    ctx.fillStyle='#62d3a6';
+    ctx.fillRect(Math.round(x)-1,Math.round(y)-1,2,2);
+  }
+
+  // ---------- matrix overlay (visual proof of bayer tiling) ----------
+  function drawMtxOverlay(){
+    var mn=curMtx(), mtx=BAYER[curMtx()];
+    for(var y=0;y<H;y+=mn){
+      for(var x=0;x<W;x+=mn){
+        // draw nothing heavy; just faint dots showing threshold ramp
+      }
+    }
+  }
+
+  // ---------- matrix preview canvas in panel ----------
+  function renderMtxPreview(){
+    var mc=document.getElementById('mtxView'), mctx=mc.getContext('2d');
+    var mn=curMtx(), mtx=BAYER[curMtx()];
+    var px = mc.width/mn;
+    for(var y=0;y<mn;y++){
+      for(var x=0;x<mn;x++){
+        var v = (mtx[y][x]+0.5); // 0..1
+        var g = Math.round(40 + v*200);
+        mctx.fillStyle='rgb('+g+','+Math.round(g*0.62)+','+Math.round(g*0.4)+')';
+        mctx.fillRect(x*px,y*px,Math.ceil(px),Math.ceil(px));
+      }
+    }
+    document.getElementById('mtxLabel').textContent = mn+'×'+mn+' BAYER';
+    document.getElementById('rowMtx').textContent = 'BAYER '+mn+'×'+mn;
+  }
+
+  // ---------- compass ----------
+  function drawCompass(now){
+    var cc=document.getElementById('compass'), cx=cc.getContext('2d');
+    cx.clearRect(0,0,80,80);
+    // bezel
+    cx.fillStyle='#120a0c'; cx.fillRect(0,0,80,80);
+    cx.strokeStyle='#3f2420'; cx.lineWidth=2; cx.strokeRect(4,4,72,72);
+    var cxp=40, cyp=40, R=28;
+    // tick ring (dithered dots)
+    for(var d=0; d<360; d+=15){
+      var ra=d*Math.PI/180;
+      var on = (d%45===0);
+      cx.fillStyle = on?'#e7b15a':'#7a4a2e';
+      var rr = on?R:R-3;
+      var tx=cxp+Math.sin(ra)*rr, ty=cyp-Math.cos(ra)*rr;
+      cx.fillRect(Math.round(tx)-1,Math.round(ty)-1, on?3:2, on?3:2);
+    }
+    // heading needle
+    var hd = currentHeading*Math.PI/180;
+    cx.strokeStyle='#62d3a6'; cx.lineWidth=2;
+    cx.beginPath();
+    cx.moveTo(cxp - Math.sin(hd)*10, cyp + Math.cos(hd)*10);
+    cx.lineTo(cxp + Math.sin(hd)*R*0.8, cyp - Math.cos(hd)*R*0.8);
+    cx.stroke();
+    // south tail
+    cx.strokeStyle='#a8502a';
+    cx.beginPath();
+    cx.moveTo(cxp,cyp);
+    cx.lineTo(cxp - Math.sin(hd)*R*0.6, cyp + Math.cos(hd)*R*0.6);
+    cx.stroke();
+    // N marker
+    cx.fillStyle='#f2cf9b'; cx.font='bold 9px monospace';
+    cx.textAlign='center'; cx.textBaseline='middle';
+    cx.fillText('N', cxp, cyp-R-4);
+    // center hub
+    cx.fillStyle='#f2cf9b'; cx.fillRect(cxp-2,cyp-2,4,4);
+  }
+
+  // ---------- HUD numbers ----------
+  var currentHeading = 41;
+  function updateHUD(now){
+    // heading derived from route tangent
+    var t1=Math.min(1,routeT+0.01);
+    var p0=pointOnRoute(routeT), p1=pointOnRoute(t1);
+    var ang = Math.atan2(p1[0]-p0[0], -(p1[1]-p0[1])); // screen-y down
+    var deg = (ang*180/Math.PI + 360) % 360;
+    currentHeading += ((deg - currentHeading + 540)%360 - 180)*0.06;
+    var hdg = Math.round((currentHeading+360)%360);
+    var dirs=['N','NE','E','SE','S','SW','W','NW'];
+    var dir = dirs[Math.round(hdg/45)%8];
+    setText('hudHead', pad(hdg,3)+'<small>°'+dir+'</small>');
+
+    var remain = (1-routeT)*14.8; // km total ~14.8
+    setText('hudDist', remain.toFixed(1)+'<small>KM</small>');
+    var spd = 42 + Math.round(Math.sin(now*0.0007)*6);
+    setText('hudSpd', spd+'<small>KPH</small>');
+    var etaMin = remain/spd*60;
+    var em=Math.floor(etaMin), es=Math.floor((etaMin-em)*60);
+    setText('hudEta', pad(em,2)+':'+pad(es,2)+'<small>M</small>');
+
+    // nav pill: next instruction based on heading dir
+    var arw = {N:'▲',NE:'◥',E:'►',SE:'◢',S:'▼',SW:'◣',W:'◄',NW:'◤'}[dir];
+    document.getElementById('navArw').textContent = arw;
+    var instr = (dir==='N')?'CONTINUE NORTH':
+                (dir.length===2)?'BEAR '+dir: 'TURN '+dir;
+    document.getElementById('navTx').textContent = instr;
+    var nextLeg = ( ( (routeT*10)%1 ) ); // fractional within a leg
+    document.getElementById('navDist').textContent = Math.round((1-nextLeg)*640)+' M';
+  }
+  function setText(id,html){ var e=document.getElementById(id); if(e) e.innerHTML=html; }
+  function pad(n,l){ n=''+n; while(n.length<l)n='0'+n; return n; }
+
+  // ---------- ticker ----------
+  document.getElementById('tkTxt').innerHTML =
+    'RUST CARTO v2.3 <span class="sep">//</span> GRID 64×64 VALUE-NOISE TERRAIN <span class="sep">//</span> '+
+    'ORDERED DITHER <b>BAYER 8×8</b> <span class="sep">//</span> PALETTE <b>RUST/12</b> QUANTIZED <span class="sep">//</span> '+
+    'ROUTE A→B→X <span class="sep">//</span> ETA LIVE <span class="sep">//</span> NO BACKEND <span class="sep">//</span> '+
+    'PRESS RESEED FOR NEW WORLD <span class="sep">//</span> 486 SVGA 640×400 <span class="sep">//</span>';
+
+  // ---------- controls ----------
+  function syncRows(){
+    document.getElementById('rowZoom').textContent = 'x'+zoom.toFixed(1);
+    document.getElementById('rowGrid').textContent = showGrid?'ON':'OFF';
+  }
+  document.getElementById('bMtx').onclick=function(){
+    matrixIdx=(matrixIdx+1)%matrixSizes.length; renderMtxPreview();
+    this.classList.toggle('on', curMtx()!==8);
+  };
+  document.getElementById('bGrid').onclick=function(){
+    showGrid=!showGrid; this.classList.toggle('on',showGrid); syncRows();
+  };
+  document.getElementById('bScan').onclick=function(){
+    showScan=!showScan;
+    document.querySelector('.crt').style.display = showScan?'block':'none';
+    this.classList.toggle('on',showScan);
+  };
+  document.getElementById('bRun').onclick=function(){
+    running=!running; this.classList.toggle('on',running);
+    this.textContent = running?'RUN':'HOLD';
+  };
+  document.getElementById('bZoomIn').onclick=function(){ zoom=clamp(zoom*1.25,0.6,3.2); syncRows(); };
+  document.getElementById('bZoomOut').onclick=function(){ zoom=clamp(zoom/1.25,0.6,3.2); syncRows(); };
+  document.getElementById('bRe').onclick=function(){
+    seed = (Date.now() & 0x7fffffff) ^ 0x5a5a5a; buildField();
+  };
+
+  // ---------- boot ----------
+  buildField();
+  renderMtxPreview();
+  syncRows();
+  requestAnimationFrame(render);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>QUICKSILVER — 액체 금속 메타볼</title>
+<style>
+  :root{
+    --ink: #ECE6FF;
+    --dim: rgba(236,230,255,.46);
+    --line: rgba(236,230,255,.16);
+  }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ height:100%; width:100%; overflow:hidden; background:#05040a; }
+  body{
+    font-family: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+    color:var(--ink);
+    -webkit-tap-highlight-color: transparent;
+    cursor: crosshair;
+    touch-action: none;
+  }
+  #gl{ position:fixed; inset:0; width:100%; height:100%; display:block; }
+
+  /* ---- overlay HUD ---- */
+  .hud{ position:fixed; inset:0; pointer-events:none; z-index:5;
+        padding: clamp(18px,3.2vw,40px);
+        display:flex; flex-direction:column; justify-content:space-between; }
+  .row{ display:flex; justify-content:space-between; align-items:flex-start; gap:16px; }
+  .brand{ display:flex; flex-direction:column; gap:7px; }
+  .brand .t{
+    font-size: clamp(20px,3.4vw,40px); font-weight:600; letter-spacing:.16em;
+    line-height:.96; mix-blend-mode:screen;
+    text-shadow:0 0 26px rgba(150,110,255,.55);
+  }
+  .brand .t b{ font-weight:600; }
+  .brand .s{ font-size:10.5px; letter-spacing:.42em; color:var(--dim); text-transform:uppercase; }
+  .tag{ text-align:right; font-size:10.5px; letter-spacing:.34em; color:var(--dim);
+        text-transform:uppercase; line-height:1.9; }
+  .tag em{ color:var(--ink); font-style:normal; }
+
+  .readout{ display:flex; gap: clamp(14px,2.6vw,34px); align-items:flex-end; flex-wrap:wrap; }
+  .meter{ display:flex; flex-direction:column; gap:8px; min-width:96px; }
+  .meter .k{ font-size:9.5px; letter-spacing:.3em; color:var(--dim); text-transform:uppercase; }
+  .meter .bar{ width:100%; height:2px; background:var(--line); position:relative; overflow:hidden; }
+  .meter .bar i{ position:absolute; left:0; top:0; bottom:0; width:30%;
+                 background:linear-gradient(90deg,#6a7bff,#ff7ad9,#7af7ff); }
+  .meter .v{ font-size:11px; letter-spacing:.12em; color:var(--ink); }
+
+  .hint{
+    align-self:center; text-align:center; font-size:11px; letter-spacing:.28em;
+    color:var(--dim); text-transform:uppercase;
+    animation: pulse 3.6s ease-in-out infinite;
+    transition: opacity 1s ease;
+  }
+  @keyframes pulse{ 0%,100%{opacity:.32} 50%{opacity:.9} }
+
+  .corner{ font-size:9.5px; letter-spacing:.3em; color:var(--dim); }
+
+  .grain{ position:fixed; inset:0; z-index:4; pointer-events:none; opacity:.05;
+    mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>"); }
+
+  @media (max-width:520px){
+    .tag{ display:none; }
+    .brand .t{ letter-spacing:.1em; }
+  }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div class="grain"></div>
+
+<div class="hud">
+  <div class="row">
+    <div class="brand">
+      <div class="t">QUICK<b>SILVER</b></div>
+      <div class="s">metaball field · no.06</div>
+    </div>
+    <div class="tag">
+      raymarched isosurface<br>
+      <em>drag</em> to pull the field<br>
+      <em>scroll</em> to fuse · <em>tap</em> to pulse
+    </div>
+  </div>
+
+  <div class="hint" id="hint">move · scroll · tap</div>
+
+  <div class="row" style="align-items:flex-end;">
+    <div class="readout">
+      <div class="meter">
+        <div class="k">fusion</div>
+        <div class="bar"><i id="bar1"></i></div>
+        <div class="v" id="v1">0.50</div>
+      </div>
+      <div class="meter">
+        <div class="k">energy</div>
+        <div class="bar"><i id="bar2"></i></div>
+        <div class="v" id="v2">0.00</div>
+      </div>
+    </div>
+    <div class="corner">60FPS · WEBGL</div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  const cv = document.getElementById('gl');
+  const gl = cv.getContext('webgl', {antialias:false, alpha:false, premultipliedAlpha:false, powerPreference:'high-performance'})
+          || cv.getContext('experimental-webgl');
+  if(!gl){ document.body.innerHTML='<div style="color:#fff;padding:40px;font-family:monospace">WebGL not available.</div>'; return; }
+
+  const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) || Math.min(innerWidth,innerHeight) < 560;
+  const STEPS = isMobile ? 64 : 104;
+  const DPRCAP = isMobile ? 1.5 : 2.0;
+
+  const VERT = `
+    attribute vec2 p;
+    void main(){ gl_Position = vec4(p,0.0,1.0); }
+  `;
+
+  const FRAG = `
+  precision highp float;
+  #define STEPS ${STEPS}
+  uniform vec2  u_res;
+  uniform float u_time;
+  uniform vec2  u_mouse;     // smoothed, aspect-corrected clip
+  uniform float u_energy;    // 0..1 pointer energy
+  uniform float u_k;         // fusion smoothness
+  uniform float u_zoom;      // camera distance
+  uniform float u_pulse;     // click pulse 0..1
+  uniform float u_hue;       // slow hue drift
+
+  const float PI = 3.14159265;
+
+  mat2 rot(float a){ float c=cos(a), s=sin(a); return mat2(c,-s,s,c); }
+
+  float smin(float a, float b, float k){
+    float h = clamp(0.5 + 0.5*(b-a)/k, 0.0, 1.0);
+    return mix(b,a,h) - k*h*(1.0-h);
+  }
+
+  // hue-rotate a color
+  vec3 hueShift(vec3 c, float a){
+    const vec3 k = vec3(0.57735);
+    float ca = cos(a), sa = sin(a);
+    return c*ca + cross(k,c)*sa + k*dot(k,c)*(1.0-ca);
+  }
+
+  // ---- the metaball field ----
+  float map(vec3 p){
+    // gentle global swirl so the cluster feels alive
+    p.xz *= rot(u_time*0.10);
+    p.xy *= rot(sin(u_time*0.13)*0.25);
+
+    float t = u_time;
+    float k = u_k + u_energy*0.55 + u_pulse*0.5;
+
+    // anchor blob
+    float d = length(p) - (0.78 + 0.10*sin(t*0.9) + u_pulse*0.25);
+
+    for(int i=0;i<8;i++){
+      float fi = float(i);
+      float sp = 0.45 + fi*0.11;
+      vec3 c = vec3(
+        sin(t*sp + fi*1.7) * (1.15 + 0.25*sin(t*0.3+fi)),
+        cos(t*(0.38+fi*0.05) + fi*2.3) * (1.05 + 0.2*cos(t*0.4+fi)),
+        sin(t*(0.5+fi*0.04) + fi*1.1) * (1.15 + 0.25*sin(t*0.27+fi*1.3))
+      );
+      float r = 0.34 + 0.16*sin(t*1.1 + fi*2.0);
+      float sd = length(p - c) - r;
+      d = smin(d, sd, k);
+    }
+
+    // pointer-controlled blob
+    vec3 mc = vec3(u_mouse.x*1.9, u_mouse.y*1.9, 0.55*sin(u_time*0.6));
+    float mr = 0.42 + u_energy*0.45 + u_pulse*0.35;
+    d = smin(d, length(p - mc) - mr, k*1.3);
+
+    return d;
+  }
+
+  vec3 calcNormal(vec3 p){
+    vec2 e = vec2(0.0012, 0.0);
+    return normalize(vec3(
+      map(p+e.xyy)-map(p-e.xyy),
+      map(p+e.yxy)-map(p-e.yxy),
+      map(p+e.yyx)-map(p-e.yyx)
+    ));
+  }
+
+  // ---- procedural studio environment (for reflections / refractions) ----
+  vec3 env(vec3 d){
+    float y = d.y*0.5 + 0.5;
+    vec3 top = vec3(0.015, 0.02, 0.07);
+    vec3 mid = vec3(0.30, 0.07, 0.46);
+    vec3 hor = vec3(0.98, 0.42, 0.55);
+    vec3 col = mix(mid, top, smoothstep(0.42, 1.0, y));
+    col = mix(hor, col, smoothstep(0.0, 0.52, y));
+
+    // a soft cyan band for that liquid-chrome kiss
+    col += vec3(0.10,0.55,0.75) * smoothstep(0.30,0.05,abs(y-0.30)) * 0.5;
+
+    // two soft lights
+    vec3 sun = normalize(vec3(0.55, 0.70, -0.45));
+    float s = pow(max(dot(d,sun),0.0), 90.0);
+    col += vec3(1.0,0.92,0.82) * s * 2.2;
+    col += vec3(0.95,0.55,0.65) * pow(max(dot(d,sun),0.0), 7.0) * 0.45;
+
+    vec3 sun2 = normalize(vec3(-0.6, -0.2, 0.5));
+    col += vec3(0.45,0.65,1.0) * pow(max(dot(d,sun2),0.0), 40.0) * 0.7;
+
+    return col;
+  }
+
+  // hash for stars / dust
+  float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+
+  vec3 background(vec3 rd){
+    vec3 col = env(rd) * 0.42;
+    // nebula breathing
+    float n = sin(rd.x*4.0 + u_time*0.3)*sin(rd.y*5.0 - u_time*0.2);
+    col += vec3(0.18,0.06,0.30) * (0.5+0.5*n) * 0.35;
+    // far stars
+    vec2 uv = rd.xy*vec2(u_res.x/u_res.y,1.0)*2.2;
+    float st = hash(floor(uv*60.0));
+    st = step(0.992, st) * (0.6+0.4*sin(u_time*3.0+st*40.0));
+    col += vec3(st);
+    return col;
+  }
+
+  void main(){
+    vec2 uv = (gl_FragCoord.xy - 0.5*u_res) / u_res.y;
+
+    // ---- camera ----
+    float az = u_mouse.x*0.55 + u_time*0.045;
+    float el = u_mouse.y*0.35 + 0.08;
+    float cd = u_zoom;
+    vec3 ro = vec3(sin(az)*cd*cos(el), sin(el)*cd, cos(az)*cd*cos(el));
+    vec3 ww = normalize(-ro);
+    vec3 uu = normalize(cross(vec3(0.0,1.0,0.0), ww));
+    vec3 vv = cross(ww, uu);
+    vec3 rd = normalize(uv.x*uu + uv.y*vv + 1.5*ww);
+
+    // ---- raymarch ----
+    float t = 0.0;
+    float md = 1e9;          // closest approach (for glow halo)
+    float hit = 0.0;
+    vec3 p;
+    for(int i=0;i<STEPS;i++){
+      p = ro + rd*t;
+      float d = map(p);
+      md = min(md, d);
+      if(d < 0.0010){ hit = 1.0; break; }
+      t += d*0.85;
+      if(t > 22.0) break;
+    }
+
+    vec3 col;
+    if(hit > 0.5){
+      vec3 n = calcNormal(p);
+      vec3 viewDir = -rd;
+      float fres = pow(1.0 - max(dot(n, viewDir), 0.0), 5.0);
+      fres = clamp(fres, 0.0, 1.0);
+
+      vec3 refl = reflect(rd, n);
+      // chromatic dispersion through the goo
+      vec3 rR = refract(rd, n, 0.90);
+      vec3 rG = refract(rd, n, 0.92);
+      vec3 rB = refract(rd, n, 0.94);
+      vec3 refrCol = vec3(env(rR).r, env(rG).g, env(rB).b);
+      vec3 reflCol = env(refl);
+
+      // thin-film iridescence
+      vec3 irid = 0.55 + 0.45*cos(6.28318*(fres*3.5 + vec3(0.0,0.33,0.67) + u_time*0.03 + length(p)*0.15));
+
+      vec3 base = mix(refrCol*irid, reflCol, fres*0.92 + 0.08);
+
+      // rim glow
+      base += irid * pow(fres, 1.4) * 0.7;
+
+      // crisp specular
+      vec3 sun = normalize(vec3(0.55,0.70,-0.45));
+      base += vec3(1.0,0.96,0.9) * pow(max(dot(refl,sun),0.0), 120.0) * 1.3;
+
+      // ambient occlusion from march length
+      float ao = clamp(t/14.0, 0.0, 1.0);
+      base *= mix(1.0, 0.55, ao*0.6);
+
+      // inner energy pulse
+      base += irid * u_pulse * 0.4 * (0.5+0.5*sin(length(p)*8.0 - u_time*6.0));
+
+      col = base;
+    } else {
+      col = background(rd);
+      // iridescent halo where rays graze the surface
+      float halo = exp(-md*2.6);
+      vec3 hc = 0.5 + 0.5*cos(6.28318*(md*1.2 + vec3(0.0,0.33,0.67) + u_time*0.05));
+      col += hc * halo * (0.9 + u_energy*0.6);
+    }
+
+    // global hue drift for life
+    col = hueShift(col, u_hue);
+
+    // tone + contrast
+    col = col / (col + 0.85);
+    col = pow(col, vec3(0.92));
+    col *= 1.06;
+
+    // vignette
+    vec2 q = gl_FragCoord.xy / u_res;
+    float vig = pow(16.0*q.x*q.y*(1.0-q.x)*(1.0-q.y), 0.22);
+    col *= mix(0.72, 1.0, vig);
+
+    gl_FragColor = vec4(col, 1.0);
+  }
+  `;
+
+  function compile(type, src){
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+      console.error(gl.getShaderInfoLog(s), src);
+      throw new Error('shader compile failed');
+    }
+    return s;
+  }
+
+  const prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
+  gl.linkProgram(prog);
+  if(!gl.getProgramParameter(prog, gl.LINK_STATUS)){
+    console.error(gl.getProgramInfoLog(prog));
+  }
+  gl.useProgram(prog);
+
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(prog, 'p');
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+
+  const U = {};
+  ['u_res','u_time','u_mouse','u_energy','u_k','u_zoom','u_pulse','u_hue'].forEach(n=>{
+    U[n] = gl.getUniformLocation(prog, n);
+  });
+
+  // ---- state ----
+  let W=0, H=0, dpr=1;
+  function resize(){
+    dpr = Math.min(window.devicePixelRatio||1, DPRCAP);
+    W = Math.floor(innerWidth * dpr);
+    H = Math.floor(innerHeight * dpr);
+    cv.width = W; cv.height = H;
+    cv.style.width = innerWidth+'px';
+    cv.style.height = innerHeight+'px';
+    gl.viewport(0,0,W,H);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  const st = {
+    mx:0, my:0, tmx:0, tmy:0,
+    energy:0,
+    k:0.50, tk:0.50,
+    zoom:4.6, tzoom:4.6,
+    pulse:0,
+    hue:0,
+    lastX:0, lastY:0, hasLast:false
+  };
+
+  function pointer(clientX, clientY){
+    const aspect = innerWidth/innerHeight;
+    st.tmx = ((clientX/innerWidth)*2-1) * aspect;
+    st.tmy = -((clientY/innerHeight)*2-1);
+    if(st.hasLast){
+      const dx = clientX - st.lastX, dy = clientY - st.lastY;
+      const v = Math.min(Math.sqrt(dx*dx+dy*dy)/26, 1.0);
+      st.energy = Math.min(1.0, st.energy + v*0.5);
+    }
+    st.lastX = clientX; st.lastY = clientY; st.hasLast = true;
+  }
+
+  window.addEventListener('mousemove', e=>pointer(e.clientX, e.clientY), {passive:true});
+  window.addEventListener('touchmove', e=>{
+    if(e.touches[0]) pointer(e.touches[0].clientX, e.touches[0].clientY);
+  }, {passive:true});
+  window.addEventListener('touchstart', e=>{
+    if(e.touches[0]){ st.hasLast=false; pointer(e.touches[0].clientX, e.touches[0].clientY); st.pulse=1.0; }
+  }, {passive:true});
+
+  function doPulse(){ st.pulse = 1.0; }
+  window.addEventListener('mousedown', doPulse);
+
+  // scroll → fuse + slight zoom
+  window.addEventListener('wheel', e=>{
+    st.tk = Math.max(0.18, Math.min(1.4, st.tk + Math.sign(e.deltaY)*0.06));
+    st.tzoom = Math.max(3.4, Math.min(6.4, st.tzoom + Math.sign(e.deltaY)*0.07));
+    fadeHint();
+  }, {passive:true});
+
+  // touch two-finger vertical drag → fuse
+  let pinchBase=null;
+  window.addEventListener('touchmove', e=>{
+    if(e.touches.length===2){
+      const a=e.touches[0], b=e.touches[1];
+      const dist=Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY);
+      if(pinchBase!=null){
+        const dd=(dist-pinchBase)/200;
+        st.tk = Math.max(0.18, Math.min(1.4, st.tk - dd));
+        st.tzoom = Math.max(3.4, Math.min(6.4, st.tzoom - dd));
+      }
+      pinchBase=dist;
+    }
+  }, {passive:true});
+  window.addEventListener('touchend', ()=>{ pinchBase=null; });
+
+  // HUD
+  const bar1=document.getElementById('bar1'), bar2=document.getElementById('bar2');
+  const v1=document.getElementById('v1'), v2=document.getElementById('v2');
+  const hint=document.getElementById('hint');
+  let hintFaded=false;
+  function fadeHint(){ if(!hintFaded){ hintFaded=true; hint.style.opacity='0'; } }
+  setTimeout(fadeHint, 6500);
+  window.addEventListener('mousedown', fadeHint);
+
+  let t0 = performance.now();
+  let frames=0, fpsT=performance.now();
+
+  function frame(now){
+    const dt = Math.min((now - t0)/1000, 0.05);
+    const time = now/1000;
+    t0 = now;
+
+    // smoothing
+    st.mx += (st.tmx - st.mx)*0.07;
+    st.my += (st.tmy - st.my)*0.07;
+    st.k  += (st.tk  - st.k )*0.06;
+    st.zoom += (st.tzoom - st.zoom)*0.06;
+    st.energy *= 0.94;
+    st.pulse  *= 0.93;
+    st.hue += dt*0.04;
+
+    gl.uniform2f(U.u_res, W, H);
+    gl.uniform1f(U.u_time, time);
+    gl.uniform2f(U.u_mouse, st.mx, st.my);
+    gl.uniform1f(U.u_energy, st.energy);
+    gl.uniform1f(U.u_k, st.k);
+    gl.uniform1f(U.u_zoom, st.zoom);
+    gl.uniform1f(U.u_pulse, st.pulse);
+    gl.uniform1f(U.u_hue, st.hue);
+
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    // HUD update (throttled)
+    frames++;
+    if(now - fpsT > 120){
+      const fk = (st.k/1.4);
+      bar1.style.width = (10 + fk*90).toFixed(0)+'%';
+      bar2.style.width = (4 + st.energy*96).toFixed(0)+'%';
+      v1.textContent = st.k.toFixed(2);
+      v2.textContent = st.energy.toFixed(2);
+      fpsT = now;
+    }
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,942 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>SYNTH-86.EXE — lo-fi 486 dither sequencer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<style>
+  /* ============================================================
+     SYNTH-86.EXE  —  lo-fi 486 dither synth / step sequencer
+     Real Bayer 8x8 ordered dithering, 14-color warm palette,
+     WebAudio procedural voices. The dithered screen IS the
+     first paint — no intro / loading gate.
+     ============================================================ */
+  :root{
+    --ink:#160809;       /* near-black maroon */
+    --maroon:#2a0f12;
+    --maroon2:#3a161a;
+    --line:#52242a;
+    --rust:#a8472b;
+    --rust2:#c8623a;
+    --salmon:#e08a5a;
+    --peach:#f0b87a;
+    --cream:#f6d9a8;
+    --teal:#1f6e6a;
+    --teal-d:#0e2b2e;
+    --green:#3fae7a;
+    --amber:#f0b052;
+    --pad:clamp(6px,1.4vw,14px);
+    --panelw:clamp(208px,23vw,300px);
+    --pixfont:'Press Start 2P', monospace;
+    --monofont:'VT323', monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:
+      radial-gradient(120% 120% at 50% 0%, #2a0f12 0%, #160809 60%, #0c0506 100%);
+    color:var(--cream);
+    font-family:var(--monofont);
+    -webkit-font-smoothing:none;
+    image-rendering:pixelated;
+    overflow:hidden;
+    display:flex;align-items:center;justify-content:center;
+    padding:clamp(6px,1.6vw,22px);
+    letter-spacing:.5px;
+  }
+
+  /* ---- the 486 application window ---- */
+  .win{
+    width:min(1180px,100%);
+    height:min(760px,100%);
+    background:var(--maroon);
+    border:3px solid var(--line);
+    box-shadow:
+      0 0 0 2px var(--ink),
+      0 0 0 5px #160809,
+      8px 10px 0 4px rgba(0,0,0,.55),
+      0 0 60px 8px rgba(168,71,43,.18);
+    display:flex;flex-direction:column;
+    overflow:hidden;
+    position:relative;
+  }
+
+  /* ---- title bar ---- */
+  .titlebar{
+    flex:0 0 auto;
+    display:flex;align-items:center;gap:8px;
+    background:linear-gradient(180deg,var(--rust) 0%,var(--rust2) 48%,var(--rust) 100%);
+    color:var(--ink);
+    border-bottom:3px solid var(--line);
+    padding:6px 8px;
+    font-family:var(--pixfont);
+    font-size:clamp(7px,1.0vw,10px);
+    text-shadow:1px 1px 0 rgba(246,217,168,.35);
+  }
+  .titlebar .dots{display:flex;gap:5px;margin-right:4px}
+  .titlebar .dots b{
+    width:11px;height:11px;border-radius:50%;
+    border:2px solid var(--ink);display:inline-block;
+  }
+  .dots b:nth-child(1){background:var(--cream)}
+  .dots b:nth-child(2){background:var(--peach)}
+  .dots b:nth-child(3){background:var(--maroon2)}
+  .titlebar .ttl{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .titlebar .ver{opacity:.8;font-size:.8em}
+
+  /* ---- menu strip ---- */
+  .menubar{
+    flex:0 0 auto;
+    display:flex;flex-wrap:wrap;gap:2px;
+    background:var(--maroon2);
+    border-bottom:2px solid var(--line);
+    padding:3px 6px;
+    font-family:var(--pixfont);
+    font-size:clamp(6px,.8vw,8px);
+    color:var(--peach);
+  }
+  .menubar span{padding:3px 6px;border:1px solid transparent}
+  .menubar span:hover{border-color:var(--line);background:var(--maroon);color:var(--cream)}
+  .menubar .sp{flex:1}
+  .menubar .clk{color:var(--green)}
+
+  /* ---- main body: visualizer + side panel ---- */
+  .body{
+    flex:1 1 auto;display:flex;min-height:0;overflow:hidden;
+    background:var(--ink);
+  }
+  .stage{
+    flex:1 1 auto;display:flex;flex-direction:column;min-width:0;min-height:0;
+    border-right:3px solid var(--line);
+  }
+
+  /* ---- visualizer (dither canvas) ---- */
+  .viz{
+    position:relative;flex:1 1 auto;min-height:0;
+    background:var(--ink);
+    overflow:hidden;
+  }
+  .viz canvas{
+    position:absolute;inset:0;width:100%;height:100%;
+    image-rendering:pixelated;
+    display:block;
+  }
+  /* CRT scanlines + vignette overlay */
+  .viz::after{
+    content:"";position:absolute;inset:0;pointer-events:none;
+    background:
+      repeating-linear-gradient(0deg, rgba(0,0,0,.22) 0 1px, rgba(0,0,0,0) 1px 3px),
+      radial-gradient(130% 120% at 50% 42%, rgba(0,0,0,0) 56%, rgba(12,5,6,.6) 100%);
+    mix-blend-mode:multiply;
+  }
+  .viz .vlabel{
+    position:absolute;left:8px;top:7px;z-index:3;
+    font-family:var(--pixfont);font-size:clamp(6px,.8vw,9px);
+    color:var(--cream);text-shadow:2px 2px 0 var(--ink);
+    letter-spacing:1px;pointer-events:none;
+  }
+  .viz .vlabel small{color:var(--peach);font-size:.78em;display:block;margin-top:4px}
+  .viz .vmeta{
+    position:absolute;right:8px;top:7px;z-index:3;text-align:right;
+    font-family:var(--pixfont);font-size:clamp(5px,.62vw,7px);
+    color:var(--salmon);text-shadow:1px 1px 0 var(--ink);line-height:1.7;
+    pointer-events:none;
+  }
+  .viz .vmeta b{color:var(--green)}
+
+  /* ---- sequencer grid under the visualizer ---- */
+  .seq{
+    flex:0 0 auto;
+    background:var(--maroon);
+    border-top:3px solid var(--line);
+    padding:7px 8px 8px;
+    overflow-x:auto;
+  }
+  /* inner grid keeps its natural width; .seq scrolls it on narrow screens */
+  .seqinner{display:inline-block;min-width:100%}
+  .seq .seqhead{
+    display:flex;align-items:center;justify-content:space-between;gap:10px;
+    font-family:var(--pixfont);font-size:clamp(6px,.72vw,8px);
+    color:var(--peach);margin-bottom:6px;
+  }
+  .seq .seqhead .lbl{flex:0 0 auto;white-space:nowrap}
+  .seq .seqhead .steps{display:flex;gap:3px;flex:0 0 auto;padding-left:70px}
+  .seq .seqhead .steps i{
+    width:var(--cell);text-align:center;color:var(--line);font-style:normal;
+    font-size:.92em;flex:0 0 auto;
+  }
+  .seq .seqhead .steps i.beat{color:var(--salmon)}
+  .seq .seqhead .steps i.play{color:var(--green)}
+  .track{
+    display:flex;align-items:center;gap:6px;margin-bottom:4px;
+  }
+  .track .tname{
+    flex:0 0 64px;width:64px;
+    font-family:var(--pixfont);font-size:clamp(5px,.62vw,7px);
+    color:var(--cream);text-align:right;padding-right:4px;
+    text-shadow:1px 1px 0 var(--ink);
+  }
+  .track .tname small{display:block;color:var(--rust2);font-size:.85em;margin-top:2px}
+  .cells{display:flex;gap:3px;flex:0 0 auto}
+  :root{--cell:clamp(13px,1.55vw,22px)}
+  .cell{
+    width:var(--cell);height:var(--cell);flex:0 0 auto;
+    background:var(--maroon2);
+    border:1px solid var(--line);
+    border-radius:1px;
+    cursor:pointer;
+    position:relative;
+    transition:none;
+  }
+  .cell.b{ /* beat marker col background */
+    background:#34141a;
+  }
+  .cell.on{
+    background:var(--rust2);
+    border-color:var(--peach);
+    box-shadow:inset 0 0 0 1px var(--cream), 0 0 5px rgba(200,98,58,.7);
+  }
+  .cell.t0.on{background:var(--rust2);border-color:var(--peach)}
+  .cell.t1.on{background:var(--salmon);border-color:var(--cream)}
+  .cell.t2.on{background:var(--green);border-color:var(--cream)}
+  .cell.t3.on{background:var(--amber);border-color:var(--cream)}
+  .cell.cur{outline:2px solid var(--green);outline-offset:1px;z-index:2}
+  .cell.flash{filter:brightness(1.9)}
+
+  /* ---- side control panel ---- */
+  .panel{
+    flex:0 0 var(--panelw);width:var(--panelw);
+    background:var(--maroon);
+    display:flex;flex-direction:column;min-height:0;
+    overflow-y:auto;
+  }
+  .panel .pcard{
+    border-bottom:2px solid var(--line);
+    padding:9px 10px;
+  }
+  .panel h3{
+    font-family:var(--pixfont);font-size:clamp(6px,.74vw,8px);
+    color:var(--peach);margin-bottom:8px;letter-spacing:1px;
+    display:flex;justify-content:space-between;align-items:center;
+  }
+  .panel h3 .led{
+    width:8px;height:8px;border-radius:50%;background:var(--green);
+    box-shadow:0 0 6px var(--green);
+  }
+  .panel h3 .led.off{background:var(--line);box-shadow:none}
+
+  /* readout rows */
+  .row{display:flex;align-items:center;justify-content:space-between;margin:6px 0;font-size:clamp(13px,1.6vw,18px)}
+  .row .k{color:var(--salmon);font-size:.78em;letter-spacing:1px}
+  .row .v{color:var(--cream)}
+  .meter{
+    height:9px;background:var(--ink);border:1px solid var(--line);
+    margin:3px 0 8px;position:relative;overflow:hidden;
+  }
+  .meter i{
+    position:absolute;left:0;top:0;bottom:0;
+    background:repeating-linear-gradient(90deg,var(--rust2) 0 4px,var(--maroon2) 4px 6px);
+    width:50%;
+  }
+  .knobrow{display:flex;gap:8px;flex-wrap:wrap;justify-content:space-between}
+  .knob{flex:1 1 44%;text-align:center;cursor:ns-resize;user-select:none}
+  .knob .dial{
+    width:46px;height:46px;margin:0 auto 4px;border-radius:50%;
+    background:radial-gradient(circle at 38% 32%,var(--maroon2),var(--ink));
+    border:2px solid var(--line);position:relative;
+    box-shadow:inset 0 0 0 2px #1c0a0c;
+  }
+  .knob .dial::after{
+    content:"";position:absolute;left:50%;top:5px;
+    width:3px;height:15px;background:var(--peach);
+    transform-origin:50% 18px;transform:translateX(-50%) rotate(var(--ang,0deg));
+    box-shadow:0 0 4px var(--peach);
+  }
+  .knob .kl{font-family:var(--pixfont);font-size:clamp(5px,.6vw,7px);color:var(--salmon)}
+  .knob .kv{color:var(--cream);font-size:1.05em}
+
+  /* palette strip */
+  .palstrip{display:flex;height:18px;border:1px solid var(--line);overflow:hidden}
+  .palstrip i{flex:1}
+
+  /* transport buttons */
+  .btns{display:flex;gap:6px;margin-top:4px;flex-wrap:wrap}
+  .btn{
+    flex:1 1 auto;min-width:62px;
+    font-family:var(--pixfont);font-size:clamp(6px,.72vw,8px);
+    color:var(--cream);background:var(--maroon2);
+    border:2px solid var(--line);
+    border-top-color:#6a2f37;border-left-color:#6a2f37;
+    padding:8px 4px;cursor:pointer;letter-spacing:1px;
+    text-shadow:1px 1px 0 var(--ink);
+  }
+  .btn:hover{background:var(--line);color:var(--cream)}
+  .btn:active{border-top-color:var(--ink);border-left-color:var(--ink);transform:translate(1px,1px)}
+  .btn.go{background:var(--green);color:var(--ink);border-color:#9fe3bf;text-shadow:none}
+  .btn.go.playing{background:var(--rust2);border-color:var(--peach)}
+  .btn.wide{flex-basis:100%}
+
+  .preset{
+    display:flex;gap:4px;flex-wrap:wrap;margin-top:4px;
+  }
+  .preset b{
+    font-family:var(--pixfont);font-size:clamp(5px,.6vw,7px);
+    color:var(--peach);background:var(--maroon2);border:1px solid var(--line);
+    padding:5px 6px;cursor:pointer;font-weight:normal;
+  }
+  .preset b:hover{background:var(--line);color:var(--cream)}
+  .preset b.sel{background:var(--rust2);color:var(--ink);border-color:var(--peach)}
+
+  /* ---- status footer ---- */
+  .statusbar{
+    flex:0 0 auto;display:flex;align-items:center;gap:10px;
+    background:var(--maroon2);border-top:3px solid var(--line);
+    padding:5px 9px;
+    font-family:var(--pixfont);font-size:clamp(5px,.66vw,8px);
+    color:var(--peach);white-space:nowrap;overflow:hidden;
+  }
+  .statusbar .marq{flex:1;overflow:hidden}
+  .statusbar .marq span{display:inline-block;animation:scroll 22s linear infinite;color:var(--salmon)}
+  @keyframes scroll{from{transform:translateX(40%)}to{transform:translateX(-110%)}}
+  .statusbar .seg{color:var(--green)}
+  .statusbar .seg b{color:var(--cream);font-weight:normal}
+
+  /* ---- responsive: narrow / mobile ---- */
+  @media (max-width:760px){
+    body{overflow:auto;align-items:flex-start}
+    :root{--cell:16px}
+    /* let the window grow with content and scroll the page */
+    .win{height:auto;min-height:100%;}
+    .body{flex-direction:column;overflow:visible;min-height:0}
+    .stage{flex:0 0 auto;border-right:none;border-bottom:3px solid var(--line)}
+    .viz{flex:0 0 auto;height:42vh;min-height:220px}
+    .seq{flex:0 0 auto}
+    .panel{flex:0 0 auto;width:100%;overflow:visible}
+    .titlebar .ver{display:none}
+    .track .tname{flex:0 0 58px;width:58px}
+    .seq .seqhead .steps{padding-left:64px}
+  }
+  @media (max-width:420px){
+    .menubar span:nth-child(n+5){display:none}
+  }
+</style>
+</head>
+<body>
+  <div class="win" id="win">
+    <!-- title bar -->
+    <div class="titlebar">
+      <span class="dots"><b></b><b></b><b></b></span>
+      <span class="ttl">SYNTH-86.EXE  —  DITHER SEQUENCER</span>
+      <span class="ver">v4.86 · 320×200 · 14-COL</span>
+    </div>
+
+    <!-- menu strip -->
+    <div class="menubar">
+      <span>FILE</span><span>EDIT</span><span>PATTERN</span><span>VOICE</span><span>FX</span><span>?</span>
+      <span class="sp"></span>
+      <span class="clk" id="menuclk">MEM 631K · ORDERED-DITHER ON</span>
+    </div>
+
+    <!-- body -->
+    <div class="body">
+      <div class="stage">
+        <!-- dithered visualizer -->
+        <div class="viz">
+          <canvas id="scene" width="320" height="200"></canvas>
+          <div class="vlabel">VESPER&nbsp;FM<small>SUNSET&nbsp;OSCILLATOR</small></div>
+          <div class="vmeta" id="vmeta">
+            STEP <b id="mStep">--</b><br>
+            BPM <b id="mBpm">96</b><br>
+            CPU <b id="mCpu">38%</b>
+          </div>
+        </div>
+
+        <!-- step sequencer -->
+        <div class="seq" id="seq">
+          <div class="seqinner">
+            <div class="seqhead">
+              <span class="lbl">PATTERN&nbsp;GRID&nbsp;·&nbsp;16&nbsp;×&nbsp;4&nbsp;VOICE</span>
+              <div class="steps" id="stepNums"></div>
+            </div>
+            <div id="grid"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- side panel -->
+      <aside class="panel">
+        <div class="pcard">
+          <h3>TRANSPORT <span class="led off" id="ledPlay"></span></h3>
+          <div class="btns">
+            <button class="btn go" id="btnPlay">▶ PLAY</button>
+            <button class="btn" id="btnStop">■ STOP</button>
+          </div>
+          <div class="btns">
+            <button class="btn" id="btnRand">RAND</button>
+            <button class="btn" id="btnClear">CLEAR</button>
+          </div>
+        </div>
+
+        <div class="pcard">
+          <h3>CONTROL <span class="led" id="ledCtl"></span></h3>
+          <div class="knobrow">
+            <div class="knob" data-k="tempo" data-min="64" data-max="168" data-val="96" data-step="2">
+              <div class="dial"></div><div class="kl">TEMPO</div><div class="kv"><span class="kn">96</span></div>
+            </div>
+            <div class="knob" data-k="cutoff" data-min="200" data-max="6000" data-val="2200" data-step="120">
+              <div class="dial"></div><div class="kl">CUTOFF</div><div class="kv"><span class="kn">2200</span></div>
+            </div>
+            <div class="knob" data-k="reso" data-min="0" data-max="22" data-val="6" data-step="1">
+              <div class="dial"></div><div class="kl">RESO</div><div class="kv"><span class="kn">6</span></div>
+            </div>
+            <div class="knob" data-k="swing" data-min="0" data-max="60" data-val="14" data-step="2">
+              <div class="dial"></div><div class="kl">SWING</div><div class="kv"><span class="kn">14</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="pcard">
+          <h3>OUTPUT</h3>
+          <div class="row"><span class="k">LEVEL</span><span class="v" id="lvlTxt">-6dB</span></div>
+          <div class="meter"><i id="mLevel"></i></div>
+          <div class="row"><span class="k">WAVE</span><span class="v" id="waveTxt">SQR · SAW · SIN</span></div>
+          <div class="row"><span class="k">DITHER</span><span class="v">BAYER 8×8</span></div>
+        </div>
+
+        <div class="pcard">
+          <h3>PALETTE <span class="v" style="color:var(--salmon);font-size:.7em">14 COL</span></h3>
+          <div class="palstrip" id="palStrip"></div>
+          <div class="preset" id="presets"></div>
+        </div>
+      </aside>
+    </div>
+
+    <!-- status footer -->
+    <div class="statusbar">
+      <span class="seg">RDY <b id="sbReady">●</b></span>
+      <span class="marq"><span>SYNTH-86.EXE · REAL ORDERED DITHER · 14-COLOR WARM QUANTIZE · WEBAUDIO PROCEDURAL VOICES · CLICK CELLS TO SEQUENCE · TAP A PRESET · PRESS PLAY · ░▒▓ VESPER AUDIO LABS 1986 ▓▒░</span></span>
+      <span class="seg">PAT <b id="sbPat">A</b></span>
+      <span class="seg">VOX <b id="sbVox">4</b></span>
+    </div>
+  </div>
+
+<script>
+"use strict";
+/* ===================================================================
+   SYNTH-86.EXE
+   - REAL Bayer 8x8 ordered dithering into a 14-color warm palette.
+     Scene is rendered truecolor into a Float32 buffer at 320x200,
+     then EVERY pixel gets a bayer threshold offset and snaps to the
+     nearest palette color. No CSS blur. The dithered frame is the
+     first paint — there is no intro/loading gate.
+   - WebAudio procedural step sequencer: 4 voices (KICK/BASS/LEAD/HAT)
+     across 16 steps, lookahead scheduler, lowpass + resonance,
+     swing. The visualizer reacts to the running step / energy.
+   =================================================================== */
+
+/* ---- curated warm 486 palette (14 colors, RGB) ---- */
+const PALETTE = [
+  [22,8,9],      // 0 ink
+  [42,15,18],    // 1 maroon
+  [58,22,26],    // 2 maroon2
+  [82,36,42],    // 3 line
+  [134,52,40],   // 4 deep rust
+  [168,71,43],   // 5 rust
+  [200,98,58],   // 6 rust2
+  [224,138,90],  // 7 salmon
+  [240,184,122], // 8 peach
+  [246,217,168], // 9 cream
+  [14,43,46],    // 10 deep teal
+  [31,110,106],  // 11 teal
+  [63,174,122],  // 12 green
+  [240,176,82],  // 13 amber
+];
+const PAL_NAMES = ["VESPER","EMBER","FROST"]; // preset palettes (re-order/curate)
+const PAL_PRESETS = {
+  VESPER: PALETTE,
+  EMBER: [ [22,8,9],[42,15,18],[58,22,26],[90,34,30],[150,52,34],[190,80,40],
+           [216,112,52],[236,150,78],[246,206,140],[250,230,182],
+           [40,18,20],[120,52,40],[210,120,60],[244,196,120] ],
+  FROST: [ [10,14,18],[18,26,32],[26,40,46],[40,60,64],[34,90,90],[40,128,118],
+           [62,170,140],[120,206,170],[196,232,196],[244,246,224],
+           [60,30,40],[150,70,70],[214,120,96],[244,196,150] ],
+};
+let activePal = PALETTE.slice();
+
+function paintPalStrip(){
+  const s=document.getElementById('palStrip'); s.innerHTML='';
+  activePal.forEach(c=>{const i=document.createElement('i');i.style.background=`rgb(${c[0]},${c[1]},${c[2]})`;s.appendChild(i);});
+}
+
+/* ---- Bayer 8x8 ordered dither matrix (0..63) normalized to -0.5..0.5 ---- */
+const BAYER8=[
+   0,32, 8,40, 2,34,10,42,  48,16,56,24,50,18,58,26,
+  12,44, 4,36,14,46, 6,38,  60,28,52,20,62,30,54,22,
+   3,35,11,43, 1,33, 9,41,  51,19,59,27,49,17,57,25,
+  15,47, 7,39,13,45, 5,37,  63,31,55,23,61,29,53,21
+];
+const bthr=new Float32Array(64);
+for(let i=0;i<64;i++) bthr[i]=(BAYER8[i]+0.5)/64-0.5;
+
+/* nearest palette color (squared distance) */
+function nearest(r,g,b){
+  let bi=0,bd=1e18,P=activePal;
+  for(let i=0;i<P.length;i++){
+    const p=P[i],dr=r-p[0],dg=g-p[1],db=b-p[2];
+    const d=dr*dr+dg*dg+db*db;
+    if(d<bd){bd=d;bi=i;}
+  }
+  return P[bi];
+}
+
+/* ===================================================================
+   SCENE BUFFER  — render a warm dusk synth landscape into a small
+   truecolor float buffer, then dither->quantize to the canvas.
+   Animates with the sequencer: sun pulses on the beat, the waveform
+   "sea" ripples with current step energy, equalizer bars on horizon.
+   =================================================================== */
+const W=320,H=200;
+const cv=document.getElementById('scene');
+const ctx=cv.getContext('2d',{alpha:false});
+const img=ctx.createImageData(W,H);
+const buf=new Float32Array(W*H*3);
+
+function lerp(a,b,t){return a+(b-a)*t;}
+function mix(c1,c2,t){return [lerp(c1[0],c2[0],t),lerp(c1[1],c2[1],t),lerp(c1[2],c2[2],t)];}
+function clamp(v,a,b){return v<a?a:v>b?b:v;}
+
+const SKY=[ [40,18,28],[110,46,48],[196,96,60],[246,194,128] ];
+const WAT=[ [228,150,96],[60,120,108],[24,74,74],[12,40,46] ];
+function sampleStops(stops,t){
+  t=clamp(t,0,0.9999);
+  const f=t*(stops.length-1),i=Math.floor(f);
+  return mix(stops[i],stops[i+1],f-i);
+}
+
+let T=0;                 // animation time
+const horizon=0.52;      // horizon fraction
+let beatPulse=0;         // 0..1, decays after each beat
+let energy=0;            // running rms-ish energy 0..1
+const barLevels=new Float32Array(16); // EQ bars near horizon
+
+function renderScene(){
+  const horizPx=(H*horizon)|0;
+  const sunR=22 + beatPulse*7;
+  const sunX=W*0.5;
+  const sunY=horizPx*0.62;
+
+  for(let y=0;y<H;y++){
+    const row=y*W*3;
+    if(y<horizPx){
+      // ---- SKY ----
+      const ty=y/horizPx;
+      for(let x=0;x<W;x++){
+        let col=sampleStops(SKY,ty);
+        const dx=x-sunX, dy=y-sunY, dist=Math.sqrt(dx*dx+dy*dy);
+        if(dist<sunR){
+          col=mix(col,[252,226,172],0.94);
+        }else{
+          const glow=Math.max(0,1-(dist-sunR)/(96+beatPulse*40));
+          col=mix(col,[250,202,132],glow*(0.5+beatPulse*0.35));
+        }
+        // soft scan/cloud bands -> gives the dither something to chew
+        const cl=Math.sin(x*0.018 + y*0.05 + T*0.25);
+        if(cl>0.55 && ty<0.86){ col=mix(col,[200,104,72],(cl-0.55)*0.55); }
+        // equalizer silhouette just above horizon (driven by sequencer)
+        const barIdx=(x*16/W)|0;
+        const bh=barLevels[barIdx]* (horizPx*0.34);
+        if(y > horizPx-bh-1){ col=mix(col,[36,16,20],0.86); }
+        const i=row+x*3; buf[i]=col[0];buf[i+1]=col[1];buf[i+2]=col[2];
+      }
+    }else{
+      // ---- WATER (waveform sea) ----
+      const tw=(y-horizPx)/(H-horizPx);
+      for(let x=0;x<W;x++){
+        let col=sampleStops(WAT,tw);
+        // reflected sun column
+        const refl=Math.max(0,1-Math.abs(x-sunX)/(26+tw*60));
+        const shimmer=0.5+0.5*Math.sin(x*0.25 + y*0.6 + T*2.4);
+        col=mix(col,[236,168,110], refl*shimmer*(0.55-tw*0.3));
+        // waveform ripple lines — amplitude tracks energy & step
+        const wav=Math.sin(x*0.10 + T*3.0 + tw*5.0)*(0.6+energy*0.9)
+                 + Math.sin(x*0.043 - T*1.7)*0.5;
+        const band=Math.sin((y*1.0) + wav*3.2 + T*1.2);
+        if(band>0.45){ col=mix(col,[40,150,128],(band-0.45)*0.5*(0.5+energy)); }
+        if(band<-0.55){ col=mix(col,[14,46,52],(-band-0.55)*0.6); }
+        const i=row+x*3; buf[i]=col[0];buf[i+1]=col[1];buf[i+2]=col[2];
+      }
+    }
+  }
+  ditherToScreen();
+}
+
+/* ---- THE DITHER PASS ---- */
+const DITHER_STRENGTH=44;
+function ditherToScreen(){
+  const d=img.data;
+  for(let y=0;y<H;y++){
+    const rb=(y&7)*8;
+    for(let x=0;x<W;x++){
+      const si=(y*W+x)*3;
+      const t=bthr[rb+(x&7)]*DITHER_STRENGTH;
+      const p=nearest(buf[si]+t, buf[si+1]+t, buf[si+2]+t);
+      const di=(y*W+x)*4;
+      d[di]=p[0];d[di+1]=p[1];d[di+2]=p[2];d[di+3]=255;
+    }
+  }
+  ctx.putImageData(img,0,0);
+}
+
+/* ===================================================================
+   SEQUENCER STATE
+   =================================================================== */
+const STEPS=16, TRACKS=4;
+const TRACK_DEFS=[
+  {name:"KICK",  sub:"BD",  cls:"t0"},
+  {name:"BASS",  sub:"BS",  cls:"t1"},
+  {name:"LEAD",  sub:"LD",  cls:"t2"},
+  {name:"HAT",   sub:"HH",  cls:"t3"},
+];
+// pattern[track][step] = 0/1
+let pattern = TRACK_DEFS.map(()=>new Array(STEPS).fill(0));
+
+const PATTERNS = {
+  // a pleasing default groove
+  default: [
+    [1,0,0,0, 1,0,0,0, 1,0,0,1, 1,0,0,0],   // kick
+    [1,0,0,1, 0,0,1,0, 1,0,0,1, 0,1,0,0],   // bass
+    [0,0,1,0, 0,1,0,0, 0,0,1,0, 0,1,0,1],   // lead
+    [1,0,1,0, 1,0,1,1, 1,0,1,0, 1,1,1,0],   // hat
+  ],
+};
+pattern = PATTERNS.default.map(r=>r.slice());
+
+let params = { tempo:96, cutoff:2200, reso:6, swing:14 };
+
+/* build step-number header */
+(function(){
+  const sn=document.getElementById('stepNums');
+  for(let s=0;s<STEPS;s++){
+    const i=document.createElement('i');
+    i.textContent=(s+1);
+    if(s%4===0) i.classList.add('beat');
+    i.dataset.s=s;
+    sn.appendChild(i);
+  }
+})();
+
+/* build the grid */
+const cellEls=[]; // cellEls[track][step]
+(function(){
+  const grid=document.getElementById('grid');
+  for(let tr=0;tr<TRACKS;tr++){
+    const trackDiv=document.createElement('div');
+    trackDiv.className='track';
+    const name=document.createElement('div');
+    name.className='tname';
+    name.innerHTML=TRACK_DEFS[tr].name+'<small>'+TRACK_DEFS[tr].sub+'</small>';
+    const cells=document.createElement('div');
+    cells.className='cells';
+    cellEls[tr]=[];
+    for(let s=0;s<STEPS;s++){
+      const c=document.createElement('div');
+      c.className='cell '+TRACK_DEFS[tr].cls + (s%4===0?' b':'');
+      if(pattern[tr][s]) c.classList.add('on');
+      c.dataset.tr=tr; c.dataset.s=s;
+      c.addEventListener('click',()=>{
+        pattern[tr][s]^=1;
+        c.classList.toggle('on');
+        ensureAudio();
+        if(pattern[tr][s]) trigger(tr, audio?audio.currentTime:0, 1);
+      });
+      cells.appendChild(c);
+      cellEls[tr][s]=c;
+    }
+    trackDiv.appendChild(name);
+    trackDiv.appendChild(cells);
+    grid.appendChild(trackDiv);
+  }
+})();
+
+/* ===================================================================
+   WEBAUDIO — procedural voices + lookahead scheduler
+   =================================================================== */
+let audio=null, master=null, comp=null;
+function ensureAudio(){
+  if(audio) { if(audio.state==='suspended') audio.resume(); return; }
+  const AC=window.AudioContext||window.webkitAudioContext;
+  audio=new AC();
+  master=audio.createGain(); master.gain.value=0.5;
+  comp=audio.createDynamicsCompressor();
+  comp.threshold.value=-14; comp.knee.value=18; comp.ratio.value=6;
+  comp.attack.value=0.003; comp.release.value=0.18;
+  master.connect(comp); comp.connect(audio.destination);
+}
+
+// shared noise buffer for hats
+let noiseBuf=null;
+function getNoise(){
+  if(noiseBuf) return noiseBuf;
+  const n=audio.sampleRate*0.4;
+  noiseBuf=audio.createBuffer(1,n,audio.sampleRate);
+  const d=noiseBuf.getChannelData(0);
+  for(let i=0;i<n;i++) d[i]=Math.random()*2-1;
+  return noiseBuf;
+}
+
+// scale for melodic voices (A minor pentatonic-ish, warm)
+const SCALE=[110.00,130.81,146.83,164.81,196.00,220.00,261.63,293.66];
+let leadStepCount=0;
+
+function trigger(track, when, vel){
+  if(!audio) return;
+  const t=when;
+  const cut=params.cutoff, q=params.reso;
+  if(track===0){ // KICK — sine pitch drop + click
+    const o=audio.createOscillator();
+    const g=audio.createGain();
+    o.type='sine';
+    o.frequency.setValueAtTime(140,t);
+    o.frequency.exponentialRampToValueAtTime(46,t+0.12);
+    g.gain.setValueAtTime(0.0001,t);
+    g.gain.exponentialRampToValueAtTime(0.9*vel,t+0.004);
+    g.gain.exponentialRampToValueAtTime(0.0001,t+0.30);
+    o.connect(g); g.connect(master);
+    o.start(t); o.stop(t+0.32);
+  } else if(track===1){ // BASS — saw through lowpass
+    const o=audio.createOscillator();
+    const g=audio.createGain();
+    const f=audio.createBiquadFilter();
+    o.type='sawtooth';
+    o.frequency.value=SCALE[0]*0.5; // low root
+    f.type='lowpass'; f.frequency.value=clamp(cut*0.45,120,2200); f.Q.value=q*0.5+1;
+    g.gain.setValueAtTime(0.0001,t);
+    g.gain.exponentialRampToValueAtTime(0.5*vel,t+0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001,t+0.26);
+    o.connect(f); f.connect(g); g.connect(master);
+    o.start(t); o.stop(t+0.28);
+  } else if(track===2){ // LEAD — square arpeggio through lowpass+reso
+    const note=SCALE[(leadStepCount++)%SCALE.length];
+    const o=audio.createOscillator();
+    const o2=audio.createOscillator();
+    const g=audio.createGain();
+    const f=audio.createBiquadFilter();
+    o.type='square'; o.frequency.value=note;
+    o2.type='square'; o2.frequency.value=note*1.005; o2.detune.value=6;
+    f.type='lowpass'; f.frequency.setValueAtTime(clamp(cut,200,7000),t);
+    f.frequency.exponentialRampToValueAtTime(clamp(cut*0.4+200,200,7000),t+0.22);
+    f.Q.value=q;
+    g.gain.setValueAtTime(0.0001,t);
+    g.gain.exponentialRampToValueAtTime(0.26*vel,t+0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001,t+0.22);
+    o.connect(f); o2.connect(f); f.connect(g); g.connect(master);
+    o.start(t); o2.start(t); o.stop(t+0.24); o2.stop(t+0.24);
+  } else { // HAT — filtered noise burst
+    const s=audio.createBufferSource(); s.buffer=getNoise();
+    const g=audio.createGain();
+    const f=audio.createBiquadFilter();
+    f.type='highpass'; f.frequency.value=6500;
+    g.gain.setValueAtTime(0.0001,t);
+    g.gain.exponentialRampToValueAtTime(0.22*vel,t+0.002);
+    g.gain.exponentialRampToValueAtTime(0.0001,t+0.06);
+    s.connect(f); f.connect(g); g.connect(master);
+    s.start(t); s.stop(t+0.07);
+  }
+}
+
+/* ---- transport / lookahead scheduler ---- */
+let playing=false;
+let curStep=0;
+let nextNoteTime=0;
+const LOOKAHEAD=0.025;      // s, scheduler tick
+const SCHEDULE_AHEAD=0.12;  // s
+let schedTimer=null;
+let stepQueue=[];           // {step, time} for UI sync
+
+function secondsPerStep(){
+  // 16 steps = 4 beats (16th notes)
+  return (60/params.tempo)/4;
+}
+function scheduler(){
+  if(!audio) return;
+  while(nextNoteTime < audio.currentTime + SCHEDULE_AHEAD){
+    const sp=secondsPerStep();
+    // swing: delay odd steps
+    let t=nextNoteTime;
+    if(curStep%2===1) t += sp*(params.swing/100);
+    // fire active voices
+    for(let tr=0;tr<TRACKS;tr++){
+      if(pattern[tr][curStep]) trigger(tr,t,1);
+    }
+    stepQueue.push({step:curStep,time:t});
+    nextNoteTime += sp;
+    curStep=(curStep+1)%STEPS;
+  }
+  schedTimer=setTimeout(scheduler,LOOKAHEAD*1000);
+}
+
+function play(){
+  ensureAudio();
+  if(playing) return;
+  playing=true;
+  curStep=0;
+  nextNoteTime=audio.currentTime+0.06;
+  scheduler();
+  const b=document.getElementById('btnPlay');
+  b.classList.add('playing'); b.textContent='❚❚ PAUSE';
+  document.getElementById('ledPlay').classList.remove('off');
+  document.getElementById('sbReady').textContent='▶';
+}
+function stop(){
+  playing=false;
+  if(schedTimer){clearTimeout(schedTimer);schedTimer=null;}
+  stepQueue=[];
+  const b=document.getElementById('btnPlay');
+  b.classList.remove('playing'); b.textContent='▶ PLAY';
+  document.getElementById('ledPlay').classList.add('off');
+  document.getElementById('sbReady').textContent='●';
+  // clear cursor highlight
+  for(let tr=0;tr<TRACKS;tr++) for(let s=0;s<STEPS;s++) cellEls[tr][s].classList.remove('cur');
+  document.querySelectorAll('#stepNums i').forEach(i=>i.classList.remove('play'));
+  document.getElementById('mStep').textContent='--';
+}
+
+/* ===================================================================
+   ANIMATION LOOP  — pop scheduled steps when their time arrives,
+   drive visualizer pulse/energy, and dither every frame.
+   =================================================================== */
+let uiStep=-1;
+function tickUI(){
+  T += 0.05;
+  // pop any step whose time has passed -> sync UI + visuals
+  if(audio){
+    const now=audio.currentTime;
+    while(stepQueue.length && stepQueue[0].time<=now){
+      const ev=stepQueue.shift();
+      uiStep=ev.step;
+      highlightStep(uiStep);
+      // energy from how many voices fired this step
+      let v=0; for(let tr=0;tr<TRACKS;tr++) v+=pattern[tr][uiStep];
+      energy = clamp(0.25 + v*0.22, 0, 1);
+      // EQ bars: shift + inject
+      for(let i=15;i>0;i--) barLevels[i]=barLevels[i-1]*0.86;
+      barLevels[0]=energy;
+      // kick (track 0) drives the sun pulse
+      if(pattern[0][uiStep]) beatPulse=1;
+      document.getElementById('mStep').textContent=(uiStep+1);
+      document.getElementById('mCpu').textContent=(28+v*7+((Math.random()*4)|0))+'%';
+    }
+  }
+  // decay
+  beatPulse*=0.86;
+  energy*=0.965;
+  // output meter
+  const lvl=clamp(28 + energy*68 + beatPulse*18, 4, 100);
+  document.getElementById('mLevel').style.width=lvl.toFixed(0)+'%';
+
+  renderScene();
+  requestAnimationFrame(tickUI);
+}
+
+function highlightStep(s){
+  for(let tr=0;tr<TRACKS;tr++){
+    for(let st=0;st<STEPS;st++) cellEls[tr][st].classList.toggle('cur', st===s);
+    // brief flash on active cells
+    if(pattern[tr][s]){
+      const c=cellEls[tr][s]; c.classList.add('flash');
+      setTimeout(()=>c.classList.remove('flash'),90);
+    }
+  }
+  document.querySelectorAll('#stepNums i').forEach(i=>i.classList.toggle('play', +i.dataset.s===s));
+}
+
+/* ===================================================================
+   KNOBS  (drag vertically) + readouts
+   =================================================================== */
+function setKnob(el, val){
+  const min=+el.dataset.min, max=+el.dataset.max, k=el.dataset.k;
+  val=clamp(val,min,max);
+  el.dataset.val=val;
+  params[k]=val;
+  const ang=-135 + (val-min)/(max-min)*270;
+  el.querySelector('.dial').style.setProperty('--ang',ang+'deg');
+  el.querySelector('.kn').textContent=Math.round(val);
+  if(k==='tempo') document.getElementById('mBpm').textContent=Math.round(val);
+}
+document.querySelectorAll('.knob').forEach(el=>{
+  setKnob(el,+el.dataset.val);
+  let dragging=false,sy=0,sv=0;
+  const start=(y)=>{dragging=true;sy=y;sv=+el.dataset.val;ensureAudio();};
+  const move=(y)=>{
+    if(!dragging) return;
+    const dv=(sy-y)*( (el.dataset.max-el.dataset.min)/180 );
+    let nv=sv+dv;
+    const step=+el.dataset.step; nv=Math.round(nv/step)*step;
+    setKnob(el,nv);
+  };
+  el.addEventListener('mousedown',e=>{start(e.clientY);e.preventDefault();});
+  el.addEventListener('touchstart',e=>{start(e.touches[0].clientY);},{passive:true});
+  window.addEventListener('mousemove',e=>move(e.clientY));
+  window.addEventListener('touchmove',e=>{if(dragging){move(e.touches[0].clientY);e.preventDefault();}},{passive:false});
+  window.addEventListener('mouseup',()=>dragging=false);
+  window.addEventListener('touchend',()=>dragging=false);
+  // wheel tweak
+  el.addEventListener('wheel',e=>{e.preventDefault();const step=+el.dataset.step;setKnob(el,+el.dataset.val + (e.deltaY<0?step:-step));},{passive:false});
+});
+
+/* ===================================================================
+   BUTTONS + PRESETS
+   =================================================================== */
+document.getElementById('btnPlay').addEventListener('click',()=>{
+  ensureAudio();
+  if(playing) stop(); else play();
+});
+document.getElementById('btnStop').addEventListener('click',stop);
+document.getElementById('btnRand').addEventListener('click',()=>{
+  const dens=[0.45,0.4,0.35,0.55];
+  for(let tr=0;tr<TRACKS;tr++) for(let s=0;s<STEPS;s++){
+    pattern[tr][s]= Math.random()<dens[tr]?1:0;
+    cellEls[tr][s].classList.toggle('on', !!pattern[tr][s]);
+  }
+});
+document.getElementById('btnClear').addEventListener('click',()=>{
+  for(let tr=0;tr<TRACKS;tr++) for(let s=0;s<STEPS;s++){
+    pattern[tr][s]=0; cellEls[tr][s].classList.remove('on');
+  }
+});
+
+/* palette presets */
+(function(){
+  const wrap=document.getElementById('presets');
+  PAL_NAMES.forEach((nm,idx)=>{
+    const b=document.createElement('b');
+    b.textContent=nm;
+    if(idx===0) b.classList.add('sel');
+    b.addEventListener('click',()=>{
+      activePal=PAL_PRESETS[nm].slice();
+      paintPalStrip();
+      wrap.querySelectorAll('b').forEach(x=>x.classList.remove('sel'));
+      b.classList.add('sel');
+    });
+    wrap.appendChild(b);
+  });
+})();
+
+/* ===================================================================
+   BOOT — paint dithered scene immediately (first paint = dither),
+   then start the animation/UI loop. No intro / loading gate.
+   =================================================================== */
+paintPalStrip();
+renderScene();          // <-- the very first paint is the dithered frame
+requestAnimationFrame(tickUI);
+
+// keyboard: space = play/stop
+window.addEventListener('keydown',e=>{
+  if(e.code==='Space'){ e.preventDefault(); ensureAudio(); playing?stop():play(); }
+});
+</script>
+</body>
+</html>

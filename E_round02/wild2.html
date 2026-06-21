@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>ARID//486 — ATMOSPHERIC DITHER SCANNER</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<style>
+  :root{
+    /* limited warm 486 palette, exposed for chrome */
+    --c-void:#160a0c;      /* deep maroon-black */
+    --c-maroon:#3a1418;    /* deep maroon */
+    --c-rust:#7a2d1e;      /* rust */
+    --c-ember:#b8472a;     /* ember/brick */
+    --c-salmon:#e07a4f;    /* salmon */
+    --c-peach:#f2b27a;     /* peach */
+    --c-cream:#f6dba8;     /* cream highlight */
+    --c-teal-dk:#0f3b3a;   /* deep teal */
+    --c-teal:#1f6e63;      /* teal */
+    --c-green:#3f9d6f;     /* green */
+    --c-mint:#8fd0a0;      /* mint */
+    --panel:#2a1216;
+    --panel-2:#1d0d10;
+    --line:#5a2620;
+    --line-hi:#9a4a35;
+    --ink:#f0c79a;
+    --ink-dim:#b87a52;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{height:100%;}
+  body{
+    background:
+      radial-gradient(120% 90% at 50% -10%, #2a1014 0%, #160a0c 55%, #0c0608 100%);
+    color:var(--ink);
+    font-family:'VT323',monospace;
+    font-size:18px;
+    -webkit-font-smoothing:none;
+    image-rendering:pixelated;
+    overflow-x:hidden;
+    letter-spacing:.5px;
+    min-height:100%;
+    padding:14px;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:12px;
+  }
+  /* global CRT scanline + vignette overlay */
+  body::after{
+    content:"";
+    position:fixed; inset:0; pointer-events:none; z-index:9999;
+    background:
+      repeating-linear-gradient(0deg, rgba(0,0,0,.16) 0 1px, rgba(0,0,0,0) 1px 3px),
+      radial-gradient(130% 120% at 50% 50%, rgba(0,0,0,0) 60%, rgba(8,4,5,.55) 100%);
+    mix-blend-mode:multiply;
+    opacity:.85;
+  }
+  .pix{font-family:'Press Start 2P',monospace;}
+
+  /* ---- top status strip ---- */
+  .strip{
+    width:100%; max-width:1180px;
+    display:flex; align-items:center; gap:10px;
+    background:var(--panel-2);
+    border:2px solid var(--line);
+    border-top-color:var(--line-hi);
+    border-left-color:var(--line-hi);
+    padding:6px 10px;
+    font-size:13px;
+    box-shadow:0 0 0 2px #0c0608, inset 0 0 24px rgba(0,0,0,.5);
+  }
+  .strip .dot{width:9px;height:9px;background:var(--c-green);border:1px solid #0a2a1e;box-shadow:0 0 6px var(--c-green);}
+  .strip .pix{font-size:9px; color:var(--c-peach);}
+  .strip .sp{flex:1;}
+  .strip .blip{color:var(--c-mint);}
+  .strip .seg{color:var(--ink-dim);}
+
+  /* ---- main window ---- */
+  .frame{
+    width:100%; max-width:1180px;
+    background:linear-gradient(180deg,#341519,#220e11);
+    border:2px solid var(--line-hi);
+    box-shadow:
+      0 0 0 2px #0c0608,
+      0 14px 0 -2px rgba(0,0,0,.5),
+      0 18px 50px rgba(0,0,0,.7),
+      inset 0 0 0 1px rgba(240,199,154,.06);
+    padding:0;
+  }
+  /* title bar */
+  .titlebar{
+    display:flex; align-items:center; gap:8px;
+    background:
+      repeating-linear-gradient(90deg, rgba(240,199,154,.10) 0 2px, transparent 2px 4px),
+      linear-gradient(180deg,#6f2c20,#4a1c17);
+    border-bottom:2px solid #0c0608;
+    padding:7px 9px;
+  }
+  .titlebar .tb-btns{display:flex; gap:5px;}
+  .tb-btns b{
+    width:14px;height:14px;display:block;
+    background:#2a1216; border:1px solid #0c0608;
+    border-top-color:var(--line-hi); border-left-color:var(--line-hi);
+    color:var(--c-cream); font-family:'Press Start 2P'; font-size:7px;
+    line-height:12px; text-align:center;
+  }
+  .titlebar .tt{font-family:'Press Start 2P'; font-size:9px; color:var(--c-cream); text-shadow:1px 1px 0 #2a0c0a;}
+  .titlebar .tt small{color:var(--c-peach);}
+  .titlebar .sp{flex:1;}
+  .titlebar .meta{font-size:13px; color:#f0c79a;}
+
+  /* layout grid: viewport | side rack */
+  .body{
+    display:grid;
+    grid-template-columns: 1fr 312px;
+    gap:0;
+  }
+  @media (max-width:860px){
+    .body{grid-template-columns:1fr;}
+  }
+
+  /* ---- viewport ---- */
+  .viewport{
+    position:relative;
+    background:#0c0608;
+    border-right:2px solid #0c0608;
+    padding:12px;
+    display:flex; flex-direction:column; gap:10px;
+  }
+  .screen{
+    position:relative;
+    border:2px solid #0c0608;
+    box-shadow:inset 0 0 0 1px rgba(240,199,154,.08), inset 0 0 40px rgba(0,0,0,.6);
+    background:#160a0c;
+    overflow:hidden;
+    aspect-ratio: 16/10;
+  }
+  canvas#scene{
+    display:block; width:100%; height:100%;
+    image-rendering:pixelated; image-rendering:crisp-edges;
+  }
+  /* curved CRT glass glare on the screen */
+  .screen::after{
+    content:""; position:absolute; inset:0; pointer-events:none;
+    background:
+      repeating-linear-gradient(0deg, rgba(0,0,0,.22) 0 1px, transparent 1px 3px),
+      radial-gradient(70% 50% at 30% 18%, rgba(246,219,168,.10), transparent 60%),
+      radial-gradient(120% 120% at 50% 50%, transparent 62%, rgba(8,4,5,.6) 100%);
+    mix-blend-mode:screen;
+  }
+  /* HUD overlay text inside screen */
+  .hud{
+    position:absolute; inset:0; pointer-events:none;
+    font-size:12px; color:var(--c-cream);
+    text-shadow:1px 1px 0 #160a0c;
+  }
+  .hud .tl{position:absolute; top:6px; left:8px; font-family:'Press Start 2P'; font-size:8px; color:var(--c-peach); letter-spacing:1px;}
+  .hud .tr{position:absolute; top:6px; right:8px; font-size:13px; color:var(--c-mint);}
+  .hud .bl{position:absolute; bottom:6px; left:8px;}
+  .hud .br{position:absolute; bottom:6px; right:8px; color:var(--c-mint);}
+  .hud .reticle{position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:42px;height:42px; opacity:.55;}
+  .hud .reticle:before,.hud .reticle:after{content:"";position:absolute;background:rgba(143,208,160,.6);}
+  .hud .reticle:before{left:50%;top:0;width:1px;height:100%;transform:translateX(-.5px);}
+  .hud .reticle:after{top:50%;left:0;height:1px;width:100%;transform:translateY(-.5px);}
+
+  /* transport row under screen */
+  .transport{
+    display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  }
+  .seg-read{
+    flex:1; min-width:160px;
+    background:#08151a; border:2px solid #0c0608;
+    border-top-color:#173b3a; border-left-color:#173b3a;
+    padding:4px 8px; color:var(--c-mint);
+    font-size:15px; overflow:hidden; white-space:nowrap;
+    box-shadow:inset 0 0 18px rgba(0,0,0,.6);
+  }
+  .seg-read b{color:var(--c-peach); font-family:'Press Start 2P'; font-size:8px;}
+
+  /* generic chunky button */
+  .btn{
+    font-family:'Press Start 2P'; font-size:8px;
+    color:var(--c-cream);
+    background:linear-gradient(180deg,#3a1a16,#270f0c);
+    border:2px solid #0c0608;
+    border-top-color:var(--line-hi); border-left-color:var(--line-hi);
+    padding:8px 9px; cursor:pointer; user-select:none;
+    text-shadow:1px 1px 0 #160a0c;
+    transition:none;
+  }
+  .btn:hover{background:linear-gradient(180deg,#4d231b,#311410); color:var(--c-peach);}
+  .btn:active, .btn.on{
+    border-top-color:#0c0608; border-left-color:#0c0608;
+    border-bottom-color:var(--line-hi); border-right-color:var(--line-hi);
+    background:linear-gradient(180deg,#1f0c0a,#3a1a16);
+    color:var(--c-mint); text-shadow:1px 1px 0 #000;
+  }
+  .btn.acc{color:var(--c-mint);}
+
+  /* ---- side rack (CONTROL panel) ---- */
+  .rack{
+    background:linear-gradient(180deg,#2a1216,#1b0c0f);
+    padding:12px;
+    display:flex; flex-direction:column; gap:10px;
+  }
+  @media (max-width:860px){ .rack{ border-top:2px solid #0c0608; } }
+  .module{
+    background:var(--panel-2);
+    border:2px solid #0c0608;
+    border-top-color:var(--line); border-left-color:var(--line);
+    box-shadow:inset 0 0 22px rgba(0,0,0,.45);
+    padding:9px;
+  }
+  .mod-head{
+    display:flex; align-items:center; gap:6px;
+    font-family:'Press Start 2P'; font-size:8px; color:var(--c-peach);
+    border-bottom:1px dashed var(--line-hi);
+    padding-bottom:6px; margin-bottom:8px; letter-spacing:1px;
+  }
+  .mod-head .led{width:7px;height:7px;background:var(--c-salmon);box-shadow:0 0 5px var(--c-salmon);}
+  .mod-head .sp{flex:1;}
+  .mod-head small{font-family:'VT323'; font-size:13px; color:var(--ink-dim); letter-spacing:0;}
+
+  .seg-grid{display:grid; grid-template-columns:1fr 1fr; gap:6px;}
+  .seg-grid .btn{padding:8px 4px; text-align:center;}
+
+  /* knob/slider rows */
+  .ctrlrow{display:flex; align-items:center; gap:8px; margin:7px 0; font-size:14px; color:var(--ink);}
+  .ctrlrow label{font-family:'Press Start 2P'; font-size:7px; color:var(--ink-dim); width:64px; line-height:1.5;}
+  .ctrlrow input[type=range]{flex:1;}
+  .ctrlrow .val{width:48px; text-align:right; color:var(--c-mint); font-size:15px;}
+  input[type=range]{
+    -webkit-appearance:none; appearance:none; height:14px;
+    background:
+      repeating-linear-gradient(90deg,#0c0608 0 3px, #2a1216 3px 6px);
+    border:2px solid #0c0608; border-top-color:var(--line); border-left-color:var(--line);
+    outline:none; cursor:pointer;
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none; appearance:none;
+    width:12px; height:18px; margin-top:-2px;
+    background:linear-gradient(180deg,#f2b27a,#b8472a);
+    border:2px solid #0c0608; cursor:pointer;
+  }
+  input[type=range]::-moz-range-thumb{
+    width:12px; height:18px;
+    background:linear-gradient(180deg,#f2b27a,#b8472a);
+    border:2px solid #0c0608; cursor:pointer;
+  }
+
+  /* palette swatches */
+  .swatches{display:flex; flex-wrap:wrap; gap:3px;}
+  .swatches i{width:18px;height:18px;display:block;border:1px solid #0c0608;}
+
+  /* vu meter mini */
+  .vu{display:flex; align-items:flex-end; gap:2px; height:34px; padding:3px; background:#08151a; border:2px solid #0c0608; border-top-color:#173b3a; border-left-color:#173b3a;}
+  .vu i{flex:1; background:linear-gradient(0deg,var(--c-green),var(--c-mint)); height:30%;}
+
+  .readout{font-size:14px; color:var(--ink); line-height:1.45;}
+  .readout b{color:var(--c-mint);}
+  .readout .dim{color:var(--ink-dim);}
+
+  /* footer ticker */
+  .ticker{
+    width:100%; max-width:1180px;
+    background:var(--panel-2);
+    border:2px solid var(--line);
+    border-top-color:var(--line-hi); border-left-color:var(--line-hi);
+    padding:6px 0; overflow:hidden; font-size:14px; color:var(--c-peach);
+    box-shadow:0 0 0 2px #0c0608;
+  }
+  .ticker .run{display:inline-block; white-space:nowrap; padding-left:100%; animation:scrollx 26s linear infinite;}
+  .ticker .run b{color:var(--c-mint);} .ticker .run i{color:var(--ink-dim); font-style:normal;}
+  @keyframes scrollx{from{transform:translateX(0);}to{transform:translateX(-100%);}}
+
+  .blink{animation:bl 1.05s steps(2,end) infinite;}
+  @keyframes bl{50%{opacity:0;}}
+</style>
+</head>
+<body>
+
+  <!-- top status strip -->
+  <div class="strip">
+    <span class="dot"></span>
+    <span class="pix">ARID/486</span>
+    <span class="seg">·  DITHER ENGINE v2.6  ·</span>
+    <span class="blip" id="stat-mode">BAYER 8×8</span>
+    <span class="sp"></span>
+    <span class="seg">SECTOR</span> <span class="blip" id="stat-sec">R-02</span>
+    <span class="seg">·  TEMP</span> <span class="blip" id="stat-temp">041°C</span>
+    <span class="seg">·  CLK</span> <span class="blip" id="stat-clk">00:00:00</span>
+  </div>
+
+  <!-- main window -->
+  <div class="frame">
+    <div class="titlebar">
+      <div class="tb-btns"><b>≡</b><b>_</b><b>□</b><b>×</b></div>
+      <span class="tt">ATMOSPHERIC&nbsp;DITHER&nbsp;SCANNER&nbsp;<small>[ARID//486]</small></span>
+      <span class="sp"></span>
+      <span class="meta">MEM 614K · VESA 256c · <span class="blink">_</span></span>
+    </div>
+
+    <div class="body">
+      <!-- viewport -->
+      <div class="viewport">
+        <div class="screen">
+          <canvas id="scene" width="320" height="200"></canvas>
+          <div class="hud">
+            <div class="tl">SCAN <span id="hud-scan">▮▮▮▯</span></div>
+            <div class="tr" id="hud-fps">— FPS</div>
+            <div class="reticle"></div>
+            <div class="bl">LAT 34.91N · LON 116.4W · <span id="hud-elev">+612m</span></div>
+            <div class="br" id="hud-pal">8c / DESERT</div>
+          </div>
+        </div>
+
+        <div class="transport">
+          <button class="btn" id="b-play">▶ RUN</button>
+          <button class="btn" id="b-pause">❚❚ HOLD</button>
+          <button class="btn acc" id="b-shot">◉ FRAME</button>
+          <div class="seg-read"><b>SCENE</b> &nbsp;<span id="seg-scene">DUNE MESA · SUNDOWN DRIFT</span></div>
+        </div>
+      </div>
+
+      <!-- side rack -->
+      <div class="rack">
+        <div class="module">
+          <div class="mod-head"><span class="led"></span> DITHER&nbsp;CORE <span class="sp"></span><small>ordered</small></div>
+          <div class="seg-grid">
+            <button class="btn" data-dither="b2">BAYER 2×2</button>
+            <button class="btn" data-dither="b4">BAYER 4×4</button>
+            <button class="btn on" data-dither="b8">BAYER 8×8</button>
+            <button class="btn" data-dither="none">QUANT RAW</button>
+          </div>
+        </div>
+
+        <div class="module">
+          <div class="mod-head"><span class="led" style="background:var(--c-mint);box-shadow:0 0 5px var(--c-mint)"></span> PALETTE <span class="sp"></span><small id="pal-name">desert</small></div>
+          <div class="seg-grid" style="margin-bottom:8px;">
+            <button class="btn on" data-pal="desert">DESERT</button>
+            <button class="btn" data-pal="ash">ASH&nbsp;TEAL</button>
+            <button class="btn" data-pal="ember">EMBER&nbsp;6</button>
+            <button class="btn" data-pal="mono">MONO&nbsp;4</button>
+          </div>
+          <div class="swatches" id="swatches"></div>
+        </div>
+
+        <div class="module">
+          <div class="mod-head"><span class="led" style="background:var(--c-peach);box-shadow:0 0 5px var(--c-peach)"></span> SIGNAL</div>
+          <div class="ctrlrow"><label>PIXEL SZ</label><input type="range" id="r-px" min="1" max="6" step="1" value="4"><span class="val" id="v-px">4×</span></div>
+          <div class="ctrlrow"><label>SUN ALT</label><input type="range" id="r-sun" min="0" max="100" value="40"><span class="val" id="v-sun">40</span></div>
+          <div class="ctrlrow"><label>HAZE</label><input type="range" id="r-haze" min="0" max="100" value="34"><span class="val" id="v-haze">34</span></div>
+          <div class="ctrlrow"><label>DRIFT</label><input type="range" id="r-drift" min="0" max="100" value="50"><span class="val" id="v-drift">50</span></div>
+        </div>
+
+        <div class="module">
+          <div class="mod-head"><span class="led" style="background:var(--c-green);box-shadow:0 0 5px var(--c-green)"></span> TELEMETRY</div>
+          <div class="vu" id="vu"></div>
+          <div class="readout" style="margin-top:8px;">
+            DITHER&nbsp;ERR <b id="t-err">0.00</b><br>
+            BUFFER <b id="t-buf">320×200</b> <span class="dim">px</span><br>
+            BANDS <b id="t-bands">8</b> <span class="dim">/ pal</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- footer ticker -->
+  <div class="ticker"><span class="run">
+    <i>///</i> ARID//486 ATMOSPHERIC DITHER SCANNER <b>·</b> REAL ORDERED DITHERING — NO IMAGE FILTERS, EVERY DOT IS A THRESHOLDED PALETTE CELL <b>·</b>
+    TOGGLE <b>DITHER CORE</b> TO WATCH THE MATRIX CHANGE <b>·</b> DRAG <b>SUN ALT</b> FOR SUNDOWN GRADIENT BANDING <b>·</b>
+    PALETTE LOCKED TO RUST/SALMON/PEACH + TEAL/GREEN <b>·</b> 486DX2 @ 66MHz <i>///</i> PRAY FOR FABLE <i>///</i>
+  </span></div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---------- palettes (limited warm 486 sets) ----------
+  const PAL = {
+    desert: ["#160a0c","#3a1418","#7a2d1e","#b8472a","#e07a4f","#f2b27a","#1f6e63","#3f9d6f"],
+    ash:    ["#160a0c","#2a1216","#0f3b3a","#1f6e63","#3f9d6f","#8fd0a0","#b8472a","#f2b27a"],
+    ember:  ["#160a0c","#3a1418","#7a2d1e","#b8472a","#e07a4f","#f6dba8"],
+    mono:   ["#160a0c","#5a2620","#b8472a","#f2b27a"]
+  };
+  const PAL_NAME = {desert:"DESERT",ash:"ASH TEAL",ember:"EMBER 6",mono:"MONO 4"};
+
+  function hexToRgb(h){return [parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)];}
+  let palRGB = PAL.desert.map(hexToRgb);
+
+  // ---------- Bayer ordered-dither matrices (normalized 0..1) ----------
+  function buildBayer(n){
+    // recursive Bayer matrix of size n (power of two)
+    if(n===1) return [[0]];
+    const h = buildBayer(n/2);
+    const m = [];
+    for(let y=0;y<n;y++) m.push(new Array(n).fill(0));
+    const s = n/2;
+    for(let y=0;y<s;y++){for(let x=0;x<s;x++){
+      const v = h[y][x]*4;
+      m[y][x]       = v+0;
+      m[y][x+s]     = v+2;
+      m[y+s][x]     = v+3;
+      m[y+s][x+s]   = v+1;
+    }}
+    return m;
+  }
+  function normMatrix(m){
+    const n=m.length, d=n*n, out=[];
+    for(let y=0;y<n;y++){out.push([]);for(let x=0;x<n;x++) out[y].push((m[y][x]+0.5)/d - 0.5);}
+    return out;
+  }
+  const MAT = {
+    none: null,
+    b2: normMatrix(buildBayer(2)),
+    b4: normMatrix(buildBayer(4)),
+    b8: normMatrix(buildBayer(8))
+  };
+  const MAT_LABEL = {none:"QUANT RAW", b2:"BAYER 2×2", b4:"BAYER 4×4", b8:"BAYER 8×8"};
+
+  // ---------- canvas / buffer ----------
+  const cv = document.getElementById("scene");
+  const ctx = cv.getContext("2d", {willReadFrequently:true});
+  ctx.imageSmoothingEnabled = false;
+
+  // logical low-res buffer size; px size controls how chunky
+  let pxSize = 4;
+  const SCREEN_W = 320, SCREEN_H = 200; // display canvas (CSS scales it up)
+  let BW = SCREEN_W/pxSize | 0, BH = SCREEN_H/pxSize | 0;
+  let img = ctx.createImageData(SCREEN_W, SCREEN_H);
+
+  function resizeBuffer(){
+    BW = Math.max(40, (SCREEN_W/pxSize)|0);
+    BH = Math.max(25, (SCREEN_H/pxSize)|0);
+    document.getElementById("t-buf").textContent = BW+"×"+BH;
+  }
+
+  // ---------- state ----------
+  const S = {
+    dither:"b8",
+    pal:"desert",
+    sun:40, haze:34, drift:50,
+    running:true,
+    t:0
+  };
+
+  // nearest palette index for a linear rgb color
+  function quantize(r,g,b){
+    let bi=0, bd=1e9;
+    for(let i=0;i<palRGB.length;i++){
+      const p=palRGB[i];
+      const dr=r-p[0], dg=g-p[1], db=b-p[2];
+      const d=dr*dr+dg*dg+db*db;
+      if(d<bd){bd=d;bi=i;}
+    }
+    return bi;
+  }
+
+  // ---------- scene shading: returns linear rgb 0..255 for buffer cell (bx,by) ----------
+  // builds a dithered desert: sky gradient, dithered sun disk, drifting cloud bands,
+  // a mesa silhouette ridge, and a reflective dithered flat (salt pan) with ripples.
+  function shade(bx, by, t){
+    const u = bx/BW;          // 0..1 across
+    const v = by/BH;          // 0..1 down
+    const sunAlt = S.sun/100; // 0 low .. 1 high
+    const haze = S.haze/100;
+    const driftAmt = S.drift/100;
+
+    // horizon line moves slightly with sun
+    const horizon = 0.62 - sunAlt*0.08;
+
+    let r,g,b;
+
+    if(v < horizon){
+      // ---- SKY ----
+      // vertical gradient from deep maroon (top) to peach/cream near horizon+sun
+      const sv = v/horizon; // 0 top .. 1 horizon
+      // base sky ramp
+      r = lerp(40, 224, smooth(sv));
+      g = lerp(16, 132, Math.pow(sv,1.3));
+      b = lerp(24, 82, Math.pow(sv,1.6));
+
+      // sun position
+      const sunX = 0.5 + Math.sin(t*0.06)*0.04;
+      const sunY = horizon - 0.02 - sunAlt*0.42;
+      const dx=(u-sunX)*1.0, dy=(v-sunY)*1.7;
+      const dist = Math.sqrt(dx*dx+dy*dy);
+      const sunR = 0.10 + sunAlt*0.03;
+      // sun core + glow
+      if(dist < sunR){
+        const core = 1 - dist/sunR;
+        r = lerp(r, 246, 0.85+core*0.15);
+        g = lerp(g, 219, 0.7+core*0.3);
+        b = lerp(b, 120, 0.55+core*0.45);
+      } else {
+        const glow = Math.max(0, 1 - (dist-sunR)/0.5);
+        r = lerp(r, 240, glow*0.55);
+        g = lerp(g, 150, glow*0.4);
+        b = lerp(b, 90,  glow*0.3);
+      }
+
+      // drifting cloud bands (sinus layers) — these create lovely dither texture
+      let cloud = 0;
+      cloud += Math.sin(u*7.0 + t*0.5*driftAmt + v*3.0)*0.5+0.5;
+      cloud *= Math.sin(v*9.0 - t*0.2)*0.5+0.5;
+      const band = Math.max(0, cloud - 0.55) * 1.8 * (0.4+sv*0.8);
+      r = lerp(r, 250, band*0.5);
+      g = lerp(g, 178, band*0.45);
+      b = lerp(b, 122, band*0.4);
+
+      // haze near horizon lifts blacks toward cream
+      const hz = Math.pow(sv, 2.0) * haze;
+      r = lerp(r, 240, hz*0.5); g = lerp(g, 170, hz*0.4); b = lerp(b, 120, hz*0.3);
+
+      // birds / scan specks (tiny) — purely decorative, still gets dithered
+      // (kept out to preserve clean palette)
+
+    } else {
+      // ---- GROUND: mesa ridge + reflective salt pan ----
+      const gv = (v - horizon)/(1-horizon); // 0 horizon .. 1 bottom
+
+      // mesa ridge silhouette as a function of u (layered buttes)
+      const ridge =
+          0.10*Math.sin(u*5.0+1.3)
+        + 0.06*Math.sin(u*11.0+0.4)
+        + stepButte(u);
+      const ridgeTop = 0.0 + 0.10 + ridge*0.5; // within ground band, top portion is mesa
+      if(gv < ridgeTop){
+        // mesa body: warm dark rust, with subtle vertical strata
+        const strat = Math.sin((gv*BH)*0.9 + u*4.0)*0.5+0.5;
+        r = lerp(58, 150, gv/ridgeTop*0.7 + strat*0.12);
+        g = lerp(20, 60,  gv/ridgeTop*0.6 + strat*0.10);
+        b = lerp(24, 40,  gv/ridgeTop*0.5);
+        // rim light on top edge facing sun
+        if(gv < ridgeTop*0.12){
+          r=lerp(r,240,0.5); g=lerp(g,150,0.4); b=lerp(b,90,0.3);
+        }
+      } else {
+        // salt pan / water: reflect sky + sun with horizontal ripples
+        const refl = (ridgeTop) / Math.max(0.001,(gv)); // fake reflection coord
+        // reflected sun shimmer
+        const sunX = 0.5 + Math.sin(t*0.06)*0.04;
+        const ripple = Math.sin((u-sunX)*40.0 + t*1.2) * Math.sin(v*30.0 + t*0.8);
+        let shimmer = Math.exp(-Math.abs(u-sunX)*7.0) * (0.5+0.5*ripple);
+        // base pan color: teal/green deepening downward
+        const deep = Math.pow(gv,0.8);
+        r = lerp(40, 14, deep);
+        g = lerp(110, 40, deep);
+        b = lerp(99, 50, deep);
+        // mix in warm reflection of sun band
+        r = lerp(r, 235, shimmer*(0.7-deep*0.4));
+        g = lerp(g, 160, shimmer*(0.55-deep*0.3));
+        b = lerp(b, 110, shimmer*(0.4-deep*0.2));
+        // horizontal ripple banding for dither interest
+        const hb = Math.sin(v*70.0 + Math.sin(u*8.0+t*0.5)*2.0)*0.5+0.5;
+        r = lerp(r, r*1.2, hb*0.12); g=lerp(g,g*1.2,hb*0.12); b=lerp(b,b*1.2,hb*0.12);
+      }
+    }
+
+    return [clamp8(r),clamp8(g),clamp8(b)];
+  }
+
+  // a couple of solid butte blocks for skyline interest
+  function stepButte(u){
+    let s=0;
+    if(u>0.12 && u<0.27) s+=0.16;
+    if(u>0.60 && u<0.70) s+=0.10;
+    if(u>0.78 && u<0.90) s+=0.22;
+    return s;
+  }
+
+  function lerp(a,b,t){return a+(b-a)*Math.max(0,Math.min(1,t));}
+  function smooth(t){return t*t*(3-2*t);}
+  function clamp8(x){return x<0?0:x>255?255:x|0;}
+
+  // ---------- main render: shade -> Bayer threshold -> quantize -> blit pixels ----------
+  function render(t){
+    const mat = MAT[S.dither];
+    const data = img.data;
+    const n = mat ? mat.length : 0;
+
+    // strength of dither (spread between palette bands). Larger when fewer colors.
+    const spread = 46;
+
+    let errAccum = 0, errCount = 0;
+
+    for(let by=0; by<BH; by++){
+      for(let bx=0; bx<BW; bx++){
+        let [r,g,b] = shade(bx, by, t);
+
+        if(mat){
+          const th = mat[by % n][bx % n]; // -0.5..0.5
+          const add = th * spread;
+          r += add; g += add; b += add;
+        }
+        const idx = quantize(r,g,b);
+        const p = palRGB[idx];
+
+        // accumulate quantization error for telemetry
+        errAccum += Math.abs(r-p[0])+Math.abs(g-p[1])+Math.abs(b-p[2]);
+        errCount += 3;
+
+        // blit this logical cell as a pxSize×pxSize block into the display image
+        const px0 = bx*pxSize, py0 = by*pxSize;
+        const R=p[0],G=p[1],B=p[2];
+        for(let yy=0; yy<pxSize; yy++){
+          const row = (py0+yy)*SCREEN_W;
+          if(py0+yy>=SCREEN_H) break;
+          for(let xx=0; xx<pxSize; xx++){
+            const X = px0+xx; if(X>=SCREEN_W) break;
+            const o = (row + X)*4;
+            data[o]=R; data[o+1]=G; data[o+2]=B; data[o+3]=255;
+          }
+        }
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+
+    // telemetry
+    const err = errAccum/Math.max(1,errCount);
+    document.getElementById("t-err").textContent = (err/255).toFixed(3);
+  }
+
+  // ---------- animation loop ----------
+  let last = performance.now(), fpsT=0, frames=0, fps=0;
+  function frame(now){
+    const dt = (now-last)/1000; last=now;
+    if(S.running){ S.t += dt * (0.6 + S.drift/100*1.4); }
+    render(S.t);
+
+    frames++; fpsT += dt;
+    if(fpsT>=0.5){ fps=Math.round(frames/fpsT); frames=0; fpsT=0;
+      document.getElementById("hud-fps").textContent = fps+" FPS"; }
+
+    updateVU(now);
+    updateClock();
+    requestAnimationFrame(frame);
+  }
+
+  // ---------- VU meter ----------
+  const vuEl = document.getElementById("vu");
+  let vuBars=[];
+  (function buildVU(){ for(let i=0;i<14;i++){const b=document.createElement("i");vuEl.appendChild(b);vuBars.push(b);} })();
+  function updateVU(now){
+    for(let i=0;i<vuBars.length;i++){
+      const h = (Math.sin(now*0.004 + i*0.6)*0.5+0.5)* (S.running?1:0.25) *0.8+0.1;
+      vuBars[i].style.height = (h*100)+"%";
+      vuBars[i].style.background = h>0.7 ? "linear-gradient(0deg,#b8472a,#f2b27a)" : "linear-gradient(0deg,#1f6e63,#8fd0a0)";
+    }
+  }
+
+  // ---------- clock ----------
+  const t0 = Date.now();
+  function updateClock(){
+    const s = Math.floor((Date.now()-t0)/1000);
+    const hh=String(Math.floor(s/3600)).padStart(2,"0");
+    const mm=String(Math.floor(s/60)%60).padStart(2,"0");
+    const ss=String(s%60).padStart(2,"0");
+    document.getElementById("stat-clk").textContent = hh+":"+mm+":"+ss;
+  }
+
+  // ---------- swatches ----------
+  function renderSwatches(){
+    const el = document.getElementById("swatches"); el.innerHTML="";
+    PAL[S.pal].forEach(c=>{const i=document.createElement("i");i.style.background=c;el.appendChild(i);});
+    document.getElementById("t-bands").textContent = PAL[S.pal].length;
+    document.getElementById("hud-pal").textContent = PAL[S.pal].length+"c / "+PAL_NAME[S.pal];
+    document.getElementById("pal-name").textContent = S.pal;
+  }
+
+  // ---------- controls ----------
+  document.querySelectorAll("[data-dither]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      document.querySelectorAll("[data-dither]").forEach(b=>b.classList.remove("on"));
+      btn.classList.add("on");
+      S.dither = btn.getAttribute("data-dither");
+      document.getElementById("stat-mode").textContent = MAT_LABEL[S.dither];
+    });
+  });
+  document.querySelectorAll("[data-pal]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      document.querySelectorAll("[data-pal]").forEach(b=>b.classList.remove("on"));
+      btn.classList.add("on");
+      S.pal = btn.getAttribute("data-pal");
+      palRGB = PAL[S.pal].map(hexToRgb);
+      renderSwatches();
+    });
+  });
+
+  function bindRange(id, vid, fmt, onset){
+    const r=document.getElementById(id), v=document.getElementById(vid);
+    const apply=()=>{ onset(+r.value); v.textContent = fmt(+r.value); };
+    r.addEventListener("input", apply); apply();
+  }
+  bindRange("r-px","v-px", x=>x+"×", x=>{ pxSize=x; resizeBuffer(); });
+  bindRange("r-sun","v-sun", x=>x, x=>{ S.sun=x; document.getElementById("hud-elev").textContent = "+"+(400+Math.round(x*4.2))+"m"; });
+  bindRange("r-haze","v-haze", x=>x, x=>{ S.haze=x; });
+  bindRange("r-drift","v-drift", x=>x, x=>{ S.drift=x; });
+
+  document.getElementById("b-play").addEventListener("click", ()=>{ S.running=true; });
+  document.getElementById("b-pause").addEventListener("click", ()=>{ S.running=false; });
+  document.getElementById("b-shot").addEventListener("click", ()=>{
+    const a=document.createElement("a");
+    a.download="arid486_frame.png"; a.href=cv.toDataURL("image/png"); a.click();
+  });
+
+  // scene readout cycle
+  const scenes=["DUNE MESA · SUNDOWN DRIFT","SALT PAN REFLECTION","BUTTE RIDGE GLOW","HAZE SWEEP 04"];
+  let sIdx=0;
+  setInterval(()=>{ sIdx=(sIdx+1)%scenes.length; document.getElementById("seg-scene").textContent=scenes[sIdx]; }, 4200);
+  // temp jitter + scan glyph
+  const scanG=["▮▯▯▯","▮▮▯▯","▮▮▮▯","▮▮▮▮"]; let scI=0;
+  setInterval(()=>{ scI=(scI+1)%scanG.length; document.getElementById("hud-scan").textContent=scanG[scI];
+    document.getElementById("stat-temp").textContent = String(38+Math.floor(Math.random()*8)).padStart(3,"0")+"°C"; }, 700);
+
+  // ---------- init ----------
+  resizeBuffer();
+  renderSwatches();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

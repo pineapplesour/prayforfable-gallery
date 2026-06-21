@@ -1,0 +1,1054 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>WARD ZERO — 영안 병동</title>
+<style>
+  :root{
+    --bg:#05060a; --ink:#9fb0a0; --dim:#4a5a4c; --blood:#b5352c;
+    --amber:#d9a441; --steel:#7d8c9a; --void:#1a1410;
+  }
+  *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body{ margin:0; height:100%; overflow:hidden; background:var(--bg); }
+  body{ font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; color:var(--ink); }
+
+  #wrap{ position:fixed; inset:0; display:flex; align-items:center; justify-content:center; }
+  #view{
+    margin:0; white-space:pre; letter-spacing:0; line-height:1;
+    user-select:none; cursor:crosshair; text-shadow:0 0 3px rgba(0,0,0,.9);
+    font-variant-ligatures:none;
+  }
+
+  /* ---- HUD ---- */
+  #hud{
+    position:fixed; left:0; right:0; bottom:0; z-index:6;
+    display:flex; align-items:stretch; gap:0;
+    background:linear-gradient(180deg, rgba(5,6,10,0) 0%, rgba(5,6,10,.85) 35%, #07080c 100%);
+    padding:10px 12px 8px; pointer-events:none;
+    font-size:12px; line-height:1.35;
+  }
+  .gauge{ flex:0 0 auto; min-width:78px; }
+  .gauge .lbl{ color:var(--dim); font-size:9px; letter-spacing:2px; }
+  .gauge .big{ font-size:22px; font-weight:700; line-height:1; }
+  #gHP .big{ color:var(--blood); }
+  #gAR .big{ color:var(--steel); }
+  #gAM .big{ color:var(--amber); }
+  #weaponBox{ flex:1 1 auto; text-align:center; align-self:center; }
+  #weaponName{ font-size:14px; letter-spacing:3px; color:#d8e0d6; }
+  #weaponSub{ font-size:10px; color:var(--dim); margin-top:2px; }
+  #keys{ flex:0 0 auto; align-self:center; font-size:18px; letter-spacing:4px; min-width:60px; text-align:right; }
+  .keyOn{ color:var(--amber); text-shadow:0 0 8px var(--amber); }
+  .keyOff{ color:#23271f; }
+
+  /* ---- minimap ---- */
+  #map{
+    position:fixed; right:10px; top:10px; z-index:6;
+    border:1px solid #1d2620; background:rgba(4,6,8,.62);
+    image-rendering:pixelated; opacity:.9;
+  }
+
+  /* ---- crosshair ---- */
+  #cross{
+    position:fixed; left:50%; top:46%; transform:translate(-50%,-50%);
+    z-index:5; color:#cfe0cf; font-size:18px; opacity:.55; pointer-events:none;
+    text-shadow:0 0 4px #000;
+  }
+
+  /* ---- damage / pickup flash ---- */
+  #flash{ position:fixed; inset:0; z-index:4; pointer-events:none; opacity:0;
+    transition:opacity .12s linear; mix-blend-mode:screen; }
+
+  /* ---- messages ---- */
+  #toast{
+    position:fixed; left:50%; bottom:96px; transform:translateX(-50%); z-index:7;
+    background:rgba(4,6,8,.78); border:1px solid #1d2620; color:#cfe0cf;
+    padding:6px 14px; font-size:12px; letter-spacing:1px; border-radius:2px;
+    opacity:0; transition:opacity .25s ease; white-space:nowrap; pointer-events:none;
+  }
+
+  /* ---- overlays ---- */
+  .overlay{
+    position:fixed; inset:0; z-index:10; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; text-align:center; padding:28px;
+    background:radial-gradient(ellipse at center, rgba(10,8,12,.92), rgba(2,3,5,.985));
+    transition:opacity .8s ease;
+  }
+  .overlay.hidden{ opacity:0; pointer-events:none; }
+  #intro h1{
+    font-size:52px; font-weight:800; letter-spacing:14px; margin:0 0 6px;
+    color:#cdd8cc; text-shadow:0 0 24px rgba(181,53,44,.55), 0 0 2px #000;
+  }
+  #intro .sub{ font-size:13px; letter-spacing:8px; color:var(--blood); margin-bottom:26px; }
+  #intro .lore{ font-size:13px; line-height:2.05; max-width:520px; color:#90a092; margin:0 0 8px; }
+  #intro .keys{ font-size:12px; color:#5e6f60; margin-top:24px; line-height:2; }
+  .btn{
+    margin-top:26px; pointer-events:auto; cursor:pointer; user-select:none;
+    border:1px solid var(--blood); color:#e7d6c2; background:rgba(181,53,44,.08);
+    padding:12px 30px; font-family:inherit; font-size:14px; letter-spacing:5px; border-radius:2px;
+    transition:background .2s, box-shadow .2s;
+  }
+  .btn:hover, .btn:active{ background:rgba(181,53,44,.24); box-shadow:0 0 20px rgba(181,53,44,.4); }
+  #end h2{ font-size:34px; letter-spacing:8px; margin:0 0 14px; }
+  #end p{ font-size:14px; line-height:1.9; max-width:480px; color:#9fb0a0; }
+  .win h2{ color:#cfe0cf; text-shadow:0 0 24px rgba(159,176,160,.6); }
+  .lose h2{ color:var(--blood); text-shadow:0 0 24px rgba(181,53,44,.6); }
+
+  /* ---- credit ---- */
+  #credit{
+    position:fixed; left:0; right:0; bottom:2px; z-index:11; text-align:center;
+    font-size:9px; color:#3a4438; letter-spacing:.5px; pointer-events:none;
+  }
+  .overlay #credit{ color:#52604f; }
+
+  /* ---- touch controls ---- */
+  #touch{ position:fixed; inset:0; z-index:8; display:none; }
+  #touch .pad{
+    position:absolute; display:flex; align-items:center; justify-content:center;
+    border:1px solid rgba(159,176,160,.22); background:rgba(8,12,10,.34);
+    color:#9fb0a0; font-size:15px; border-radius:50%; width:56px; height:56px;
+    user-select:none; backdrop-filter:blur(2px);
+  }
+  #tFwd{ left:62px; bottom:150px; } #tBack{ left:62px; bottom:84px; }
+  #tLeft{ left:8px; bottom:117px; } #tRight{ left:116px; bottom:117px; }
+  #tTurnL{ left:8px; bottom:200px; } #tTurnR{ left:116px; bottom:200px; }
+  #tFire{ right:14px; bottom:96px; width:84px; height:84px; border-color:var(--blood);
+    color:#e7c6bf; font-size:13px; background:rgba(80,20,16,.4); }
+  #tSwap{ right:30px; bottom:196px; width:50px; height:50px; font-size:11px; }
+  #tLook{ position:absolute; right:0; top:0; width:55%; height:55%; }
+  body.touch #touch{ display:block; }
+  body.touch #cross{ top:42%; }
+</style>
+</head>
+<body>
+<div id="wrap"><pre id="view"></pre></div>
+
+<div id="cross">+</div>
+<div id="flash"></div>
+<canvas id="map" width="120" height="120"></canvas>
+<div id="toast"></div>
+
+<div id="hud">
+  <div class="gauge" id="gHP"><div class="lbl">VITALS</div><div class="big"><span id="hp">100</span></div></div>
+  <div class="gauge" id="gAR"><div class="lbl">WARD-PLATE</div><div class="big"><span id="ar">0</span></div></div>
+  <div id="weaponBox">
+    <div id="weaponName">—</div>
+    <div id="weaponSub"></div>
+  </div>
+  <div class="gauge" id="gAM"><div class="lbl">CHARGE</div><div class="big"><span id="am">∞</span></div></div>
+  <div id="keys"><span id="kBlue" class="keyOff">◈</span> <span id="kRed" class="keyOff">◈</span></div>
+</div>
+
+<!-- touch -->
+<div id="touch">
+  <div id="tLook"></div>
+  <div class="pad" id="tFwd">▲</div>
+  <div class="pad" id="tBack">▼</div>
+  <div class="pad" id="tLeft">◀</div>
+  <div class="pad" id="tRight">▶</div>
+  <div class="pad" id="tTurnL">↺</div>
+  <div class="pad" id="tTurnR">↻</div>
+  <div class="pad" id="tFire">발사</div>
+  <div class="pad" id="tSwap">무기</div>
+</div>
+
+<!-- intro -->
+<div class="overlay" id="intro">
+  <h1>WARD&nbsp;ZERO</h1>
+  <div class="sub">영 안 병 동</div>
+  <p class="lore">
+    버려진 정신병동 지하 0병동. 마지막 환자가 사라진 밤,<br>
+    벽 속에서 글자가 자라기 시작했다. 복도는 비명으로 굳었고<br>
+    환자들의 잔영(殘影)이 어둠 속을 떠돈다.<br><br>
+    출구는 봉인되어 있다. 두 개의 인장(◈)을 찾아 문을 열고,<br>
+    이 집이 너를 삼키기 전에 빠져나가라.
+  </p>
+  <p class="keys">
+    WASD 이동 · 마우스 조준(클릭으로 잠금) · ←→ 회전 보조<br>
+    좌클릭/Space 발사 · 1·2·3 또는 휠 무기 교체 · Shift 질주
+  </p>
+  <button class="btn" id="startBtn">병동 진입</button>
+</div>
+
+<!-- end -->
+<div class="overlay hidden" id="end">
+  <h2 id="endTitle"></h2>
+  <p id="endText"></p>
+  <button class="btn" id="againBtn">다시</button>
+</div>
+
+<div id="credit">DOOM (id Software)에서 영감 — © id Software. 본 작품은 오리지널 구현 “WARD ZERO”.</div>
+
+<script>
+(() => {
+"use strict";
+
+// ============================================================
+//  WARD ZERO — DDA ASCII raycaster boomer-shooter (original)
+//  Renderer lineage inherited from the reference 2_내부.html:
+//  DDA raycast, character-textured walls, floor gradient, game loop.
+// ============================================================
+
+// ---- source of the building material: this very document ----
+const rawSrc = document.documentElement.outerHTML;
+const SRC = (rawSrc.replace(/[^\x21-\x7E]/g,"") || "WARDZERO").slice(0, 60000);
+function hash(s){ let h=2166136261>>>0; for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,16777619);} return h>>>0; }
+
+// ============================================================
+//  LEVEL — procedurally generated asylum (guaranteed connected)
+//  grid values: 0 floor · 1 wall · 2 grime · 3 cell-bar · 4 blueDoor
+//               5 redDoor · 6 exit-gate(goal, walkable)
+//  A perfect maze (recursive backtracker, fully connected by
+//  construction) is carved, then rooms are opened. Seals, exit,
+//  pickups and enemies are placed ONLY on cells reachable from
+//  spawn (BFS) — so every level is always winnable on foot.
+// ============================================================
+const MW = 41, MH = 35;          // odd dims for clean maze carving
+let grid;
+const ENEMY_DEF = [];
+const PICK_DEF = [];
+let spawn = {x:1.5,y:1.5};
+let exitCell = {x:0,y:0};
+
+function mulberry32(a){ return ()=>{ a|=0; a=(a+0x6D2B79F5)|0; let t=Math.imul(a^(a>>>15),1|a); t=(t+Math.imul(t^(t>>>7),61|t))^t; return ((t^(t>>>14))>>>0)/4294967296; }; }
+let LEVEL_SEED = hash(SRC);
+let rnd = mulberry32(LEVEL_SEED);
+
+function carveMaze(){
+  grid = Array.from({length:MH}, ()=>Array(MW).fill(1));
+  const stack=[[1,1]]; grid[1][1]=0;
+  while(stack.length){
+    const [cx,cy]=stack[stack.length-1];
+    const dirs=[[2,0],[-2,0],[0,2],[0,-2]];
+    for(let i=dirs.length-1;i>0;i--){ const j=(rnd()*(i+1))|0; [dirs[i],dirs[j]]=[dirs[j],dirs[i]]; }
+    let carved=false;
+    for(const [dx,dy] of dirs){
+      const nx=cx+dx, ny=cy+dy;
+      if(nx>0&&ny>0&&nx<MW-1&&ny<MH-1&&grid[ny][nx]===1){
+        grid[ny][nx]=0; grid[cy+dy/2][cx+dx/2]=0; stack.push([nx,ny]); carved=true; break;
+      }
+    }
+    if(!carved) stack.pop();
+  }
+  // open arenas
+  for(let r=0;r<7;r++){
+    const rw=2+((rnd()*2)|0), rh=2+((rnd()*2)|0);
+    const rx=2+((rnd()*(MW-rw-3))|0), ry=2+((rnd()*(MH-rh-3))|0);
+    for(let y=ry;y<ry+rh;y++) for(let x=rx;x<rx+rw;x++) grid[y][x]=0;
+  }
+  // braid: remove some dead-end walls for loops
+  for(let i=0;i<70;i++){
+    const x=1+((rnd()*(MW-2))|0), y=1+((rnd()*(MH-2))|0);
+    if(grid[y][x]===1 && rnd()<0.5){
+      const horiz=(grid[y][x-1]===0 && grid[y][x+1]===0);
+      const vert =(grid[y-1]&&grid[y+1]&&grid[y-1][x]===0&&grid[y+1][x]===0);
+      if(horiz||vert) grid[y][x]=0;
+    }
+  }
+}
+function bfsReachable(sx,sy){
+  const seen=Array.from({length:MH},()=>Array(MW).fill(false));
+  const q=[[sx,sy]]; seen[sy][sx]=true; const cells=[[sx,sy]];
+  let head=0;
+  while(head<q.length){
+    const [x,y]=q[head++];
+    for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+      const nx=x+dx, ny=y+dy;
+      if(nx>=0&&ny>=0&&nx<MW&&ny<MH&&!seen[ny][nx]&&grid[ny][nx]===0){
+        seen[ny][nx]=true; q.push([nx,ny]); cells.push([nx,ny]);
+      }
+    }
+  }
+  return cells;
+}
+function wallType(c){ return c; }
+
+function buildLevel(){
+  ENEMY_DEF.length=0; PICK_DEF.length=0;
+  rnd = mulberry32(LEVEL_SEED);
+  carveMaze();
+  spawn = {x:1.5,y:1.5};
+  let reach = bfsReachable(1,1);
+  if(reach.length < 120){ rnd=mulberry32(LEVEL_SEED^0x9e37); carveMaze(); reach=bfsReachable(1,1); }
+
+  // exit = farthest reachable cell (the goal you walk onto)
+  let far=[1,1], farD=-1;
+  for(const c of reach){ const d=(c[0]-1)*(c[0]-1)+(c[1]-1)*(c[1]-1); if(d>farD){farD=d; far=c;} }
+  exitCell={x:far[0]+0.5,y:far[1]+0.5}; grid[far[1]][far[0]]=6;
+
+  const used=new Set(['1,1', far[0]+','+far[1]]);
+  const key=c=>c[0]+','+c[1];
+  const pick=(minD,pred)=>{
+    let cand=reach.filter(c=>!used.has(key(c))&&grid[c[1]][c[0]]===0&&Math.hypot(c[0]-1,c[1]-1)>=minD&&(!pred||pred(c)));
+    if(!cand.length) cand=reach.filter(c=>!used.has(key(c))&&grid[c[1]][c[0]]===0);
+    if(!cand.length) return null;
+    const ch=cand[(rnd()*cand.length)|0]; used.add(key(ch)); return ch;
+  };
+
+  const sB=pick(8); if(sB) PICK_DEF.push({x:sB[0]+0.5,y:sB[1]+0.5,t:'keyB'});
+  const sR=pick(8, c=> sB? Math.hypot(c[0]-sB[0],c[1]-sB[1])>8 : true);
+  if(sR) PICK_DEF.push({x:sR[0]+0.5,y:sR[1]+0.5,t:'keyR'});
+
+  const place=(t,n,minD)=>{ for(let i=0;i<n;i++){ const c=pick(minD||3); if(c) PICK_DEF.push({x:c[0]+0.5,y:c[1]+0.5,t}); } };
+  place('health',5,4); place('armor',2,6); place('nail',5,3); place('fuel',3,7); place('secret',3,6);
+
+  const eplace=(k,n,minD)=>{ for(let i=0;i<n;i++){ const c=pick(minD); if(c){ used.delete(key(c)); ENEMY_DEF.push({x:c[0]+0.5,y:c[1]+0.5,k}); } } };
+  eplace('crawler',8,5); eplace('wraith',7,7); eplace('brute',4,10);
+
+  // visual wall variety (still solid)
+  for(let y=0;y<MH;y++) for(let x=0;x<MW;x++){
+    if(grid[y][x]===1){ const r=((x*73856093)^(y*19349663))>>>0; if(r%11===0) grid[y][x]=2; else if(r%17===0) grid[y][x]=3; }
+  }
+  try{ window.__exit=exitCell; window.__grid=grid; window.__reach=reach.length; }catch(e){}
+}
+buildLevel();
+
+// ============================================================
+//  STATE
+// ============================================================
+const G = {
+  px:spawn.x, py:spawn.y, dir:-Math.PI/2, pitch:0,
+  hp:100, armor:0, keyB:false, keyR:false,
+  weapon:0, ammo:{nail:60, fuel:8},
+  enemies:[], picks:[], shots:[],
+  secrets:0, secretsTotal:0, killsTotal:0, kills:0,
+  started:false, dead:false, won:false,
+  lastFire:0, muzzle:0, hurtT:0, bob:0, t0:performance.now(),
+};
+try{ window.__G = G; }catch(e){}
+
+// ---- weapons (original names) ----
+const WEAPONS = [
+  { id:'shard', name:"부러진 주사기", sub:"근접 · 무한",  ammo:null,  cd:360, dmg:34, range:1.5, kind:'melee' },
+  { id:'nailer',name:"못 총 NAILER",  sub:"연사 · 못",     ammo:'nail',cd:115, dmg:13, range:18,  kind:'hit', spread:0.045 },
+  { id:'igniter',name:"점화기 IGNITER",sub:"폭발 · 연료",  ammo:'fuel',cd:620, dmg:60, range:16,  kind:'proj', splash:1.8 },
+];
+
+function resetGame(){
+  buildLevel();
+  Object.assign(G,{
+    px:spawn.x, py:spawn.y, dir:-Math.PI/2, pitch:0,
+    hp:100, armor:0, keyB:false, keyR:false,
+    weapon:0, ammo:{nail:60, fuel:8},
+    enemies:[], picks:[], shots:[],
+    secrets:0, killsTotal:0, kills:0,
+    started:true, dead:false, won:false,
+    lastFire:0, muzzle:0, hurtT:0, bob:0, t0:performance.now(),
+  });
+  G.secretsTotal = PICK_DEF.filter(p=>p.t==='secret').length;
+  G.killsTotal = ENEMY_DEF.length;
+  for(const e of ENEMY_DEF){
+    const base = e.k==='wraith' ? {hp:34,spd:1.55,dmg:9,sym:'Ψ',col:'#b9c4ad',rng:1.1,atkcd:900,fire:false}
+              : e.k==='crawler'? {hp:20,spd:2.2,dmg:6,sym:'λ',col:'#8fae8a',rng:1.0,atkcd:650,fire:false}
+              : {hp:80,spd:1.05,dmg:16,sym:'Φ',col:'#c98b6b',rng:7,atkcd:1300,fire:true};
+    G.enemies.push({ x:e.x, y:e.y, k:e.k, ...base, alive:true, hurt:0, state:'idle',
+      wx:e.x, wy:e.y, lastAtk:0, seen:0 });
+  }
+  for(const p of PICK_DEF){ G.picks.push({...p, got:false}); }
+  updateHUD();
+}
+
+// ============================================================
+//  RENDER SETUP
+// ============================================================
+const view = document.getElementById("view");
+let W=110, H=46, CW=8, CH=12, FS=13;
+function fit(){
+  // aim for a readable column count (~92 desktop, ~52 phone) → bigger glyphs
+  const vw = innerWidth, vh = innerHeight;
+  const targetCols = vw < 560 ? 54 : 96;
+  FS = Math.max(9, Math.min(22, Math.round(vw/targetCols)));
+  view.style.font = FS+"px/"+FS+"px ui-monospace,Menlo,Consolas,monospace";
+  // measure real char width for this font size
+  const probe=document.createElement("span");
+  probe.style.cssText="position:absolute;visibility:hidden;white-space:pre;font:"+FS+"px/"+FS+"px ui-monospace,Menlo,Consolas,monospace";
+  probe.textContent="M".repeat(100); document.body.appendChild(probe);
+  CW = probe.getBoundingClientRect().width/100 || FS*0.6; probe.remove();
+  CH = FS;
+  W = Math.max(48, Math.min(140, Math.floor(vw/CW)));
+  H = Math.max(28, Math.min(80, Math.floor(vh/CH)));
+}
+fit(); addEventListener("resize", fit);
+
+// wall texture palettes per wall type
+const SHADE_NEAR = "@MWN8#bdkhao*+=~:.";   // density ramp near→far (fallback)
+function texChar(wt, ix, iy, tx, ty, d, side){
+  if(d>20) return ' ';
+  // door / exit get distinct glyphs
+  if(wt===4) return d>9 ? '=' : (((ty*9)|0)%2 ? '╫' : 'B');
+  if(wt===5) return d>9 ? '=' : (((ty*9)|0)%2 ? '╫' : 'R');
+  if(wt===6) return ((ix+iy+((ty*6)|0))%3) ? 'X' : '#';
+  if(wt===3){ // cell bars — vertical
+    const vert = ((tx*8)|0)%2===0;
+    if(vert) return d>10?'¦':'║';
+    return d>8?'·':(((ty*6)|0)%2?'─':' ');
+  }
+  // wall-cell vertical seams read as corners
+  const edge = (tx<0.05||tx>0.95);
+  // depth shading ramp: near walls = real source glyphs, far = fade to dots/void
+  // dim is the fraction of cells that go "dark" (blank/dot) — grows with distance
+  const dim = Math.min(0.92, (d-1.2)*0.085);
+  const seed = ((ix*73856093) ^ (iy*19349663)) >>> 0;
+  const idx = (seed + (((tx*96)|0)*131) + (((ty*48)|0)*37)) % SRC.length;
+  // deterministic dither so the same wall texel is stable frame-to-frame
+  const dith = ((seed ^ ((tx*977)|0) ^ ((ty*577)|0)) % 100) / 100;
+  if(d>17) return ' ';
+  if(edge && d<10) return '│';
+  if(dith < dim){
+    // darkened texel — sparser glyph for depth
+    return d>9 ? ' ' : (dith < dim*0.5 ? '·' : ':');
+  }
+  let ch = SRC[idx];
+  if(wt===2){ // grime — heavier, dirtier glyphs
+    if(/[a-z0-9. ]/i.test(ch)) ch = "%#&8@MoO".charAt(idx%8);
+  }
+  if(d>9)  return /[a-z0-9]/i.test(ch) ? ch.toLowerCase() : ':';
+  if(d>6)  return /[A-Z0-9#%&@]/.test(ch) ? ch : (/[a-z]/.test(ch)?ch:':');
+  return ch;
+}
+
+// near (bottom/top of screen) → far (toward horizon)
+const FLOOR = ["`","'",".",",",".",":"," "," "];   // near=textured, fades to void at horizon
+const CEIL  = [" "," "," ",".",".",":","'"];        // dark void ceiling, faint near horizon
+
+// reusable buffers
+let zbuf = new Float32Array(W);
+let frameRows = [];
+
+function castColumns(){
+  if(zbuf.length!==W) zbuf = new Float32Array(W);
+  const cols = new Array(W);
+  const horizon = (H>>1) + (G.pitch|0);
+  const cdir=Math.cos(G.dir), sdir=Math.sin(G.dir);
+  const planeX = Math.cos(G.dir+Math.PI/2)*0.72, planeY = Math.sin(G.dir+Math.PI/2)*0.72;
+  for(let x=0;x<W;x++){
+    const cam=(2*x)/W-1;
+    const rdx=cdir+planeX*cam, rdy=sdir+planeY*cam;
+    let mx=G.px|0, my=G.py|0;
+    const ddx=Math.abs(1/(rdx||1e-9)), ddy=Math.abs(1/(rdy||1e-9));
+    let sx,sy,sdx,sdy,side=0;
+    if(rdx<0){ sx=-1; sdx=(G.px-mx)*ddx; } else { sx=1; sdx=(mx+1-G.px)*ddx; }
+    if(rdy<0){ sy=-1; sdy=(G.py-my)*ddy; } else { sy=1; sdy=(my+1-G.py)*ddy; }
+    let hit=0, guard=0, wt=1;
+    while(!hit && guard++<200){
+      if(sdx<sdy){ sdx+=ddx; mx+=sx; side=0; } else { sdy+=ddy; my+=sy; side=1; }
+      if(mx<0||my<0||mx>=MW||my>=MH){ hit=1; wt=1; break; }
+      const g=grid[my][mx];
+      if(g){ hit=1; wt=g; }
+    }
+    const dist=Math.max(0.05, side===0 ? sdx-ddx : sdy-ddy);
+    zbuf[x]=dist;
+    const lh=Math.min(H*4,(H/dist)|0);
+    const ds=Math.max(0, horizon-(lh>>1));
+    const de=Math.min(H-1, horizon+(lh>>1));
+    let wallX = side===0 ? G.py+dist*rdy : G.px+dist*rdx; wallX-=wallX|0;
+    cols[x]=[ds,de,mx,my,wallX,dist,lh,side,wt];
+  }
+  return {cols, horizon};
+}
+
+// project a sprite (enemy/pickup) and return screen info, or null
+function projectSprite(sx, sy){
+  const dx=sx-G.px, dy=sy-G.py;
+  const cdir=Math.cos(G.dir), sdir=Math.sin(G.dir);
+  // camera space: forward & right
+  const fwd = dx*cdir + dy*sdir;
+  if(fwd<=0.18) return null;
+  const planeX = Math.cos(G.dir+Math.PI/2)*0.72, planeY = Math.sin(G.dir+Math.PI/2)*0.72;
+  const invDet = 1.0/(planeX*sdir - cdir*planeY);
+  const tX = invDet*(sdir*dx - cdir*dy);   // along plane
+  // screen x: center + (tX/fwd)*halfW
+  const sxScreen = (W/2) * (1 + (tX/fwd)/0.72);
+  return { col: Math.round(sxScreen), dist: fwd };
+}
+
+function render(){
+  const {cols, horizon} = castColumns();
+  const rows = new Array(H);
+
+  // pre-render world into char arrays (per row)
+  const grid2 = new Array(H);
+  for(let y=0;y<H;y++) grid2[y]=new Array(W);
+
+  for(let x=0;x<W;x++){
+    const [ds,de,ix,iy,tx,d,lh,side,wt]=cols[x];
+    for(let y=0;y<H;y++){
+      if(y<ds){ // ceiling — dark void up high, faint toward horizon
+        const cd=(horizon-y)/Math.max(1,horizon);     // 1 at top, 0 at horizon
+        grid2[y][x] = CEIL[Math.min(CEIL.length-1,((1-cd)*CEIL.length)|0)] || ' ';
+      } else if(y>de){ // floor
+        const fd=(y-horizon)/Math.max(1,(H-horizon));
+        grid2[y][x] = FLOOR[Math.min(FLOOR.length-1,((1-fd)*FLOOR.length)|0)] || ' ';
+      } else {
+        const ty = lh>0 ? (y-(horizon-lh/2))/lh : 0;
+        grid2[y][x] = texChar(wt, ix, iy, tx, Math.abs(ty%1), d+(side?1.0:0), side);
+      }
+    }
+  }
+
+  // ---- sprites: enemies + pickups, far→near ----
+  const sprites = [];
+  for(const e of G.enemies){ if(!e.alive) continue;
+    const p=projectSprite(e.x,e.y); if(p) sprites.push({p, e, kind:'enemy'}); }
+  for(const pk of G.picks){ if(pk.got||pk.t==='secret') continue;
+    const p=projectSprite(pk.x,pk.y); if(p) sprites.push({p, pk, kind:'pick'}); }
+  for(const s of G.shots){ if(!s.alive) continue;
+    const p=projectSprite(s.x,s.y); if(p) sprites.push({p, s, kind:'shot'}); }
+  sprites.sort((a,b)=>b.p.dist-a.p.dist);
+
+  // colored overlay cells: map "row,col" -> {ch,col}
+  const colorCells = [];
+
+  for(const sp of sprites){
+    const {col, dist} = sp.p;
+    if(dist>20) continue;
+    const size = Math.min(H*1.4, (H/dist)|0);
+    const half = size/2;
+    const cyScreen = horizon + (size*0.06); // sit slightly toward floor
+    const top = Math.max(0, Math.round(cyScreen-half));
+    const bot = Math.min(H-1, Math.round(cyScreen+half));
+    const lw = Math.max(1, Math.round(size*0.42));
+    const left = Math.round(col-lw/2), right = Math.round(col+lw/2);
+
+    let glyphFn, color;
+    if(sp.kind==='enemy'){
+      const e=sp.e; color = e.hurt>0 ? '#ffd2c2' : e.col;
+      glyphFn = enemyGlyph(e);
+    } else if(sp.kind==='pick'){
+      const m = pickStyle(sp.pk.t); color=m.col; glyphFn = pickGlyph(m, sp.pk);
+    } else {
+      color = sp.s.kind==='fire' ? '#ffb347' : '#dfe7d6';
+      glyphFn = ()=> sp.s.kind==='fire' ? '✺' : '•';
+    }
+
+    for(let y=top;y<=bot;y++){
+      for(let x=left;x<=right;x++){
+        if(x<0||x>=W||y<0||y>=H) continue;
+        if(dist > zbuf[x]+0.15) continue;       // occluded by wall
+        const u = lw>1 ? (x-left)/(right-left) : 0.5;
+        const v = bot>top ? (y-top)/(bot-top) : 0.5;
+        const ch = glyphFn(u,v);
+        if(ch===null||ch===' ') continue;
+        grid2[y][x]=ch;
+        colorCells.push({y,x,col:color});
+      }
+    }
+  }
+
+  // weapon viewmodel (bottom center, ascii)
+  drawWeapon(grid2);
+
+  for(let y=0;y<H;y++){
+    rows[y]=grid2[y].join("");
+  }
+  view.textContent = rows.join("\n");
+  lastGrid = grid2;                 // current frame's char grid (for color overlay)
+  // colored sprite glyphs drawn on top of the gray ascii base
+  applyTint(colorCells);
+}
+
+// ---- enemy glyph builders (little ascii figures) ----
+function enemyGlyph(e){
+  const big = ['Ψ','Φ'].includes(e.sym);
+  return (u,v)=>{
+    // simple humanoid silhouette
+    if(v<0.18){ return (u>0.32&&u<0.68)? e.sym : null; }            // head
+    if(v<0.30){ return (u>0.22&&u<0.78)? '▓' : (u>0.1&&u<0.9?'░':null); }
+    if(v<0.62){ // torso + arms
+      if(u<0.16||u>0.84) return v<0.5?'/':'\\';
+      return (u>0.30&&u<0.70)? (e.k==='brute'?'█':'▒') : '▒';
+    }
+    if(v<0.84){ return (u>0.30&&u<0.46)||(u>0.54&&u<0.70)? '█':null; } // legs
+    return (u>0.26&&u<0.46)||(u>0.54&&u<0.74)? '▙':null;              // feet
+  };
+}
+function pickStyle(t){
+  switch(t){
+    case 'health': return {col:'#6fdc8c', s:'✚'};
+    case 'armor':  return {col:'#8fb6e0', s:'▣'};
+    case 'nail':   return {col:'#d9a441', s:'≡'};
+    case 'fuel':   return {col:'#ff9b50', s:'◊'};
+    case 'keyB':   return {col:'#5fa8ff', s:'◈'};
+    case 'keyR':   return {col:'#ff5f6e', s:'◈'};
+    default:       return {col:'#cccccc', s:'?'};
+  }
+}
+function pickGlyph(m, pk){
+  const float = Math.sin(performance.now()/300 + pk.x*3)*0.06;
+  return (u,v)=>{
+    const vv=v - float;
+    if(vv<0.34||vv>0.78) return null;
+    if(u<0.30||u>0.70) return null;
+    if(vv<0.46 && (u>0.42&&u<0.58)) return m.s;
+    return (vv>0.5 && vv<0.72 && u>0.36&&u<0.64) ? '▒' : (u>0.30&&u<0.70? '░':null);
+  };
+}
+
+// ---- weapon viewmodel ----
+function drawWeapon(g2){
+  const w = WEAPONS[G.weapon];
+  const cx = (W/2)|0;
+  const baseY = H-1;
+  const bob = Math.round(Math.sin(G.bob)*1.2);
+  const flash = performance.now()-G.muzzle < 70;
+  const put=(x,y,ch)=>{ if(x>=0&&x<W&&y>=0&&y<H) g2[y][x]=ch; };
+
+  if(w.id==='shard'){
+    const swing = (performance.now()-G.lastFire<200)? 2:0;
+    for(let i=0;i<5;i++){ put(cx+6+swing, baseY-i+bob, "│/|\\\\".charAt(i)); }
+    put(cx+5+swing, baseY-5+bob, '╲'); put(cx+7+swing, baseY-5+bob, '╱');
+    put(cx+6+swing, baseY-6+bob, '▼');
+  } else if(w.id==='nailer'){
+    for(let x=-3;x<=3;x++) put(cx+x, baseY+bob, '▄');
+    for(let x=-2;x<=2;x++) put(cx+x, baseY-1+bob, '█');
+    put(cx-3, baseY-1+bob,'╔'); put(cx+3, baseY-1+bob,'╗');
+    for(let x=-1;x<=1;x++) put(cx+x, baseY-2+bob, '▀');
+    if(flash){ put(cx, baseY-3+bob,'╪'); put(cx, baseY-4+bob,'┊'); }
+  } else {
+    for(let x=-4;x<=4;x++) put(cx+x, baseY+bob, '▄');
+    for(let x=-3;x<=3;x++) put(cx+x, baseY-1+bob, '█');
+    put(cx-4,baseY-1+bob,'╔'); put(cx+4,baseY-1+bob,'╗');
+    put(cx, baseY-2+bob, '◎');
+    if(flash){ put(cx, baseY-3+bob,'✺'); put(cx-1,baseY-3+bob,'※'); put(cx+1,baseY-3+bob,'※'); }
+  }
+}
+
+// ============================================================
+//  COLOR TINT (lightweight): we color the crosshair + flash;
+//  per-cell sprite color is approximated by overlay dots canvas.
+// ============================================================
+const spriteCanvas = document.createElement('canvas');
+spriteCanvas.style.cssText="position:fixed;inset:0;z-index:3;pointer-events:none;";
+document.body.appendChild(spriteCanvas);
+const sctx = spriteCanvas.getContext('2d');
+function applyTint(cells){
+  if(spriteCanvas.width!==innerWidth||spriteCanvas.height!==innerHeight){
+    spriteCanvas.width=innerWidth; spriteCanvas.height=innerHeight;
+  }
+  sctx.clearRect(0,0,spriteCanvas.width,spriteCanvas.height);
+  if(!cells.length) return;
+  // map grid cell -> pixel. view is centered.
+  const vb = view.getBoundingClientRect();
+  const cw = vb.width / W, ch = vb.height / H;
+  sctx.font = (FS)+"px ui-monospace,Menlo,Consolas,monospace";
+  sctx.textBaseline="top";
+  // group by color for fewer state changes
+  for(const c of cells){
+    const px = vb.left + c.x*cw;
+    const py = vb.top + c.y*ch;
+    sctx.fillStyle=c.col;
+    sctx.fillText(charAt(c.y,c.x), px, py);  // redraw the glyph in color
+  }
+}
+// fast lookup into the current frame's char grid
+let lastGrid=null;
+function charAt(y,x){ return (lastGrid && lastGrid[y]) ? (lastGrid[y][x]||' ') : ' '; }
+
+// ============================================================
+//  COMBAT
+// ============================================================
+const toastEl=document.getElementById('toast');
+let toastT=0;
+function toast(msg,ms=1400){ toastEl.textContent=msg; toastEl.style.opacity='1'; toastT=performance.now()+ms; }
+
+function fire(){
+  if(!G.started||G.dead||G.won) return;
+  const w=WEAPONS[G.weapon];
+  const now=performance.now();
+  if(now-G.lastFire < w.cd) return;
+  if(w.ammo && G.ammo[w.ammo]<=0){ if(now-G.lastFire>300){ toast("탄약 없음 — 무기 교체(1·2·3)"); G.lastFire=now;} return; }
+  G.lastFire=now; G.muzzle=now; G.bob+=0.6;
+  if(w.ammo) G.ammo[w.ammo]--;
+
+  if(w.kind==='melee'){
+    // hit nearest enemy in front within range
+    hitscan(w.range, w.dmg, 0.5, true);
+  } else if(w.kind==='hit'){
+    const sp = (Math.random()*2-1)*w.spread;
+    hitscanDir(G.dir+sp, w.range, w.dmg);
+  } else { // projectile (igniter)
+    G.shots.push({ x:G.px+Math.cos(G.dir)*0.4, y:G.py+Math.sin(G.dir)*0.4,
+      vx:Math.cos(G.dir)*7, vy:Math.sin(G.dir)*7, life:1.6, alive:true, kind:'fire',
+      dmg:w.dmg, splash:w.splash });
+  }
+  updateHUD();
+}
+
+function hitscanDir(ang, range, dmg){
+  const dx=Math.cos(ang), dy=Math.sin(ang);
+  // step along ray; stop at wall; damage first enemy crossed
+  let best=null, bestD=range;
+  for(const e of G.enemies){ if(!e.alive) continue;
+    const rx=e.x-G.px, ry=e.y-G.py;
+    const proj = rx*dx+ry*dy;
+    if(proj<0||proj>bestD) continue;
+    const perp = Math.abs(rx*dy - ry*dx);
+    const hitR = 0.45 + Math.min(0.3, proj*0.02);
+    if(perp<hitR){
+      // wall between?
+      if(!rayBlocked(G.px,G.py,e.x,e.y,proj)){ if(proj<bestD){best=e; bestD=proj;} }
+    }
+  }
+  if(best){ damageEnemy(best, dmg); }
+}
+function hitscan(range,dmg,arc,melee){
+  let best=null,bestD=range;
+  for(const e of G.enemies){ if(!e.alive)continue;
+    const rx=e.x-G.px, ry=e.y-G.py; const d=Math.hypot(rx,ry);
+    if(d>range)continue;
+    const ang=Math.atan2(ry,rx);
+    let da=Math.abs(((ang-G.dir+Math.PI*3)%(Math.PI*2))-Math.PI);
+    if(da<arc && d<bestD){ best=e; bestD=d; }
+  }
+  if(best) damageEnemy(best,dmg);
+}
+function rayBlocked(x0,y0,x1,y1,dist){
+  const steps=Math.ceil(dist*4);
+  for(let i=1;i<steps;i++){
+    const t=i/steps, gx=(x0+(x1-x0)*t)|0, gy=(y0+(y1-y0)*t)|0;
+    if(gx<0||gy<0||gx>=MW||gy>=MH) return true;
+    if(grid[gy][gx]) return true;
+  }
+  return false;
+}
+function damageEnemy(e,dmg){
+  e.hp-=dmg; e.hurt=8; e.state='chase'; e.seen=performance.now();
+  if(e.hp<=0){ e.alive=false; G.kills++; spawnGib(e); maybeUpdateExit(); }
+}
+function spawnGib(e){ /* visual flash handled by hurt; brief toast for brute */
+  if(e.k==='brute') toast("거구의 잔영이 무너진다");
+}
+
+// igniter explosion
+function explode(x,y,dmg,splash){
+  for(const e of G.enemies){ if(!e.alive)continue;
+    const d=Math.hypot(e.x-x,e.y-y);
+    if(d<splash){ damageEnemy(e, Math.round(dmg*(1-d/splash))); }
+  }
+  // self splash — fair but punishing if you fire into your own face
+  const ds=Math.hypot(G.px-x,G.py-y);
+  if(ds<splash){ hurtPlayer(Math.round(14*(1-ds/splash)), '#ff9b50'); }
+  flashScreen('#ff9b50', 0.5);
+}
+
+// ============================================================
+//  PLAYER DAMAGE / PICKUPS
+// ============================================================
+const flashEl=document.getElementById('flash');
+function flashScreen(color, a){ flashEl.style.background=color; flashEl.style.opacity=a; setTimeout(()=>flashEl.style.opacity=0,120); }
+function hurtPlayer(dmg, col){
+  if(G.dead||G.won) return;
+  let d=dmg;
+  if(G.armor>0){ const absorb=Math.min(G.armor, Math.round(d*0.5)); G.armor-=absorb; d-=absorb; }
+  G.hp-=d; G.hurtT=performance.now();
+  flashScreen(col||'#b5352c', Math.min(0.55, 0.18+d/60));
+  if(G.hp<=0){ G.hp=0; die(); }
+  updateHUD();
+}
+function pickupCheck(){
+  for(const pk of G.picks){ if(pk.got||pk.t==='secret') continue;
+    if(Math.hypot(pk.x-G.px,pk.y-G.py)<0.55){
+      pk.got=true; grabPickup(pk);
+    }
+  }
+  // secret floor tiles
+  for(const pk of G.picks){ if(pk.t!=='secret'||pk.got) continue;
+    if(Math.hypot(pk.x-G.px,pk.y-G.py)<0.6){ pk.got=true; G.secrets++;
+      G.hp=Math.min(100,G.hp+15); G.ammo.nail+=20; flashScreen('#6fdc8c',0.3);
+      toast("시크릿 발견! ("+G.secrets+"/"+G.secretsTotal+") +보급"); updateHUD(); }
+  }
+}
+function grabPickup(pk){
+  switch(pk.t){
+    case 'health': G.hp=Math.min(100,G.hp+25); flashScreen('#6fdc8c',0.28); toast("응급 키트 +25 활력"); break;
+    case 'armor':  G.armor=Math.min(100,G.armor+30); flashScreen('#8fb6e0',0.25); toast("병동 보호판 +30"); break;
+    case 'nail':   G.ammo.nail+=24; toast("못 +24"); break;
+    case 'fuel':   G.ammo.fuel+=3; toast("연료 캡슐 +3"); break;
+    case 'keyB':   G.keyB=true; flashScreen('#5fa8ff',0.35); toast("청색 인장 획득 ◈"); openDoors(); break;
+    case 'keyR':   G.keyR=true; flashScreen('#ff5f6e',0.35); toast("적색 인장 획득 ◈"); openDoors(); break;
+  }
+  updateHUD();
+}
+function openDoors(){
+  for(let y=0;y<MH;y++) for(let x=0;x<MW;x++){
+    if(grid[y][x]===4 && G.keyB) grid[y][x]=0;
+    if(grid[y][x]===5 && G.keyR) grid[y][x]=0;
+  }
+  maybeUpdateExit();
+}
+function maybeUpdateExit(){
+  // exit opens when both seals are held
+  if(G.keyB && G.keyR){
+    const ex=exitCell.x|0, ey=exitCell.y|0;
+    if(grid[ey] && grid[ey][ex]===6){ /* keep solid but reachable as goal */ }
+  }
+}
+
+// ============================================================
+//  ENEMY AI
+// ============================================================
+function updateEnemies(dt){
+  const now=performance.now();
+  for(const e of G.enemies){ if(!e.alive)continue;
+    if(e.hurt>0) e.hurt-=dt*20;
+    const dx=G.px-e.x, dy=G.py-e.y; const d=Math.hypot(dx,dy);
+    const los = d<11 && !rayBlocked(e.x,e.y,G.px,G.py,d);
+    if(los){ e.state='chase'; e.seen=now; e.tx=G.px; e.ty=G.py; }
+    else if(now-e.seen>4000){ e.state='idle'; }
+
+    let mvx=0,mvy=0;
+    if(e.state==='chase' && d>0.05){
+      mvx=dx/d; mvy=dy/d;
+      // attack
+      if(d<e.rng && now-e.lastAtk>e.atkcd){
+        e.lastAtk=now;
+        if(e.fire){ // brute lobs a bolt
+          G.shots.push({x:e.x,y:e.y, vx:dx/d*5, vy:dy/d*5, life:2.4, alive:true,
+            kind:'bolt', dmg:e.dmg, enemy:true, splash:0});
+        } else {
+          if(!rayBlocked(e.x,e.y,G.px,G.py,d)) hurtPlayer(e.dmg);
+        }
+      }
+    } else if(e.state==='idle'){
+      // wander toward waypoint
+      if(Math.hypot(e.wx-e.x,e.wy-e.y)<0.4 || Math.random()<0.005){
+        e.wx=e.x+(Math.random()*6-3); e.wy=e.y+(Math.random()*6-3);
+      }
+      const wdx=e.wx-e.x, wdy=e.wy-e.y, wd=Math.hypot(wdx,wdy)||1;
+      mvx=wdx/wd*0.4; mvy=wdy/wd*0.4;
+    }
+    // move with collision (don't stack into player)
+    const stop = e.state==='chase' && d<e.rng*0.8;
+    if(!stop){
+      const spd=e.spd*dt;
+      const nx=e.x+mvx*spd, ny=e.y+mvy*spd;
+      if(!solid(nx,e.y)) e.x=nx;
+      if(!solid(e.x,ny)) e.y=ny;
+    }
+  }
+}
+function solid(x,y){
+  const gx=x|0, gy=y|0;
+  if(gx<0||gy<0||gx>=MW||gy>=MH) return true;
+  return grid[gy][gx]!==0;
+}
+
+// projectiles (igniter fire + brute bolts)
+function updateShots(dt){
+  for(const s of G.shots){ if(!s.alive)continue;
+    s.life-=dt; if(s.life<=0){ s.alive=false; continue; }
+    const nx=s.x+s.vx*dt, ny=s.y+s.vy*dt;
+    if(solid(nx,ny)){ if(s.kind==='fire'){ explode(s.x,s.y,s.dmg,s.splash);} s.alive=false; continue; }
+    s.x=nx; s.y=ny;
+    if(s.enemy){
+      if(Math.hypot(s.x-G.px,s.y-G.py)<0.4){ hurtPlayer(s.dmg,'#c98b6b'); s.alive=false; }
+    } else {
+      // player fire hits enemy
+      for(const e of G.enemies){ if(!e.alive)continue;
+        if(Math.hypot(s.x-e.x,s.y-e.y)<0.5){ explode(s.x,s.y,s.dmg,s.splash); s.alive=false; break; }
+      }
+    }
+  }
+  if(G.shots.length>60) G.shots=G.shots.filter(s=>s.alive);
+}
+
+// ============================================================
+//  INPUT
+// ============================================================
+const keys={};
+let mouseLocked=false;
+function bindKey(e,down){
+  const k=e.key.toLowerCase();
+  keys[k]=down;
+  if(["arrowup","arrowdown","arrowleft","arrowright"," ","w","a","s","d"].includes(k)) e.preventDefault();
+  if(down){
+    if(k==='1') selectWeapon(0);
+    if(k==='2') selectWeapon(1);
+    if(k==='3') selectWeapon(2);
+  }
+}
+addEventListener('keydown', e=>{ if(!G.started)return; bindKey(e,true);
+  if(e.key===' ') fire();
+});
+addEventListener('keyup', e=>{ if(!G.started)return; bindKey(e,false); });
+
+function selectWeapon(i){
+  if(i===G.weapon) return;
+  if(WEAPONS[i].ammo && G.ammo[WEAPONS[i].ammo]<=0 && i!==0){ /* allow select even empty */ }
+  G.weapon=i; updateHUD(); toast(WEAPONS[i].name);
+}
+
+view.style.cursor='crosshair';
+const wrap=document.getElementById('wrap');
+addEventListener('mousedown', e=>{
+  if(!G.started||G.dead||G.won) return;
+  if(!mouseLocked && !isTouch){ wrap.requestPointerLock&&wrap.requestPointerLock(); }
+  if(e.button===0) fire();
+});
+document.addEventListener('pointerlockchange', ()=>{ mouseLocked = (document.pointerLockElement===wrap); });
+addEventListener('mousemove', e=>{
+  if(!G.started) return;
+  if(mouseLocked){
+    G.dir += e.movementX*0.0026;
+    G.pitch = Math.max(-H*0.35, Math.min(H*0.35, G.pitch - e.movementY*0.18));
+  }
+});
+addEventListener('wheel', e=>{ if(!G.started)return; selectWeapon((G.weapon+(e.deltaY>0?1:2))%3); }, {passive:true});
+
+// touch
+const isTouch = matchMedia('(pointer:coarse)').matches || ('ontouchstart' in window);
+if(isTouch) document.body.classList.add('touch');
+function holdBtn(id, k){
+  const el=document.getElementById(id); if(!el)return;
+  const set=v=>{ keys[k]=v; };
+  el.addEventListener('touchstart',e=>{e.preventDefault(); if(!G.started)return; set(true);},{passive:false});
+  el.addEventListener('touchend',e=>{e.preventDefault(); set(false);},{passive:false});
+  el.addEventListener('touchcancel',()=>set(false));
+}
+holdBtn('tFwd','w'); holdBtn('tBack','s'); holdBtn('tLeft','a'); holdBtn('tRight','d');
+holdBtn('tTurnL','arrowleft'); holdBtn('tTurnR','arrowright');
+{
+  const f=document.getElementById('tFire');
+  f && f.addEventListener('touchstart',e=>{e.preventDefault(); if(G.started) fire();},{passive:false});
+  const sw=document.getElementById('tSwap');
+  sw && sw.addEventListener('touchstart',e=>{e.preventDefault(); selectWeapon((G.weapon+1)%3);},{passive:false});
+  // look drag
+  const look=document.getElementById('tLook'); let lx=0,ly=0,act=false;
+  look && look.addEventListener('touchstart',e=>{ act=true; lx=e.touches[0].clientX; ly=e.touches[0].clientY; },{passive:true});
+  look && look.addEventListener('touchmove',e=>{ if(!act)return; const t=e.touches[0];
+    G.dir+=(t.clientX-lx)*0.006; G.pitch=Math.max(-H*0.3,Math.min(H*0.3,G.pitch-(t.clientY-ly)*0.25)); lx=t.clientX; ly=t.clientY; },{passive:true});
+  look && look.addEventListener('touchend',()=>act=false);
+}
+
+// ============================================================
+//  MOVEMENT
+// ============================================================
+function tryMove(nx,ny){
+  const m=0.2;
+  const cx=nx+Math.sign(nx-G.px)*m, cy=ny+Math.sign(ny-G.py)*m;
+  if(!solid(cx, G.py)) G.px=nx;
+  if(!solid(G.px, cy)) G.py=ny;
+}
+
+// ============================================================
+//  HUD + MINIMAP
+// ============================================================
+const hpEl=document.getElementById('hp'), arEl=document.getElementById('ar'), amEl=document.getElementById('am');
+const wnEl=document.getElementById('weaponName'), wsEl=document.getElementById('weaponSub');
+const kB=document.getElementById('kBlue'), kR=document.getElementById('kRed');
+function updateHUD(){
+  hpEl.textContent=Math.max(0,G.hp|0);
+  arEl.textContent=G.armor|0;
+  const w=WEAPONS[G.weapon];
+  wnEl.textContent=w.name;
+  wsEl.textContent=w.sub + (w.ammo? "":"") ;
+  amEl.textContent = w.ammo ? G.ammo[w.ammo] : '∞';
+  hpEl.style.color = G.hp<30 ? '#ff5f5f' : '';
+  kB.className = G.keyB?'keyOn':'keyOff';
+  kR.className = G.keyR?'keyOn':'keyOff';
+}
+const mapC=document.getElementById('map'), mctx=mapC.getContext('2d');
+function drawMap(){
+  const cell=Math.max(2, Math.floor(120/Math.max(MW,MH)));
+  mapC.width=MW*cell; mapC.height=MH*cell;
+  mctx.clearRect(0,0,mapC.width,mapC.height);
+  for(let y=0;y<MH;y++)for(let x=0;x<MW;x++){
+    const g=grid[y][x];
+    if(g){ mctx.fillStyle = g===4?'#2f5a8a': g===5?'#7a2a32': g===6?'#5a5a2a':'#1d2a20';
+      mctx.fillRect(x*cell,y*cell,cell,cell); }
+  }
+  // pickups
+  for(const pk of G.picks){ if(pk.got||pk.t==='secret')continue;
+    const m=pickStyle(pk.t); mctx.fillStyle=m.col;
+    mctx.fillRect((pk.x-0.5)*cell+cell*0.2,(pk.y-0.5)*cell+cell*0.2,cell*0.6,cell*0.6); }
+  // enemies
+  for(const e of G.enemies){ if(!e.alive)continue;
+    mctx.fillStyle = e.state==='chase'?'#ff5f6e':'#7d6a4a';
+    mctx.fillRect((e.x-0.5)*cell+cell*0.25,(e.y-0.5)*cell+cell*0.25,cell*0.5,cell*0.5); }
+  // exit
+  mctx.fillStyle='#d9d441'; mctx.fillRect((exitCell.x-0.5)*cell,(exitCell.y-0.5)*cell,cell,cell);
+  // player
+  mctx.fillStyle='#9fffb0';
+  mctx.beginPath(); mctx.arc(G.px*cell, G.py*cell, cell*0.6, 0, 7); mctx.fill();
+  mctx.strokeStyle='#9fffb0'; mctx.beginPath(); mctx.moveTo(G.px*cell,G.py*cell);
+  mctx.lineTo((G.px+Math.cos(G.dir)*1.4)*cell,(G.py+Math.sin(G.dir)*1.4)*cell); mctx.stroke();
+}
+
+// ============================================================
+//  WIN / LOSE
+// ============================================================
+const endEl=document.getElementById('end'), endTitle=document.getElementById('endTitle'), endText=document.getElementById('endText');
+function die(){
+  if(G.dead)return; G.dead=true; document.exitPointerLock&&document.exitPointerLock();
+  endEl.classList.remove('hidden'); endEl.classList.add('lose'); endEl.classList.remove('win');
+  endTitle.textContent="당신은 병동에 삼켜졌다";
+  endText.innerHTML=`0병동은 또 한 명의 잔영을 얻었다.<br>처치 ${G.kills}/${G.killsTotal} · 시크릿 ${G.secrets}/${G.secretsTotal}<br><br>벽은 여전히 자라고 있다.`;
+}
+function win(){
+  if(G.won)return; G.won=true; document.exitPointerLock&&document.exitPointerLock();
+  endEl.classList.remove('hidden'); endEl.classList.add('win'); endEl.classList.remove('lose');
+  endTitle.textContent="탈출";
+  endText.innerHTML=`지상의 빛이 복도 끝에서 새어든다. 당신은 0병동을 빠져나왔다.<br><br>처치 ${G.kills}/${G.killsTotal} · 시크릿 ${G.secrets}/${G.secretsTotal} · 활력 ${G.hp|0}<br><br>그러나 등 뒤에서, 글자 하나가 다시 벽에 새겨진다.`;
+}
+function checkExit(){
+  if(G.keyB&&G.keyR && Math.hypot(exitCell.x-G.px,exitCell.y-G.py)<1.1){ win(); }
+  // also allow reaching exit-adjacent open cell
+}
+
+// ============================================================
+//  MAIN LOOP
+// ============================================================
+let lastT=performance.now(), acc=0;
+function loop(t){
+  const dt=Math.min(0.05,(t-lastT)/1000); lastT=t;
+  if(G.started && !G.dead && !G.won){
+    const run = (keys['shift']?1.7:1);
+    const ms=2.7*dt*run, rs=2.3*dt;
+    if(keys['arrowleft']||keys['q']) G.dir-=rs;
+    if(keys['arrowright']||keys['e']) G.dir+=rs;
+    const fx=Math.cos(G.dir), fy=Math.sin(G.dir);
+    let moving=false;
+    if(keys['w']||keys['arrowup']){ tryMove(G.px+fx*ms,G.py+fy*ms); moving=true; }
+    if(keys['s']||keys['arrowdown']){ tryMove(G.px-fx*ms,G.py-fy*ms); moving=true; }
+    if(keys['a']){ tryMove(G.px+fy*ms,G.py-fx*ms); moving=true; }
+    if(keys['d']){ tryMove(G.px-fy*ms,G.py+fx*ms); moving=true; }
+    if(moving) G.bob += dt*8*run; else G.bob*=0.9;
+    if(keys[' ']) {} // handled on keydown
+    updateEnemies(dt);
+    updateShots(dt);
+    pickupCheck();
+    checkExit();
+  }
+  acc+=dt;
+  if(acc>1/34){ acc=0;
+    if(G.started){ render(); drawMap(); }
+  }
+  if(toastT && performance.now()>toastT){ toastEl.style.opacity='0'; toastT=0; }
+  requestAnimationFrame(loop);
+}
+
+// ============================================================
+//  BOOT
+// ============================================================
+const intro=document.getElementById('intro');
+document.getElementById('startBtn').addEventListener('click', start);
+document.getElementById('againBtn').addEventListener('click', ()=>{ endEl.classList.add('hidden'); resetGame(); start(); });
+function start(){
+  resetGame();
+  intro.classList.add('hidden');
+  G.started=true;
+  toast("0병동 진입 — 두 인장(◈)을 찾아 출구를 열어라", 2600);
+  if(!isTouch){ setTimeout(()=>{ wrap.requestPointerLock&&wrap.requestPointerLock(); }, 200); }
+}
+// allow any key on intro to start
+addEventListener('keydown', e=>{ if(!G.started && intro && !intro.classList.contains('hidden')){ start(); } }, {once:false});
+
+// first paint of the world behind intro
+resetGame(); G.started=false;
+render(); drawMap();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

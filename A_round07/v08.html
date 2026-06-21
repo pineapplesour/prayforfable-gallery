@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Caustica — 수면 코스틱 풀</title>
+<style>
+  html,body{margin:0;height:100%;background:#02060a;overflow:hidden;cursor:crosshair;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+    -webkit-tap-highlight-color:transparent;touch-action:none;}
+  #gl{display:block;width:100vw;height:100vh;position:fixed;inset:0;}
+  #hud{position:fixed;left:0;right:0;bottom:0;padding:14px 18px;pointer-events:none;
+    display:flex;justify-content:space-between;align-items:flex-end;gap:18px;
+    color:rgba(220,240,255,.66);font-size:11.5px;letter-spacing:.18em;text-transform:uppercase;
+    text-shadow:0 1px 8px rgba(0,0,0,.55);mix-blend-mode:screen;z-index:5;
+    transition:opacity 1.4s ease;}
+  #hud.dim{opacity:0;}
+  #title{position:fixed;top:0;left:0;padding:16px 20px;pointer-events:none;z-index:5;
+    color:rgba(225,245,255,.85);mix-blend-mode:screen;text-shadow:0 1px 12px rgba(0,0,0,.5);
+    transition:opacity 1.4s ease;}
+  #title.dim{opacity:0;}
+  #title h1{margin:0;font-size:17px;font-weight:600;letter-spacing:.42em;}
+  #title p{margin:5px 0 0;font-size:10.5px;letter-spacing:.26em;opacity:.6;text-transform:uppercase;}
+  .hint{display:flex;flex-direction:column;gap:3px;opacity:.85;}
+  .hint b{font-weight:600;color:rgba(255,255,255,.78);}
+  #right{text-align:right;font-variant-numeric:tabular-nums;}
+  @media (max-width:480px){
+    #title h1{font-size:13px;letter-spacing:.3em;}
+    #title p{font-size:9px;letter-spacing:.18em;}
+    #hud{font-size:9.5px;letter-spacing:.12em;padding:11px 13px;}
+  }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="title">
+  <h1>C A U S T I C A</h1>
+  <p>수면 코스틱 — 빛이 물을 통과하는 순간</p>
+</div>
+<div id="hud">
+  <div class="hint">
+    <span><b>움직여서</b> 잔물결 · <b>눌러서</b> 물방울</span>
+    <span><b>스크롤</b> 깊이 &amp; 태양 · <b>꾹 눌러</b> 비</span>
+  </div>
+  <div id="right">
+    <div id="fps">— fps</div>
+    <div id="depth">depth —</div>
+  </div>
+</div>
+
+<script type="x-shader/x-fragment" id="frag">
+precision highp float;
+varying vec2 v_uv;          // 0..1
+uniform vec2  u_res;
+uniform float u_time;
+uniform float u_depth;      // 0.4 .. 1.6   apparent water depth
+uniform float u_sun;        // sun angle / dispersion drive
+uniform vec3  u_drops[12];  // x,y (uv) , age-seconds  (active ripples)
+uniform float u_dropAmp[12];
+uniform vec2  u_mouse;      // current pointer in uv
+uniform float u_mActive;    // pointer presence 0..1
+
+// ---------- hashing / value noise ----------
+float hash21(vec2 p){
+  p=fract(p*vec2(123.34,456.21));
+  p+=dot(p,p+45.32);
+  return fract(p.x*p.y);
+}
+float vnoise(vec2 p){
+  vec2 i=floor(p), f=fract(p);
+  vec2 u=f*f*(3.0-2.0*f);
+  float a=hash21(i), b=hash21(i+vec2(1,0));
+  float c=hash21(i+vec2(0,1)), d=hash21(i+vec2(1,1));
+  return mix(mix(a,b,u.x),mix(c,d,u.x),u.y);
+}
+float fbm(vec2 p){
+  float s=0.0,a=0.5;
+  mat2 m=mat2(1.6,1.2,-1.2,1.6);
+  for(int i=0;i<5;i++){ s+=a*vnoise(p); p=m*p; a*=0.5; }
+  return s;
+}
+float fbm3(vec2 p){
+  float s=0.0,a=0.5;
+  mat2 m=mat2(1.6,1.2,-1.2,1.6);
+  for(int i=0;i<3;i++){ s+=a*vnoise(p); p=m*p; a*=0.5; }
+  return s;
+}
+
+// height field of the water surface at point p (water plane coords, aspect corrected)
+float surf(vec2 p, float t){
+  float h=0.0;
+  // travelling directional swells (Gerstner-ish, summed)
+  h+=0.55*sin( dot(p, vec2( 1.30, 0.45))*2.2 - t*0.95);
+  h+=0.42*sin( dot(p, vec2(-0.70, 1.20))*2.7 - t*1.18 + 1.3);
+  h+=0.30*sin( dot(p, vec2( 0.95,-0.85))*3.6 - t*1.55 + 2.1);
+  h+=0.22*sin( dot(p, vec2(-1.25,-0.35))*4.8 - t*1.9  + 0.4);
+  // fine chop via fbm, slowly advected
+  h+=0.55*(fbm(p*2.3 + vec2(t*0.18,-t*0.12)) - 0.5);
+  h+=0.30*(fbm(p*5.1 - vec2(t*0.07, t*0.21)) - 0.5);
+
+  // interactive radial ripples (expanding rings that fade)
+  for(int i=0;i<12;i++){
+    float age=u_drops[i].z;
+    float amp=u_dropAmp[i];
+    if(amp<=0.0) continue;
+    vec2 d=p-u_drops[i].xy;
+    float r=length(d);
+    float spd=1.7;
+    float ring=age*spd;
+    float w = sin(r*16.0 - age*9.0);
+    float env = exp(-pow((r-ring)*5.5,2.0)) * exp(-age*1.15) * exp(-r*0.7);
+    h += amp*1.1*w*env;
+  }
+
+  // pointer wake — soft bulge that trails the cursor
+  if(u_mActive>0.001){
+    float r=length(p-u_mouse);
+    h += u_mActive*0.16*sin(r*22.0 - t*5.0)*exp(-r*r*7.0);
+  }
+  return h;
+}
+
+// Lighter surface used for caustic-normal sampling (3-octave chop instead of 5,
+// but keeps the swells + interactive ripples so drops still cast caustics).
+float surfLite(vec2 p, float t){
+  float h=0.0;
+  h+=0.55*sin( dot(p, vec2( 1.30, 0.45))*2.2 - t*0.95);
+  h+=0.42*sin( dot(p, vec2(-0.70, 1.20))*2.7 - t*1.18 + 1.3);
+  h+=0.30*sin( dot(p, vec2( 0.95,-0.85))*3.6 - t*1.55 + 2.1);
+  h+=0.22*sin( dot(p, vec2(-1.25,-0.35))*4.8 - t*1.9  + 0.4);
+  h+=0.55*(fbm3(p*2.3 + vec2(t*0.18,-t*0.12)) - 0.5);
+  h+=0.30*(fbm3(p*5.1 - vec2(t*0.07, t*0.21)) - 0.5);
+  for(int i=0;i<12;i++){
+    float amp=u_dropAmp[i];
+    if(amp<=0.0) continue;
+    float age=u_drops[i].z;
+    float r=length(p-u_drops[i].xy);
+    float ring=age*1.7;
+    float env=exp(-pow((r-ring)*5.5,2.0))*exp(-age*1.15)*exp(-r*0.7);
+    h += amp*1.1*sin(r*16.0-age*9.0)*env;
+  }
+  if(u_mActive>0.001){
+    float r=length(p-u_mouse);
+    h += u_mActive*0.16*sin(r*22.0 - t*5.0)*exp(-r*r*7.0);
+  }
+  return h;
+}
+
+// surface normal at point (analytic-ish finite diff) — caustic path (lite)
+vec3 surfNormal(vec2 p, float t, float strength){
+  float e=0.010;
+  float c=surfLite(p,t);
+  float x=surfLite(p+vec2(e,0.0),t);
+  float y=surfLite(p+vec2(0.0,e),t);
+  return normalize(vec3(-vec2(x-c,y-c)/e*strength, 1.0));
+}
+
+// Caustic light density on the floor from FOUR precomputed corner normals,
+// for a given refraction index. Take a tiny neighbourhood of light rays,
+// refract each through the surface, project to the floor, and measure how much
+// the patch SHRINKS. A shrinking patch == converging light == bright caustic.
+// Corners a(-,-) b(+,-) c(-,+) e(+,+) spaced by 'd' around p.
+float causticFrom(vec2 a, vec2 b, vec2 c, vec2 e,
+                  vec3 Na, vec3 Nb, vec3 Nc, vec3 Ne,
+                  float d, float dd, vec3 L, float ior){
+  vec2 fa=a+refract(-L,Na,ior).xy*dd;
+  vec2 fb=b+refract(-L,Nb,ior).xy*dd;
+  vec2 fc=c+refract(-L,Nc,ior).xy*dd;
+  vec2 fe=e+refract(-L,Ne,ior).xy*dd;
+  float orig=(2.0*d)*(2.0*d);
+  vec2 u1=fb-fa, v1=fc-fa;
+  vec2 u2=fb-fe, v2=fc-fe;
+  float area=0.5*(abs(u1.x*v1.y-u1.y*v1.x)+abs(u2.x*v2.y-u2.y*v2.x));
+  float density=orig/(area+1e-4);  // >1 where light converges
+  float c1=smoothstep(0.9,3.0,density);
+  float c2=pow(max(density-1.0,0.0),1.4)*0.22;
+  return clamp(c1+c2,0.0,3.5);
+}
+
+void main(){
+  vec2 uv=v_uv;
+  float aspect=u_res.x/u_res.y;
+  // water-plane coordinate, aspect corrected, centered
+  vec2 p=(uv-0.5);
+  p.x*=aspect;
+  p*=3.6;
+
+  float t=u_time;
+  float depth=u_depth;
+
+  // surface normal (for specular sparkle + floor texturing)
+  vec3 N=surfNormal(p,t,0.62);
+  vec3 L=normalize(vec3(0.18*cos(u_sun), 0.18*sin(u_sun), 1.0)); // sun nearly overhead
+  vec2 fhit = p + refract(-L,N,0.752).xy*depth*1.9;
+
+  // ---- caustics via projected ray-patch convergence, per RGB channel.
+  // Compute the 4 corner surface normals ONCE (the expensive part), then
+  // refract them through three indices for chromatic dispersion (cheap).
+  float dd2=0.0035;
+  vec2 ca=p+vec2(-dd2,-dd2), cb_=p+vec2(dd2,-dd2), cc=p+vec2(-dd2,dd2), ce=p+vec2(dd2,dd2);
+  vec3 Na=surfNormal(ca,t,0.62), Nb=surfNormal(cb_,t,0.62);
+  vec3 Nc=surfNormal(cc,t,0.62), Ne=surfNormal(ce,t,0.62);
+  float ddepth=depth*1.9;
+  float disp = 0.030 + 0.030*abs(sin(u_sun));
+  float cr = causticFrom(ca,cb_,cc,ce, Na,Nb,Nc,Ne, dd2,ddepth, L, 0.752+disp);
+  float cgj= causticFrom(ca,cb_,cc,ce, Na,Nb,Nc,Ne, dd2,ddepth, L, 0.752);
+  float cb = causticFrom(ca,cb_,cc,ce, Na,Nb,Nc,Ne, dd2,ddepth, L, 0.752-disp);
+
+  // ---- pool floor base colour: depth gradient + sandy tile noise
+  float floorN = fbm(fhit*2.2)*0.6 + fbm(fhit*7.0)*0.4;
+  // deep teal -> bright aqua with depth (darker base so caustics blaze)
+  vec3 deep   = vec3(0.006,0.055,0.105);
+  vec3 mid    = vec3(0.015,0.20,0.30);
+  vec3 shallow= vec3(0.05,0.42,0.52);
+  float dgrad = smoothstep(0.0,1.0, uv.y*0.7 + 0.3 + (depth-1.0)*0.25);
+  vec3 base = mix(deep, mid, dgrad);
+  base = mix(base, shallow, smoothstep(0.55,1.0,dgrad)*0.6);
+  base *= 0.78+0.34*floorN;
+
+  // caustic colour: per-channel focusing (R/G/B refract differently) -> rainbow
+  // fringes appear where the channels disagree along a vein edge.
+  vec3 cCol = vec3(cr, cgj, cb);
+  // tint the caustic toward white-gold at its hottest core, cyan in the body
+  vec3 hot = mix(vec3(0.22,0.70,1.0), vec3(1.0,0.96,0.78), smoothstep(0.8,2.4,cgj));
+  cCol *= hot;
+  // soft bloom around the bright filaments
+  cCol += vec3(0.20,0.48,0.72)*smoothstep(0.35,1.8,cgj)*0.7;
+  // gently deepen the darkest cells so the bright veins blaze by contrast
+  base *= mix(0.78,1.0, smoothstep(0.0,0.35,cgj));
+
+  vec3 col = base + cCol*1.15;
+
+  // godrays / volumetric light shafts (animated bands sweeping)
+  float ray = fbm(vec2(uv.x*3.0 + uv.y*1.5, t*0.25));
+  float shaft = smoothstep(0.45,1.0,ray) * (0.10+0.10*sin(u_sun));
+  col += vec3(0.30,0.55,0.70)*shaft*(0.5+0.5*cgj*0.3);
+
+  // hottest caustic cores: a white-gold pop for that sun-glint sparkle
+  float core = smoothstep(2.2,3.4,cgj);
+  col += vec3(1.0,0.95,0.80)*core*0.9;
+
+  // surface sparkle: specular glints where normal faces the sun
+  float spec = pow(max(dot(N, normalize(vec3(L.xy,1.6))),0.0), 60.0);
+  col += vec3(0.9,0.98,1.0)*spec*1.4;
+
+  // pointer glow — a gentle halo following the cursor underwater
+  if(u_mActive>0.001){
+    float md=length(p-u_mouse);
+    col += vec3(0.25,0.55,0.7)*u_mActive*0.18*exp(-md*md*2.5);
+  }
+
+  // depth haze toward top, vignette
+  col = mix(col, deep*1.3, smoothstep(0.0,1.0,1.0-dgrad)*0.20);
+  float vig = smoothstep(1.15,0.25, length((uv-0.5)*vec2(aspect,1.0)));
+  col *= 0.55+0.55*vig;
+
+  // tonemap + gentle filmic lift
+  col = col/(col+0.7);
+  col = pow(col, vec3(0.82));
+  // subtle blue-shadow / warm-highlight grade
+  col = mix(col, col*vec3(0.92,1.0,1.12), 0.4);
+
+  // grain to kill banding
+  float g=(hash21(uv*u_res + t)-0.5)*0.025;
+  col += g;
+
+  gl_FragColor=vec4(col,1.0);
+}
+</script>
+
+<script type="x-shader/x-vertex" id="vert">
+attribute vec2 a_pos;
+varying vec2 v_uv;
+void main(){ v_uv=a_pos*0.5+0.5; gl_Position=vec4(a_pos,0.0,1.0); }
+</script>
+
+<script>
+(function(){
+  "use strict";
+  const cvs=document.getElementById('gl');
+  const gl=cvs.getContext('webgl',{antialias:false,alpha:false,powerPreference:'high-performance',preserveDrawingBuffer:true})
+        || cvs.getContext('experimental-webgl');
+  if(!gl){ document.body.innerHTML='<div style="color:#9cf;font:14px sans-serif;padding:40px">WebGL을 사용할 수 없습니다.</div>'; return; }
+
+  function compile(type,src){
+    const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+    if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  }
+  const prog=gl.createProgram();
+  gl.attachShader(prog,compile(gl.VERTEX_SHADER,document.getElementById('vert').textContent));
+  gl.attachShader(prog,compile(gl.FRAGMENT_SHADER,document.getElementById('frag').textContent));
+  gl.linkProgram(prog);
+  if(!gl.getProgramParameter(prog,gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+
+  const buf=gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 3,-1, -1,3]),gl.STATIC_DRAW);
+  const aPos=gl.getAttribLocation(prog,'a_pos');
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos,2,gl.FLOAT,false,0,0);
+
+  const U={
+    res:gl.getUniformLocation(prog,'u_res'),
+    time:gl.getUniformLocation(prog,'u_time'),
+    depth:gl.getUniformLocation(prog,'u_depth'),
+    sun:gl.getUniformLocation(prog,'u_sun'),
+    drops:gl.getUniformLocation(prog,'u_drops'),
+    dropAmp:gl.getUniformLocation(prog,'u_dropAmp'),
+    mouse:gl.getUniformLocation(prog,'u_mouse'),
+    mActive:gl.getUniformLocation(prog,'u_mActive'),
+  };
+
+  // ---- state
+  const MAXD=12;
+  const drops=new Float32Array(MAXD*3);   // x,y,age
+  const dropAmp=new Float32Array(MAXD);
+  let dropHead=0;
+  let depth=1.0, depthTarget=1.0;
+  let sun=0.6, sunTarget=0.6;
+  // mouse in plane coords matching shader
+  let mUv=[0,0], mActive=0, mActiveTarget=0;
+  let aspect=1;
+
+  function spawnDrop(uvx,uvy,amp){
+    const i=dropHead%MAXD; dropHead++;
+    // convert uv -> plane coords (must match shader transform)
+    let px=(uvx-0.5)*aspect*3.6;
+    let py=(uvy-0.5)*3.6;
+    drops[i*3]=px; drops[i*3+1]=py; drops[i*3+2]=0.0;
+    dropAmp[i]=amp;
+  }
+
+  let DPRcap=2.0;
+  function resize(){
+    const dpr=Math.min(window.devicePixelRatio||1, DPRcap);
+    const w=Math.floor(cvs.clientWidth*dpr), h=Math.floor(cvs.clientHeight*dpr);
+    if(cvs.width!==w||cvs.height!==h){ cvs.width=w; cvs.height=h; }
+    gl.viewport(0,0,cvs.width,cvs.height);
+    aspect=cvs.width/cvs.height;
+  }
+  window.addEventListener('resize',resize);
+  resize();
+
+  // ---- input
+  function setMouse(cx,cy){
+    const r=cvs.getBoundingClientRect();
+    const uvx=(cx-r.left)/r.width;
+    const uvy=1.0-(cy-r.top)/r.height;
+    mUv=[(uvx-0.5)*aspect*3.6,(uvy-0.5)*3.6];
+    mActiveTarget=1.0;
+    return [uvx,uvy];
+  }
+  let lastMoveSpawn=0;
+  window.addEventListener('mousemove',e=>{
+    const uv=setMouse(e.clientX,e.clientY);
+    const now=performance.now();
+    if(now-lastMoveSpawn>55){ spawnDrop(uv[0],uv[1],0.10); lastMoveSpawn=now; wake(); }
+  });
+  window.addEventListener('mousedown',e=>{
+    const uv=setMouse(e.clientX,e.clientY);
+    spawnDrop(uv[0],uv[1],0.55); wake();
+  });
+  window.addEventListener('mouseleave',()=>{ mActiveTarget=0; });
+
+  // touch
+  function touchPt(t){ return setMouse(t.clientX,t.clientY); }
+  let holdTimer=null, rainOn=false;
+  cvs.addEventListener('touchstart',e=>{
+    e.preventDefault();
+    for(const t of e.changedTouches){ const uv=touchPt(t); spawnDrop(uv[0],uv[1],0.5); }
+    wake();
+    holdTimer=setTimeout(()=>{ rainOn=true; },520);
+  },{passive:false});
+  cvs.addEventListener('touchmove',e=>{
+    e.preventDefault();
+    for(const t of e.changedTouches){ const uv=touchPt(t); spawnDrop(uv[0],uv[1],0.12); }
+  },{passive:false});
+  cvs.addEventListener('touchend',e=>{
+    e.preventDefault(); clearTimeout(holdTimer); rainOn=false; mActiveTarget=0;
+  },{passive:false});
+
+  // long press on desktop -> rain
+  let mdTimer=null;
+  window.addEventListener('mousedown',()=>{ mdTimer=setTimeout(()=>{rainOn=true;},480); });
+  window.addEventListener('mouseup',()=>{ clearTimeout(mdTimer); rainOn=false; });
+
+  // scroll -> depth + sun
+  window.addEventListener('wheel',e=>{
+    depthTarget=Math.max(0.45,Math.min(1.65, depthTarget + (e.deltaY>0?0.06:-0.06)));
+    sunTarget=Math.max(-0.6,Math.min(1.9, sunTarget + (e.deltaY>0?0.04:-0.04)));
+    wake();
+  },{passive:true});
+
+  // hide HUD after idle, show on activity
+  const hud=document.getElementById('hud'), titleEl=document.getElementById('title');
+  let idleT=null;
+  function wake(){
+    hud.classList.remove('dim'); titleEl.classList.remove('dim');
+    clearTimeout(idleT);
+    idleT=setTimeout(()=>{ hud.classList.add('dim'); },4200);
+  }
+  wake();
+
+  // ---- expose for verification
+  window.__caustica={
+    drop:(x,y,a)=>spawnDrop(x,y,a==null?0.5:a),
+    state:()=>({depth:depth,sun:sun,activeDrops:dropAmp.reduce((s,v)=>s+(v>0?1:0),0),mActive:mActive,frames:frameCount}),
+    setDepth:v=>{depthTarget=v;},
+    pulse:()=>{ for(let k=0;k<5;k++) spawnDrop(Math.random(),Math.random(),0.5); }
+  };
+
+  // ---- loop
+  const fpsEl=document.getElementById('fps'), depthEl=document.getElementById('depth');
+  let t0=performance.now(), last=t0, frameCount=0, fpsAcc=0, fpsN=0, fpsShown=0, rainAcc=0;
+  function frame(now){
+    const dt=Math.min(0.05,(now-last)/1000); last=now;
+    const time=(now-t0)/1000;
+    frameCount++;
+
+    // smooth params
+    depth+=(depthTarget-depth)*0.06;
+    sun  +=(sunTarget-sun)*0.06;
+    mActive+=(mActiveTarget-mActive)*0.08;
+    mActiveTarget*=0.94; // pointer presence decays so wake fades when still
+
+    // age drops, fade amplitude
+    for(let i=0;i<MAXD;i++){
+      if(dropAmp[i]>0){
+        drops[i*3+2]+=dt;
+        dropAmp[i]*=Math.pow(0.18,dt); // exponential fade ~ life 1.5s
+        if(dropAmp[i]<0.003) dropAmp[i]=0;
+      }
+    }
+    // rain
+    if(rainOn){
+      rainAcc+=dt;
+      while(rainAcc>0.06){ rainAcc-=0.06; spawnDrop(Math.random(),Math.random(),0.28+Math.random()*0.25); }
+    }
+
+    gl.uniform2f(U.res,cvs.width,cvs.height);
+    gl.uniform1f(U.time,time);
+    gl.uniform1f(U.depth,depth);
+    gl.uniform1f(U.sun,sun);
+    gl.uniform3fv(U.drops,drops);
+    gl.uniform1fv(U.dropAmp,dropAmp);
+    gl.uniform2f(U.mouse,mUv[0],mUv[1]);
+    gl.uniform1f(U.mActive,mActive);
+    gl.drawArrays(gl.TRIANGLES,0,3);
+
+    // fps + auto resolution scaling for smoothness
+    fpsAcc+=dt; fpsN++;
+    if(fpsAcc>=0.5){
+      fpsShown=Math.round(fpsN/fpsAcc);
+      fpsEl.textContent=fpsShown+' fps';
+      depthEl.textContent='depth '+depth.toFixed(2);
+      if(fpsShown<42 && DPRcap>1.0){ DPRcap=Math.max(1.0,DPRcap-0.25); resize(); }
+      else if(fpsShown>58 && DPRcap<2.0){ DPRcap=Math.min(2.0,DPRcap+0.25); resize(); }
+      fpsAcc=0; fpsN=0;
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  // gentle ambient life on first paint so it's alive even before interaction
+  setTimeout(()=>{ spawnDrop(0.35,0.62,0.3); spawnDrop(0.7,0.4,0.25); },300);
+})();
+</script>
+</body>
+</html>

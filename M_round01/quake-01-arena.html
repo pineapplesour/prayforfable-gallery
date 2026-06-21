@@ -1,0 +1,1049 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>RUNE ARENA — ASCII Deathmatch</title>
+<style>
+  :root { --ink:#d8ffe0; --bg:#06100a; --dim:#3a6a4c; --hot:#ff5a3c; --gold:#ffd166; --blue:#5ad1ff; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; overflow:hidden; background:var(--bg); }
+  #wrap { position:fixed; inset:0; display:flex; flex-direction:column; }
+  #view {
+    flex:1 1 auto; margin:0; width:100%;
+    font:13px/13px ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    color:var(--ink); background:var(--bg); white-space:pre; overflow:hidden;
+    letter-spacing:0; user-select:none; cursor:crosshair; text-shadow:0 0 5px rgba(120,255,160,.16);
+  }
+  /* HUD overlay */
+  #hud {
+    position:fixed; left:0; right:0; bottom:0; height:46px;
+    display:flex; align-items:center; gap:14px; padding:0 14px;
+    background:linear-gradient(0deg,rgba(4,12,8,.96),rgba(4,12,8,.62));
+    color:var(--ink); font:13px/46px ui-monospace,Menlo,monospace;
+    white-space:nowrap; overflow:hidden; pointer-events:none; z-index:6;
+    border-top:1px solid #123a22;
+  }
+  #hud b { font-weight:700; }
+  .stat { display:inline-flex; align-items:baseline; gap:5px; }
+  .stat .lab { color:var(--dim); font-size:11px; letter-spacing:1px; }
+  #hp .val { color:#7fff9e; } #hp.low .val { color:var(--hot); }
+  #ar .val { color:var(--blue); }
+  #am .val { color:var(--gold); }
+  #wp .val { color:#fff; }
+  #frag .val { color:var(--gold); font-weight:700; }
+  #credit { margin-left:auto; color:var(--dim); font-size:10px; letter-spacing:.4px; }
+  /* minimap + log */
+  #map { position:fixed; top:8px; right:8px; z-index:6; pointer-events:none;
+    font:9px/9px ui-monospace,Menlo,monospace; color:var(--dim);
+    background:rgba(4,12,8,.55); padding:6px 7px; border:1px solid #123a22; white-space:pre; }
+  #log { position:fixed; top:8px; left:8px; z-index:6; pointer-events:none;
+    font:12px/16px ui-monospace,Menlo,monospace; color:var(--ink); max-width:46vw; white-space:pre-wrap;
+    text-shadow:0 0 4px #000; }
+  #log .k { color:var(--hot); } #log .d { color:var(--dim); }
+  /* flash + crosshair */
+  #flash { position:fixed; inset:0; z-index:5; pointer-events:none; background:transparent; transition:background .08s linear; }
+  /* intro / scoreboard */
+  .panel { position:fixed; inset:0; z-index:20; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; text-align:center; padding:26px;
+    background:radial-gradient(ellipse at 50% 30%,rgba(20,46,30,.97),rgba(4,10,7,.99));
+    color:var(--ink); font-family:ui-monospace,Menlo,monospace; transition:opacity .5s ease; }
+  .panel.hidden { opacity:0; pointer-events:none; }
+  .panel h1 { font-size:46px; letter-spacing:14px; margin:0 0 6px; text-indent:14px;
+    color:#eaffe9; text-shadow:0 0 18px rgba(90,255,150,.45); }
+  .panel .sub { color:var(--gold); letter-spacing:4px; font-size:13px; margin-bottom:22px; }
+  .panel p { font-size:13px; line-height:1.95; max-width:560px; margin:5px 0; color:#bfe9cc; }
+  .panel .keys { color:var(--dim); font-size:12px; line-height:1.9; margin-top:18px; }
+  .btn { margin-top:26px; pointer-events:auto; cursor:pointer; border:1px solid #2f7a4c;
+    background:#0f2a1b; color:#d8ffe0; padding:13px 30px; font:15px/1 ui-monospace,Menlo,monospace;
+    letter-spacing:3px; border-radius:3px; }
+  .btn:hover { background:#16401f; box-shadow:0 0 16px rgba(90,255,150,.4); }
+  .cred { margin-top:24px; color:var(--dim); font-size:10px; line-height:1.6; max-width:520px; }
+  #board .row { font-size:15px; line-height:2; letter-spacing:1px; }
+  #board .me { color:var(--gold); } #board .bot { color:#bfe9cc; }
+  /* touch controls */
+  #touch { position:fixed; inset:0; z-index:8; display:none; }
+  .tbtn { position:absolute; background:rgba(20,50,32,.42); border:1px solid #2f7a4c;
+    border-radius:50%; color:#cfffdd; font:18px/1 ui-monospace,Menlo,monospace;
+    display:flex; align-items:center; justify-content:center; user-select:none; -webkit-user-select:none; }
+  #pad { left:14px; bottom:120px; width:150px; height:150px; border-radius:14px; background:rgba(20,50,32,.28);
+    border:1px solid #235a39; }
+  #pad .tbtn { width:46px; height:46px; }
+  #pu { left:52px; bottom:226px; } #pd { left:52px; bottom:120px; }
+  #pl { left:14px; bottom:173px; } #pr { left:90px; bottom:173px; }
+  #fire { right:24px; bottom:150px; width:96px; height:96px; background:rgba(120,40,30,.4); border-color:var(--hot); font-size:13px; }
+  #jmp { right:130px; bottom:140px; width:64px; height:64px; }
+  #swp { right:34px; bottom:262px; width:64px; height:64px; font-size:12px; }
+  .look { position:absolute; top:0; bottom:240px; right:0; left:180px; }
+  @media (pointer:coarse){ #touch{display:block;} #map{display:none;} }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <pre id="view"></pre>
+</div>
+<div id="flash"></div>
+<div id="log"></div>
+<div id="map"></div>
+<div id="hud">
+  <span class="stat" id="hp"><span class="lab">HP</span><span class="val">100</span></span>
+  <span class="stat" id="ar"><span class="lab">ARM</span><span class="val">0</span></span>
+  <span class="stat" id="am"><span class="lab">AMMO</span><span class="val">--</span></span>
+  <span class="stat" id="wp"><span class="lab">WPN</span><span class="val">RUNEBLASTER</span></span>
+  <span class="stat" id="frag"><span class="lab">FRAGS</span><span class="val">0 / 15</span></span>
+  <span id="credit">Quake (id Software) 에서 영감 — © id Software · 오리지널 구현</span>
+</div>
+
+<!-- touch -->
+<div id="touch">
+  <div class="look" id="look"></div>
+  <div id="pad">
+    <div class="tbtn" id="pu" style="position:absolute;top:6px;left:52px">▲</div>
+    <div class="tbtn" id="pd" style="position:absolute;bottom:6px;left:52px">▼</div>
+    <div class="tbtn" id="pl" style="position:absolute;top:52px;left:6px">◀</div>
+    <div class="tbtn" id="pr" style="position:absolute;top:52px;right:6px">▶</div>
+  </div>
+  <div class="tbtn" id="fire">FIRE</div>
+  <div class="tbtn" id="jmp">JUMP</div>
+  <div class="tbtn" id="swp">WPN</div>
+</div>
+
+<!-- intro -->
+<div class="panel" id="intro">
+  <h1>RUNE ARENA</h1>
+  <div class="sub">A S C I I &nbsp; D E A T H M A T C H</div>
+  <p>고대의 룬 투기장. 잊혀진 신들이 만든 글자-벽돌의 미궁 속에서<br>
+  봇 검투사들과 끝없는 데스매치를 벌인다. 먼저 <b>15 프래그</b>를 따내라.</p>
+  <p class="keys">
+    이동 <b>WASD</b> · 조준 <b>마우스</b> 또는 <b>← →</b> · 발사 <b>클릭 / Space</b><br>
+    점프 <b>Shift</b> (로켓점프!) · 무기교체 <b>1 2 3</b> 또는 <b>Q</b> · 일시정지 <b>Esc</b><br>
+    터치: 좌측 패드 이동 · 우측 화면 조준 · FIRE / JUMP / WPN
+  </p>
+  <button class="btn" id="start">투기장 입장</button>
+  <div class="cred">Quake 에서 영감을 받은 <b>오리지널</b> 게임입니다. 맵·적·무기·이름·코드는 전부 새로 디자인되었습니다.<br>
+  실제 Quake 의 맵/스프라이트/텍스처/사운드/코드/고유명은 일절 사용하지 않았습니다.<br>
+  Quake (id Software) 에서 영감 — © id Software. 오리지널 구현.</div>
+</div>
+
+<!-- scoreboard / pause -->
+<div class="panel hidden" id="board">
+  <h1 id="board-title">FRAG STANDINGS</h1>
+  <div class="sub" id="board-sub">투기장 일시정지</div>
+  <div id="board-rows"></div>
+  <button class="btn" id="resume">계속</button>
+  <div class="cred">Quake (id Software) 에서 영감 — © id Software. 오리지널 구현.</div>
+</div>
+
+<script>
+(() => {
+"use strict";
+
+// ============================================================
+//  RUNE ARENA — original ASCII raycast arena deathmatch
+//  Raycast DDA + ASCII wall texturing inherited & re-built from
+//  the "2_내부" reference. Everything else (combat, bots,
+//  weapons, pickups, sprites, HUD) is original.
+// ============================================================
+
+const view   = document.getElementById("view");
+const flashEl = document.getElementById("flash");
+const logEl  = document.getElementById("log");
+const mapEl  = document.getElementById("map");
+const hpEl   = document.getElementById("hp"), arEl = document.getElementById("ar");
+const amEl   = document.getElementById("am"), wpEl = document.getElementById("wp");
+const fragEl = document.getElementById("frag");
+const intro  = document.getElementById("intro");
+const board  = document.getElementById("board");
+
+// ---- ASCII wall material (built from a fixed rune string, not the doc) ----
+const RUNES = ("RUNEARENADEATHMATCHIDSOFTWAREINSPIREDORIGINAL"+
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#@%&$=+*<>/\\|}{][)(").replace(/[^\x21-\x7E]/g,"");
+const FLOOR_RAMP = " .,:;~-=".split("");   // far -> near floor
+const CEIL_RAMP  = "  .'^\"`".split("");   // ceiling speckle
+
+// ============================================================
+//  ARENA MAP  (original layout: octagon-ish arena, pillars,
+//  two side bunkers, a central dais). 1 = wall, 0 = floor.
+// ============================================================
+const MAP = [
+"111111111111111111111111",
+"100000000000000000000001",
+"100011000000000000110001",
+"100010000000000000010001",
+"100000000011110000000001",
+"100000000010010000000001",
+"100001100010010001100001",
+"100000000010010000000001",
+"100000000000000000000001",
+"100000001000000010000001",
+"100000001000000010000001",
+"100000001000000010000001",
+"100000001000000010000001",
+"100000000000000000000001",
+"100000000011110000000001",
+"100001100010010001100001",
+"100000000010010000000001",
+"100000000010010000000001",
+"100010000000000000010001",
+"100011000000000000110001",
+"100000000000000000000001",
+"111111111111111111111111",
+].map(r => r.split("").map(Number));
+const MH = MAP.length, MW = MAP[0].length;
+const isWall = (x,y) => (x<0||y<0||x>=MW||y>=MH) ? 1 : MAP[y|0][x|0];
+const isOpen = (x,y) => !isWall(x,y);
+
+// jump pads (push player up + forward boost) and spawn points
+const JUMPPADS = [ {x:4.5,y:4.5}, {x:19.5,y:4.5}, {x:4.5,y:17.5}, {x:19.5,y:17.5} ];
+const SPAWNS = [
+  {x:2.5,y:2.5}, {x:21.5,y:2.5}, {x:2.5,y:19.5}, {x:21.5,y:19.5},
+  {x:12,y:2.5}, {x:12,y:19.5}, {x:2.5,y:10.5}, {x:21.5,y:10.5}, {x:12,y:10.5},
+];
+function randSpawn(awayFrom, minD){
+  let best=SPAWNS[0], bd=-1;
+  for(let i=0;i<SPAWNS.length;i++){
+    const s=SPAWNS[(Math.random()*SPAWNS.length)|0];
+    if(isWall(s.x,s.y)) continue;
+    const d = awayFrom? Math.hypot(s.x-awayFrom.x,s.y-awayFrom.y) : 1e9;
+    if(d>bd){bd=d;best=s;}
+    if(bd>(minD||4)) break;
+  }
+  return {x:best.x, y:best.y};
+}
+
+// ============================================================
+//  WEAPONS  (original names; Quake-flavored archetypes)
+// ============================================================
+const WEAPONS = [
+  { id:0, name:"RUNEBLASTER", kind:"hitscan", dmg:14, spread:0.10, pellets:1,
+    cool:0.16, ammoKey:"cells", use:1, range:14, color:"·", tracer:"-", reach:0,
+    sfx:"tk" },
+  { id:1, name:"VOLT-FLUX", kind:"hitscan", dmg:7, spread:0.20, pellets:3,
+    cool:0.10, ammoKey:"cells", use:1, range:11, color:"*", tracer:"*", reach:0,
+    sfx:"zz" },
+  { id:2, name:"GRAVE-LANCE", kind:"rail", dmg:50, spread:0.0, pellets:1,
+    cool:0.85, ammoKey:"slugs", use:1, range:30, color:"│", tracer:"│", reach:0,
+    sfx:"krak" },
+  { id:3, name:"SOULROCKET", kind:"rocket", dmg:80, splash:2.4, spread:0.0,
+    cool:0.78, ammoKey:"rockets", use:1, speed:9.5, range:30, color:"¤",
+    sfx:"whoom" },
+];
+
+// ============================================================
+//  STATE
+// ============================================================
+const FRAG_LIMIT = 15;
+const player = {
+  x:2.5, y:2.5, dir:1.0, z:0, vz:0,         // z = view height bob (0=ground)
+  hp:100, armor:0,
+  weapon:0, owned:[true,true,true,true],     // arena style: all weapons available
+  ammo:{cells:200, slugs:25, rockets:25},
+  frags:0, deaths:0,
+  cool:0, alive:true, respawn:0, kickback:0, muzzle:0, dmgFlash:0, killFlash:0,
+};
+let projectiles = [];   // rockets
+let particles = [];     // hit sparks / explosions (world billboards)
+let pickups = [];       // health/armor/ammo
+let bots = [];
+let logLines = [];
+let running = false, paused = false;
+let lastT = performance.now();
+let tracers = [];       // transient beam lines for rail/blaster (screen overlay via z)
+
+// ---- pickups setup ----
+function makePickups(){
+  pickups = [
+    { x:12,  y:10.5, type:"mega",   amt:100, rt:0, cd:25, glyph:"Ø", col:"#7fff9e", txt:"메가-룬(체력)" },
+    { x:4.5, y:10.5, type:"armor",  amt:100, rt:0, cd:22, glyph:"▒", col:"#5ad1ff", txt:"룬 아머" },
+    { x:21.5,y:10.5, type:"armor",  amt:50,  rt:0, cd:18, glyph:"░", col:"#5ad1ff", txt:"경갑 아머" },
+    { x:12,  y:5,    type:"rockets",amt:10,  rt:0, cd:14, glyph:"¤", col:"#ffd166", txt:"로켓 x10" },
+    { x:12,  y:16,   type:"slugs",  amt:8,   rt:0, cd:14, glyph:"≡", col:"#ffd166", txt:"슬러그 x8" },
+    { x:7.5, y:7.5,  type:"health", amt:25,  rt:0, cd:12, glyph:"+",      col:"#7fff9e", txt:"체력 +25" },
+    { x:16.5,y:7.5,  type:"health", amt:25,  rt:0, cd:12, glyph:"+",      col:"#7fff9e", txt:"체력 +25" },
+    { x:7.5, y:14.5, type:"cells",  amt:50,  rt:0, cd:12, glyph:":",      col:"#ffd166", txt:"셀 x50" },
+    { x:16.5,y:14.5, type:"cells",  amt:50,  rt:0, cd:12, glyph:":",      col:"#ffd166", txt:"셀 x50" },
+  ];
+}
+
+// ---- bots ----
+const BOTNAMES = ["GHARN","VEX","MORDU","SKULGRA","THRAEL","NYX","DROSK","KAINE"];
+let botNameIdx = 0;
+function spawnBot(){
+  const s = randSpawn(player, 6);
+  const b = {
+    x:s.x, y:s.y, dir:Math.random()*6.28,
+    hp:90, armor:0, alive:true, respawn:0,
+    name:BOTNAMES[(botNameIdx++)%BOTNAMES.length],
+    frags:0, weapon:(Math.random()*4)|0, cool:Math.random()*0.5,
+    think:0, target:null, strafe:Math.random()<0.5?1:-1, strafeT:0,
+    wx:s.x, wy:s.y, // waypoint when wandering
+    skill:0.55+Math.random()*0.35,
+    flash:0, vz:0, z:0,
+  };
+  return b;
+}
+function initBots(n){ bots = []; for(let i=0;i<n;i++) bots.push(spawnBot()); }
+
+// ============================================================
+//  RENDER GRID
+// ============================================================
+let W=120, H=44, CW=7.8, FOV=0.70;
+let zbuf = new Float32Array(W);
+function fit(){
+  const probe = document.createElement("span");
+  probe.style.cssText="position:absolute;visibility:hidden;font:13px/13px ui-monospace,Menlo,monospace;white-space:pre";
+  probe.textContent="M".repeat(100); document.body.appendChild(probe);
+  CW = probe.getBoundingClientRect().width/100 || 7.8; probe.remove();
+  const vw = view.clientWidth || innerWidth;
+  const vh = view.clientHeight || (innerHeight-46);
+  W = Math.max(50, Math.min(240, Math.floor(vw/CW)));
+  H = Math.max(22, Math.min(80, Math.floor(vh/13)));
+  zbuf = new Float32Array(W);
+}
+
+// ============================================================
+//  WALL TEXTURE
+// ============================================================
+function wallChar(mx,my,tx,ty,d,side){
+  if(d>16) return " ";
+  if(d>11) return side? "." : ":";
+  const seed = (((mx*73856093)^(my*19349663)^(side*83492791))>>>0);
+  const idx = (seed + ((tx*64)|0)*131 + ((ty*32)|0)*37) % RUNES.length;
+  let ch = RUNES[idx];
+  if(d>7.5) ch = /[A-Z0-9]/.test(ch)? ch.toLowerCase() : ".";
+  else if(d>4.5 && side) ch = /[A-Z0-9]/.test(ch)? ch.toLowerCase() : ch;
+  return ch;
+}
+
+// ============================================================
+//  SPRITES (billboarded): bots, pickups, projectiles, particles
+//  Each rendered with per-column z-test against wall zbuf.
+// ============================================================
+function gatherSprites(){
+  const sp = [];
+  for(const b of bots){ if(b.alive) sp.push({x:b.x,y:b.y,kind:"bot",ref:b}); }
+  for(const p of pickups){ if(p.rt<=0) sp.push({x:p.x,y:p.y,kind:"pickup",ref:p}); }
+  for(const r of projectiles){ sp.push({x:r.x,y:r.y,kind:"rocket",ref:r}); }
+  for(const j of JUMPPADS){ sp.push({x:j.x,y:j.y,kind:"pad"}); }
+  for(const pa of particles){ sp.push({x:pa.x,y:pa.y,kind:"part",ref:pa}); }
+  return sp;
+}
+
+// bot body ascii by apparent height
+function botGlyph(row, total, hurt){
+  const t = row/Math.max(1,total-1);
+  if(total<=2) return hurt?"X":"@";
+  if(t<0.18) return hurt?"x":"o";            // head
+  if(t<0.5)  return hurt?"#":"M";            // torso
+  if(t<0.78) return "|";                      // legs
+  return "/\\".charAt(row&1);                  // feet
+}
+
+// ============================================================
+//  MAIN RENDER
+// ============================================================
+const chars = []; // reused 2d buffer of single chars
+const cols  = []; // color spans (we color whole-screen via class? we use plain) -> we colorize key sprites by wrapping spans
+function render(){
+  const horizon = (H>>1) + Math.round(player.z*6) + Math.round(player.kickback*4);
+  // build char buffer
+  let grid = new Array(H);
+  for(let y=0;y<H;y++) grid[y] = new Array(W).fill(" ");
+  // color buffer: store hex string or null
+  let cbuf = new Array(H);
+  for(let y=0;y<H;y++) cbuf[y] = new Array(W).fill(null);
+
+  const dirX=Math.cos(player.dir), dirY=Math.sin(player.dir);
+  const planeX=-dirY*FOV, planeY=dirX*FOV;
+
+  // ---- walls ----
+  for(let x=0;x<W;x++){
+    const cam = 2*x/W - 1;
+    const rdx = dirX + planeX*cam, rdy = dirY + planeY*cam;
+    let mx=player.x|0, my=player.y|0;
+    const ddx=Math.abs(1/(rdx||1e-9)), ddy=Math.abs(1/(rdy||1e-9));
+    let sx,sy,sdx,sdy,side=0;
+    if(rdx<0){sx=-1;sdx=(player.x-mx)*ddx;} else {sx=1;sdx=(mx+1-player.x)*ddx;}
+    if(rdy<0){sy=-1;sdy=(player.y-my)*ddy;} else {sy=1;sdy=(my+1-player.y)*ddy;}
+    let hit=0,guard=0;
+    while(!hit && guard++<128){
+      if(sdx<sdy){sdx+=ddx;mx+=sx;side=0;} else {sdy+=ddy;my+=sy;side=1;}
+      if(isWall(mx,my)) hit=1;
+    }
+    let dist = side===0 ? (sdx-ddx) : (sdy-ddy);
+    dist = Math.max(0.05, dist);
+    zbuf[x] = dist;
+    const lh = Math.min(H*4, (H/dist)|0);
+    const ds = Math.max(0, horizon-(lh>>1));
+    const de = Math.min(H-1, horizon+(lh>>1));
+    let wallX = side===0 ? player.y+dist*rdy : player.x+dist*rdx;
+    wallX -= wallX|0;
+    for(let y=0;y<H;y++){
+      if(y<ds){ // ceiling
+        const cd=(horizon-y)/Math.max(1,horizon);
+        const cch = CEIL_RAMP[Math.min(CEIL_RAMP.length-1,((1-cd)*CEIL_RAMP.length)|0)]||" ";
+        grid[y][x]=cch;
+      } else if(y>de){ // floor
+        const fd=(y-horizon)/Math.max(1,H-horizon);
+        grid[y][x]=FLOOR_RAMP[Math.min(FLOOR_RAMP.length-1,((1-fd)*FLOOR_RAMP.length)|0)]||" ";
+      } else {
+        const ty = lh>0 ? (y-(horizon-lh/2))/lh : 0;
+        grid[y][x]=wallChar(mx,my,wallX,Math.abs(ty%1),dist+(side?1.0:0),side);
+      }
+    }
+  }
+
+  // ---- sprites (depth sort far->near) ----
+  const sprites = gatherSprites();
+  for(const s of sprites){
+    const sxp=s.x-player.x, syp=s.y-player.y;
+    s._d = sxp*sxp+syp*syp;
+  }
+  sprites.sort((a,b)=>b._d-a._d);
+  const invDet = 1/(planeX*dirY - dirX*planeY);
+  for(const s of sprites){
+    const sxp=s.x-player.x, syp=s.y-player.y;
+    const tX = invDet*(dirY*sxp - dirX*syp);
+    const tY = invDet*(-planeY*sxp + planeX*syp); // depth
+    if(tY<=0.15) continue;
+    const screenX = ((W/2)*(1+tX/tY))|0;
+    let sizeY, sizeX, glyph, color, anchorBottom=true, hurt=false;
+    if(s.kind==="bot"){
+      sizeY = Math.min(H*2.0,(H/tY)|0);
+      sizeX = Math.max(2,(sizeY*0.42)|0);
+      hurt = s.ref.flash>0;
+      color = hurt? "#ff5a3c" : "#ff9a76";
+    } else if(s.kind==="pickup"){
+      sizeY = Math.max(1,Math.min(H, (H/tY*0.5)|0));
+      sizeX = Math.max(1,(sizeY*0.8)|0);
+      glyph=s.ref.glyph; color=s.ref.col;
+    } else if(s.kind==="rocket"){
+      sizeY = Math.max(1,Math.min(H,(H/tY*0.55)|0));
+      sizeX = Math.max(1,(sizeY*0.9)|0); glyph="¤"; color="#ffce6b";
+    } else if(s.kind==="pad"){
+      sizeY = Math.max(1,Math.min(H,(H/tY*0.32)|0));
+      sizeX = Math.max(2,(sizeY*1.4)|0); glyph="▀"; color="#9b6bff";
+      anchorBottom=true;
+    } else { // particle
+      const life=s.ref.life;
+      sizeY = Math.max(1,Math.min(H,(H/tY* (s.ref.big?1.4:0.35))|0));
+      sizeX = Math.max(1,(sizeY* (s.ref.big?1.0:0.8))|0);
+      glyph = life>0.5? "#" : (life>0.25? "*" : ".");
+      color = s.ref.big? (life>0.4?"#ffd166":"#ff5a3c") : "#ffe08a";
+    }
+    const drawStartY = anchorBottom
+      ? Math.max(0, horizon + ((H/tY)/2|0) - sizeY)   // feet near floor line
+      : Math.max(0, horizon - (sizeY>>1));
+    const drawEndY = Math.min(H-1, drawStartY+sizeY);
+    const drawStartX = Math.max(0, screenX-(sizeX>>1));
+    const drawEndX   = Math.min(W-1, screenX+(sizeX>>1));
+    for(let x=drawStartX;x<=drawEndX;x++){
+      if(tY>=zbuf[x]) continue; // behind wall
+      for(let y=drawStartY;y<drawEndY;y++){
+        if(y<0||y>=H) continue;
+        let g;
+        if(s.kind==="bot"){
+          g = botGlyph(y-drawStartY, sizeY, hurt);
+        } else g = glyph;
+        if(g===" ") continue;
+        grid[y][x]=g;
+        cbuf[y][x]=color;
+      }
+    }
+  }
+
+  // ---- screen-space tracers (rail/blaster beams from muzzle to hit) ----
+  for(const tr of tracers){
+    // draw a vertical-ish streak at target screen column if in front
+    const sxp=tr.x-player.x, syp=tr.y-player.y;
+    const tX=invDet*(dirY*sxp-dirX*syp), tY=invDet*(-planeY*sxp+planeX*syp);
+    if(tY<=0.2) continue;
+    const scol=((W/2)*(1+tX/tY))|0;
+    if(scol<0||scol>=W) continue;
+    if(tY>=zbuf[scol]) continue;
+    const h=Math.min(H,(H/tY*0.6)|0);
+    const y0=Math.max(0,horizon-(h>>1)), y1=Math.min(H-1,horizon+(h>>1));
+    for(let y=y0;y<=y1;y++){ grid[y][scol]=tr.glyph; cbuf[y][scol]=tr.col; }
+  }
+
+  // ---- muzzle flash / weapon viewmodel at bottom center ----
+  drawViewmodel(grid,cbuf,horizon);
+
+  // ---- crosshair ----
+  const cxp=(W/2)|0, cyp=(H/2)|0;
+  if(grid[cyp]){ if(grid[cyp][cxp-1]===" "||grid[cyp][cxp-1]==="."){grid[cyp][cxp-1]="-";}
+    if(grid[cyp][cxp+1]===" "||grid[cyp][cxp+1]==="."){grid[cyp][cxp+1]="-";}
+  }
+  if(grid[cyp-1]&&(grid[cyp-1][cxp]===" ")) grid[cyp-1][cxp]="'";
+  if(grid[cyp+1]&&(grid[cyp+1][cxp]===" ")) grid[cyp+1][cxp]=",";
+  grid[cyp][cxp]="+"; cbuf[cyp][cxp]="#9bffc0";
+
+  // ---- compose with color spans ----
+  let out="";
+  for(let y=0;y<H;y++){
+    let run=""; let curCol=null;
+    for(let x=0;x<W;x++){
+      const ch=grid[y][x], col=cbuf[y][x];
+      if(col!==curCol){
+        if(run){ out += curCol? `<span style="color:${curCol}">${esc(run)}</span>` : esc(run); }
+        run=ch; curCol=col;
+      } else run+=ch;
+    }
+    if(run){ out += curCol? `<span style="color:${curCol}">${esc(run)}</span>` : esc(run); }
+    out+="\n";
+  }
+  view.innerHTML = out;
+}
+function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+// weapon viewmodel (ascii) bottom-center, recoils with kickback
+function drawViewmodel(grid,cbuf,horizon){
+  const cx=(W/2)|0;
+  const baseY=H-1-Math.round(player.kickback*3);
+  const w=WEAPONS[player.weapon];
+  const muz = player.muzzle>0;
+  // simple gun barrel art per weapon
+  let art=[];
+  if(w.kind==="rocket"){
+    art=[" ___ ","[===]==>","|####|"];
+  } else if(w.kind==="rail"){
+    art=["  _  "," |#|=---"," |#| "];
+  } else if(w.id===1){ // volt-flux
+    art=[" /=\\ ","[%%%]>>","|___|"];
+  } else {
+    art=["  _ "," |#|--"," |#| "];
+  }
+  for(let i=0;i<art.length;i++){
+    const row=art[i]; const yy=baseY-(art.length-1-i);
+    if(yy<0||yy>=H) continue;
+    const startX=cx-((row.length/2)|0);
+    for(let k=0;k<row.length;k++){
+      const ch=row[k]; if(ch===" ") continue;
+      const xx=startX+k; if(xx<0||xx>=W) continue;
+      grid[yy][xx]=ch; cbuf[yy][xx]="#a9c7b6";
+    }
+  }
+  if(muz){
+    const my=horizon, art2= w.kind==="rocket"? "(*)" : (w.kind==="rail"? "|" : "*");
+    const mxs=cx-((art2.length/2)|0);
+    for(let k=0;k<art2.length;k++){ const xx=mxs+k; if(xx<0||xx>=W)continue;
+      if(my>=0&&my<H){grid[my][xx]=art2[k]; cbuf[my][xx]="#fff0b0";} }
+  }
+}
+
+// ============================================================
+//  COMBAT
+// ============================================================
+function lineClearToWall(x0,y0,x1,y1,maxDist){
+  // DDA-ish step; returns distance to wall along ray or maxDist if clear
+  const dx=x1-x0, dy=y1-y0; const len=Math.hypot(dx,dy)||1e-9;
+  const nx=dx/len, ny=dy/len; const steps=Math.min(maxDist,len);
+  for(let t=0;t<steps;t+=0.08){
+    if(isWall(x0+nx*t,y0+ny*t)) return t;
+  }
+  return steps;
+}
+function hasLOS(ax,ay,bx,by){
+  const d=Math.hypot(bx-ax,by-ay);
+  return lineClearToWall(ax,ay,bx,by,d) >= d-0.05;
+}
+
+// hitscan: from shooter pos along angle; check bots (or player) within spread
+function fireHitscan(shooter, isPlayer){
+  const w = WEAPONS[shooter.weapon];
+  for(let p=0;p<(w.pellets||1);p++){
+    const ang = shooter.dir + (Math.random()-0.5)*2*(w.spread||0);
+    const dx=Math.cos(ang), dy=Math.sin(ang);
+    const wallD = lineClearToWall(shooter.x,shooter.y,shooter.x+dx*w.range,shooter.y+dy*w.range,w.range);
+    // find closest target along ray
+    let bestT=wallD, hitEnt=null, hx=shooter.x+dx*wallD, hy=shooter.y+dy*wallD;
+    const targets = isPlayer? bots.filter(b=>b.alive) : [player].filter(()=>player.alive);
+    for(const e of targets){
+      const ex=e.x-shooter.x, ey=e.y-shooter.y;
+      const proj = ex*dx+ey*dy;               // distance along ray
+      if(proj<0.2||proj>bestT) continue;
+      const perp = Math.abs(ex*dy-ey*dx);     // perpendicular dist
+      if(perp<0.42){ bestT=proj; hitEnt=e; hx=shooter.x+dx*proj; hy=shooter.y+dy*proj; }
+    }
+    // tracer
+    const isRail = w.kind==="rail";
+    tracers.push({x:hx,y:hy,glyph:isRail?"│":(w.tracer||"-"),col:isRail?"#5ad1ff":(isPlayer?"#fff0b0":"#ff9a76"),life:isRail?0.18:0.06});
+    if(hitEnt){
+      spawnSpark(hx,hy,false);
+      applyDamage(hitEnt, w.dmg, shooter, isPlayer);
+    } else {
+      spawnSpark(hx,hy,false);
+    }
+  }
+}
+function fireRail(shooter,isPlayer){ fireHitscan(shooter,isPlayer); }
+
+function fireRocket(shooter,isPlayer){
+  const w=WEAPONS[shooter.weapon];
+  const dx=Math.cos(shooter.dir), dy=Math.sin(shooter.dir);
+  projectiles.push({
+    x:shooter.x+dx*0.4, y:shooter.y+dy*0.4, vx:dx*w.speed, vy:dy*w.speed,
+    owner:isPlayer?"player":shooter, isPlayer:isPlayer, dmg:w.dmg, splash:w.splash, life:3.2
+  });
+}
+
+function fireWeapon(shooter,isPlayer){
+  const w=WEAPONS[shooter.weapon];
+  const key=w.ammoKey;
+  if(isPlayer){
+    if(player.ammo[key] < w.use){ flashWeaponEmpty(); return false; }
+    player.ammo[key]-=w.use;
+    player.kickback = Math.min(1.4, player.kickback + (w.kind==="rocket"?1.1:(w.kind==="rail"?0.8:0.4)));
+    player.muzzle = 0.06;
+  }
+  shooter.cool = w.cool;
+  if(w.kind==="rocket") fireRocket(shooter,isPlayer);
+  else if(w.kind==="rail") fireRail(shooter,isPlayer);
+  else fireHitscan(shooter,isPlayer);
+  return true;
+}
+let emptyT=0;
+function flashWeaponEmpty(){ emptyT=0.4; }
+
+function applyDamage(ent, dmg, src, fromPlayer){
+  if(ent===player){
+    // armor soak (2/3 to armor)
+    let d=dmg;
+    if(player.armor>0){ const soak=Math.min(player.armor, d*0.66|0); player.armor-=soak; d-=soak; }
+    player.hp-=d|0;
+    player.dmgFlash=Math.min(1,player.dmgFlash+0.5);
+    if(player.hp<=0){ player.hp=0; killPlayer(src); }
+  } else {
+    ent.flash=0.15;
+    let d=dmg;
+    if(ent.armor>0){ const soak=Math.min(ent.armor,(d*0.5)|0); ent.armor-=soak; d-=soak; }
+    ent.hp-=d;
+    if(ent.hp<=0){ killBot(ent, src, fromPlayer); }
+    else if(src===player){ /* bot reacts: turn to face & maybe flee */ ent.target=player; ent.think=0; }
+  }
+}
+
+function killBot(bot, src, byPlayer){
+  bot.alive=false; bot.respawn=2.2;
+  spawnExplosionFx(bot.x,bot.y,1.0,false);
+  bot.deaths=(bot.deaths||0)+1;
+  if(src===player || byPlayer){
+    player.frags++;
+    addLog(`<span class="k">FRAG</span> ${bot.name} 처치 (${WEAPONS[player.weapon].name})`);
+    player.killFlash=0.25;
+    if(player.frags>=FRAG_LIMIT){ endMatch(true); }
+  } else if(src && src.name){
+    src.frags=(src.frags||0)+1;
+    addLog(`<span class="d">${src.name}</span> 가 ${bot.name} 처치`);
+  }
+}
+function killPlayer(src){
+  player.alive=false; player.respawn=2.0; player.deaths++;
+  spawnExplosionFx(player.x,player.y,1.0,false);
+  if(src && src.name){ src.frags=(src.frags||0)+1; addLog(`<span class="k">DEAD</span> ${src.name} 에게 당함`); }
+  else addLog(`<span class="k">DEAD</span> 자멸`);
+}
+
+function spawnSpark(x,y,big){ particles.push({x,y,life:0.3,big:false}); }
+function spawnExplosionFx(x,y,scale,big){
+  for(let i=0;i<10;i++){
+    const a=Math.random()*6.28, r=Math.random()*0.9*scale;
+    particles.push({x:x+Math.cos(a)*r, y:y+Math.sin(a)*r, life:0.45+Math.random()*0.3, big:true});
+  }
+}
+
+// rocket explosion -> splash damage to all entities in radius (incl. self => rocket jump)
+function explodeRocket(r){
+  spawnExplosionFx(r.x,r.y,1.3,true);
+  const victims = [...bots.filter(b=>b.alive)];
+  // player always a potential victim
+  const all = [{e:player,isP:true}, ...victims.map(b=>({e:b,isP:false}))];
+  for(const {e,isP} of all){
+    const d=Math.hypot(e.x-r.x,e.y-r.y);
+    if(d>r.splash) continue;
+    if(!hasLOS(r.x,r.y,e.x,e.y)) continue;
+    const falloff = 1 - d/r.splash;
+    const dmg = Math.ceil(r.dmg*falloff);
+    // knockback (rocket jump!)
+    const kdir = Math.atan2(e.y-r.y||0.001, e.x-r.x||0.001);
+    const force = falloff* (isP?0.55:0.32);
+    if(isP){
+      e.vz += force*1.6;     // vertical pop = rocket jump
+      e.x += Math.cos(kdir)*force; e.y += Math.sin(kdir)*force;
+      // only damage player from own rocket if close (self-splash reduced)
+      const self = (r.owner==="player");
+      applyDamage(e, self? Math.ceil(dmg*0.5):dmg, r.owner==="player"?player:r.owner, false);
+    } else {
+      e.x += Math.cos(kdir)*force; e.y += Math.sin(kdir)*force;
+      applyDamage(e, dmg, r.isPlayer?player:r.owner, r.isPlayer);
+    }
+  }
+}
+
+// ============================================================
+//  MOVEMENT
+// ============================================================
+function tryMoveEnt(ent, nx, ny, radius){
+  const r=radius||0.22;
+  if(isOpen(nx+Math.sign(nx-ent.x)*r, ent.y)) ent.x=nx;
+  if(isOpen(ent.x, ny+Math.sign(ny-ent.y)*r)) ent.y=ny;
+}
+
+// ============================================================
+//  BOT AI
+// ============================================================
+function updateBot(b, dt){
+  if(!b.alive){
+    b.respawn-=dt;
+    if(b.respawn<=0){ const s=randSpawn(player,5); Object.assign(b, spawnBot(), {name:b.name, frags:b.frags, deaths:b.deaths, x:s.x, y:s.y}); }
+    return;
+  }
+  if(b.flash>0) b.flash-=dt;
+  b.cool=Math.max(0,b.cool-dt);
+  b.think-=dt; b.strafeT-=dt;
+
+  const dpx=player.x-b.x, dpy=player.y-b.y;
+  const distP=Math.hypot(dpx,dpy);
+  const see = player.alive && distP<13 && hasLOS(b.x,b.y,player.x,player.y);
+
+  if(see){
+    b.target=player;
+    // face player (with skill-based aim error)
+    const want=Math.atan2(dpy,dpx);
+    let da=((want-b.dir+Math.PI*3)%(Math.PI*2))-Math.PI;
+    b.dir += da*Math.min(1, dt* (4+b.skill*5));
+    // pick weapon by range
+    if(distP>9) b.weapon=2;           // rail far
+    else if(distP>4) b.weapon=Math.random()<0.5?3:0;
+    else b.weapon=Math.random()<0.5?1:0;
+    // shoot if roughly aimed & has ammo (bots have infinite ammo for fairness/pace)
+    const aimed=Math.abs(da)< (0.18+ (1-b.skill)*0.25);
+    if(aimed && b.cool<=0 && Math.random()<0.55+b.skill*0.4){
+      // bots don't consume ammo
+      const realAmmo=player.ammo; // not used
+      const w=WEAPONS[b.weapon];
+      b.cool=w.cool*(1.2-b.skill*0.4);
+      if(w.kind==="rocket") fireRocket(b,false);
+      else if(w.kind==="rail") fireRail(b,false);
+      else fireHitscan(b,false);
+    }
+    // strafe + approach to ideal range (~5 tiles)
+    if(b.strafeT<=0){ b.strafe=Math.random()<0.5?1:-1; b.strafeT=0.6+Math.random()*0.8; }
+    const fx=Math.cos(b.dir), fy=Math.sin(b.dir);
+    const sx=-fy, sy=fx;
+    let mvx=0,mvy=0;
+    const sp=1.9*dt*b.skill;
+    if(distP>5){ mvx+=fx; mvy+=fy; } else if(distP<3.2){ mvx-=fx; mvy-=fy; }
+    mvx+=sx*b.strafe*0.9; mvy+=sy*b.strafe*0.9;
+    const ml=Math.hypot(mvx,mvy)||1; mvx/=ml; mvy/=ml;
+    tryMoveEnt(b, b.x+mvx*sp, b.y+mvy*sp, 0.3);
+  } else {
+    // wander to waypoint
+    if(b.think<=0 || (Math.hypot(b.wx-b.x,b.wy-b.y)<0.6)){
+      // sometimes hunt pickups, sometimes random
+      let tgt;
+      if(Math.random()<0.4){ const avail=pickups.filter(p=>p.rt<=0); tgt=avail.length?avail[(Math.random()*avail.length)|0]:null; }
+      tgt = tgt || SPAWNS[(Math.random()*SPAWNS.length)|0];
+      b.wx=tgt.x; b.wy=tgt.y; b.think=2+Math.random()*2;
+    }
+    const wa=Math.atan2(b.wy-b.y,b.wx-b.x);
+    let da=((wa-b.dir+Math.PI*3)%(Math.PI*2))-Math.PI;
+    b.dir+=da*Math.min(1,dt*3);
+    const fx=Math.cos(b.dir),fy=Math.sin(b.dir);
+    tryMoveEnt(b, b.x+fx*1.5*dt, b.y+fy*1.5*dt, 0.3);
+  }
+  botPickups(b);
+}
+function botPickups(b){
+  for(const p of pickups){
+    if(p.rt>0) continue;
+    if(Math.hypot(p.x-b.x,p.y-b.y)<0.5){
+      if(p.type==="health"||p.type==="mega"){ b.hp=Math.min(p.type==="mega"?200:100,b.hp+p.amt); p.rt=p.cd; }
+      else if(p.type==="armor"){ b.armor=Math.min(150,b.armor+p.amt); p.rt=p.cd; }
+      // bots ignore ammo (infinite) but still trigger respawn so player competes
+    }
+  }
+}
+
+// ============================================================
+//  PLAYER UPDATE
+// ============================================================
+const keys={};
+let mouseDX=0;
+function updatePlayer(dt){
+  if(!player.alive){
+    player.respawn-=dt;
+    if(player.respawn<=0) respawnPlayer();
+    return;
+  }
+  // look
+  const rs=2.6*dt;
+  if(keys["arrowleft"]||keys["q"]&&false) player.dir-=rs;
+  if(keys["arrowright"]) player.dir+=rs;
+  if(keys["arrowleft"]) player.dir-=rs;
+  if(mouseDX){ player.dir += mouseDX*0.0024; mouseDX=0; }
+
+  // move
+  const fx=Math.cos(player.dir), fy=Math.sin(player.dir);
+  const ms=2.9*dt;
+  let mvx=0,mvy=0;
+  if(keys["w"]||keys["arrowup"]){mvx+=fx;mvy+=fy;}
+  if(keys["s"]||keys["arrowdown"]){mvx-=fx;mvy-=fy;}
+  if(keys["a"]){mvx+=fy;mvy-=fx;}
+  if(keys["d"]){mvx-=fy;mvy+=fx;}
+  const ml=Math.hypot(mvx,mvy);
+  if(ml>0){ mvx/=ml; mvy/=ml; tryMoveEnt(player, player.x+mvx*ms, player.y+mvy*ms, 0.22); }
+
+  // jump / gravity / z-bob
+  if((keys["shift"]||keys[" jump"]) && player.z<=0.02 && player.vz<=0.05){ player.vz=1.3; }
+  player.vz -= 5.0*dt;
+  player.z += player.vz*dt;
+  if(player.z<0){ player.z=0; player.vz=0; }
+  if(player.z>2.4){ player.z=2.4; player.vz=Math.min(player.vz,0); }
+
+  // jump pads
+  for(const j of JUMPPADS){
+    if(Math.hypot(j.x-player.x,j.y-player.y)<0.55 && player.z<0.1){
+      player.vz=2.0; addLog(`<span class="d">점프패드!</span>`);
+    }
+  }
+
+  // fire
+  player.cool=Math.max(0,player.cool-dt);
+  if((keys[" "]||keys["mouse"]) && player.cool<=0){ fireWeapon(player,true); }
+
+  // weapon switch
+  if(keys["1"]){player.weapon=0;keys["1"]=false;}
+  if(keys["2"]){player.weapon=2;keys["2"]=false;}  // 2 -> rail
+  if(keys["3"]){player.weapon=3;keys["3"]=false;}  // 3 -> rocket
+  if(keys["4"]){player.weapon=1;keys["4"]=false;}  // 4 -> volt
+  if(keys["q"]){ player.weapon=(player.weapon+1)%4; keys["q"]=false; }
+
+  // pickups
+  for(const p of pickups){
+    if(p.rt>0) continue;
+    if(Math.hypot(p.x-player.x,p.y-player.y)<0.55){
+      grab(p);
+    }
+  }
+  // decays
+  player.kickback=Math.max(0,player.kickback-dt*4.5);
+  player.muzzle=Math.max(0,player.muzzle-dt);
+  player.dmgFlash=Math.max(0,player.dmgFlash-dt*2.2);
+  player.killFlash=Math.max(0,player.killFlash-dt*2.5);
+}
+function grab(p){
+  let took=false;
+  if(p.type==="health"){ if(player.hp<100){player.hp=Math.min(100,player.hp+p.amt);took=true;} }
+  else if(p.type==="mega"){ player.hp=Math.min(200,player.hp+p.amt); took=true; }
+  else if(p.type==="armor"){ if(player.armor<150){player.armor=Math.min(150,player.armor+p.amt);took=true;} }
+  else if(p.type==="rockets"){ if(player.ammo.rockets<50){player.ammo.rockets=Math.min(50,player.ammo.rockets+p.amt);took=true;} }
+  else if(p.type==="slugs"){ if(player.ammo.slugs<50){player.ammo.slugs=Math.min(50,player.ammo.slugs+p.amt);took=true;} }
+  else if(p.type==="cells"){ if(player.ammo.cells<300){player.ammo.cells=Math.min(300,player.ammo.cells+p.amt);took=true;} }
+  if(took){ p.rt=p.cd; addLog(`<span class="d">획득</span> ${p.txt}`); }
+}
+function respawnPlayer(){
+  const s=randSpawn(null,6);
+  player.x=s.x; player.y=s.y; player.dir=Math.random()*6.28;
+  player.hp=100; player.armor=0; player.alive=true; player.z=0; player.vz=0;
+  player.ammo={cells:Math.max(player.ammo.cells,80), slugs:Math.max(player.ammo.slugs,10), rockets:Math.max(player.ammo.rockets,10)};
+  addLog(`<span class="d">리스폰</span>`);
+}
+
+// ============================================================
+//  WORLD UPDATE
+// ============================================================
+function updateWorld(dt){
+  // projectiles
+  for(let i=projectiles.length-1;i>=0;i--){
+    const r=projectiles[i];
+    r.life-=dt; let steps=4;
+    let exploded=false;
+    for(let k=0;k<steps;k++){
+      const nx=r.x+r.vx*dt/steps, ny=r.y+r.vy*dt/steps;
+      if(isWall(nx,ny)){ r.x=nx;r.y=ny; explodeRocket(r); exploded=true; break; }
+      r.x=nx; r.y=ny;
+      // direct entity hit
+      const ents = r.isPlayer? bots.filter(b=>b.alive) : [player].filter(()=>player.alive);
+      let hit=false;
+      for(const e of ents){ if(Math.hypot(e.x-r.x,e.y-r.y)<0.45){ explodeRocket(r); exploded=true; hit=true; break; } }
+      if(hit) break;
+    }
+    if(exploded || r.life<=0){ if(!exploded&&r.life<=0) explodeRocket(r); projectiles.splice(i,1); }
+  }
+  // particles
+  for(let i=particles.length-1;i>=0;i--){ particles[i].life-=dt; if(particles[i].life<=0) particles.splice(i,1); }
+  // tracers
+  for(let i=tracers.length-1;i>=0;i--){ tracers[i].life-=dt; if(tracers[i].life<=0) tracers.splice(i,1); }
+  // pickup respawn timers
+  for(const p of pickups){ if(p.rt>0) p.rt-=dt; }
+  // bots
+  for(const b of bots) updateBot(b,dt);
+}
+
+// ============================================================
+//  HUD / LOG
+// ============================================================
+function addLog(html){
+  logLines.unshift(html);
+  if(logLines.length>5) logLines.pop();
+  logEl.innerHTML = logLines.join("<br>");
+  clearTimeout(addLog._t);
+  addLog._t=setTimeout(()=>{ logLines.pop(); logEl.innerHTML=logLines.join("<br>"); },3500);
+}
+function updateHUD(){
+  const w=WEAPONS[player.weapon];
+  hpEl.querySelector(".val").textContent = player.alive? player.hp : "—";
+  hpEl.classList.toggle("low", player.hp<=30);
+  arEl.querySelector(".val").textContent = player.armor;
+  amEl.querySelector(".val").textContent = player.alive? player.ammo[w.ammoKey] : "—";
+  wpEl.querySelector(".val").textContent = w.name + (emptyT>0?" (탄없음)":"");
+  fragEl.querySelector(".val").textContent = `${player.frags} / ${FRAG_LIMIT}`;
+  // flash overlay
+  let fl="transparent";
+  if(player.dmgFlash>0) fl=`rgba(255,40,20,${(player.dmgFlash*0.4).toFixed(2)})`;
+  else if(player.killFlash>0) fl=`rgba(255,210,90,${(player.killFlash*0.18).toFixed(2)})`;
+  else if(!player.alive) fl="rgba(80,0,0,0.45)";
+  flashEl.style.background=fl;
+}
+function updateMinimap(){
+  if(getComputedStyle(mapEl).display==="none") return;
+  const sc=1; let g=[];
+  for(let y=0;y<MH;y++){ let row=""; for(let x=0;x<MW;x++){ row += MAP[y][x]? "#":" "; } g.push(row.split("")); }
+  for(const b of bots){ if(b.alive && g[b.y|0]) g[b.y|0][b.x|0]="b"; }
+  for(const p of pickups){ if(p.rt<=0 && g[p.y|0] && g[p.y|0][p.x|0]===" ") g[p.y|0][p.x|0]="·"; }
+  if(g[player.y|0]) g[player.y|0][player.x|0]="@";
+  mapEl.innerHTML = g.map(r=>r.join("").replace(/@/g,'<span style="color:#ffd166">@</span>').replace(/b/g,'<span style="color:#ff5a3c">b</span>')).join("\n");
+}
+
+// ============================================================
+//  SCOREBOARD
+// ============================================================
+function showBoard(title,sub,final){
+  const rows=[{name:"당신",frags:player.frags,deaths:player.deaths,me:true},
+    ...bots.map(b=>({name:b.name,frags:b.frags||0,deaths:b.deaths||0}))];
+  rows.sort((a,b)=>b.frags-a.frags);
+  document.getElementById("board-title").textContent=title;
+  document.getElementById("board-sub").textContent=sub;
+  document.getElementById("board-rows").innerHTML = rows.map((r,i)=>
+    `<div class="row ${r.me?'me':'bot'}">${String(i+1).padStart(2)}.  ${r.name.padEnd(10)}  FRAGS ${String(r.frags).padStart(3)}   DEATHS ${String(r.deaths).padStart(3)}</div>`
+  ).join("");
+  const btn=document.getElementById("resume");
+  btn.textContent = final? "다시 시작" : "계속";
+  board.classList.remove("hidden");
+}
+function endMatch(won){
+  paused=true;
+  showBoard(won?"승리 — VICTORY":"매치 종료", won?`${FRAG_LIMIT} 프래그 달성!`:"", true);
+}
+
+// ============================================================
+//  LOOP
+// ============================================================
+function frame(t){
+  const dt=Math.min(0.05,(t-lastT)/1000); lastT=t;
+  if(running && !paused){
+    updatePlayer(dt);
+    updateWorld(dt);
+    if(emptyT>0) emptyT-=dt;
+    render();
+    updateHUD();
+    updateMinimap();
+  }
+  requestAnimationFrame(frame);
+}
+
+// ============================================================
+//  INPUT
+// ============================================================
+addEventListener("keydown",e=>{
+  const k=e.key.toLowerCase();
+  if(k==="escape"){ if(running){ paused=!paused; if(paused) showBoard("FRAG STANDINGS","투기장 일시정지",false); else board.classList.add("hidden"); } return; }
+  keys[k]=true;
+  if(["arrowup","arrowdown","arrowleft","arrowright"," "].includes(k)) e.preventDefault();
+});
+addEventListener("keyup",e=>{ keys[e.key.toLowerCase()]=false; });
+
+view.addEventListener("mousedown",()=>{ keys["mouse"]=true; if(running&&!paused&&!document.pointerLockElement) view.requestPointerLock&&view.requestPointerLock(); });
+addEventListener("mouseup",()=>{ keys["mouse"]=false; });
+addEventListener("mousemove",e=>{ if(document.pointerLockElement===view) mouseDX += e.movementX; });
+
+// touch
+const T={};
+function bindTouch(id,on,off){
+  const el=document.getElementById(id); if(!el) return;
+  el.addEventListener("touchstart",e=>{e.preventDefault();on();},{passive:false});
+  el.addEventListener("touchend",e=>{e.preventDefault();off&&off();},{passive:false});
+  el.addEventListener("touchcancel",e=>{off&&off();});
+}
+bindTouch("pu",()=>keys["w"]=true,()=>keys["w"]=false);
+bindTouch("pd",()=>keys["s"]=true,()=>keys["s"]=false);
+bindTouch("pl",()=>keys["a"]=true,()=>keys["a"]=false);
+bindTouch("pr",()=>keys["d"]=true,()=>keys["d"]=false);
+bindTouch("fire",()=>keys["mouse"]=true,()=>keys["mouse"]=false);
+bindTouch("jmp",()=>{keys["shift"]=true;setTimeout(()=>keys["shift"]=false,120);});
+bindTouch("swp",()=>{player.weapon=(player.weapon+1)%4;});
+// look drag
+const look=document.getElementById("look");
+let lastTouchX=null;
+if(look){
+  look.addEventListener("touchstart",e=>{ lastTouchX=e.touches[0].clientX; },{passive:true});
+  look.addEventListener("touchmove",e=>{ if(lastTouchX!=null){ player.dir+=(e.touches[0].clientX-lastTouchX)*0.006; lastTouchX=e.touches[0].clientX; } },{passive:true});
+  look.addEventListener("touchend",()=>{ lastTouchX=null; });
+}
+
+// ============================================================
+//  START
+// ============================================================
+function startGame(){
+  fit();
+  makePickups();
+  initBots(4);
+  player.x=2.5; player.y=2.5; player.dir=0.8; player.hp=100; player.armor=0;
+  player.frags=0; player.deaths=0; player.alive=true; player.weapon=0;
+  player.ammo={cells:200,slugs:25,rockets:25};
+  running=true; paused=false;
+  intro.classList.add("hidden");
+  board.classList.add("hidden");
+  addLog(`<span class="d">투기장 입장 — 먼저 ${FRAG_LIMIT}프래그!</span>`);
+  lastT=performance.now();
+}
+document.getElementById("start").addEventListener("click",startGame);
+document.getElementById("resume").addEventListener("click",()=>{
+  if(document.getElementById("resume").textContent.indexOf("다시")>=0){ startGame(); }
+  else { paused=false; board.classList.add("hidden"); }
+});
+
+addEventListener("resize",()=>{ fit(); });
+
+// first paint of the world behind the intro so it isn't blank
+fit(); makePickups(); initBots(4);
+render();
+requestAnimationFrame(frame);
+
+// ---- test hook (used by playwright self-verification only) ----
+window.__arena = {
+  start: startGame,
+  state: () => ({ x:player.x, y:player.y, dir:player.dir, hp:player.hp, armor:player.armor,
+    frags:player.frags, weapon:WEAPONS[player.weapon].name, ammo:{...player.ammo}, z:player.z,
+    bots:bots.length, botsAlive:bots.filter(b=>b.alive).length, running, paused,
+    rockets:projectiles.length, particles:particles.length, tracers:tracers.length }),
+  teleport:(x,y)=>{player.x=x;player.y=y;}, face:(a)=>{player.dir=a;},
+  setWeapon:(w)=>{player.weapon=w;}, fire:()=>fireWeapon(player,true),
+  hurtPlayer:(d)=>applyDamage(player,d,{name:"TEST"},false),
+  paintLen: () => view.textContent.replace(/\s/g,"").length,
+  spriteCount: () => gatherSprites().length,
+  putBotAhead: (dist,reset) => { // place bot #0 directly in front of player for combat test
+    const b=bots[0]; b.alive=true; if(reset){b.hp=90;b.armor=0;}
+    b.x=player.x+Math.cos(player.dir)*(dist||3);
+    b.y=player.y+Math.sin(player.dir)*(dist||3);
+    return {bx:b.x,by:b.y,bhp:b.hp};
+  },
+  botHp: ()=> bots[0]? bots[0].hp : null,
+  botAlive: ()=> bots[0]? bots[0].alive : null,
+};
+
+})();
+</script>
+</body>
+</html>

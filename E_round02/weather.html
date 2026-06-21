@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>METEO//486 — DITHER WEATHER STATION</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<style>
+  /* ===================== PALETTE (limited warm + teal, ~14 swatches) ===================== */
+  :root{
+    --maroon-0:#1a0c12;   /* deepest */
+    --maroon-1:#24121a;
+    --maroon-2:#3a1822;
+    --rust-0:#5e2417;
+    --rust-1:#8a3a22;
+    --rust-2:#b85733;
+    --salmon:#d97a4e;
+    --peach:#f0a878;
+    --cream:#f6d8a8;
+    --teal-0:#0f3a3a;
+    --teal-1:#1d5a52;
+    --teal-2:#3a8a78;
+    --green:#6db58a;
+    --ink:#e8c9a0;
+    --line:#5e2417;
+    --line-hi:#b85733;
+    --bg:#160a0f;
+  }
+
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html,body{height:100%;}
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:'VT323', monospace;
+    -webkit-font-smoothing:none;
+    image-rendering:pixelated;
+    overflow-x:hidden;
+    /* subtle vignette over deep maroon */
+    background:
+      radial-gradient(120% 90% at 50% 0%, rgba(90,30,20,0.35), transparent 60%),
+      radial-gradient(140% 120% at 50% 120%, rgba(15,58,58,0.18), transparent 55%),
+      var(--bg);
+    padding:14px;
+  }
+  /* global scanline + CRT veil */
+  body::after{
+    content:"";
+    position:fixed; inset:0; z-index:9999; pointer-events:none;
+    background:repeating-linear-gradient(0deg, rgba(0,0,0,0.0) 0px, rgba(0,0,0,0.0) 2px, rgba(0,0,0,0.16) 3px, rgba(0,0,0,0.16) 3px);
+    mix-blend-mode:multiply;
+  }
+  body::before{
+    content:"";
+    position:fixed; inset:0; z-index:9998; pointer-events:none;
+    background:radial-gradient(120% 120% at 50% 40%, transparent 58%, rgba(0,0,0,0.45) 100%);
+  }
+
+  .pixel{font-family:'Press Start 2P', monospace;}
+  .mono{font-family:'VT323', monospace;}
+
+  /* ===================== TOP MARQUEE BAR ===================== */
+  .topbar{
+    max-width:1180px; margin:0 auto 12px;
+    display:flex; align-items:center; gap:10px;
+    border:2px solid var(--line); background:var(--maroon-1);
+    padding:7px 10px; font-family:'Press Start 2P'; font-size:7px; letter-spacing:1px;
+    color:var(--peach);
+    box-shadow:inset 0 0 0 2px var(--maroon-0), 0 0 0 2px var(--maroon-0);
+  }
+  .topbar .dot{width:8px; height:8px; background:var(--rust-2); box-shadow:10px 0 0 var(--salmon), 20px 0 0 var(--teal-2);}
+  .topbar .grow{flex:1; overflow:hidden; white-space:nowrap;}
+  .marquee{display:inline-block; padding-left:100%; animation:scroll 24s linear infinite; color:var(--cream);}
+  @keyframes scroll{to{transform:translateX(-100%);}}
+  .topbar .clk{color:var(--green); white-space:nowrap;}
+
+  /* ===================== LAYOUT ===================== */
+  .shell{max-width:1180px; margin:0 auto; display:grid; grid-template-columns:1fr 318px; gap:12px;}
+  @media (max-width:900px){ .shell{grid-template-columns:1fr;} }
+
+  /* generic 486 window */
+  .win{ border:2px solid var(--line); background:var(--maroon-1); box-shadow:inset 0 0 0 2px var(--maroon-0); }
+  .titlebar{
+    display:flex; align-items:center; gap:8px;
+    background:linear-gradient(90deg, var(--rust-1), var(--rust-0));
+    border-bottom:2px solid var(--maroon-0);
+    padding:5px 8px; font-family:'Press Start 2P'; font-size:7px; color:var(--cream); letter-spacing:1px;
+  }
+  .titlebar .tb-name{flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .btnbox{display:flex; gap:4px;}
+  .tbtn{width:12px; height:12px; border:1px solid var(--maroon-0); background:var(--peach); display:inline-block;}
+  .tbtn.c2{background:var(--salmon);} .tbtn.c3{background:var(--teal-2);}
+
+  /* ===================== STAGE (dither canvas) ===================== */
+  .stage{position:relative;}
+  .stage .frame{ position:relative; background:var(--maroon-0); padding:6px; }
+  #sky{ display:block; width:100%; height:auto; image-rendering:pixelated; }
+  .stage .overlay{
+    position:absolute; inset:6px; pointer-events:none;
+    display:flex; flex-direction:column; justify-content:space-between;
+    padding:10px 12px;
+  }
+  .hud-top{display:flex; justify-content:space-between; align-items:flex-start;}
+  .place{ font-family:'Press Start 2P'; font-size:12px; color:var(--cream); text-shadow:2px 2px 0 var(--maroon-0); line-height:1.5;}
+  .place small{display:block; font-family:'VT323'; font-size:16px; color:var(--peach); letter-spacing:2px; margin-top:4px; text-shadow:1px 1px 0 var(--maroon-0);}
+  .cond-chip{ font-family:'Press Start 2P'; font-size:7px; color:var(--maroon-0); background:var(--cream); padding:5px 7px; border:2px solid var(--maroon-0); letter-spacing:1px;}
+  .hud-bot{display:flex; justify-content:space-between; align-items:flex-end;}
+  .bigtemp{ font-family:'Press Start 2P'; font-size:34px; color:var(--cream); text-shadow:3px 3px 0 var(--maroon-0);}
+  .bigtemp .u{font-size:16px; color:var(--peach);}
+  .stat-strip{ text-align:right; font-family:'VT323'; font-size:17px; color:var(--ink); line-height:1.15; text-shadow:1px 1px 0 var(--maroon-0);}
+  .stat-strip b{color:var(--green);}
+
+  @media (max-width:480px){
+    .place{font-size:9px;} .place small{font-size:13px;}
+    .bigtemp{font-size:24px;} .bigtemp .u{font-size:12px;}
+    .stat-strip{font-size:14px;}
+  }
+
+  /* ===================== CONTROL panel (right) ===================== */
+  .ctl-body{padding:9px;}
+  .ctl-sec{ font-family:'Press Start 2P'; font-size:7px; color:var(--salmon); letter-spacing:1px; margin:8px 2px 6px; border-bottom:1px dashed var(--line); padding-bottom:5px;}
+  .ctl-sec:first-child{margin-top:2px;}
+  .row{ display:flex; justify-content:space-between; align-items:center; font-family:'VT323'; font-size:18px; padding:3px 4px; color:var(--ink);}
+  .row .k{color:var(--peach); letter-spacing:1px;}
+  .row .v{color:var(--green);}
+
+  /* condition buttons */
+  .seg{display:grid; grid-template-columns:1fr 1fr; gap:6px; padding:2px 2px 4px;}
+  .seg button{
+    font-family:'Press Start 2P'; font-size:7px; letter-spacing:1px;
+    color:var(--cream); background:var(--maroon-2);
+    border:2px solid var(--line); padding:8px 4px; cursor:pointer;
+    box-shadow:inset 0 0 0 1px var(--maroon-0);
+    transition:none;
+  }
+  .seg button:hover{background:var(--rust-0); border-color:var(--line-hi);}
+  .seg button.on{ background:var(--rust-2); color:var(--maroon-0); border-color:var(--cream); box-shadow:inset 0 0 0 2px var(--cream);}
+
+  /* sliders / toggles */
+  .ctl-line{ display:flex; align-items:center; gap:8px; padding:5px 4px; }
+  .ctl-line label{ font-family:'VT323'; font-size:16px; color:var(--peach); width:78px; letter-spacing:1px;}
+  input[type=range]{ -webkit-appearance:none; appearance:none; flex:1; height:10px; background:var(--maroon-0); border:1px solid var(--line); outline:none;}
+  input[type=range]::-webkit-slider-thumb{ -webkit-appearance:none; width:12px; height:18px; background:var(--peach); border:2px solid var(--maroon-0); cursor:pointer;}
+  input[type=range]::-moz-range-thumb{ width:12px; height:18px; background:var(--peach); border:2px solid var(--maroon-0); cursor:pointer; border-radius:0;}
+  .ctl-line .val{ font-family:'Press Start 2P'; font-size:7px; color:var(--green); width:34px; text-align:right;}
+
+  .toggle{ display:flex; gap:6px; }
+  .toggle button{ flex:1; font-family:'Press Start 2P'; font-size:6px; padding:6px 2px; color:var(--ink); background:var(--maroon-2); border:2px solid var(--line); cursor:pointer; letter-spacing:1px;}
+  .toggle button.on{ background:var(--teal-1); color:var(--cream); border-color:var(--teal-2);}
+
+  /* gauges */
+  .gauges{display:grid; grid-template-columns:1fr 1fr; gap:8px; padding:4px 2px;}
+  .gauge{ border:2px solid var(--line); background:var(--maroon-0); padding:6px; text-align:center;}
+  .gauge .gl{font-family:'Press Start 2P'; font-size:6px; color:var(--salmon); letter-spacing:1px;}
+  .gauge canvas{display:block; margin:5px auto 3px; image-rendering:pixelated;}
+  .gauge .gv{font-family:'Press Start 2P'; font-size:8px; color:var(--cream);}
+
+  /* ===================== FORECAST STRIP (bottom full) ===================== */
+  .forecast{ max-width:1180px; margin:12px auto 8px;}
+  .fc-body{ display:grid; grid-template-columns:repeat(7,1fr); gap:6px; padding:9px;}
+  @media (max-width:560px){ .fc-body{grid-template-columns:repeat(4,1fr);} }
+  .fc-cell{ border:2px solid var(--line); background:var(--maroon-0); padding:7px 4px; text-align:center; cursor:pointer; }
+  .fc-cell:hover{ border-color:var(--line-hi); background:var(--maroon-2);}
+  .fc-cell.on{ border-color:var(--cream); background:var(--rust-0);}
+  .fc-day{ font-family:'Press Start 2P'; font-size:7px; color:var(--peach); letter-spacing:1px;}
+  .fc-cell canvas{ display:block; margin:7px auto 5px; image-rendering:pixelated;}
+  .fc-hi{ font-family:'Press Start 2P'; font-size:8px; color:var(--cream);}
+  .fc-lo{ font-family:'VT323'; font-size:15px; color:var(--teal-2); letter-spacing:1px;}
+
+  /* footer status */
+  .statusbar{ max-width:1180px; margin:0 auto; display:flex; gap:12px; align-items:center; flex-wrap:wrap;
+    border:2px solid var(--line); background:var(--maroon-1); box-shadow:inset 0 0 0 2px var(--maroon-0);
+    padding:6px 10px; font-family:'VT323'; font-size:15px; color:var(--ink); letter-spacing:1px;}
+  .statusbar .seg2{display:flex; gap:6px; align-items:center;}
+  .statusbar .led{width:8px; height:8px; background:var(--green); box-shadow:0 0 6px var(--green);}
+  .statusbar .led.amber{background:var(--peach); box-shadow:0 0 6px var(--peach);}
+  .statusbar b{color:var(--salmon);}
+  .spacer{flex:1;}
+
+</style>
+</head>
+<body>
+
+  <!-- ================= TOP BAR ================= -->
+  <div class="topbar">
+    <span class="dot"></span>
+    <span class="grow"><span class="marquee" id="ticker">METEO//486 DITHER WEATHER STATION · ORDERED BAYER QUANTIZER ONLINE · 14-SWATCH WARM PALETTE LOCKED · SYNTHETIC FORECAST MODEL v4.86 · NO BLOCKING INTRO · FRAME BUFFER NOMINAL ·</span></span>
+    <span class="clk" id="clk">--:--:--</span>
+  </div>
+
+  <!-- ================= MAIN SHELL ================= -->
+  <div class="shell">
+
+    <!-- LEFT: dither sky window -->
+    <div class="win stage">
+      <div class="titlebar">
+        <div class="btnbox"><span class="tbtn"></span><span class="tbtn c2"></span><span class="tbtn c3"></span></div>
+        <div class="tb-name">SKY.RENDER — DITHER STAGE</div>
+        <div>4X4/8X8</div>
+      </div>
+      <div class="frame">
+        <canvas id="sky" width="480" height="300"></canvas>
+        <div class="overlay">
+          <div class="hud-top">
+            <div class="place">PORT VESPER<small id="hud-region">SECTOR 48-6 · 37.8N</small></div>
+            <div class="cond-chip" id="hud-chip">CLEAR</div>
+          </div>
+          <div class="hud-bot">
+            <div class="bigtemp"><span id="hud-temp">21</span><span class="u">°C</span></div>
+            <div class="stat-strip">
+              FEELS <b id="hud-feels">20°</b><br>
+              WIND <b id="hud-wind">11 KT</b><br>
+              HUMID <b id="hud-hum">58%</b>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: CONTROL panel -->
+    <div class="win">
+      <div class="titlebar">
+        <div class="btnbox"><span class="tbtn"></span><span class="tbtn c2"></span><span class="tbtn c3"></span></div>
+        <div class="tb-name">CONTROL.PANEL</div>
+        <div>SYS</div>
+      </div>
+      <div class="ctl-body">
+
+        <div class="ctl-sec">SKY CONDITION</div>
+        <div class="seg" id="seg">
+          <button data-c="clear" class="on">CLEAR</button>
+          <button data-c="sunset">SUNSET</button>
+          <button data-c="storm">STORM</button>
+          <button data-c="snow">SNOW</button>
+        </div>
+
+        <div class="ctl-sec">RENDER ENGINE</div>
+        <div class="ctl-line">
+          <label>DITHER</label>
+          <div class="toggle" id="ditmode" style="flex:1">
+            <button data-d="bayer4">4X4</button>
+            <button data-d="bayer8" class="on">8X8</button>
+            <button data-d="off">RAW</button>
+          </div>
+        </div>
+        <div class="ctl-line">
+          <label>PIXEL</label>
+          <input type="range" id="pixsize" min="2" max="6" value="3" step="1">
+          <span class="val" id="pixval">3X</span>
+        </div>
+        <div class="ctl-line">
+          <label>PALETTE</label>
+          <input type="range" id="palsize" min="4" max="14" value="14" step="2">
+          <span class="val" id="palval">14</span>
+        </div>
+        <div class="ctl-line">
+          <label>SCANLINE</label>
+          <div class="toggle" id="scanmode" style="flex:1">
+            <button data-s="on" class="on">ON</button>
+            <button data-s="off">OFF</button>
+          </div>
+        </div>
+
+        <div class="ctl-sec">INSTRUMENTS</div>
+        <div class="gauges">
+          <div class="gauge"><div class="gl">PRESSURE</div><canvas id="gPres" width="70" height="40"></canvas><div class="gv" id="vPres">1013 hPa</div></div>
+          <div class="gauge"><div class="gl">VISIBILITY</div><canvas id="gVis" width="70" height="40"></canvas><div class="gv" id="vVis">12 KM</div></div>
+          <div class="gauge"><div class="gl">UV INDEX</div><canvas id="gUv" width="70" height="40"></canvas><div class="gv" id="vUv">4 MOD</div></div>
+          <div class="gauge"><div class="gl">DEW PT</div><canvas id="gDew" width="70" height="40"></canvas><div class="gv" id="vDew">12°C</div></div>
+        </div>
+
+        <div class="ctl-sec">READOUT</div>
+        <div class="row"><span class="k">LOCAL TIME</span><span class="v" id="rTime">--:--</span></div>
+        <div class="row"><span class="k">SUNRISE</span><span class="v" id="rRise">05:42</span></div>
+        <div class="row"><span class="k">SUNSET</span><span class="v" id="rSet">20:51</span></div>
+        <div class="row"><span class="k">FRAME</span><span class="v" id="rFrame">0</span></div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= FORECAST ================= -->
+  <div class="win forecast">
+    <div class="titlebar">
+      <div class="btnbox"><span class="tbtn"></span><span class="tbtn c2"></span><span class="tbtn c3"></span></div>
+      <div class="tb-name">FORECAST.WEEK — 7 DAY OUTLOOK</div>
+      <div>HI / LO</div>
+    </div>
+    <div class="fc-body" id="fcBody"><!-- cells injected --></div>
+  </div>
+
+  <!-- ================= STATUS ================= -->
+  <div class="statusbar">
+    <span class="seg2"><span class="led"></span> ENGINE OK</span>
+    <span class="seg2"><span class="led amber"></span> DITHER <b id="sbDit">8X8</b></span>
+    <span class="seg2">PALETTE <b id="sbPal">14</b> SWATCH</span>
+    <span class="spacer"></span>
+    <span>METEO//486 · <b id="sbCond">CLEAR</b> · BUF NOMINAL</span>
+  </div>
+
+<script>
+/* ===========================================================================
+   METEO//486 — true Bayer ordered dithering weather station
+   All client side. No backend. The dither IS the first paint.
+   =========================================================================== */
+(function(){
+  "use strict";
+
+  // ---- Bayer threshold matrices (normalized 0..1) ----
+  const BAYER4 = [
+    [ 0, 8, 2,10],
+    [12, 4,14, 6],
+    [ 3,11, 1, 9],
+    [15, 7,13, 5]
+  ].map(r=>r.map(v=>(v+0.5)/16));
+
+  function makeBayer8(){
+    const b4=[[0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]];
+    const m=[]; for(let y=0;y<8;y++){m[y]=[];for(let x=0;x<8;x++){
+      const q=((y&4)>>1)+((x&4)>>2); // 0..3 quadrant index pattern
+      // standard 8x8 recursion: 4*M4[y%4][x%4] + bayerIndex2[quadrant]
+      const b2=[[0,2],[3,1]];
+      const base=4*b4[y%4][x%4]+b2[(y>>2)&1][(x>>2)&1];
+      m[y][x]=(base+0.5)/64;
+    }}
+    return m;
+  }
+  const BAYER8 = makeBayer8();
+
+  // ---- Limited warm + teal palette (14 swatches) ----
+  const HEX = ["#1a0c12","#24121a","#3a1822","#5e2417","#8a3a22","#b85733",
+               "#d97a4e","#f0a878","#f6d8a8","#0f3a3a","#1d5a52","#3a8a78",
+               "#6db58a","#e8c9a0"];
+  function hex2rgb(h){return [parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)];}
+  const FULLPAL = HEX.map(hex2rgb);
+
+  // choose subset for reduced palette sizes, keeping spread
+  function palSubset(n){
+    if(n>=FULLPAL.length) return FULLPAL;
+    // pick evenly spaced indices but always include darkest + lightest + a teal
+    const idx=[]; const must=[0,8,11,5];
+    for(let i=0;i<n;i++){ idx.push(Math.round(i*(FULLPAL.length-1)/(n-1))); }
+    must.forEach(m=>{ if(!idx.includes(m)&&idx.length<n) idx[idx.length-1]=m; });
+    return Array.from(new Set(idx)).slice(0,n).sort((a,b)=>a-b).map(i=>FULLPAL[i]);
+  }
+
+  // nearest palette color (euclidean in rgb)
+  function nearest(pal,r,g,b){
+    let bi=0,bd=1e12;
+    for(let i=0;i<pal.length;i++){
+      const p=pal[i]; const dr=r-p[0],dg=g-p[1],db=b-p[2];
+      const d=dr*dr+dg*dg+db*db;
+      if(d<bd){bd=d;bi=i;}
+    }
+    return pal[bi];
+  }
+
+  // ============================ STATE ============================
+  const S = {
+    cond:"clear",
+    dither:"bayer8",
+    pixel:3,
+    palN:14,
+    scan:true,
+    frame:0,
+    t:0
+  };
+
+  // weather profile per condition (drives HUD + render colors)
+  const PROFILE = {
+    clear:  {label:"CLEAR",    temp:21, feels:20, wind:11, hum:58, pres:1019, vis:14, uv:5,  dew:12, rise:"05:42", set:"20:51"},
+    sunset: {label:"SUNSET",   temp:18, feels:17, wind:8,  hum:64, pres:1014, vis:11, uv:1,  dew:13, rise:"05:42", set:"20:51"},
+    storm:  {label:"STORM",    temp:14, feels:11, wind:34, hum:88, pres:991,  vis:4,  uv:1,  dew:13, rise:"05:44", set:"20:48"},
+    snow:   {label:"SNOW",     temp:-3, feels:-8, wind:17, hum:81, pres:1027, vis:6,  uv:2,  dew:-6, rise:"06:58", set:"19:21"}
+  };
+
+  // ============================ SCENE PAINT (low-res source) ============================
+  // We paint a smooth gradient + sun/cloud/silhouette into an offscreen buffer,
+  // then ordered-dither it down to the palette. That guarantees REAL dithering,
+  // not a CSS filter.
+
+  const sky = document.getElementById("sky");
+  const SW = 480, SH = 300;       // display canvas logical size
+  sky.width=SW; sky.height=SH;
+  const sctx = sky.getContext("2d");
+
+  // offscreen at reduced internal resolution = chunky pixels
+  const off = document.createElement("canvas");
+  const offc = off.getContext("2d");
+
+  // smooth gradient helper
+  function lerp(a,b,t){return a+(b-a)*t;}
+  function mix(c1,c2,t){return [lerp(c1[0],c2[0],t),lerp(c1[1],c2[1],t),lerp(c1[2],c2[2],t)];}
+
+  // condition gradient stops (top->horizon->ground), in rgb
+  const GRAD = {
+    clear:  {sky:[ [108,181,138],[58,138,120],[240,168,120],[246,216,168] ], ground:[ [29,90,82],[15,58,58] ], sun:[246,216,168], sunY:0.30 },
+    sunset: {sky:[ [58,24,34],[138,58,34],[217,122,78],[240,168,120] ],     ground:[ [94,36,23],[26,18,18] ], sun:[246,216,168], sunY:0.52 },
+    storm:  {sky:[ [26,18,18],[58,24,34],[94,36,23],[138,58,34] ],          ground:[ [15,58,58],[15,12,18] ], sun:null, sunY:0 },
+    snow:   {sky:[ [246,216,168],[200,190,180],[140,160,165],[110,150,150] ],ground:[ [230,225,210],[58,138,120] ], sun:[246,232,210], sunY:0.22 }
+  };
+
+  // build a precip / detail field, returns rgb for a source pixel (nx,ny in 0..1)
+  function srcColor(cfg, nx, ny, t){
+    const horizon = (S.cond==="snow")?0.66:0.62;
+    let col;
+    if(ny < horizon){
+      // sky band: 4-stop vertical gradient
+      const v = ny/horizon;            // 0 top .. 1 horizon
+      const stops = cfg.sky;
+      const seg = v*(stops.length-1);
+      const i = Math.min(stops.length-2, Math.floor(seg));
+      col = mix(stops[i], stops[i+1], seg-i);
+
+      // sun / glow disc
+      if(cfg.sun){
+        const sx=0.5, sy=cfg.sunY;
+        const aspect = SW/SH;
+        const dx=(nx-sx)*aspect, dy=(ny/horizon)*horizon - sy;
+        // animate a gentle bob for sunset
+        const bob = (S.cond==="sunset")? Math.sin(t*0.0006)*0.01 : 0;
+        const dd=Math.sqrt(dx*dx+(dy-bob)*(dy-bob));
+        const rad = (S.cond==="sunset")?0.20:0.13;
+        if(dd<rad){ col = mix(col, cfg.sun, Math.pow(1-dd/rad,0.7)); }
+        else { const g=Math.max(0,1-(dd-rad)/0.35); col=mix(col,cfg.sun,g*0.45*((S.cond==="sunset")?1:0.6)); }
+      }
+      // drifting cloud bands (storm + clear)
+      if(S.cond==="storm"||S.cond==="clear"){
+        const drift=t*0.00004;
+        const band=Math.sin((nx*6.0)+(ny*3.0)+drift*40)+Math.sin((nx*11.0)-(ny*2.0)+drift*25);
+        const cloudAmt=(S.cond==="storm")?0.16:0.08;
+        const dark=(S.cond==="storm")?[26,18,18]:[58,138,120];
+        if(band>0.7){ col=mix(col,dark,Math.min(1,(band-0.7))*cloudAmt*3); }
+      }
+    } else {
+      // ground / water band: 2-stop
+      const v=(ny-horizon)/(1-horizon);
+      col=mix(cfg.ground[0],cfg.ground[1],v);
+      // water shimmer reflection for clear/sunset
+      if(S.cond==="clear"||S.cond==="sunset"){
+        const ripple=Math.sin((ny*60.0)+(t*0.002))*Math.sin(nx*20.0+ny*10.0);
+        const refl=(cfg.sun? cfg.sun:[240,168,120]);
+        const near=Math.max(0,1-v*1.6);
+        const colCenter=Math.max(0,1-Math.abs(nx-0.5)*2.2);
+        const amt=near*colCenter*0.35*(0.6+0.4*ripple);
+        col=mix(col,refl,Math.max(0,amt));
+      }
+      if(S.cond==="snow"){
+        // bright snowfield: cream highlights on drifts, teal shadow in hollows
+        const drift=Math.sin(nx*9.0)+Math.sin(nx*23.0+1.7)*0.5;
+        const hi=Math.max(0,drift)*0.5+Math.max(0,1-v*1.4)*0.4;
+        col=mix(col,[246,232,210],Math.min(0.7,hi));
+        const sh=Math.max(0,-drift)*0.4;
+        col=mix(col,[29,90,82],sh);
+      }
+    }
+
+    // ---- precipitation overlays (computed in source space so they dither too) ----
+    if(S.cond==="storm"){
+      // diagonal rain streaks
+      const rx=(nx*SW + t*0.25);
+      const ry=(ny*SH + t*0.9);
+      const v=((rx*0.6 - ry) % 9 + 9)%9;
+      if(v<1.1 && ny<0.9){ col=mix(col,[246,216,168],0.5); }
+      // occasional lightning flash tint
+      if(S._flash>0){ col=mix(col,[246,216,168],S._flash*0.5*(1-ny*0.5)); }
+    }
+    if(S.cond==="snow"){
+      // multi-layer falling snow (point field)
+      for(let L=0;L<3;L++){
+        const sp=(L+1)*0.6;
+        const fx=(nx*SW + Math.sin((ny*4)+t*0.0005)*8*(L+1));
+        const fy=(ny*SH + t*0.02*sp);
+        const gx=(fx*(0.7+L*0.3))%14, gy=(fy)%14;
+        const dxp=gx-7+ (L*2), dyp=gy-7;
+        if(dxp*dxp+dyp*dyp < (1.4+L*0.5)){ col=mix(col,[246,246,250],0.9-L*0.2); }
+      }
+    }
+    return col;
+  }
+
+  // ============================ DITHER + QUANTIZE ============================
+  function render(){
+    const cfg = GRAD[S.cond];
+    const px = S.pixel;                 // pixel block size
+    const lw = Math.max(60, Math.round(SW/px));
+    const lh = Math.max(40, Math.round(SH/px));
+    off.width=lw; off.height=lh;
+    const img = offc.createImageData(lw,lh);
+    const data = img.data;
+    const pal = palSubset(S.palN);
+    const t = S.t;
+
+    const mat = (S.dither==="bayer4")?BAYER4:(S.dither==="bayer8")?BAYER8:null;
+    const mN = (S.dither==="bayer4")?4:8;
+    // dither strength: spread of palette ~ how far we nudge before quantizing
+    const spread = 26;
+
+    for(let y=0;y<lh;y++){
+      for(let x=0;x<lw;x++){
+        const nx=x/lw, ny=y/lh;
+        let c = srcColor(cfg, nx, ny, t);
+        let r=c[0], g=c[1], b=c[2];
+        if(mat){
+          const th = mat[y%mN][x%mN] - 0.5;  // -0.5..+0.5
+          const k = th*spread;
+          r+=k; g+=k; b+=k;
+        }
+        const q = nearest(pal, r, g, b);
+        const o=(y*lw+x)*4;
+        data[o]=q[0]; data[o+1]=q[1]; data[o+2]=q[2]; data[o+3]=255;
+      }
+    }
+    offc.putImageData(img,0,0);
+
+    // upscale nearest-neighbor to the display canvas (chunky pixels)
+    sctx.imageSmoothingEnabled=false;
+    sctx.clearRect(0,0,SW,SH);
+    sctx.drawImage(off,0,0,lw,lh,0,0,SW,SH);
+
+    // CRT scanlines baked onto the canvas too (subtle, separate from CSS veil)
+    if(S.scan){
+      sctx.globalAlpha=0.12; sctx.fillStyle="#000";
+      for(let y=0;y<SH;y+=px*2){ sctx.fillRect(0,y,SW,px); }
+      sctx.globalAlpha=1;
+    }
+  }
+
+  // ============================ GAUGES (dithered mini dials) ============================
+  function drawGauge(canvas, frac, hue){
+    const ctx=canvas.getContext("2d"); const W=canvas.width,H=canvas.height;
+    ctx.clearRect(0,0,W,H);
+    // background ticks (dithered look via dotted blocks)
+    ctx.fillStyle="#3a1822";
+    for(let x=2;x<W-2;x+=4){ ctx.fillRect(x,H-6,2,4); }
+    // arc as discrete segments (retro bargraph dial)
+    const cx=W/2, cy=H-3, R=Math.min(W,H*2)/2-4;
+    const segs=14;
+    for(let i=0;i<segs;i++){
+      const a=Math.PI - (i/(segs-1))*Math.PI;
+      const on=(i/(segs-1))<=frac;
+      ctx.fillStyle= on? hue : "#5e2417";
+      const x=cx+Math.cos(a)*R, y=cy-Math.sin(a)*R;
+      ctx.fillRect(Math.round(x)-1, Math.round(y)-1, 3, 3);
+    }
+    // needle
+    const a=Math.PI - frac*Math.PI;
+    ctx.strokeStyle="#f6d8a8"; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+Math.cos(a)*(R-3), cy-Math.sin(a)*(R-3)); ctx.stroke();
+    ctx.fillStyle="#f0a878"; ctx.fillRect(cx-2,cy-2,4,4);
+  }
+
+  function updateGauges(p){
+    drawGauge(document.getElementById("gPres"), (p.pres-980)/60,  "#d97a4e");
+    drawGauge(document.getElementById("gVis"),  p.vis/20,         "#6db58a");
+    drawGauge(document.getElementById("gUv"),   p.uv/11,          "#f0a878");
+    drawGauge(document.getElementById("gDew"),  (p.dew+10)/40,    "#3a8a78");
+    document.getElementById("vPres").textContent=p.pres+" hPa";
+    document.getElementById("vVis").textContent=p.vis+" KM";
+    const uvl=p.uv<=2?"LOW":p.uv<=5?"MOD":p.uv<=7?"HIGH":"V-HI";
+    document.getElementById("vUv").textContent=p.uv+" "+uvl;
+    document.getElementById("vDew").textContent=p.dew+"°C";
+  }
+
+  // ============================ FORECAST ============================
+  const DAYS=["MON","TUE","WED","THU","FRI","SAT","SUN"];
+  const FC=[
+    {d:0,c:"clear", hi:23, lo:13},
+    {d:1,c:"sunset",hi:21, lo:12},
+    {d:2,c:"storm", hi:16, lo:10},
+    {d:3,c:"storm", hi:15, lo:9},
+    {d:4,c:"clear", hi:20, lo:11},
+    {d:5,c:"snow",  hi:2,  lo:-5},
+    {d:6,c:"snow",  hi:0,  lo:-7}
+  ];
+  // tiny dithered icon per cond
+  function fcIcon(canvas, cond){
+    const ctx=canvas.getContext("2d"); const W=canvas.width,H=canvas.height;
+    ctx.clearRect(0,0,W,H);
+    const cfg=GRAD[cond];
+    const lw=W, lh=H;
+    const img=ctx.createImageData(lw,lh); const d=img.data;
+    const pal=FULLPAL; const mat=BAYER8;
+    for(let y=0;y<lh;y++)for(let x=0;x<lw;x++){
+      const nx=x/lw, ny=y/lh;
+      let c=srcColor(cfg,nx,ny,0);
+      const th=mat[y%8][x%8]-0.5; const k=th*26;
+      const q=nearest(pal,c[0]+k,c[1]+k,c[2]+k);
+      const o=(y*lw+x)*4; d[o]=q[0];d[o+1]=q[1];d[o+2]=q[2];d[o+3]=255;
+    }
+    ctx.putImageData(img,0,0);
+  }
+  function buildForecast(){
+    const body=document.getElementById("fcBody"); body.innerHTML="";
+    FC.forEach((f,i)=>{
+      const cell=document.createElement("div");
+      cell.className="fc-cell"+(f.c===S.cond&&i===0?" on":"");
+      cell.innerHTML=`<div class="fc-day">${DAYS[i]}</div>
+        <canvas width="54" height="34"></canvas>
+        <div class="fc-hi">${f.hi}°</div><div class="fc-lo">${f.lo}°</div>`;
+      const prevCond=S.cond; S.cond=f.c;          // render icon in that cond
+      fcIcon(cell.querySelector("canvas"), f.c);
+      S.cond=prevCond;
+      cell.addEventListener("click",()=>{ setCond(f.c); document.querySelectorAll(".fc-cell").forEach(e=>e.classList.remove("on")); cell.classList.add("on"); });
+      body.appendChild(cell);
+    });
+  }
+
+  // ============================ HUD / READOUT ============================
+  function applyProfile(){
+    const p=PROFILE[S.cond];
+    document.getElementById("hud-chip").textContent=p.label;
+    document.getElementById("hud-temp").textContent=p.temp;
+    document.getElementById("hud-feels").textContent=p.feels+"°";
+    document.getElementById("hud-wind").textContent=p.wind+" KT";
+    document.getElementById("hud-hum").textContent=p.hum+"%";
+    document.getElementById("rRise").textContent=p.rise;
+    document.getElementById("rSet").textContent=p.set;
+    document.getElementById("sbCond").textContent=p.label;
+    updateGauges(p);
+  }
+
+  // ============================ CONTROLS ============================
+  function setCond(c){
+    S.cond=c;
+    document.querySelectorAll("#seg button").forEach(b=>b.classList.toggle("on", b.dataset.c===c));
+    applyProfile();
+  }
+  document.getElementById("seg").addEventListener("click",e=>{
+    const b=e.target.closest("button"); if(!b)return; setCond(b.dataset.c);
+    document.querySelectorAll(".fc-cell").forEach(x=>x.classList.remove("on"));
+  });
+  document.getElementById("ditmode").addEventListener("click",e=>{
+    const b=e.target.closest("button"); if(!b)return;
+    S.dither=b.dataset.d;
+    document.querySelectorAll("#ditmode button").forEach(x=>x.classList.toggle("on",x===b));
+    const lbl=b.dataset.d==="bayer4"?"4X4":b.dataset.d==="bayer8"?"8X8":"RAW";
+    document.getElementById("sbDit").textContent=lbl;
+  });
+  document.getElementById("scanmode").addEventListener("click",e=>{
+    const b=e.target.closest("button"); if(!b)return;
+    S.scan=(b.dataset.s==="on");
+    document.querySelectorAll("#scanmode button").forEach(x=>x.classList.toggle("on",x===b));
+  });
+  const pixs=document.getElementById("pixsize");
+  pixs.addEventListener("input",()=>{ S.pixel=+pixs.value; document.getElementById("pixval").textContent=S.pixel+"X"; });
+  const pals=document.getElementById("palsize");
+  pals.addEventListener("input",()=>{ S.palN=+pals.value; document.getElementById("palval").textContent=S.palN;
+    document.getElementById("sbPal").textContent=S.palN; });
+
+  // ============================ CLOCK + LOOP ============================
+  function tick2(){
+    const d=new Date();
+    const hh=String(d.getHours()).padStart(2,"0"), mm=String(d.getMinutes()).padStart(2,"0"), ss=String(d.getSeconds()).padStart(2,"0");
+    document.getElementById("clk").textContent=hh+":"+mm+":"+ss;
+    document.getElementById("rTime").textContent=hh+":"+mm;
+  }
+
+  let last=0;
+  function loop(ts){
+    S.t=ts;
+    // lightning flash scheduler for storm
+    if(S.cond==="storm"){
+      if(S._flash===undefined)S._flash=0;
+      if(S._flash>0)S._flash=Math.max(0,S._flash-0.06);
+      if(Math.random()<0.006)S._flash=1;
+    } else S._flash=0;
+
+    // throttle heavy render to ~30fps for animated conds, static otherwise still cheap
+    if(ts-last>33){
+      render();
+      last=ts;
+      S.frame++;
+      document.getElementById("rFrame").textContent=S.frame;
+    }
+    requestAnimationFrame(loop);
+  }
+
+  // ============================ BOOT (immediate dither paint) ============================
+  S._flash=0;
+  applyProfile();
+  buildForecast();
+  render();                 // <-- dither is the FIRST paint, no loading gate
+  requestAnimationFrame(loop);
+  tick2(); setInterval(tick2,1000);
+
+})();
+</script>
+</body>
+</html>

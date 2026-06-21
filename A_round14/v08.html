@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>ORBITAL — Docking Choreography</title>
+<style>
+  :root{ --ink:#dfe9ff; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#02030a; }
+  body{
+    font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+    color:var(--ink); -webkit-user-select:none; user-select:none;
+    touch-action:none; cursor:crosshair;
+  }
+  #stage{ position:fixed; inset:0; display:block; }
+  /* HUD */
+  .hud{ position:fixed; pointer-events:none; z-index:5; }
+  #title{ top:24px; left:28px; }
+  #title h1{
+    font-size:13px; font-weight:600; letter-spacing:.42em;
+    color:#9fd0ff; text-transform:uppercase;
+    text-shadow:0 0 18px rgba(80,160,255,.55);
+  }
+  #title p{
+    margin-top:7px; font-size:10px; letter-spacing:.28em;
+    color:rgba(160,190,235,.5);
+  }
+  #stats{
+    top:24px; right:28px; text-align:right;
+    font-size:10px; letter-spacing:.12em; line-height:1.85;
+    color:rgba(150,185,235,.62);
+  }
+  #stats b{ color:#bfe0ff; font-weight:600; }
+  #stats .acc{ color:#7affc8; }
+  #help{
+    bottom:22px; left:50%; transform:translateX(-50%);
+    font-size:10px; letter-spacing:.22em; text-align:center;
+    color:rgba(150,180,225,.46);
+    transition:opacity 1.2s ease;
+  }
+  #help span{ color:#88c4ff; }
+  #brand{
+    bottom:22px; right:28px; font-size:9px; letter-spacing:.34em;
+    color:rgba(120,150,200,.4);
+  }
+  .corner{ position:fixed; width:18px; height:18px; z-index:4; pointer-events:none;
+    border-color:rgba(110,160,230,.35); }
+  #c1{ top:16px; left:16px; border-top:1px solid; border-left:1px solid; }
+  #c2{ top:16px; right:16px; border-top:1px solid; border-right:1px solid; }
+  #c3{ bottom:16px; left:16px; border-bottom:1px solid; border-left:1px solid; }
+  #c4{ bottom:16px; right:16px; border-bottom:1px solid; border-right:1px solid; }
+  @media (max-width:520px){
+    #title h1{ font-size:11px; letter-spacing:.3em; }
+    #title p{ font-size:9px; }
+    #stats{ font-size:9px; }
+    #help{ font-size:9px; letter-spacing:.12em; width:90%; }
+    #brand{ display:none; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div class="hud" id="title">
+  <h1>O R B I T A L</h1>
+  <p>DOCKING CHOREOGRAPHY · LEO-7</p>
+</div>
+<div class="hud" id="stats">
+  <div>ALT <b id="s_alt">408</b> KM</div>
+  <div>VEL <b id="s_vel">7.66</b> KM/S</div>
+  <div>CRAFT <b id="s_craft">0</b> IN TRANSIT</div>
+  <div>DOCKED <b class="acc" id="s_dock">0</b></div>
+</div>
+<div class="hud" id="help">
+  <span>MOVE</span> tilt orbit &nbsp;·&nbsp; <span>CLICK</span> launch docking craft &nbsp;·&nbsp; <span>HOLD</span> gravity well &nbsp;·&nbsp; <span>SCROLL</span> zoom
+</div>
+<div class="hud" id="brand">A_round14 / v08</div>
+<div class="corner" id="c1"></div><div class="corner" id="c2"></div>
+<div class="corner" id="c3"></div><div class="corner" id="c4"></div>
+
+<script>
+"use strict";
+(function(){
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', { alpha:false });
+let W=0,H=0,DPR=1, CX=0,CY=0, scale=1;
+const TAU = Math.PI*2;
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = Math.floor(W*DPR); cv.height = Math.floor(H*DPR);
+  cv.style.width = W+'px'; cv.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  CX = W*0.5; CY = H*0.54;
+  scale = Math.min(W,H)/680;       // responsive scale
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* ---------- input ---------- */
+const mouse = { x:0, y:0, tx:0, ty:0, down:false, inside:false };
+let zoom = 1, zoomTarget = 1;
+function setPos(x,y){ mouse.tx=x; mouse.ty=y; mouse.inside=true; }
+cv.addEventListener('mousemove', e=> setPos(e.clientX, e.clientY));
+cv.addEventListener('mouseleave', ()=> mouse.inside=false);
+cv.addEventListener('mousedown', e=>{ mouse.down=true; launchCraft(e.clientX,e.clientY); });
+window.addEventListener('mouseup', ()=> mouse.down=false);
+cv.addEventListener('wheel', e=>{ e.preventDefault();
+  zoomTarget = Math.max(0.62, Math.min(1.85, zoomTarget * (e.deltaY>0?0.92:1.08)));
+}, {passive:false});
+// touch
+cv.addEventListener('touchstart', e=>{ e.preventDefault();
+  const t=e.touches[0]; setPos(t.clientX,t.clientY); mouse.down=true;
+  if(e.touches.length===1) launchCraft(t.clientX,t.clientY);
+  if(e.touches.length===2){ pinchStart(e); }
+}, {passive:false});
+cv.addEventListener('touchmove', e=>{ e.preventDefault();
+  const t=e.touches[0]; setPos(t.clientX,t.clientY);
+  if(e.touches.length===2) pinchMove(e);
+}, {passive:false});
+cv.addEventListener('touchend', e=>{ e.preventDefault(); if(e.touches.length===0) mouse.down=false; }, {passive:false});
+let pinchD=0;
+function pinchStart(e){ const a=e.touches[0],b=e.touches[1]; pinchD=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY); }
+function pinchMove(e){ const a=e.touches[0],b=e.touches[1]; const d=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);
+  if(pinchD>0){ zoomTarget=Math.max(0.62,Math.min(1.85, zoomTarget*(d/pinchD))); } pinchD=d; }
+
+// hide help after first interaction
+let helped=false; const helpEl=document.getElementById('help');
+function gotHelp(){ if(!helped){ helped=true; setTimeout(()=>helpEl.style.opacity='0',2600);} }
+cv.addEventListener('mousedown',gotHelp); cv.addEventListener('touchstart',gotHelp); cv.addEventListener('wheel',gotHelp);
+
+/* ---------- starfield (3 parallax layers) ---------- */
+const STARS=[];
+function buildStars(){ STARS.length=0;
+  const n = Math.round((W*H)/5200);
+  for(let i=0;i<n;i++){
+    const depth = Math.random();           // 0 far .. 1 near
+    STARS.push({
+      x:Math.random()*W, y:Math.random()*H, depth,
+      r: 0.35 + depth*1.15,
+      tw: Math.random()*TAU, tws: 0.6+Math.random()*2.2,
+      hue: 200 + Math.random()*60,
+    });
+  }
+}
+buildStars();
+window.addEventListener('resize', buildStars);
+
+/* ---------- earth limb ---------- */
+function drawEarth(t, px, py){
+  // a glowing planet limb at lower portion, parallax-shifted
+  const ex = CX + px*36;
+  const ey = H + H*0.62 - py*30;
+  const R = Math.max(W,H)*0.92;
+  // atmosphere halo
+  const halo = ctx.createRadialGradient(ex,ey,R*0.78, ex,ey,R*1.06);
+  halo.addColorStop(0,'rgba(40,120,210,0)');
+  halo.addColorStop(0.82,'rgba(46,128,225,0.06)');
+  halo.addColorStop(0.93,'rgba(95,185,255,0.40)');
+  halo.addColorStop(0.97,'rgba(175,225,255,0.30)');
+  halo.addColorStop(1,'rgba(150,210,255,0)');
+  ctx.fillStyle=halo;
+  ctx.beginPath(); ctx.arc(ex,ey,R*1.06,0,TAU); ctx.fill();
+  // body
+  const g = ctx.createRadialGradient(ex - R*0.32, ey - R*0.34, R*0.1, ex, ey, R);
+  g.addColorStop(0,'#1b3a63');
+  g.addColorStop(0.42,'#0d2244');
+  g.addColorStop(0.7,'#071528');
+  g.addColorStop(1,'#02060e');
+  ctx.fillStyle=g;
+  ctx.beginPath(); ctx.arc(ex,ey,R,0,TAU); ctx.fill();
+  // terminator sheen
+  const sh = ctx.createRadialGradient(ex - R*0.55, ey - R*0.5, R*0.05, ex - R*0.55, ey - R*0.5, R*0.85);
+  sh.addColorStop(0,'rgba(120,180,255,0.16)');
+  sh.addColorStop(1,'rgba(120,180,255,0)');
+  ctx.fillStyle=sh;
+  ctx.beginPath(); ctx.arc(ex,ey,R,0,TAU); ctx.fill();
+  // top atmosphere arc highlight
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  ctx.strokeStyle='rgba(130,200,255,0.5)';
+  ctx.lineWidth=2.4*scale;
+  ctx.beginPath(); ctx.arc(ex,ey,R,Math.PI*1.15,Math.PI*1.9); ctx.stroke();
+  ctx.lineWidth=1*scale; ctx.strokeStyle='rgba(180,225,255,0.6)';
+  ctx.beginPath(); ctx.arc(ex,ey,R+1.5*scale,Math.PI*1.2,Math.PI*1.85); ctx.stroke();
+  ctx.restore();
+}
+
+/* ---------- station (the docking target) ---------- */
+const station = { ang:0, spin:0.16 };
+
+function drawStation(t, sx, sy, s){
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.rotate(station.ang);
+  const u = 1*s; // unit
+  // glow
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  const gl = ctx.createRadialGradient(0,0,2*u,0,0,95*u);
+  gl.addColorStop(0,'rgba(150,200,255,0.42)');
+  gl.addColorStop(0.4,'rgba(120,180,255,0.14)');
+  gl.addColorStop(1,'rgba(120,180,255,0)');
+  ctx.fillStyle=gl; ctx.beginPath(); ctx.arc(0,0,95*u,0,TAU); ctx.fill();
+  ctx.restore();
+
+  // central truss
+  ctx.lineCap='round';
+  ctx.strokeStyle='rgba(190,210,245,0.9)';
+  ctx.lineWidth=3.4*u;
+  ctx.beginPath(); ctx.moveTo(-46*u,0); ctx.lineTo(46*u,0); ctx.stroke();
+  // truss lattice
+  ctx.strokeStyle='rgba(120,150,200,0.55)'; ctx.lineWidth=1*u;
+  for(let i=-44;i<=44;i+=8){
+    ctx.beginPath(); ctx.moveTo(i*u,-5*u); ctx.lineTo((i+4)*u,5*u); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo((i+4)*u,-5*u); ctx.lineTo(i*u,5*u); ctx.stroke();
+  }
+  // core modules
+  function module(x,w,h,col){
+    ctx.fillStyle=col;
+    roundRect(x-w/2, -h/2, w, h, 3*u); ctx.fill();
+    ctx.strokeStyle='rgba(20,40,70,0.8)'; ctx.lineWidth=1*u; ctx.stroke();
+    // window strip
+    ctx.fillStyle='rgba(150,225,255,0.85)';
+    for(let wx=x-w/2+4*u; wx<x+w/2-3*u; wx+=5*u){
+      ctx.fillRect(wx, -1.4*u, 2.2*u, 2.8*u);
+    }
+  }
+  module(0, 28*u, 18*u, mkGrad(-14*u,-9*u,28*u,18*u,'#cdd9ee','#5a6f95'));
+  module(-30*u, 16*u, 13*u, mkGrad(-38*u,-6*u,16*u,13*u,'#b9c6e0','#46577a'));
+  module(30*u, 16*u, 13*u, mkGrad(22*u,-6*u,16*u,13*u,'#b9c6e0','#46577a'));
+
+  // solar arrays (4 panels)
+  drawArray( 46*u, 0, 1, t, u);
+  drawArray(-46*u, 0,-1, t, u);
+
+  // radiators
+  ctx.strokeStyle='rgba(150,170,210,0.45)'; ctx.lineWidth=1.2*u;
+  for(const sgn of [-1,1]){
+    ctx.beginPath(); ctx.moveTo(8*sgn*u,9*u); ctx.lineTo(8*sgn*u,26*u); ctx.stroke();
+    ctx.fillStyle='rgba(90,110,150,0.35)';
+    ctx.fillRect(2*sgn*u + (sgn<0?-12*u:0), 26*u, 12*u, 14*u);
+  }
+
+  // docking port (pulsing)
+  const pulse = 0.5+0.5*Math.sin(t*3);
+  ctx.save(); ctx.globalCompositeOperation='lighter';
+  ctx.fillStyle='rgba(120,255,200,'+(0.25+0.4*pulse)+')';
+  ctx.beginPath(); ctx.arc(0,-9*u,5.5*u+pulse*2*u,0,TAU); ctx.fill();
+  ctx.restore();
+  ctx.fillStyle='#0a1620'; ctx.beginPath(); ctx.arc(0,-9*u,3.2*u,0,TAU); ctx.fill();
+  ctx.strokeStyle='rgba(120,255,200,0.95)'; ctx.lineWidth=1.3*u;
+  ctx.beginPath(); ctx.arc(0,-9*u,3.2*u,0,TAU); ctx.stroke();
+
+  ctx.restore();
+}
+function drawArray(bx, by, dir, t, u){
+  const sway = Math.sin(t*0.7 + dir)*0.06;
+  ctx.save();
+  ctx.translate(bx,by); ctx.rotate(sway);
+  ctx.strokeStyle='rgba(170,190,225,0.8)'; ctx.lineWidth=1.6*u;
+  ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(dir*10*u,0); ctx.stroke();
+  const pw=22*u, ph=15*u, gx=dir*10*u;
+  for(let k=0;k<2;k++){
+    const px = gx + dir*(k*pw);
+    const grad = ctx.createLinearGradient(px,0,px+dir*pw,0);
+    grad.addColorStop(0,'rgba(40,70,150,0.92)');
+    grad.addColorStop(0.5,'rgba(70,120,220,0.92)');
+    grad.addColorStop(1,'rgba(30,55,120,0.92)');
+    ctx.fillStyle=grad;
+    const x0 = Math.min(px, px+dir*pw);
+    roundRect(x0, -ph, pw, ph*2, 1.5*u); ctx.fill();
+    // grid lines
+    ctx.strokeStyle='rgba(150,190,255,0.25)'; ctx.lineWidth=0.6*u;
+    for(let gx2=x0+3*u; gx2<x0+pw; gx2+=4*u){ ctx.beginPath(); ctx.moveTo(gx2,-ph); ctx.lineTo(gx2,ph); ctx.stroke(); }
+    ctx.beginPath(); ctx.moveTo(x0,0); ctx.lineTo(x0+pw,0); ctx.stroke();
+    // specular sweep
+    ctx.save(); ctx.globalCompositeOperation='lighter';
+    const sp=(t*0.18+k*0.5)%1.4-0.2; const sx=x0+sp*pw;
+    if(sp>0&&sp<1){ const sg=ctx.createLinearGradient(sx-6*u,0,sx+6*u,0);
+      sg.addColorStop(0,'rgba(200,230,255,0)'); sg.addColorStop(0.5,'rgba(210,235,255,0.5)'); sg.addColorStop(1,'rgba(200,230,255,0)');
+      ctx.fillStyle=sg; ctx.fillRect(sx-6*u,-ph,12*u,ph*2); }
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+/* ---------- satellites in elliptical orbits ---------- */
+const SATS=[];
+function buildSats(){
+  SATS.length=0;
+  const defs=[
+    {a:170,b:120,inc:0.0,  sp:0.55, col:'#a9d4ff', size:1.0, type:0},
+    {a:230,b:150,inc:0.9,  sp:0.42, col:'#ffd8a0', size:0.9, type:1},
+    {a:300,b:205,inc:-0.6, sp:0.33, col:'#c4ffe0', size:1.1, type:0},
+    {a:360,b:250,inc:1.7,  sp:0.27, col:'#d3c0ff', size:0.85,type:2},
+    {a:440,b:300,inc:0.35, sp:0.21, col:'#ffb9d0', size:1.0, type:1},
+    {a:520,b:360,inc:-1.2, sp:0.17, col:'#9fe9ff', size:0.95,type:0},
+  ];
+  for(const d of defs){
+    SATS.push(Object.assign({ ph:Math.random()*TAU, x:0,y:0, px:0,py:0, trail:[] }, d));
+  }
+}
+buildSats();
+
+function drawOrbitPath(d, ox, oy, s, alpha){
+  ctx.save();
+  ctx.translate(ox,oy); ctx.rotate(d.inc + tiltX*0.0);
+  ctx.strokeStyle='rgba(120,160,220,'+alpha+')';
+  ctx.lineWidth=1*scale;
+  ctx.beginPath();
+  ctx.ellipse(0,0, d.a*s, d.b*s, 0, 0, TAU);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/* ---------- docking craft (player-launched + auto) ---------- */
+const CRAFT=[];
+let dockedCount=0;
+function launchCraft(sx,sy){
+  // spawn at click, fly toward station with a curved approach
+  CRAFT.push({
+    x:sx, y:sy, vx:(Math.random()-0.5)*0.6, vy:(Math.random()-0.5)*0.6,
+    state:'transit', life:0, dockT:0, trail:[], thrust:0,
+    hue: 150+Math.random()*60,
+  });
+  if(CRAFT.length>40) CRAFT.shift();
+}
+let autoTimer=0;
+function autoSpawn(dt){
+  autoTimer-=dt;
+  if(autoTimer<=0 && CRAFT.filter(c=>c.state==='transit').length<5){
+    autoTimer = 2.4+Math.random()*3;
+    const edge=Math.floor(Math.random()*4);
+    let x,y;
+    if(edge===0){x=Math.random()*W;y=-20;} else if(edge===1){x=W+20;y=Math.random()*H;}
+    else if(edge===2){x=Math.random()*W;y=H+20;} else {x=-20;y=Math.random()*H;}
+    CRAFT.push({x,y,vx:0,vy:0,state:'transit',life:0,dockT:0,trail:[],thrust:0,hue:185+Math.random()*40,auto:true});
+  }
+}
+
+/* ---------- camera tilt from pointer ---------- */
+let tiltX=0, tiltY=0, parX=0, parY=0;
+
+/* ---------- helpers ---------- */
+function roundRect(x,y,w,h,r){ r=Math.min(r,Math.abs(w)/2,Math.abs(h)/2);
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
+}
+function mkGrad(x,y,w,h,c1,c2){ const g=ctx.createLinearGradient(x,y,x,y+h); g.addColorStop(0,c1); g.addColorStop(1,c2); return g; }
+
+/* ---------- main loop ---------- */
+let last=performance.now(), tAcc=0, fps=60, fpsAcc=0, fpsN=0, fpsTimer=0;
+let transitCount=0;
+
+function frame(now){
+  let dt=(now-last)/1000; last=now;
+  if(dt>0.05) dt=0.05;            // clamp big gaps
+  tAcc+=dt;
+  const t=tAcc;
+
+  // smooth pointer
+  if(!mouse.inside){ mouse.tx=CX; mouse.ty=CY; }
+  mouse.x += (mouse.tx-mouse.x)*0.12;
+  mouse.y += (mouse.ty-mouse.y)*0.12;
+  zoom += (zoomTarget-zoom)*0.08;
+
+  // camera tilt target from pointer offset
+  const nx=(mouse.x-CX)/W, ny=(mouse.y-CY)/H;
+  tiltX += (nx*0.5 - tiltX)*0.06;
+  tiltY += (ny*0.4 - tiltY)*0.06;
+  parX += (nx - parX)*0.05;
+  parY += (ny - parY)*0.05;
+
+  const s = scale*zoom;
+  // station center shifts slightly opposite pointer (parallax)
+  const ox = CX - parX*70;
+  const oy = CY - parY*55;
+
+  station.ang += station.spin*dt;
+
+  // ---- clear / background ----
+  const bg=ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#02030b');
+  bg.addColorStop(0.55,'#040716');
+  bg.addColorStop(1,'#03040d');
+  ctx.fillStyle=bg; ctx.fillRect(0,0,W,H);
+
+  // ---- stars (parallax + twinkle) ----
+  for(const st of STARS){
+    const dx = -parX*st.depth*60;
+    const dy = -parY*st.depth*48;
+    let x=st.x+dx, y=st.y+dy;
+    // wrap
+    if(x<0)x+=W; if(x>W)x-=W; if(y<0)y+=H; if(y>H)y-=H;
+    const tw=0.45+0.55*Math.sin(t*st.tws+st.tw);
+    ctx.globalAlpha=(0.25+0.6*st.depth)*tw;
+    ctx.fillStyle='hsl('+st.hue+',80%,'+(70+st.depth*15)+'%)';
+    ctx.beginPath(); ctx.arc(x,y,st.r*(0.8+0.4*tw),0,TAU); ctx.fill();
+  }
+  ctx.globalAlpha=1;
+
+  // ---- earth limb ----
+  drawEarth(t, parX, parY);
+
+  // ---- orbit paths (under sats) ----
+  for(const d of SATS){
+    const a = 0.10 + (mouse.inside?0.06:0);
+    drawOrbitPath(d, ox, oy, s, a);
+  }
+
+  // ---- gravity well visual when holding ----
+  if(mouse.down){
+    ctx.save(); ctx.globalCompositeOperation='lighter';
+    const gw=ctx.createRadialGradient(mouse.x,mouse.y,2,mouse.x,mouse.y,140*zoom);
+    gw.addColorStop(0,'rgba(130,210,255,0.22)');
+    gw.addColorStop(0.5,'rgba(110,160,255,0.07)');
+    gw.addColorStop(1,'rgba(110,160,255,0)');
+    ctx.fillStyle=gw; ctx.beginPath(); ctx.arc(mouse.x,mouse.y,140*zoom,0,TAU); ctx.fill();
+    // ring
+    const rp=(t*0.8)%1;
+    ctx.strokeStyle='rgba(150,220,255,'+(0.5*(1-rp))+')'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.arc(mouse.x,mouse.y,rp*140*zoom,0,TAU); ctx.stroke();
+    ctx.restore();
+  }
+
+  // ---- satellites ----
+  for(const d of SATS){
+    d.ph += d.sp*dt;
+    // base elliptical position in orbit-plane
+    let lx=Math.cos(d.ph)*d.a, ly=Math.sin(d.ph)*d.b;
+    // rotate by inclination
+    const ci=Math.cos(d.inc), si=Math.sin(d.inc);
+    let wx=ox + (lx*ci-ly*si)*s;
+    let wy=oy + (lx*si+ly*ci)*s;
+    // gravity well bends them toward cursor when held
+    if(mouse.down){
+      const ddx=mouse.x-wx, ddy=mouse.y-wy, dd=Math.hypot(ddx,ddy)+1;
+      if(dd<220){ const f=(1-dd/220)*22; wx+=ddx/dd*f; wy+=ddy/dd*f; }
+    }
+    d.px=d.x; d.py=d.y; d.x=wx; d.y=wy;
+    // trail
+    d.trail.push({x:wx,y:wy}); if(d.trail.length>26) d.trail.shift();
+    // draw trail
+    ctx.save(); ctx.globalCompositeOperation='lighter';
+    for(let i=1;i<d.trail.length;i++){
+      const a=i/d.trail.length;
+      ctx.strokeStyle=d.col.replace(')',','+(a*0.4)+')').replace('rgb','rgba').replace('#','#');
+      ctx.globalAlpha=a*0.5;
+      ctx.strokeStyle=d.col; ctx.lineWidth=a*2.2*s;
+      ctx.beginPath(); ctx.moveTo(d.trail[i-1].x,d.trail[i-1].y); ctx.lineTo(d.trail[i].x,d.trail[i].y); ctx.stroke();
+    }
+    ctx.globalAlpha=1; ctx.restore();
+    drawSat(d, wx, wy, s, t);
+  }
+
+  // ---- station ----
+  drawStation(t, ox, oy, s);
+
+  // ---- craft (docking) ----
+  transitCount=0;
+  for(let i=CRAFT.length-1;i>=0;i--){
+    const c=CRAFT[i];
+    c.life+=dt;
+    if(c.state==='transit'){
+      transitCount++;
+      // steer toward docking port (top of station, in world)
+      const portAng = station.ang - Math.PI/2; // port at -9u above center, rotates
+      const portX = ox + Math.cos(portAng)*9*s;
+      const portY = oy + Math.sin(portAng)*9*s;
+      const dx=portX-c.x, dy=portY-c.y, dist=Math.hypot(dx,dy);
+      // desired velocity (with slight orbital curl for grace)
+      const acc=0.9;
+      const dirx=dx/dist, diry=dy/dist;
+      // perpendicular curl decreasing with proximity
+      const curl=Math.min(1, dist/260)*0.55;
+      const ax=dirx + (-diry)*curl;
+      const ay=diry + ( dirx)*curl;
+      const an=Math.hypot(ax,ay)||1;
+      c.vx += ax/an*acc; c.vy += ay/an*acc;
+      // gravity well influence on craft too
+      if(mouse.down){
+        const gx=mouse.x-c.x, gy=mouse.y-c.y, gd=Math.hypot(gx,gy)+1;
+        if(gd<200){ const f=(1-gd/200)*1.4; c.vx+=gx/gd*f; c.vy+=gy/gd*f; }
+      }
+      // damping & approach slowdown
+      const maxv = 30 + Math.min(160, dist)*0.8;
+      const v=Math.hypot(c.vx,c.vy);
+      if(v>maxv){ c.vx*=maxv/v; c.vy*=maxv/v; }
+      c.vx*=0.985; c.vy*=0.985;
+      c.thrust = Math.min(1, v/120);
+      c.x+=c.vx*dt*60*0.06; c.y+=c.vy*dt*60*0.06;
+      // dock
+      if(dist< 8*s+4){
+        c.state='docked'; c.dockT=0; dockedCount++;
+        // burst
+        spawnBurst(portX,portY,c.hue);
+      }
+      // trail
+      c.trail.push({x:c.x,y:c.y,th:c.thrust}); if(c.trail.length>22)c.trail.shift();
+      drawCraftTrail(c);
+      drawCraft(c, t);
+    } else if(c.state==='docked'){
+      c.dockT+=dt;
+      // ride along with station port for a bit then depart/fade
+      const portAng=station.ang-Math.PI/2;
+      c.x=ox+Math.cos(portAng)*9*s; c.y=oy+Math.sin(portAng)*9*s;
+      drawCraft(c,t,0.85);
+      if(c.dockT>3.2){ CRAFT.splice(i,1); }
+    }
+  }
+
+  // ---- particle bursts ----
+  updateBursts(dt);
+
+  // ---- vignette ----
+  const vg=ctx.createRadialGradient(CX,CY,Math.min(W,H)*0.3,CX,CY,Math.max(W,H)*0.75);
+  vg.addColorStop(0,'rgba(0,0,0,0)');
+  vg.addColorStop(1,'rgba(0,0,8,0.55)');
+  ctx.fillStyle=vg; ctx.fillRect(0,0,W,H);
+
+  // ---- HUD numbers ----
+  fpsAcc+=dt; fpsN++; fpsTimer+=dt;
+  if(fpsTimer>0.4){ fps=Math.round(fpsN/fpsAcc); fpsAcc=0;fpsN=0;fpsTimer=0; updateHUD(); }
+
+  requestAnimationFrame(frame);
+}
+
+function drawSat(d, x, y, s, t){
+  const u=2.6*s*d.size;
+  ctx.save(); ctx.translate(x,y);
+  const rot=Math.atan2(y-(CY),x-(CX)) + t*0.5;
+  ctx.rotate(rot);
+  // glow
+  ctx.save(); ctx.globalCompositeOperation='lighter';
+  const g=ctx.createRadialGradient(0,0,0,0,0,u*4.5);
+  g.addColorStop(0,d.col); g.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.globalAlpha=0.45; ctx.fillStyle=g; ctx.beginPath(); ctx.arc(0,0,u*4.5,0,TAU); ctx.fill();
+  ctx.restore();
+  // body
+  ctx.fillStyle='#cdd9ee';
+  roundRect(-u, -u*0.7, u*2, u*1.4, u*0.3); ctx.fill();
+  ctx.strokeStyle='rgba(30,50,80,0.7)'; ctx.lineWidth=0.6*s; ctx.stroke();
+  // panels
+  ctx.fillStyle='rgba(50,100,210,0.9)';
+  ctx.fillRect(-u*4.2,-u*0.6, u*2.6, u*1.2);
+  ctx.fillRect( u*1.6,-u*0.6, u*2.6, u*1.2);
+  ctx.strokeStyle='rgba(150,190,255,0.4)'; ctx.lineWidth=0.5*s;
+  ctx.strokeRect(-u*4.2,-u*0.6, u*2.6, u*1.2);
+  ctx.strokeRect( u*1.6,-u*0.6, u*2.6, u*1.2);
+  // booms
+  ctx.strokeStyle='rgba(180,200,235,0.8)'; ctx.lineWidth=0.8*s;
+  ctx.beginPath(); ctx.moveTo(-u,0); ctx.lineTo(-u*1.6,0); ctx.moveTo(u,0); ctx.lineTo(u*1.6,0); ctx.stroke();
+  // blinking light
+  if(Math.sin(t*4+d.ph*3)>0.6){
+    ctx.fillStyle='#ff5c6e'; ctx.beginPath(); ctx.arc(0,-u*0.5,u*0.28,0,TAU); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawCraftTrail(c){
+  ctx.save(); ctx.globalCompositeOperation='lighter';
+  for(let i=1;i<c.trail.length;i++){
+    const a=i/c.trail.length;
+    ctx.strokeStyle='hsla('+c.hue+',100%,72%,'+(a*0.55)+')';
+    ctx.lineWidth=a*3.2*scale*zoom;
+    ctx.beginPath(); ctx.moveTo(c.trail[i-1].x,c.trail[i-1].y); ctx.lineTo(c.trail[i].x,c.trail[i].y); ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawCraft(c, t, alpha){
+  const s=scale*zoom; const u=3.2*s;
+  const ang=Math.atan2(c.vy,c.vx);
+  ctx.save(); ctx.translate(c.x,c.y); ctx.rotate(ang);
+  ctx.globalAlpha=alpha||1;
+  // thruster flame
+  if(c.state==='transit' && c.thrust>0.05){
+    ctx.save(); ctx.globalCompositeOperation='lighter';
+    const fl=ctx.createLinearGradient(-u,0,-u*4.5*c.thrust,0);
+    fl.addColorStop(0,'hsla('+c.hue+',100%,80%,0.9)');
+    fl.addColorStop(1,'hsla('+c.hue+',100%,60%,0)');
+    ctx.fillStyle=fl;
+    ctx.beginPath(); ctx.moveTo(-u*0.8,-u*0.5); ctx.lineTo(-u*(2.5+c.thrust*2.5),0); ctx.lineTo(-u*0.8,u*0.5); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+  // hull
+  ctx.fillStyle='#e6eeff';
+  ctx.beginPath(); ctx.moveTo(u*1.4,0); ctx.lineTo(-u*0.8,-u*0.7); ctx.lineTo(-u*0.4,0); ctx.lineTo(-u*0.8,u*0.7); ctx.closePath(); ctx.fill();
+  ctx.fillStyle='hsla('+c.hue+',90%,70%,0.95)';
+  ctx.beginPath(); ctx.arc(u*0.3,0,u*0.4,0,TAU); ctx.fill();
+  ctx.globalAlpha=1;
+  ctx.restore();
+}
+
+/* ---------- particle bursts ---------- */
+const BURST=[];
+function spawnBurst(x,y,hue){
+  for(let i=0;i<26;i++){
+    const a=Math.random()*TAU, sp=20+Math.random()*120;
+    BURST.push({x,y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,life:0,max:0.5+Math.random()*0.6,hue:hue+Math.random()*30});
+  }
+}
+function updateBursts(dt){
+  ctx.save(); ctx.globalCompositeOperation='lighter';
+  for(let i=BURST.length-1;i>=0;i--){
+    const p=BURST[i]; p.life+=dt;
+    if(p.life>p.max){ BURST.splice(i,1); continue; }
+    p.x+=p.vx*dt; p.y+=p.vy*dt; p.vx*=0.94; p.vy*=0.94;
+    const a=1-p.life/p.max;
+    ctx.fillStyle='hsla('+p.hue+',100%,'+(60+a*30)+'%,'+a+')';
+    ctx.beginPath(); ctx.arc(p.x,p.y,(1+a*2.5)*scale,0,TAU); ctx.fill();
+  }
+  ctx.restore();
+}
+
+/* ---------- HUD ---------- */
+const e_alt=document.getElementById('s_alt'), e_vel=document.getElementById('s_vel'),
+      e_craft=document.getElementById('s_craft'), e_dock=document.getElementById('s_dock');
+function updateHUD(){
+  const alt=(408 + Math.sin(tAcc*0.3)*6 - (zoom-1)*40).toFixed(0);
+  const vel=(7.66 + Math.sin(tAcc*0.5)*0.04).toFixed(2);
+  e_alt.textContent=alt; e_vel.textContent=vel;
+  e_craft.textContent=transitCount;
+  e_dock.textContent=dockedCount;
+}
+
+requestAnimationFrame(frame);
+
+// expose for self-verification
+window.__orbital={
+  state:()=>({craft:CRAFT.length, transit:transitCount, docked:dockedCount, sats:SATS.length, stars:STARS.length, zoom:+zoom.toFixed(3), tilt:+tiltX.toFixed(3)}),
+  launch:(x,y)=>launchCraft(x,y),
+  spawnAuto:()=>autoSpawn(99),
+};
+
+// auto-spawn ambient craft
+(function tick(){ autoSpawn(0.016); setTimeout(tick,16); })();
+})();
+</script>
+</body>
+</html>

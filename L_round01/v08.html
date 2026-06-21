@@ -1,0 +1,1025 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>버려진 공장 — 내부 탐사</title>
+<style>
+  :root { --paper:#e7dfca; --ink:#23201a; --rust:#8a5a3b; --steel:#6f7680; --amber:#caa24a; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; overflow:hidden; background:#0d0c0a; }
+  #view {
+    margin:0; width:100vw; height:100vh;
+    font:12px/12px ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    color:#cfc6b0; white-space:pre; overflow:hidden;
+    letter-spacing:0; user-select:none; -webkit-user-select:none; cursor:crosshair;
+    background:#0d0c0a;
+  }
+  /* HUD */
+  #hud {
+    position:fixed; left:0; right:0; bottom:0; z-index:5;
+    font:12px/1.5 ui-monospace,Menlo,monospace; color:#e7dfca;
+    background:linear-gradient(0deg,rgba(13,12,10,.96),rgba(13,12,10,.72) 70%,transparent);
+    padding:10px 14px 12px; pointer-events:none;
+  }
+  #room { color:var(--amber); letter-spacing:2px; font-weight:600; }
+  #room small { color:#9b9277; letter-spacing:1px; font-weight:400; }
+  #msg { color:#d8cfb6; min-height:1.4em; margin-top:3px; }
+  #msg .k { color:var(--amber); }
+  #msg .warn { color:#d98a5a; }
+  #msg .ok { color:#8db36b; }
+  #bar { display:flex; gap:18px; margin-top:5px; color:#9b9277; flex-wrap:wrap; }
+  #bar b { color:#cfc6b0; font-weight:600; }
+  #inv b { color:var(--amber); }
+  #power.on { color:#8db36b; }
+  #power.off { color:#d98a5a; }
+  /* target reticle line */
+  #target {
+    position:fixed; left:50%; top:46%; transform:translate(-50%,-50%);
+    z-index:4; font:12px/1.4 ui-monospace,Menlo,monospace; text-align:center;
+    color:var(--amber); text-shadow:0 0 6px #000,0 1px 2px #000; pointer-events:none;
+    max-width:90vw; transition:opacity .15s; opacity:0;
+  }
+  #target .name { font-weight:700; letter-spacing:1px; }
+  #target .act { color:#cfc6b0; font-size:11px; }
+  /* mobile controls */
+  #pad { position:fixed; inset:0; z-index:6; display:none; }
+  .btn {
+    position:fixed; z-index:7; width:62px; height:62px; border-radius:14px;
+    background:rgba(231,223,202,.10); border:1px solid rgba(231,223,202,.30);
+    color:#e7dfca; font:18px/62px ui-monospace,monospace; text-align:center;
+    backdrop-filter:blur(2px); user-select:none; -webkit-user-select:none; touch-action:none;
+  }
+  .btn:active { background:rgba(202,162,74,.30); }
+  #b-fwd  { left:84px;  bottom:128px; }
+  #b-back { left:84px;  bottom:54px; }
+  #b-l    { left:14px;  bottom:91px; }
+  #b-r    { left:154px; bottom:91px; }
+  #b-tl   { right:154px;bottom:128px; font-size:15px;}
+  #b-tr   { right:14px; bottom:128px; font-size:15px;}
+  #b-use  { right:84px; bottom:60px; width:78px;height:78px;line-height:78px;
+            background:rgba(202,162,74,.22); border-color:rgba(202,162,74,.55); color:var(--amber); }
+  /* intro / overlay */
+  #intro, #scene {
+    position:fixed; inset:0; z-index:20; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; text-align:center; padding:26px;
+    background:var(--paper); color:var(--ink);
+    font-family:Georgia,"Noto Serif KR",serif;
+    transition:opacity 1.1s ease; cursor:pointer;
+  }
+  #intro h1 { font-size:clamp(30px,6vw,52px); font-weight:600; letter-spacing:.32em;
+              margin:0 0 6px; text-indent:.32em; }
+  #intro .sub { font-size:13px; letter-spacing:.5em; color:#7a6f55; margin:0 0 26px; text-indent:.5em; }
+  #intro p { font-size:clamp(13px,1.6vw,16px); line-height:2.1; max-width:520px; margin:5px 0; }
+  #intro .keys { font-family:ui-monospace,Menlo,monospace; font-size:12px; line-height:2;
+                 color:#6f6450; margin-top:24px; }
+  #intro .keys b { color:var(--ink); }
+  #intro .go { margin-top:22px; font-family:ui-monospace,monospace; font-size:12px;
+               color:var(--rust); letter-spacing:.3em; animation:blink 1.6s infinite; }
+  @keyframes blink { 50%{opacity:.25;} }
+  #scene { background:rgba(13,12,10,.97); color:#e7dfca; opacity:0; pointer-events:none;
+           font-family:ui-monospace,Menlo,monospace; }
+  #scene pre { font-size:11px; line-height:11px; color:var(--amber); margin:0 0 22px; }
+  #scene h2 { font-family:Georgia,serif; font-size:24px; letter-spacing:.28em; margin:0 0 10px; }
+  #scene p { font-size:14px; line-height:1.9; max-width:480px; color:#cfc6b0; }
+  #scene .go { margin-top:20px; color:#9b9277; font-size:12px; letter-spacing:.2em; }
+  .hidden { opacity:0 !important; pointer-events:none !important; }
+</style>
+</head>
+<body>
+<pre id="view"></pre>
+
+<div id="target"><div class="name"></div><div class="act"></div></div>
+
+<div id="hud">
+  <div id="room">— <small id="roomdesc"></small></div>
+  <div id="msg">설비를 정면으로 바라보면 조사할 수 있다. <span class="k">E</span> 로 상호작용.</div>
+  <div id="bar">
+    <span id="loc"></span>
+    <span id="power" class="off">전력: 차단</span>
+    <span id="inv">소지품: <b>없음</b></span>
+    <span id="steps"></span>
+  </div>
+</div>
+
+<div id="pad">
+  <div class="btn" id="b-tl">↺</div>
+  <div class="btn" id="b-fwd">▲</div>
+  <div class="btn" id="b-tr">↻</div>
+  <div class="btn" id="b-l">◀</div>
+  <div class="btn" id="b-back">▼</div>
+  <div class="btn" id="b-r">▶</div>
+  <div class="btn" id="b-use">E</div>
+</div>
+
+<div id="intro">
+  <h1>버려진 공장</h1>
+  <div class="sub">A B A N D O N E D &nbsp; W O R K S</div>
+  <p>송풍기는 30년 전에 멎었다. 천장의 채광창으로 먼지 낀 빛이 비스듬히 떨어지고,<br>
+     녹슨 철골 사이로 식어버린 기계들이 줄지어 서 있다.</p>
+  <p>여섯 개의 작업장이 어둠 속에 잠겨 있다. 메인 발전기를 되살려<br>
+     봉인된 <b>심부 보일러실</b>의 문을 여는 것이 당신의 일이다.</p>
+  <p class="keys">
+     <b>W A S D</b> 이동 · <b>← →</b> 회전 · <b>E</b> 살펴보기 / 줍기 / 작동<br>
+     문 앞에 서서 앞으로 걸으면 다음 작업장으로 넘어간다 · 모바일은 화면 버튼
+  </p>
+  <div class="go">— 아무 키나 누르거나 화면을 눌러 입장 —</div>
+</div>
+
+<div id="scene">
+  <pre id="scene-art"></pre>
+  <h2 id="scene-title"></h2>
+  <p id="scene-text"></p>
+  <div class="go">— 계속 —</div>
+</div>
+
+<script>
+(() => {
+"use strict";
+
+/* ============================================================
+   버려진 공장 — 3D 아스키 룸 탐험
+   raycast walls + billboard ASCII sprites + room graph + 상호작용
+   ============================================================ */
+
+const view = document.getElementById("view");
+const hudMsg = document.getElementById("msg");
+const roomEl = document.getElementById("room");
+const roomDescEl = document.getElementById("roomdesc");
+const locEl = document.getElementById("loc");
+const powerEl = document.getElementById("power");
+const invEl = document.getElementById("inv");
+const stepsEl = document.getElementById("steps");
+const targetEl = document.getElementById("target");
+const targetName = targetEl.querySelector(".name");
+const targetAct = targetEl.querySelector(".act");
+
+/* ---------- 화면 그리드 자동 맞춤 ---------- */
+let W = 120, H = 50, CW = 7, CH = 12;
+function fit() {
+  const probe = document.createElement("span");
+  probe.style.cssText = "position:absolute;visibility:hidden;font:12px/12px ui-monospace,Menlo,monospace;white-space:pre";
+  probe.textContent = "M".repeat(100);
+  document.body.appendChild(probe);
+  CW = probe.getBoundingClientRect().width / 100 || 7;
+  probe.remove();
+  CH = 12;
+  W = Math.max(54, Math.min(260, Math.floor(innerWidth / CW)));
+  H = Math.max(28, Math.min(140, Math.floor(innerHeight / CH)));
+}
+fit();
+addEventListener("resize", () => { fit(); });
+
+/* ---------- 텍스처용 글리프 팔레트 ---------- */
+// 거리/밝기에 따른 명암 램프 (멀수록 옅게)
+const RAMP = "@%#WMB8&$Oo=+~:-.` ".split("");   // 진함→옅음
+// 벽 텍스처 문자 세트 (재질감)
+const WALL_TEX = {
+  brick:  "▓▒░#=:".split(""),
+  steel:  "║│┃|!Il".split(""),
+  rust:   "%&8oØ@".split(""),
+  panel:  "▣▢□=+-".split(""),
+  grime:  "#▒░.,:".split(""),
+};
+
+/* ============================================================
+   방(room) 정의
+   map: 각 칸 = 0(빈공간) 또는 1+(벽, 텍스처/문 인덱스)
+   doors: 특정 칸에서 다른 방으로 이동
+   sprites: 월드 좌표에 박힌 3D 아스키 오브젝트
+   ============================================================ */
+
+// 벽 코드: 1=brick,2=steel,3=rust,4=panel,5=grime, 9=닫힌문(특수)
+function grid(rows) { return rows.map(r => r.split("").map(c => c===" "?0:(c==="."?0:parseInt(c,36)))); }
+
+const ROOMS = {};
+
+/* ---- 1. 하역장 (입구) ---- */
+ROOMS.bay = {
+  name:"하역장", desc:"트럭이 드나들던 적재 구역. 셔터는 녹슬어 닫혀 있다.",
+  tex:"rust", floor:"oil",
+  // 12 x 9
+  map: grid([
+    "111111111111",
+    "1..........1",
+    "1..........1",
+    "5..........5",
+    "5..........2",  // 오른쪽 문 → assembly
+    "5..........2",
+    "1..........1",
+    "1..........1",
+    "111111991111",  // 아래 셔터(잠금)
+  ]),
+  start:{ x:2.5, y:4.5, dir:0 },
+  doors:[ {cell:[11,4], to:"assembly", at:[1.5,4.5], dir:0, label:"조립장으로"} ],
+  sprites:[
+    {id:"crate1", kind:"crate", x:3.5, y:2.5, name:"나무 적재 상자", desc:"못이 빠진 팰릿 위 상자. 라벨엔 '취급주의 — 베어링'이라 적혀 있다."},
+    {id:"crate2", kind:"crate", x:4.4, y:2.6, name:"부서진 상자", desc:"옆구리가 터져 녹슨 베어링이 쏟아져 있다."},
+    {id:"barrel", kind:"barrel", x:8.5, y:6.5, name:"기름 드럼통", desc:"209L 드럼. 두드리면 절반쯤 찬 둔탁한 소리가 난다."},
+    {id:"forklift", kind:"forklift", x:6.5, y:6.4, name:"지게차", desc:"키가 꽂힌 채 방전됐다. 계기판은 죽어 있다.", needPower:true, onDesc:"전력이 들어오자 경고등이 깜빡인다. 그러나 연료가 없다."},
+    {id:"key", kind:"item", glyph:"┍", x:3.5, y:7.0, name:"발전기 키", desc:"빛바랜 'GEN-01' 태그가 달린 열쇠. 발전기를 돌릴 수 있겠다.", item:"발전기 키"},
+    {id:"shutter", kind:"sign", x:6, y:7.8, name:"비상 안내판", desc:"\"무단 출입 금지. 정전 시 비상등은 자가발전기에 의존함.\" 누렇게 바랬다."},
+  ],
+};
+
+/* ---- 2. 조립장 (중앙 허브) ---- */
+ROOMS.assembly = {
+  name:"조립장", desc:"가장 큰 작업장. 컨베이어와 로봇 팔이 멈춰 있다.",
+  tex:"steel", floor:"grate",
+  // 16 x 12
+  map: grid([
+    "1111111111111111",
+    "1..............1",
+    "1..............1",
+    "2..............3",  // 좌:bay  우:lab
+    "2..............3",
+    "1..............1",
+    "1..............1",
+    "1..............1",
+    "1..............1",
+    "1......99......1",  // 위쪽? 실은 아래 문 → control / boiler
+    "1......44......1",
+    "1111119911111111",
+  ]),
+  start:{ x:2.5, y:4.5, dir:0 },
+  doors:[
+    {cell:[0,3],  to:"bay",     at:[10.5,4.5], dir:Math.PI, label:"하역장으로"},
+    {cell:[15,3], to:"lab",     at:[1.5,5.5],  dir:0, label:"검사실로"},
+    {cell:[7,11], to:"control", at:[3.5,1.5],  dir:Math.PI/2, label:"제어실로"},
+    {cell:[8,11], to:"control", at:[4.5,1.5],  dir:Math.PI/2, label:"제어실로"},
+  ],
+  sprites:[
+    {id:"conv", kind:"conveyor", x:8, y:3.0, name:"컨베이어 벨트", desc:"고무 벨트가 삭아 끊겼다. 위엔 조립되다 만 금속 케이스가 멈춰 있다.", needPower:true, onDesc:"모터가 깨어나 벨트가 끼익 소리내며 기어간다."},
+    {id:"arm1", kind:"robot", x:4.5, y:6.5, name:"용접 로봇 팔", desc:"6축 매니퓰레이터. 마지막 자세 그대로 굳어 있다. 토치 끝에 마른 슬래그.", needPower:true, onDesc:"관절이 윙윙대며 1cm 움직이다 안전정지에 걸린다."},
+    {id:"arm2", kind:"robot", x:11.5, y:7.5, name:"이송 로봇 팔", desc:"흡착 패드가 달린 팔. 패드 고무가 갈라졌다."},
+    {id:"toolcab", kind:"cabinet", x:13.5, y:2.5, name:"공구함", desc:"대부분 비었지만, 멀쩡한 손전등 하나가 굴러다닌다.", item:"손전등", itemDesc:"이제 어두운 곳도 비출 수 있다."},
+    {id:"pillar", kind:"pillar", x:8, y:8.5, name:"H형 철골 기둥", desc:"천장을 받치는 주 기둥. 페인트가 벗겨져 녹이 흘러내렸다."},
+    {id:"core", kind:"creature", x:12.5, y:9.0, name:"움직이는 무언가", desc:"배관 그늘에서 무언가 웅크렸다 흩어진다. 비둘기 떼였다. 심장이 내려앉는다."},
+  ],
+};
+
+/* ---- 3. 검사실 ---- */
+ROOMS.lab = {
+  name:"검사실", desc:"품질을 따지던 방. 측정기와 표본이 먼지를 뒤집어썼다.",
+  tex:"panel", floor:"tile",
+  map: grid([
+    "1111111111",
+    "1........1",
+    "3........1",  // 좌 → assembly
+    "1........1",
+    "1........1",
+    "1........1",
+    "1........1",
+    "1111111111",
+  ]),
+  start:{ x:1.5, y:2.5, dir:0 },
+  doors:[ {cell:[0,2], to:"assembly", at:[13.5,3.5], dir:Math.PI, label:"조립장으로"} ],
+  sprites:[
+    {id:"scope", kind:"machine", x:3.5, y:2.5, name:"좌표측정기(CMM)", desc:"프로브가 표본 위에 멈춰 있다. 마지막 측정값: 공차 +0.003 — 합격이었다."},
+    {id:"shelf", kind:"shelf", x:7.5, y:2.5, name:"표본 선반", desc:"불량으로 폐기된 기어들이 번호표를 단 채 줄지어 있다."},
+    {id:"desk", kind:"desk", x:6.5, y:5.5, name:"검사 책상", desc:"펼쳐진 일지. 마지막 줄: '라인 정지. 발전기 차단기 확인 요망.' 다음 장은 비어 있다."},
+    {id:"fuse", kind:"item", glyph:"╪", x:2.5, y:6.0, name:"예비 퓨즈", desc:"30A 차단기용 예비 퓨즈. 제어반의 끊긴 자리에 맞을 것 같다.", item:"예비 퓨즈"},
+    {id:"specimen", kind:"creature", x:8.0, y:5.5, name:"표본 단지 속", desc:"포르말린이 말라붙은 단지. 안의 형체는 그저 낡은 베어링 뭉치다… 아마도."},
+  ],
+};
+
+/* ---- 4. 제어실 ---- */
+ROOMS.control = {
+  name:"제어실", desc:"공장의 두뇌. 계기반과 배전반이 한쪽 벽을 덮고 있다.",
+  tex:"panel", floor:"tile",
+  map: grid([
+    "11111111",
+    "1......1",
+    "1......1",
+    "1......1",
+    "1......1",
+    "4......3",  // 좌 아래 문 → assembly ; 우 → break
+    "1......1",
+    "11111111",
+  ]),
+  start:{ x:3.5, y:1.5, dir:Math.PI/2 },
+  doors:[
+    {cell:[0,5], to:"assembly", at:[7.5,10.5], dir:Math.PI/2*3, label:"조립장으로"},
+    {cell:[7,5], to:"breakroom", at:[1.5,2.5],  dir:0, label:"휴게실로"},
+  ],
+  sprites:[
+    {id:"panel", kind:"breaker", x:4, y:2.0, name:"메인 배전반", desc:"차단기 한 칸이 'BLOWN'으로 비어 있다. 예비 퓨즈를 끼우면 살릴 수 있겠다.",
+      gate:true, needItem:"예비 퓨즈", lockedDesc:"퓨즈 자리가 비었다. 어딘가 30A 예비 퓨즈가 있을 텐데.",
+      readyDesc:"가진 예비 퓨즈가 자리에 딱 맞는다. 끼워 넣자 딸깍 — 이제 발전기만 돌리면 된다."},
+    {id:"gen", kind:"generator", x:2.0, y:5.5, name:"비상 발전기", desc:"디젤 자가발전기. 키를 꽂고 돌려야 한다.",
+      gate:true, needItem:"발전기 키", needFlag:"fused",
+      lockedDesc:"키가 없다. 그리고 배전반 퓨즈부터 갈아야 폭주하지 않을 것이다.",
+      lockedNoFuse:"발전기 키는 있지만, 배전반 퓨즈가 나간 채로 돌리면 다시 타버린다.",
+      readyDesc:"키를 꽂고 돌리자 — 쿨럭, 쿨럭, 부르릉! 발전기가 살아난다. 천장 형광등이 차례로 깜빡이며 들어온다.",
+      activatesPower:true},
+    {id:"console", kind:"console", x:4.5, y:5.0, name:"운전 콘솔", desc:"버튼들이 죽어 있다. 전력이 들어오면 라인 상태가 표시될 것이다.", needPower:true,
+      onDesc:"화면이 점등된다: '심부 보일러실 — 봉인 해제. 잔류 압력 주의.'"},
+    {id:"chart", kind:"sign", x:6, y:6.5, name:"공정 흐름도", desc:"빛바랜 도면: 하역→조립→검사, 그리고 붉은 선이 보일러실로 이어진다."},
+  ],
+};
+
+/* ---- 5. 휴게실 ---- */
+ROOMS.breakroom = {
+  name:"휴게실", desc:"노동자들이 잠시 쉬던 방. 시간이 멈춘 듯하다.",
+  tex:"brick", floor:"tile",
+  map: grid([
+    "111111111",
+    "4.......1",  // 좌 → control
+    "1.......1",
+    "1.......1",
+    "1.......1",
+    "111111111",
+  ]),
+  start:{ x:1.5, y:1.5, dir:0 },
+  doors:[ {cell:[0,1], to:"control", at:[6.5,5.5], dir:Math.PI/2*3, label:"제어실로"} ],
+  sprites:[
+    {id:"locker", kind:"cabinet", x:3.5, y:1.5, name:"철제 사물함", desc:"이름표가 붙은 사물함들. 하나가 열려 있고, 안엔 빛바랜 작업복과 가족 사진."},
+    {id:"table", kind:"desk", x:4.5, y:3.0, name:"식탁", desc:"녹슨 도시락통과 멈춘 벽시계 — 3시 17분. 마지막 휴식이 그때였나 보다."},
+    {id:"vend", kind:"machine", x:7.0, y:2.5, name:"자판기", desc:"먼지 낀 유리 뒤로 빛바랜 캔들. 전력이 오면 어쩌면 한 캔쯤.", needPower:true,
+      onDesc:"위잉— 내부 등이 켜지고, 덜컹! 캔 하나가 굴러 떨어진다. 30년 묵은 보리차."},
+    {id:"radio", kind:"item", glyph:"▤", x:6.5, y:4.0, name:"낡은 라디오", desc:"손잡이로 충전하는 비상 라디오. 챙겨두면 든든하다.", item:"비상 라디오"},
+    {id:"cat", kind:"creature", x:2.5, y:4.0, name:"공장 고양이", desc:"테이블 밑 종이상자에서 한쪽 눈을 뜬 길고양이. 당신을 빤히 보다 다시 잔다."},
+  ],
+};
+
+/* ---- 6. 심부 보일러실 (최종) ---- */
+ROOMS.boiler = {
+  name:"심부 보일러실", desc:"공장의 심장. 거대한 보일러가 식은 채 천장까지 솟아 있다.",
+  tex:"rust", floor:"oil",
+  map: grid([
+    "1111111111",
+    "1........1",
+    "1........1",
+    "1........1",
+    "1........1",
+    "9........1",  // 좌 → control (해제 후)
+    "1........1",
+    "1111111111",
+  ]),
+  start:{ x:1.5, y:5.5, dir:0 },
+  doors:[ {cell:[0,5], to:"control", at:[2.5,6.5], dir:Math.PI/2, label:"제어실로"} ],
+  sprites:[
+    {id:"boilerbig", kind:"boiler", x:6, y:3.5, name:"주 보일러", desc:"3층 높이의 강철 심장. 압력계 바늘이 천천히, 아주 천천히 떨린다. 아직 살아 있다."},
+    {id:"valve", kind:"valve", x:3.0, y:5.5, name:"메인 밸브", desc:"붉게 칠한 큰 핸들. 'EMERGENCY VENT'. 돌리면 잔류 압력이 빠질 것이다.",
+      gate:true, needFlag:"power", lockedDesc:"수동으로는 꿈쩍도 않는다. 전동 잠금이 걸려 있다 — 전력이 필요하다.",
+      readyDesc:"전동 잠금이 풀렸다. 온 힘으로 핸들을 돌리자 푸쉬익— 30년 묵은 증기가 한꺼번에 빠져나간다.", endingTrigger:true},
+    {id:"gauge", kind:"sign", x:8, y:5.5, name:"명판", desc:"\"본 설비는 1968년 제작, 1994년 정지. 다시 깨우는 자에게 — 부디 조심히.\""},
+  ],
+};
+
+/* ============================================================
+   상태
+   ============================================================ */
+let cur = "bay";
+let R = ROOMS[cur];
+let px = R.start.x, py = R.start.y, dir = R.start.dir;
+let powerOn = false;
+let fused = false;          // 배전반 퓨즈 교체됨
+const inventory = [];
+const flags = { fused:false, power:false };
+const spriteState = {};     // id -> {activated:bool}
+let steps = 0;
+let entered = false, ending = false;
+const keys = {};
+
+function setFlag(f,v){ flags[f]=v; if(f==="fused") fused=v; if(f==="power"){ powerOn=v; } }
+
+/* 표시 갱신 */
+function refreshHud(){
+  roomEl.innerHTML = R.name + ' <small id="roomdesc">' + R.desc + '</small>';
+  locEl.textContent = "위치 ("+px.toFixed(1)+", "+py.toFixed(1)+")";
+  powerEl.textContent = "전력: " + (powerOn?"공급":"차단");
+  powerEl.className = powerOn?"on":"off";
+  invEl.innerHTML = "소지품: <b>" + (inventory.length?inventory.join(", "):"없음") + "</b>";
+  stepsEl.textContent = "걸음 " + steps;
+}
+function say(html){ hudMsg.innerHTML = html; }
+
+/* ============================================================
+   raycast 렌더 + 스프라이트 합성
+   ============================================================ */
+const zbuf = new Float32Array(512);   // 열별 벽 거리
+
+/* 손전등 모델: 정전이어도 화면 중심 원뿔이 밝다.
+   colCone: 0(가장자리)~1(정중앙). 반환 = 거리에 더해질 음영(작을수록 밝음) */
+function lightShade(d, colCone){
+  // 기본 거리 감쇠
+  let s = d;
+  if(powerOn){
+    s -= 1.4;                         // 전체 형광등
+    s -= colCone*1.6;                 // 중심 약간 더
+  } else {
+    // 손전등: 중심은 환하게, 가장자리는 어둑하게
+    s += (1 - colCone) * 5.0;         // 가장자리 페이드
+    s -= colCone * 2.2;               // 중심 부스트
+    s += 0.6;                          // 전체 약간 어둑(분위기)
+  }
+  return s;
+}
+
+function texCharFor(room, ix, iy, tx, ty, d, side, colCone){
+  const set = WALL_TEX[room.tex] || WALL_TEX.steel;
+  let shade = lightShade(d, colCone) + (side?1.0:0);
+  if(shade > 12) return " ";
+  if(shade > 9)  return "·";
+  if(shade > 6.5) return ":";
+  const seed = ((ix*73856093) ^ (iy*19349663) ^ ((tx*97)|0) ^ ((ty*53)|0)) >>> 0;
+  const ch = set[ (seed) % set.length ];
+  if(shade > 4.0) return /[#%&8@▓▒]/.test(ch) ? "+" : ch;   // 중간거리: 진한문자 톤다운
+  return ch;
+}
+
+function floorChar(room, fd, colCone){
+  // fd: 0(지평선)~1(발치)
+  let table;
+  switch(room.floor){
+    case "grate": table = " .,:+#%#%".split(""); break;   // 격자 바닥
+    case "tile":  table = " .,::-=+=".split(""); break;
+    case "oil":   table = " .,:~ooO@".split(""); break;
+    default:      table = " .,:;+#%".split("");
+  }
+  // 가까운 바닥(fd 큼)일수록 밝음. 손전등 중심 보정.
+  let lvl = fd*table.length + colCone* (powerOn?1.0:2.0) - (powerOn?0:1.6);
+  let i = Math.floor(lvl);
+  return table[Math.min(table.length-1, Math.max(0,i))] || " ";
+}
+
+function ceilChar(fd, colCone, x){
+  // fd: 0(지평선)~1(천장꼭대기 위)  — 실제로는 y/horizon
+  if(powerOn){
+    const t = " .,:--=+#".split("");
+    let lvl = (1-fd)*t.length + colCone;
+    return t[Math.min(t.length-1, Math.max(0,Math.floor(lvl)))] || " ";
+  }
+  // 정전: 천장 어둡되 채광창(빛줄기)·먼지 약간
+  const beam = ((x*3 + (fd*40|0)) % 23 === 0) && fd>0.2 && fd<0.85;
+  if(beam) return ":";
+  if(fd>0.86) return ".";        // 천장 가장자리 윤곽
+  return " ";
+}
+
+/* 스프라이트 ASCII 아트(앞면) — 폭/높이는 sprite kind별 */
+const ART = {
+  crate: [
+    " ______ ",
+    "/_____/|",
+    "|     ||",
+    "| [#] ||",
+    "|_____|/",
+  ],
+  barrel: [
+    " .--. ",
+    "|≡≡≡|",
+    "|≡≡≡|",
+    "|≡≡≡|",
+    " `--' ",
+  ],
+  forklift: [
+    "  ___    | |",
+    " /[o]\\___| |",
+    " |___|__OO_|",
+    "  (O)   (O) ",
+  ],
+  conveyor: [
+    "[#]======[#]",
+    "o-o-o-o-o-o-o",
+    "============",
+    " ||      || ",
+  ],
+  robot: [
+    "   __    ",
+    "  /  \\_  ",
+    " | () | \\_",
+    "  \\__/   \\",
+    "   ||    []",
+    "  =||=    ",
+  ],
+  cabinet: [
+    " ______ ",
+    "|=.--.=|",
+    "||    ||",
+    "||  o ||",
+    "||    ||",
+    "|=`--'=|",
+  ],
+  shelf: [
+    "+------+",
+    "|o o o |",
+    "+------+",
+    "|o o o |",
+    "+------+",
+    "|o o o |",
+    "+------+",
+  ],
+  desk: [
+    " ______ ",
+    "/_====_/",
+    "|  __  |",
+    "|_|  |_|",
+  ],
+  machine: [
+    " .====. ",
+    "|[]  []|",
+    "| .--. |",
+    "| |  | |",
+    "|_|__|_|",
+  ],
+  breaker: [
+    "+--------+",
+    "|. . . . |",
+    "|: : : : |",
+    "|. .[X]. |",
+    "|: : : : |",
+    "+--------+",
+  ],
+  generator: [
+    " ____________ ",
+    "| [O O O O O]|",
+    "|  ________  |",
+    "| | DIESEL | |",
+    "|=|________|=|",
+    " (o)      (o) ",
+  ],
+  console: [
+    " .--------. ",
+    "/__________\\",
+    "|  ::::::  |",
+    "| [][][][]|",
+    "|__________|",
+  ],
+  boiler: [
+    "    .------.    ",
+    "   /  (())  \\   ",
+    "  |   ====   |  ",
+    "  |  | || |  |  ",
+    "  |  | || |  |  ",
+    "  | [P:88] |   ",
+    "  |__||||__|   ",
+    " /==========\\  ",
+    "[__|__||__|__] ",
+  ],
+  valve: [
+    "   _||_   ",
+    "  /(##)\\  ",
+    " | (##) | ",
+    "  \\(##)/  ",
+    "   ~||~   ",
+  ],
+  pillar: [
+    "==[]==",
+    "  ||  ",
+    "  ||  ",
+    "  ||  ",
+    "  ||  ",
+    "  ||  ",
+    "==[]==",
+  ],
+  sign: [
+    "+------+",
+    "|!  !  |",
+    "| WARN |",
+    "+--||--+",
+  ],
+  creature: [
+    " (\\_/) ",
+    " (o.o) ",
+    " (\")(\")",
+  ],
+  item: null, // glyph 사용
+};
+function spriteArt(s){
+  if(s.kind==="item"){
+    const g = s.glyph || "*";
+    return ["  __ ", " ("+g+") ", "  ‾‾ "];
+  }
+  return ART[s.kind] || ART.crate;
+}
+
+/* 메인 렌더 */
+function render(){
+  const buf = new Array(H);
+  const horizon = (H*0.46)|0;
+  // FOV
+  const planeK = 0.66;
+  const dcos = Math.cos(dir), dsin = Math.sin(dir);
+  const pcos = Math.cos(dir+Math.PI/2)*planeK, psin = Math.sin(dir+Math.PI/2)*planeK;
+  const map = R.map, MH = map.length, MW = map[0].length;
+
+  // 열별 손전등 원뿔(중심=1, 가장자리=0)
+  const cone = new Float32Array(W);
+  for(let x=0;x<W;x++){
+    const c = 1 - Math.abs((2*x)/W - 1);   // 0..1
+    cone[x] = Math.pow(c, 1.6);
+  }
+  // 행 버퍼 초기화 + 천장/바닥
+  for(let y=0;y<H;y++){
+    let row = new Array(W);
+    for(let x=0;x<W;x++){
+      if(y<horizon){
+        const fd = y/horizon;
+        row[x] = ceilChar(fd, cone[x], x);
+      } else {
+        const fd = (y-horizon)/(H-horizon);
+        row[x] = floorChar(R, fd, cone[x]);
+      }
+    }
+    buf[y]=row;
+  }
+
+  // 벽 raycast (열별)
+  for(let x=0;x<W;x++){
+    const cam = (2*x)/W - 1;
+    const rdx = dcos + pcos*cam;
+    const rdy = dsin + psin*cam;
+    let mx = px|0, my = py|0;
+    const ddx = Math.abs(1/(rdx||1e-9)), ddy = Math.abs(1/(rdy||1e-9));
+    let sx, sy, sdx, sdy, side=0;
+    if(rdx<0){ sx=-1; sdx=(px-mx)*ddx; } else { sx=1; sdx=(mx+1-px)*ddx; }
+    if(rdy<0){ sy=-1; sdy=(py-my)*ddy; } else { sy=1; sdy=(my+1-py)*ddy; }
+    let hit=0, guard=0, cell=0;
+    while(!hit && guard++<96){
+      if(sdx<sdy){ sdx+=ddx; mx+=sx; side=0; } else { sdy+=ddy; my+=sy; side=1; }
+      if(mx<0||my<0||mx>=MW||my>=MH){ hit=1; cell=1; }
+      else if(map[my][mx]){ hit=1; cell=map[my][mx]; }
+    }
+    let dist = Math.max(0.05, side===0 ? sdx-ddx : sdy-ddy);
+    zbuf[x] = dist;
+    const lh = (H/dist)|0;
+    const ds = Math.max(0, horizon-(lh>>1));
+    const de = Math.min(H-1, horizon+(lh>>1));
+    let wallX = side===0 ? py+dist*rdy : px+dist*rdx;
+    wallX -= wallX|0;
+    for(let y=ds;y<=de;y++){
+      const ty = lh>0 ? (y-(horizon-lh/2))/lh : 0;
+      let ch;
+      if(cell===9){
+        // 닫힌(특수) 문: 보일러 봉인 등 — 다른 텍스처
+        ch = (!powerOn && cur==="boiler") ? texCharFor(R,mx,my,wallX,ty,dist,side,cone[x])
+           : doorTex(wallX, ty, lightShade(dist,cone[x])+(side?1:0));
+      } else {
+        ch = texCharFor(R, mx, my, wallX, ty, dist, side, cone[x]);
+      }
+      buf[y][x] = ch;
+    }
+  }
+
+  // ---- 스프라이트(빌보드) 합성 + 가장 가까운 타겟 결정 ----
+  let best = null, bestD = 1e9;
+  const sprites = R.sprites.filter(s => !(spriteState[s.id] && spriteState[s.id].taken));
+  // 거리 내림차순(먼 것 먼저 그림)
+  const order = sprites.map(s=>{
+    const dx=s.x-px, dy=s.y-py;
+    return {s, d:dx*dx+dy*dy};
+  }).sort((a,b)=>b.d-a.d);
+
+  for(const {s} of order){
+    const relx = s.x-px, rely = s.y-py;
+    // 카메라 좌표로 변환 (역행렬)
+    const invDet = 1/(pcos*dsin - dcos*psin);
+    const transX = invDet*(dsin*relx - dcos*rely);
+    const transY = invDet*(-psin*relx + pcos*rely); // 깊이
+    if(transY<=0.15) continue;            // 뒤/너무 가까움
+    const screenX = ((W/2)*(1 + transX/transY))|0;
+    const art = spriteArt(s);
+    const aH = art.length, aW = Math.max(...art.map(r=>r.length));
+    // 스프라이트 화면 높이: 거리 반비례, kind별 스케일
+    const scaleH = (s.kind==="boiler")?1.6:(s.kind==="creature"?0.55:(s.kind==="item"?0.5:0.95));
+    let drawH = Math.max(3, ((H/transY)*scaleH)|0);
+    drawH = Math.min(drawH, H*2);
+    const charAspect = (CH/CW);                 // 보통 ~1.7
+    let drawW = Math.max(2, (drawH * (aW/aH) / charAspect)|0);
+    drawW = Math.min(drawW, W*2);
+    // 바닥에 발붙이기: 스프라이트 하단을 지평선 아래로
+    const footY = horizon + ((H/transY)*0.5*((s.kind==="boiler")?0.2:0.5))|0;
+    const sy0 = footY - drawH;
+    const sx0 = screenX - (drawW>>1);
+    // 스프라이트 손전등: 화면 중심에 가까울수록 밝다
+    const sCone = Math.pow(Math.max(0, 1 - Math.abs((2*screenX)/W - 1)), 1.5);
+    const sShade = lightShade(transY, sCone);
+    let visible=false;
+    for(let yy=0; yy<drawH; yy++){
+      const ay = (yy*aH/drawH)|0;
+      const line = art[Math.min(aH-1,ay)] || "";
+      const ty = sy0+yy;
+      if(ty<0||ty>=H) continue;
+      for(let xx=0; xx<drawW; xx++){
+        const tx = sx0+xx;
+        if(tx<0||tx>=W) continue;
+        if(transY >= zbuf[tx]) continue;       // 벽에 가림
+        const ax = (xx*aW/drawW)|0;
+        let c = line[ax];
+        if(c===undefined||c===" ") continue;
+        // 손전등/거리 음영
+        if(sShade > 11){ continue; }                 // 어둠 속으로 사라짐
+        else if(sShade > 8){ c = (xx+yy)%2? "." : " "; if(c===" ") continue; }
+        else if(sShade > 5.5 && /[a-z0-9]/i.test(c)) c = c.toLowerCase();
+        buf[ty][tx]=c;
+        visible=true;
+      }
+    }
+    if(visible){
+      // 타겟 후보: 화면 중앙 근처 + 정면
+      const onAxis = Math.abs(screenX - W/2) < Math.max(6, drawW*0.6);
+      if(onAxis && transY < bestD && transY < 4.5){ bestD = transY; best = {s, transY}; }
+    }
+  }
+
+  // 글자행 합치기
+  const out = new Array(H);
+  for(let y=0;y<H;y++) out[y]=buf[y].join("");
+  view.textContent = out.join("\n");
+
+  updateTarget(best);
+  return best;
+}
+
+function doorTex(tx,ty,shade){
+  if(shade>11) return " ";
+  // 봉인된 문: 빗장 무늬
+  const v = (Math.floor(ty*8)+Math.floor(tx*8))%5;
+  if(shade>7) return v<2?"=":":";
+  if(shade>4) return v<2?"=":"+";
+  return "▦▥▤■=".split("")[v];
+}
+
+/* 현재 정면 타겟 */
+let currentTarget = null;
+function updateTarget(best){
+  if(ending || !entered){ targetEl.style.opacity=0; currentTarget=null; return; }
+  if(!best){ targetEl.style.opacity=0; currentTarget=null; return; }
+  const s = best.s;
+  currentTarget = s;
+  let act;
+  if(s.item) act = "[E] 줍기";
+  else if(s.gate) act = "[E] 작동/조사";
+  else if(s.needPower) act = "[E] " + (powerOn?"작동":"조사");
+  else act = "[E] 살펴보기";
+  targetName.textContent = "▸ " + s.name;
+  targetAct.textContent = act;
+  targetEl.style.opacity = 1;
+}
+
+/* ============================================================
+   상호작용
+   ============================================================ */
+function interact(){
+  if(ending || !entered) return;
+  const s = currentTarget;
+  if(!s){ say("바라보는 곳에 조사할 만한 것이 없다. 설비를 정면에 두어 보라."); return; }
+
+  // 아이템 줍기
+  if(s.item){
+    if(!inventory.includes(s.item)){
+      inventory.push(s.item);
+      spriteState[s.id] = {taken:true};
+      say('<span class="ok">획득:</span> <span class="k">'+s.item+'</span> — '+(s.itemDesc||s.desc));
+      refreshHud();
+    }
+    return;
+  }
+
+  // 게이트(퍼즐) 설비
+  if(s.gate){
+    const st = spriteState[s.id] || (spriteState[s.id]={});
+    if(st.activated){ say(s.readyDesc || s.desc); return; }
+
+    // 배전반: 퓨즈 필요
+    if(s.id==="panel"){
+      if(inventory.includes("예비 퓨즈")){
+        st.activated=true; setFlag("fused",true);
+        const i=inventory.indexOf("예비 퓨즈"); if(i>=0) inventory.splice(i,1);
+        say('<span class="ok">배전반 복구.</span> '+s.readyDesc);
+        refreshHud();
+      } else { say('<span class="warn">'+s.lockedDesc+'</span>'); }
+      return;
+    }
+    // 발전기: 키 + 퓨즈 선행
+    if(s.id==="gen"){
+      if(!flags.fused){ say('<span class="warn">'+(inventory.includes("발전기 키")?s.lockedNoFuse:s.lockedDesc)+'</span>'); return; }
+      if(!inventory.includes("발전기 키")){ say('<span class="warn">'+s.lockedDesc+'</span>'); return; }
+      st.activated=true; setFlag("power",true);
+      say('<span class="ok">전력 공급 개시!</span> '+s.readyDesc);
+      refreshHud();
+      return;
+    }
+    // 보일러 밸브: 전력 필요 → 엔딩
+    if(s.id==="valve"){
+      if(!flags.power){ say('<span class="warn">'+s.lockedDesc+'</span>'); return; }
+      st.activated=true;
+      say('<span class="ok">'+s.readyDesc+'</span>');
+      setTimeout(triggerEnding, 1500);
+      return;
+    }
+  }
+
+  // 전력 필요 설비
+  if(s.needPower){
+    if(powerOn) say('<span class="ok">작동:</span> '+(s.onDesc||s.desc));
+    else say(s.desc + ' <span class="warn">(정지 — 전력 없음)</span>');
+    return;
+  }
+
+  // 일반 살펴보기
+  say(s.desc);
+}
+
+/* 문 통과 */
+function checkDoors(){
+  // 벽 코드가 문(특수)인 칸을 지나거나, doors 정의된 cell 근처 진입시 전환
+  for(const dr of R.doors){
+    const [cx,cy]=dr.cell;
+    // 보일러 봉인문: power 없으면 막힘
+    if(dr.to==="boiler" && !flags.power) continue;
+    const near = Math.hypot((cx+0.5)-px,(cy+0.5)-py) < 0.95;
+    if(near){
+      // 문 칸이 벽(9)이면 통과 허용
+      enterRoom(dr.to, dr.at, dr.dir, dr.label);
+      return true;
+    }
+  }
+  return false;
+}
+
+function enterRoom(to, at, ndir, label){
+  cur = to; R = ROOMS[to];
+  px = at[0]; py = at[1]; dir = ndir;
+  refreshHud();
+  say("→ <span class=\"k\">"+R.name+"</span> 으로 들어섰다. "+R.desc);
+}
+
+/* 보일러실 진입 가능하게: control의 cell→boiler 문을 power시 활성 */
+// control 방에 boiler 문 추가 (전력 들어온 뒤 의미)
+ROOMS.control.doors.push({cell:[3,0], to:"boiler", at:[1.5,5.5], dir:0, label:"심부 보일러실로"});
+// boiler 진입 안내용 — control 상단 가운데 벽을 문(9)으로? 위는 벽. 대신 거리 트리거로 처리됨.
+
+/* ============================================================
+   이동
+   ============================================================ */
+function blockedAt(nx,ny){
+  const mx=nx|0,my=ny|0,map=R.map;
+  if(mx<0||my<0||my>=map.length||mx>=map[0].length) return true;
+  const c = map[my][mx];
+  if(c===0) return false;
+  if(c===9){
+    // 특수문: 보일러 봉인은 전력 전엔 벽
+    if(cur==="boiler") return true;        // 좌측 통로문은 doors로 처리
+    return true;
+  }
+  return true;
+}
+function tryMove(nx,ny){
+  // 스프라이트 충돌(가구는 통과 못함) — 간단 반경
+  for(const s of R.sprites){
+    if(spriteState[s.id]&&spriteState[s.id].taken) continue;
+    if(s.kind==="item"||s.kind==="creature"||s.kind==="sign") continue;
+    const rr = (s.kind==="boiler")?1.1:0.55;
+    if(Math.hypot(nx-s.x,ny-s.y)<rr){ return false; }
+  }
+  let moved=false;
+  if(!blockedAt(nx,py)){ px=nx; moved=true; }
+  if(!blockedAt(px,ny)){ py=ny; moved=true; }
+  return moved;
+}
+
+/* ============================================================
+   엔딩
+   ============================================================ */
+const sceneEl = document.getElementById("scene");
+const sceneArt = document.getElementById("scene-art");
+const sceneTitle = document.getElementById("scene-title");
+const sceneText = document.getElementById("scene-text");
+function triggerEnding(){
+  ending=true;
+  sceneArt.textContent =
+"        .------.        \n"+
+"       /  ((  ))\\       \n"+
+"      |  ~~~~~~  |      \n"+
+"   ~ ~| 증  기  |~ ~   \n"+
+"      |  ______  |      \n"+
+"     [|=| 0000 |=|]     \n"+
+"      \\==========/      ";
+  sceneTitle.textContent = "압력 해제";
+  sceneText.innerHTML =
+    "30년을 참아온 증기가 빠져나가며 공장이 길게 한숨을 쉰다.<br><br>"+
+    "당신은 식은 심장을 다시 멎게 한 것이 아니라, 마침내 편히 쉬게 했다.<br>"+
+    "형광등 아래, 멈춰 있던 기계들이 처음으로 조용해 보인다.<br><br>"+
+    "<span style='color:#caa24a'>— 탐사 종료 · "+steps+"걸음 · 방문 "+visited.size+"개 작업장 —</span>";
+  sceneEl.classList.remove("hidden");
+  sceneEl.style.opacity=1; sceneEl.style.pointerEvents="auto";
+  targetEl.style.opacity=0;
+}
+
+/* 방문 기록 */
+const visited = new Set();
+
+/* ============================================================
+   입력
+   ============================================================ */
+const intro = document.getElementById("intro");
+function enter(){
+  if(entered) return;
+  entered=true;
+  intro.classList.add("hidden");
+  refreshHud();
+  say('입장. <span class="k">WASD</span> 이동, <span class="k">←→</span> 회전, 정면 설비에 <span class="k">E</span>. 문 앞에서 앞으로 걸어 방을 옮긴다.');
+}
+
+addEventListener("keydown", e=>{
+  const k = e.key.toLowerCase();
+  if(ending){ if(k==="enter"||k===" "){ location.reload(); } return; }
+  if(!entered){ enter(); return; }
+  keys[k]=true;
+  if(k==="e"){ interact(); }
+  if(["arrowup","arrowdown","arrowleft","arrowright"," "].includes(k)) e.preventDefault();
+});
+addEventListener("keyup", e=>{ keys[e.key.toLowerCase()]=false; });
+
+// intro 클릭 입장 / scene 클릭 재시작
+intro.addEventListener("click", enter);
+sceneEl.addEventListener("click", ()=>{ if(ending) location.reload(); });
+
+/* ---- 모바일 ---- */
+const pad = document.getElementById("pad");
+function isTouch(){ return ('ontouchstart' in window) || navigator.maxTouchPoints>0; }
+function bindBtn(id, key, isUse){
+  const el = document.getElementById(id);
+  const on = e=>{ e.preventDefault(); if(ending){location.reload();return;} if(!entered){enter();return;}
+    if(isUse) interact(); else keys[key]=true; };
+  const off = e=>{ e.preventDefault(); if(!isUse) keys[key]=false; };
+  el.addEventListener("touchstart",on,{passive:false});
+  el.addEventListener("touchend",off,{passive:false});
+  el.addEventListener("mousedown",on);
+  el.addEventListener("mouseup",off);
+  el.addEventListener("mouseleave",off);
+}
+bindBtn("b-fwd","w"); bindBtn("b-back","s");
+bindBtn("b-l","a"); bindBtn("b-r","d");
+bindBtn("b-tl","arrowleft"); bindBtn("b-tr","arrowright");
+bindBtn("b-use",null,true);
+function showPad(){ if(isTouch()){ pad.style.display="block"; } }
+showPad();
+
+/* ============================================================
+   루프
+   ============================================================ */
+let lastT = performance.now(), acc=0;
+let lastDoorTry=0;
+function loop(t){
+  const dt = Math.min(0.05,(t-lastT)/1000); lastT=t;
+  if(entered && !ending){
+    const rs = 2.2*dt, ms = 2.4*dt;
+    if(keys["arrowleft"]||keys["q"]) dir-=rs;
+    if(keys["arrowright"]) dir+=rs;
+    const fx=Math.cos(dir), fy=Math.sin(dir);
+    let movedFwd=false, movedAny=false;
+    if(keys["w"]||keys["arrowup"]){ if(tryMove(px+fx*ms,py+fy*ms)){movedFwd=true;movedAny=true;} }
+    if(keys["s"]||keys["arrowdown"]){ if(tryMove(px-fx*ms,py-fy*ms)){movedAny=true;} }
+    if(keys["a"]){ if(tryMove(px+fy*ms,py-fx*ms)){movedAny=true;} }
+    if(keys["d"]){ if(tryMove(px-fy*ms,py+fx*ms)){movedAny=true;} }
+    if(movedAny){ steps++; visited.add(cur); }
+    // 문 전환은 앞으로 갈 때만, 그리고 쿨다운
+    if(movedFwd && t-lastDoorTry>600){
+      if(checkDoors()) lastDoorTry=t;
+    }
+  }
+  acc+=dt;
+  if(acc>1/24){ acc=0; render(); if(entered && !ending && steps%2===0) refreshHud(); }
+  requestAnimationFrame(loop);
+}
+
+visited.add(cur);
+refreshHud();
+render();
+requestAnimationFrame(loop);
+
+/* ---- 자가검증용 디버그 훅 (UI/플레이에 영향 없음) ---- */
+window.__dbg = {
+  enter,
+  go(room){ if(ROOMS[room]){ const s=ROOMS[room].start; enterRoom(room,[s.x,s.y],s.dir,""); } return cur; },
+  // 방 안 특정 스프라이트 정면 1.5칸 앞에 서서 바라보게 함
+  face(id){
+    const s = R.sprites.find(o=>o.id===id); if(!s) return false;
+    // 스프라이트에서 방 중심 쪽으로 1.6칸 떨어진 빈칸을 찾는다
+    const MW=R.map[0].length, MH=R.map.length, ccx=MW/2, ccy=MH/2;
+    let bx=s.x+(ccx-s.x), by=s.y+(ccy-s.y); // 중심 방향
+    const len=Math.hypot(bx-s.x,by-s.y)||1;
+    const ux=(bx-s.x)/len, uy=(by-s.y)/len;
+    for(let d=1.3; d<=3.2; d+=0.2){
+      const tx=s.x+ux*d, ty=s.y+uy*d;
+      if(!R.map[ty|0] || R.map[ty|0][tx|0]===0){
+        px=tx; py=ty; dir=Math.atan2(s.y-py, s.x-px);
+        render();
+        return currentTarget && currentTarget.id===id;
+      }
+    }
+    return false;
+  },
+  use(){ interact(); return { msg:hudMsg.textContent, inv:inventory.slice(), power:powerOn, fused:flags.fused }; },
+  state(){ return { room:cur, px, py, dir, power:powerOn, fused:flags.fused, inv:inventory.slice(), ending,
+                    target: currentTarget?currentTarget.id:null, steps, visited:[...visited] }; },
+  give(item){ if(!inventory.includes(item)) inventory.push(item); refreshHud(); return inventory.slice(); },
+};
+})();
+</script>
+</body>
+</html>

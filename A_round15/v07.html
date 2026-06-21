@@ -1,0 +1,529 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1,user-scalable=no"/>
+<title>실크 오로라 베일 · Silk Aurora Veil</title>
+<style>
+  :root{ color-scheme: dark; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#03040a; }
+  body{
+    font-family:"SF Pro Display",-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    -webkit-tap-highlight-color:transparent;
+    touch-action:none;
+    cursor:crosshair;
+  }
+  #gl, #fx{
+    position:fixed; inset:0; width:100%; height:100%; display:block;
+  }
+  #fx{ pointer-events:none; mix-blend-mode:screen; }
+
+  /* ---- ambient title / hint, woven into the piece, not a gate ---- */
+  .ui{ position:fixed; pointer-events:none; user-select:none; z-index:5; }
+  #brand{
+    left:clamp(18px,3.2vw,52px); top:clamp(16px,3.2vh,46px);
+    color:#eef3ff;
+    text-shadow:0 0 24px rgba(120,180,255,.5), 0 2px 18px rgba(0,0,0,.55);
+    opacity:.92;
+  }
+  #brand .ko{
+    font-weight:300; letter-spacing:.42em; font-size:clamp(13px,1.55vw,20px);
+    text-indent:.42em;
+  }
+  #brand .en{
+    margin-top:.55em; font-weight:200; letter-spacing:.62em; text-indent:.62em;
+    font-size:clamp(8.5px,.92vw,11px);
+    color:#9fb6e8; opacity:.78;
+  }
+  #brand .bar{
+    margin-top:.85em; height:1px; width:0; background:linear-gradient(90deg,rgba(150,190,255,.9),rgba(150,190,255,0));
+    animation:grow 2.6s cubic-bezier(.16,1,.3,1) .35s forwards;
+  }
+  @keyframes grow{ to{ width:clamp(120px,15vw,240px);} }
+
+  #hint{
+    right:clamp(18px,3.2vw,52px); bottom:clamp(16px,3.2vh,40px);
+    text-align:right; color:#aebfe6; opacity:0; font-weight:300;
+    font-size:clamp(9px,1.05vw,12px); letter-spacing:.18em; line-height:2.05;
+    transition:opacity 1.4s ease;
+    text-shadow:0 2px 14px rgba(0,0,0,.6);
+  }
+  #hint.show{ opacity:.62; }
+  #hint b{ color:#dbe6ff; font-weight:500; }
+  #hint .dot{ color:#6f86bd; }
+
+  #pal{
+    left:50%; bottom:clamp(14px,3vh,34px); transform:translateX(-50%);
+    display:flex; gap:9px; opacity:0; transition:opacity 1.2s ease .4s;
+    pointer-events:auto;
+  }
+  #pal.show{ opacity:.9; }
+  .sw{
+    width:26px; height:26px; border-radius:50%; cursor:pointer;
+    border:1px solid rgba(255,255,255,.25);
+    box-shadow:0 0 0 0 rgba(255,255,255,0), 0 4px 16px rgba(0,0,0,.45);
+    transition:transform .35s cubic-bezier(.16,1,.3,1), box-shadow .35s ease;
+  }
+  .sw:hover{ transform:translateY(-3px) scale(1.12); }
+  .sw.on{ box-shadow:0 0 0 2px rgba(255,255,255,.85), 0 0 18px rgba(255,255,255,.4); transform:translateY(-2px) scale(1.1); }
+
+  @media (max-width:520px){
+    #brand .ko{ letter-spacing:.3em; }
+    #brand .en{ letter-spacing:.42em; }
+    #hint{ font-size:10px; line-height:1.95; }
+  }
+
+  /* tiny fallback if WebGL is unavailable */
+  #fallback{
+    position:fixed; inset:0; display:none; place-items:center; z-index:9;
+    color:#cdd9f5; font-weight:300; letter-spacing:.2em; text-align:center; padding:8vw;
+    background:radial-gradient(120% 80% at 50% 20%, #16224a, #05060e 70%);
+  }
+</style>
+</head>
+<body>
+  <canvas id="gl"></canvas>
+  <canvas id="fx"></canvas>
+
+  <div id="brand" class="ui">
+    <div class="ko">실크 오로라 베일</div>
+    <div class="en">SILK AURORA VEIL</div>
+    <div class="bar"></div>
+  </div>
+
+  <div id="hint" class="ui">
+    <div><b>움직여</b> 바람을 일으키고 <span class="dot">·</span> <b>눌러</b> 돌풍을</div>
+    <div><b>스크롤</b>로 고도와 빛을 <span class="dot">·</span> <b>색</b>을 고른다</div>
+  </div>
+
+  <div id="pal" class="ui">
+    <div class="sw on" data-p="0" style="background:conic-gradient(from 0deg,#46f0d0,#5aa0ff,#b079ff,#46f0d0)"></div>
+    <div class="sw" data-p="1" style="background:conic-gradient(from 0deg,#ff7ac0,#ff9b5a,#ffe07a,#ff7ac0)"></div>
+    <div class="sw" data-p="2" style="background:conic-gradient(from 0deg,#7affc9,#9affe0,#caffe9,#7affc9)"></div>
+    <div class="sw" data-p="3" style="background:conic-gradient(from 0deg,#7d5cff,#c45aff,#ff6ad5,#7d5cff)"></div>
+  </div>
+
+  <div id="fallback">이 작품은 WebGL이 필요합니다.<br/>최신 브라우저에서 열어주세요.</div>
+
+<script>
+(function(){
+'use strict';
+
+// ============================================================
+//  실크 오로라 베일 — Silk Aurora Veil
+//  Layered translucent silk sheets driven by domain-warped
+//  flow noise, lit as an aurora. Single fullscreen GLSL pass
+//  + additive 2D filament sheen overlay. No loading gate.
+// ============================================================
+
+var glcanvas = document.getElementById('gl');
+var gl = glcanvas.getContext('webgl', {antialias:false, alpha:false, premultipliedAlpha:false, powerPreference:'high-performance'})
+      || glcanvas.getContext('experimental-webgl');
+
+if(!gl){ document.getElementById('fallback').style.display='grid'; return; }
+
+// ---------- shaders ----------
+var VERT = [
+'attribute vec2 p;',
+'void main(){ gl_Position = vec4(p,0.0,1.0); }'
+].join('\n');
+
+var FRAG = [
+'precision highp float;',
+'uniform vec2  u_res;',
+'uniform float u_time;',
+'uniform vec2  u_mouse;',    // 0..1, smoothed
+'uniform float u_mAmp;',     // pointer activity 0..1
+'uniform float u_scroll;',   // altitude offset
+'uniform float u_burst;',    // click gust 0..1
+'uniform float u_pal;',      // palette index, smoothed (float)',
+'uniform float u_aspect;',
+
+// ---- hash / value noise ----
+'vec2 hash2(vec2 p){',
+'  p=vec2(dot(p,vec2(127.1,311.7)),dot(p,vec2(269.5,183.3)));',
+'  return -1.0+2.0*fract(sin(p)*43758.5453123);',
+'}',
+'float vnoise(vec2 p){',
+'  vec2 i=floor(p), f=fract(p);',
+'  vec2 u=f*f*(3.0-2.0*f);',
+'  float a=dot(hash2(i+vec2(0.0,0.0)),f-vec2(0.0,0.0));',
+'  float b=dot(hash2(i+vec2(1.0,0.0)),f-vec2(1.0,0.0));',
+'  float c=dot(hash2(i+vec2(0.0,1.0)),f-vec2(0.0,1.0));',
+'  float d=dot(hash2(i+vec2(1.0,1.0)),f-vec2(1.0,1.0));',
+'  return mix(mix(a,b,u.x),mix(c,d,u.x),u.y);',
+'}',
+'float fbm(vec2 p){',
+'  float v=0.0, a=0.55; mat2 m=mat2(1.6,1.2,-1.2,1.6);',
+'  for(int i=0;i<5;i++){ v+=a*vnoise(p); p=m*p; a*=0.5; }',
+'  return v;',
+'}',
+
+// hue palettes
+'vec3 pal(float t, float idx){',
+'  vec3 a,b,c,d;',
+'  if(idx<0.5){ a=vec3(0.34,0.46,0.52); b=vec3(0.42,0.38,0.55); c=vec3(1.0,1.0,1.0); d=vec3(0.0,0.20,0.55);} ', // teal-blue-violet
+'  else if(idx<1.5){ a=vec3(0.55,0.40,0.36); b=vec3(0.50,0.36,0.30); c=vec3(1.0,1.0,0.9); d=vec3(0.0,0.10,0.30);} ', // warm sunset silk
+'  else if(idx<2.5){ a=vec3(0.40,0.55,0.50); b=vec3(0.35,0.45,0.42); c=vec3(1.0,1.0,1.0); d=vec3(0.10,0.40,0.30);} ', // ghost mint
+'  else { a=vec3(0.45,0.36,0.55); b=vec3(0.45,0.30,0.50); c=vec3(1.0,1.0,1.0); d=vec3(0.10,0.10,0.45);} ', // electric violet-magenta
+'  return a + b*cos(6.28318*(c*t+d));',
+'}',
+
+// one silk veil layer: returns vec2(density, sheen)
+'vec2 veil(vec2 uv, float seed, float speed, float scale, float thick){',
+'  float t = u_time*speed + seed*53.7;',
+// pointer wind: push the field near cursor, decaying with distance
+'  vec2 m = u_mouse; m.x*=u_aspect;',
+'  vec2 puv = uv; puv.x*=u_aspect;',
+'  vec2 toM = puv - m;',
+'  float md = length(toM);',
+'  float wind = u_mAmp * exp(-md*2.3) * 0.45;',
+// domain warp -> flowing folds
+'  vec2 q;',
+'  q.x = fbm(uv*scale + vec2(0.0, t*0.35));',
+'  q.y = fbm(uv*scale + vec2(5.2,1.3) - vec2(t*0.22,0.0));',
+'  vec2 warp = uv*scale + q*1.8 + toM*wind*6.0;',
+'  warp.y -= u_scroll*0.7 + seed*0.4;',
+'  warp += vec2(sin(t*0.3)*0.4, t*0.12);',
+'  float f = fbm(warp + q*0.6);',
+// fold lines: where the silk creases (derivative-ish via ridged noise)
+'  float ridged = 1.0 - abs(f);',
+'  ridged = pow(ridged, 2.2);',
+// horizontal banding -> sheet structure that drapes',
+'  float band = sin( (uv.y*2.0 + f*2.4 + seed*3.0 + u_scroll*1.4) * 3.14159 );',
+'  float sheet = smoothstep(1.0-thick, 1.0, 0.5+0.5*band);',
+'  float dens = sheet * (0.6 + 0.8*ridged);',
+// specular sheen along folds — silk highlight',
+'  float sheen = pow(max(ridged,0.0), 6.0) * sheet;',
+'  sheen += pow(max(0.5+0.5*band,0.0), 14.0)*0.6;',
+// burst gust ripples outward from center-ish & cursor',
+'  float gust = u_burst * (0.5+0.5*sin((md-u_time*1.6)*10.0)) * exp(-md*1.4);',
+'  dens += gust*0.5; sheen += gust*0.7;',
+'  return vec2(dens, sheen);',
+'}',
+
+'void main(){',
+'  vec2 uv = gl_FragCoord.xy / u_res.xy;',
+'  vec2 cuv = uv;',
+
+// gentle vertical gradient base (deep night to dim glow)',
+'  vec3 col = mix(vec3(0.010,0.013,0.035), vec3(0.02,0.04,0.10), pow(uv.y,1.3));',
+
+// accumulate several silk veils, far->near with parallax',
+'  float pidx = u_pal;',
+'  float totalSheen = 0.0;',
+'  const int N = 5;',
+'  for(int i=0;i<N;i++){',
+'    float fi = float(i);',
+'    float depth = fi/float(N-1);',          // 0 far .. 1 near
+'    float par = mix(0.06,0.22, depth);',     // parallax from pointer
+'    vec2 p = uv + (u_mouse-0.5)*par*vec2(u_aspect,1.0);',
+'    float speed = mix(0.10,0.45, depth);',
+'    float scale = mix(1.6,3.4, depth);',
+'    float thick = mix(0.55,0.30, depth);',
+'    vec2 v = veil(p, fi, speed, scale, thick);',
+'    float dens = v.x; float sheen = v.y;',
+// color of this veil: shift hue by depth and position & altitude',
+'    float hueT = depth*0.33 + p.y*0.5 + u_scroll*0.25 + u_time*0.012 + fi*0.07;',
+'    vec3 vc = pal(hueT, pidx);',
+// distance from light tint -> aurora luminance bias',
+'    vc = mix(vc, vec3(0.85,0.95,1.0), sheen*0.55);',
+// alpha-ish translucent compositing (screen-add weighted)',
+'    float a = dens * mix(0.16,0.34, depth);',
+'    col += vc * a;',
+'    col += vc * sheen * mix(0.12,0.30, depth);',
+'    totalSheen += sheen*mix(0.3,1.0,depth);',
+'  }',
+
+// vertical light shafts of aurora — subtle curtains',
+'  float curtain = fbm(vec2(uv.x*3.0 + u_time*0.05, u_scroll*0.5));',
+'  float shaft = smoothstep(0.2,0.9, curtain) * pow(uv.y,1.5);',
+'  col += pal(uv.x*0.4 + u_time*0.02, pidx) * shaft * 0.10;',
+
+// pointer halo — soft luminous bloom following cursor',
+'  vec2 m=u_mouse; vec2 d=(uv-m); d.x*=u_aspect;',
+'  float halo = exp(-dot(d,d)*9.0);',
+'  col += pal(0.15+u_time*0.05, pidx) * halo * (0.25 + u_mAmp*0.6);',
+
+// burst flash',
+'  col += vec3(0.7,0.85,1.0) * u_burst * exp(-dot(d,d)*3.0) * 0.5;',
+
+// filmic-ish tone + subtle vignette',
+'  col = col / (col + vec3(0.85));',                  // reinhard-ish
+'  col = pow(col, vec3(0.85));',                       // lift
+'  float vig = smoothstep(1.25,0.25, length((uv-0.5)*vec2(u_aspect,1.0)));',
+'  col *= mix(0.55,1.0, vig);',
+// faint film grain to kill banding',
+'  float g = fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453 + u_time);',
+'  col += (g-0.5)*0.018;',
+'  gl_FragColor = vec4(col,1.0);',
+'}'
+].join('\n');
+
+function compile(type,src){
+  var s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){
+    console.error(gl.getShaderInfoLog(s)); return null;
+  }
+  return s;
+}
+var prog=gl.createProgram();
+var vs=compile(gl.VERTEX_SHADER,VERT), fs=compile(gl.FRAGMENT_SHADER,FRAG);
+if(!vs||!fs){ document.getElementById('fallback').style.display='grid'; return; }
+gl.attachShader(prog,vs); gl.attachShader(prog,fs); gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog,gl.LINK_STATUS)){
+  console.error(gl.getProgramInfoLog(prog));
+  document.getElementById('fallback').style.display='grid'; return;
+}
+gl.useProgram(prog);
+
+var buf=gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 3,-1, -1,3]),gl.STATIC_DRAW);
+var loc=gl.getAttribLocation(prog,'p');
+gl.enableVertexAttribArray(loc);
+gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+
+var U={};
+['u_res','u_time','u_mouse','u_mAmp','u_scroll','u_burst','u_pal','u_aspect'].forEach(function(n){
+  U[n]=gl.getUniformLocation(prog,n);
+});
+
+// ---------- 2D filament sheen overlay ----------
+var fx=document.getElementById('fx');
+var ctx=fx.getContext('2d');
+
+// ---------- sizing with DPR cap (perf) ----------
+var DPR=1, W=0,H=0;
+function resize(){
+  var dw=window.innerWidth, dh=window.innerHeight;
+  var area=dw*dh;
+  // cap resolution: keep ~ <= 2.3M device px on the GL pass
+  var capDpr = Math.min(window.devicePixelRatio||1, area>1600000?1.25:(area>900000?1.5:2.0));
+  DPR=capDpr;
+  W=Math.round(dw*DPR); H=Math.round(dh*DPR);
+  glcanvas.width=W; glcanvas.height=H;
+  glcanvas.style.width=dw+'px'; glcanvas.style.height=dh+'px';
+  fx.width=W; fx.height=H; fx.style.width=dw+'px'; fx.style.height=dh+'px';
+  gl.viewport(0,0,W,H);
+}
+window.addEventListener('resize',resize,{passive:true});
+resize();
+
+// ---------- interaction state ----------
+var mouse={x:0.5,y:0.5};          // target (0..1, y flipped to GL)
+var smouse={x:0.5,y:0.5};         // smoothed
+var amp=0, ampTarget=0;
+var scroll=0, scrollTarget=0;
+var burst=0;
+var palIdx=0, palSmooth=0;
+var lastMoveT=0, moveSpeed=0, lastX=0.5,lastY=0.5;
+var hasPointed=false;
+
+// filaments: light threads that ride the silk and react to pointer
+var FIL=[];
+var FCOUNT=0;
+function setupFilaments(){
+  var dw=window.innerWidth;
+  FCOUNT = dw<560?20 : (dw<1100?34:48);
+  FIL.length=0;
+  for(var i=0;i<FCOUNT;i++){
+    FIL.push({
+      base: Math.random(),
+      yoff: Math.random(),
+      speed: 0.18+Math.random()*0.5,
+      amp: 0.04+Math.random()*0.10,
+      phase: Math.random()*Math.PI*2,
+      seg: 22+ (Math.random()*10|0),
+      hue: Math.random(),
+      w: 0.6+Math.random()*1.4
+    });
+  }
+}
+setupFilaments();
+window.addEventListener('resize',setupFilaments,{passive:true});
+
+function setPointer(cx,cy){
+  var nx=cx/window.innerWidth;
+  var ny=cy/window.innerHeight;
+  mouse.x=nx; mouse.y=1.0-ny;            // GL y up
+  var dx=nx-lastX, dy=ny-lastY;
+  moveSpeed=Math.min(1.0, Math.sqrt(dx*dx+dy*dy)*22.0);
+  ampTarget=Math.min(1.0, ampTarget*0.6 + moveSpeed);
+  lastX=nx; lastY=ny; lastMoveT=performance.now();
+  hasPointed=true;
+}
+window.addEventListener('pointermove',function(e){ setPointer(e.clientX,e.clientY); },{passive:true});
+window.addEventListener('pointerdown',function(e){
+  setPointer(e.clientX,e.clientY);
+  burst=1.0; ampTarget=1.0;
+  spawnRings(e.clientX,e.clientY);
+},{passive:true});
+
+// wheel -> altitude/light; clamp
+window.addEventListener('wheel',function(e){
+  scrollTarget += e.deltaY*0.0016;
+  scrollTarget = Math.max(-3.0, Math.min(6.0, scrollTarget));
+},{passive:true});
+
+// touch scroll gesture -> altitude
+var lastTouchY=null;
+window.addEventListener('touchmove',function(e){
+  if(e.touches.length>=1){
+    var ty=e.touches[0].clientY;
+    if(lastTouchY!==null){ scrollTarget += (lastTouchY-ty)*0.004; scrollTarget=Math.max(-3,Math.min(6,scrollTarget)); }
+    lastTouchY=ty;
+  }
+},{passive:true});
+window.addEventListener('touchend',function(){ lastTouchY=null; },{passive:true});
+
+// palette swatches
+var pal=document.getElementById('pal');
+var sws=Array.prototype.slice.call(document.querySelectorAll('.sw'));
+function selectPalette(i){
+  palIdx=i;
+  sws.forEach(function(s,k){ s.classList.toggle('on', k===i); });
+}
+sws.forEach(function(s){
+  s.addEventListener('click',function(){ selectPalette(+s.dataset.p); });
+});
+
+// keyboard: arrows = palette / altitude (nice for verification & power users)
+window.addEventListener('keydown',function(e){
+  if(e.key==='ArrowRight'){ selectPalette((palIdx+1)%4); }
+  else if(e.key==='ArrowLeft'){ selectPalette((palIdx+3)%4); }
+  else if(e.key==='ArrowUp'){ scrollTarget=Math.min(6,scrollTarget+0.6); }
+  else if(e.key==='ArrowDown'){ scrollTarget=Math.max(-3,scrollTarget-0.6); }
+  else if(e.key===' '){ burst=1; ampTarget=1; spawnRings(window.innerWidth/2,window.innerHeight/2); }
+});
+
+// gust rings on the 2D overlay
+var RINGS=[];
+function spawnRings(cx,cy){
+  RINGS.push({x:cx*DPR,y:cy*DPR,r:6*DPR,life:1.0,hue:palIdx});
+}
+
+// ---------- render loop ----------
+var t0=performance.now();
+var lastFrame=t0;
+var idleShownAt=0;
+var hintEl=document.getElementById('hint');
+
+// reveal hint + palette shortly after first paint (still no gate)
+setTimeout(function(){ hintEl.classList.add('show'); pal.classList.add('show'); }, 1100);
+// fade hint after a while
+setTimeout(function(){ hintEl.classList.remove('show'); }, 9000);
+
+function drawFilaments(time, dt){
+  ctx.clearRect(0,0,W,H);
+  ctx.globalCompositeOperation='lighter';
+  var cols=[
+    ['rgba(120,240,220,','rgba(120,170,255,'],
+    ['rgba(255,170,210,','rgba(255,190,120,'],
+    ['rgba(150,255,210,','rgba(190,255,235,'],
+    ['rgba(170,130,255,','rgba(255,120,220,']
+  ][palIdx];
+
+  var mx=smouse.x*W, my=(1-smouse.y)*H;
+  for(var i=0;i<FCOUNT;i++){
+    var f=FIL[i];
+    var y0=(f.yoff + Math.sin(time*0.05+f.phase)*0.04)*H;
+    ctx.beginPath();
+    var segs=f.seg;
+    for(var s=0;s<=segs;s++){
+      var u=s/segs;
+      var x=u*W;
+      // wavy silk thread, scroll lifts it
+      var wave = Math.sin(u*7.0 + time*f.speed + f.phase) * f.amp*H;
+      var wave2= Math.sin(u*3.0 - time*f.speed*0.6 + f.phase*1.7) * f.amp*0.6*H;
+      var y = y0 + wave + wave2 - scroll*14*DPR*(0.4+f.base);
+      // pointer attraction/repulsion: thread bows toward cursor wake
+      var ddx=x-mx, ddy=y-my, dd=Math.sqrt(ddx*ddx+ddy*ddy)+1;
+      var pull = (amp*0.6+0.05) * Math.exp(-dd/(160*DPR)) * 90*DPR;
+      y -= (ddy/dd)*pull*0.5;
+      x -= (ddx/dd)*pull*0.25;
+      if(s===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+    }
+    var sh = (0.05 + amp*0.18) * (0.5+0.5*Math.sin(time*f.speed*1.3+f.phase));
+    var g=ctx.createLinearGradient(0,0,W,0);
+    g.addColorStop(0, cols[0]+'0)');
+    g.addColorStop(0.5, cols[ f.hue>0.5?1:0 ]+ (sh).toFixed(3) +')');
+    g.addColorStop(1, cols[1]+'0)');
+    ctx.strokeStyle=g;
+    ctx.lineWidth=f.w*DPR;
+    ctx.stroke();
+  }
+
+  // gust rings
+  ctx.globalCompositeOperation='lighter';
+  for(var r=RINGS.length-1;r>=0;r--){
+    var R=RINGS[r];
+    R.r += 320*DPR*dt; R.life -= dt*0.9;
+    if(R.life<=0){ RINGS.splice(r,1); continue; }
+    var rc = cols[ R.hue>1?1:0 ];
+    ctx.beginPath();
+    ctx.arc(R.x,R.y,R.r,0,Math.PI*2);
+    ctx.lineWidth=(1.5+R.life*3)*DPR;
+    ctx.strokeStyle= cols[0] + (R.life*0.4).toFixed(3) + ')';
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(R.x,R.y,R.r*0.6,0,Math.PI*2);
+    ctx.strokeStyle= cols[1] + (R.life*0.3).toFixed(3) + ')';
+    ctx.lineWidth=(1+R.life*2)*DPR;
+    ctx.stroke();
+  }
+}
+
+function frame(now){
+  var dt=Math.min(0.05,(now-lastFrame)/1000); lastFrame=now;
+  var time=(now-t0)/1000;
+
+  // decay pointer activity if idle
+  if(now-lastMoveT>120){ ampTarget*=0.94; }
+  amp += (ampTarget-amp)*0.08;
+  ampTarget*=0.985;
+
+  // smooth pointer & scroll & palette
+  smouse.x += (mouse.x-smouse.x)*0.12;
+  smouse.y += (mouse.y-smouse.y)*0.12;
+  scroll  += (scrollTarget-scroll)*0.07;
+  palSmooth += (palIdx-palSmooth)*0.1;
+  burst *= 0.93;
+
+  // idle breathing drift so it's "alive" with no input
+  if(!hasPointed){
+    var bx=0.5+Math.cos(time*0.18)*0.16;
+    var by=0.5+Math.sin(time*0.13)*0.12;
+    mouse.x=bx; mouse.y=by; ampTarget=Math.max(ampTarget,0.18);
+  }
+
+  gl.useProgram(prog);
+  gl.uniform2f(U.u_res,W,H);
+  gl.uniform1f(U.u_time,time);
+  gl.uniform2f(U.u_mouse,smouse.x,smouse.y);
+  gl.uniform1f(U.u_mAmp,amp);
+  gl.uniform1f(U.u_scroll,scroll);
+  gl.uniform1f(U.u_burst,burst);
+  gl.uniform1f(U.u_pal,palSmooth);
+  gl.uniform1f(U.u_aspect,W/H);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+
+  drawFilaments(time,dt);
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// expose minimal hooks for self-verification
+window.__veil = {
+  state:function(){ return {pal:palIdx, scroll:+scroll.toFixed(3), amp:+amp.toFixed(3), burst:+burst.toFixed(3)}; },
+  setPalette:selectPalette,
+  pulse:function(){ burst=1; ampTarget=1; spawnRings(window.innerWidth/2,window.innerHeight/2); },
+  wind:function(x,y){ setPointer(x,y); }
+};
+
+})();
+</script>
+</body>
+</html>

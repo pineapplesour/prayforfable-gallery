@@ -1,0 +1,967 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>PULSE — 도시의 24시간 해부도</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800;900&family=Space+Grotesk:wght@300;400;500;700&family=JetBrains+Mono:wght@300;400;500;700&family=Noto+Serif+KR:wght@200;400;700;900&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#05070d;
+  --bg2:#0a0e18;
+  --ink:#e8ecf6;
+  --dim:#7d8aa6;
+  --faint:#3a455e;
+  --line:rgba(140,160,200,.10);
+  --line2:rgba(140,160,200,.20);
+  --night:#1b2440;
+  --amber:#ff8a3c;
+  --amber-soft:#ffb35c;
+  --cyan:#37e0d8;
+  --cyan-soft:#7af0ea;
+  --pink:#ff5d8f;
+  --violet:#8b6dff;
+  --gold:#ffd25c;
+  --glass:rgba(12,17,30,.7);
+  --glass-line:rgba(150,180,255,.14);
+  --serif:'Noto Serif KR',serif;
+  --mono:'JetBrains Mono',monospace;
+  --grotesk:'Space Grotesk',sans-serif;
+  --sans:'Inter','Apple SD Gothic Neo',sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  background:var(--bg);
+  color:var(--ink);
+  font-family:var(--sans);
+  overflow-x:hidden;
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+  letter-spacing:-.01em;
+}
+::selection{background:var(--amber);color:#0a0a0a}
+canvas{display:block}
+.mono{font-family:var(--mono)}
+
+/* ============ FIXED BACKGROUND CANVAS (city skyline) ============ */
+#sky{
+  position:fixed;inset:0;z-index:0;
+  width:100vw;height:100vh;
+  transition:filter .6s ease;
+}
+#grain{
+  position:fixed;inset:0;z-index:1;pointer-events:none;
+  opacity:.045;mix-blend-mode:overlay;
+}
+#vignette{
+  position:fixed;inset:0;z-index:2;pointer-events:none;
+  background:radial-gradient(130% 90% at 50% 8%,transparent 40%,rgba(2,4,9,.55) 88%,rgba(2,4,9,.9) 100%);
+}
+
+/* ============ HUD FRAME (fixed) ============ */
+.hud{position:fixed;z-index:40;pointer-events:none;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;color:var(--dim);text-transform:uppercase}
+.hud.tl{top:22px;left:26px}
+.hud.tr{top:22px;right:26px;text-align:right}
+.hud.bl{bottom:22px;left:26px}
+.hud .big{color:var(--ink);font-weight:500;letter-spacing:.05em;font-size:12px}
+.hud .acc{color:var(--amber)}
+.corner{position:fixed;width:26px;height:26px;z-index:41;pointer-events:none;border-color:var(--line2);border-style:solid;border-width:0}
+.corner.tl{top:14px;left:14px;border-top-width:1.5px;border-left-width:1.5px}
+.corner.tr{top:14px;right:14px;border-top-width:1.5px;border-right-width:1.5px}
+.corner.bl{bottom:14px;left:14px;border-bottom-width:1.5px;border-left-width:1.5px}
+.corner.br{bottom:14px;right:14px;border-bottom-width:1.5px;border-right-width:1.5px}
+
+/* live clock readout top-center */
+#clockHud{
+  position:fixed;top:18px;left:50%;transform:translateX(-50%);z-index:42;
+  font-family:var(--mono);text-align:center;pointer-events:none;
+}
+#clockHud .t{font-size:30px;font-weight:300;letter-spacing:.04em;color:var(--ink);line-height:1;
+  text-shadow:0 0 30px rgba(255,180,90,.35)}
+#clockHud .lbl{font-size:9px;letter-spacing:.42em;color:var(--dim);margin-top:5px;text-transform:uppercase}
+#clockHud .t .blink{animation:blink 1.05s steps(1) infinite}
+@keyframes blink{50%{opacity:.15}}
+
+/* scroll progress rail */
+#rail{position:fixed;right:16px;top:50%;transform:translateY(-50%);z-index:42;
+  width:2px;height:240px;background:var(--line);border-radius:2px;pointer-events:none}
+#railFill{position:absolute;top:0;left:0;width:100%;background:linear-gradient(var(--amber),var(--cyan));border-radius:2px;height:0%;
+  box-shadow:0 0 12px var(--amber)}
+.railDot{position:absolute;left:50%;transform:translate(-50%,-50%);width:6px;height:6px;border-radius:50%;
+  background:var(--bg2);border:1.5px solid var(--line2)}
+.railDot.on{background:var(--amber);border-color:var(--amber);box-shadow:0 0 8px var(--amber)}
+
+/* ============ SCROLL CONTENT ============ */
+#scroll{position:relative;z-index:10}
+section{position:relative;min-height:100vh;padding:0 7vw;display:flex;flex-direction:column;justify-content:center}
+/* readability veil behind data acts (keeps charts/text crisp over the live skyline) */
+#act1::before,#act2::before,#act3::before,#act4::before,#act5::before{
+  content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;
+  background:radial-gradient(120% 80% at 50% 45%,rgba(4,6,12,.74) 0%,rgba(4,6,12,.5) 55%,rgba(4,6,12,.2) 100%);
+}
+.kick{font-family:var(--mono);font-size:11px;letter-spacing:.34em;text-transform:uppercase;color:var(--amber);
+  display:flex;align-items:center;gap:12px;margin-bottom:20px}
+.kick::before{content:"";width:34px;height:1px;background:var(--amber);display:inline-block}
+.kick .n{color:var(--dim)}
+
+/* ---------- HERO ---------- */
+#hero{padding:0;align-items:center;text-align:center;min-height:100vh;justify-content:center}
+.hero-inner{position:relative;z-index:5}
+.hero-tag{font-family:var(--mono);font-size:11px;letter-spacing:.5em;color:var(--cyan-soft);text-transform:uppercase;
+  margin-bottom:26px;opacity:0;animation:fadeUp .9s .15s forwards}
+.hero-title{
+  font-family:var(--grotesk);font-weight:700;line-height:.86;letter-spacing:-.04em;
+  font-size:clamp(68px,15.5vw,232px);
+  margin:0;
+  background:linear-gradient(178deg,#fff 8%,#ffd9b0 42%,#ff8a3c 78%,#ff5d8f 105%);
+  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
+  filter:drop-shadow(0 12px 60px rgba(255,120,50,.28));
+  opacity:0;animation:fadeUp 1.1s .3s forwards;
+}
+.hero-sub-kr{font-family:var(--serif);font-weight:200;font-size:clamp(17px,2.4vw,27px);color:var(--ink);
+  margin-top:18px;letter-spacing:.02em;opacity:0;animation:fadeUp 1s .55s forwards}
+.hero-sub-kr b{font-weight:700;color:var(--amber-soft)}
+.hero-desc{font-size:13.5px;color:var(--dim);max-width:560px;margin:22px auto 0;line-height:1.7;
+  opacity:0;animation:fadeUp 1s .7s forwards}
+.hero-stats{display:flex;gap:38px;justify-content:center;margin-top:40px;flex-wrap:wrap;
+  opacity:0;animation:fadeUp 1s .85s forwards}
+.hstat{text-align:center}
+.hstat .v{font-family:var(--mono);font-size:26px;font-weight:500;color:var(--ink);line-height:1}
+.hstat .v .u{font-size:13px;color:var(--amber);margin-left:2px}
+.hstat .k{font-family:var(--mono);font-size:9.5px;letter-spacing:.24em;color:var(--dim);text-transform:uppercase;margin-top:8px}
+.scrollcue{position:absolute;bottom:34px;left:50%;transform:translateX(-50%);font-family:var(--mono);
+  font-size:9.5px;letter-spacing:.4em;color:var(--dim);text-transform:uppercase;text-align:center;
+  opacity:0;animation:fadeUp 1s 1.1s forwards}
+.scrollcue .ar{display:block;margin:10px auto 0;width:1px;height:34px;
+  background:linear-gradient(var(--amber),transparent);animation:cue 1.8s ease-in-out infinite}
+@keyframes cue{0%,100%{transform:scaleY(.4);opacity:.4;transform-origin:top}50%{transform:scaleY(1);opacity:1;transform-origin:top}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(26px)}to{opacity:1;transform:translateY(0)}}
+
+/* ---------- generic reveal ---------- */
+.rv{opacity:0;transform:translateY(34px);transition:opacity .9s cubic-bezier(.2,.7,.2,1),transform .9s cubic-bezier(.2,.7,.2,1)}
+.rv.in{opacity:1;transform:none}
+.rv.d1{transition-delay:.08s}.rv.d2{transition-delay:.16s}.rv.d3{transition-delay:.24s}.rv.d4{transition-delay:.32s}
+
+.h2{font-family:var(--grotesk);font-weight:500;font-size:clamp(34px,5.6vw,76px);line-height:.98;letter-spacing:-.03em;margin-bottom:8px}
+.h2 .em{font-family:var(--serif);font-weight:900;font-style:normal;background:linear-gradient(120deg,var(--amber),var(--pink));
+  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.lead{font-size:15px;color:var(--dim);max-width:540px;line-height:1.75;margin-top:14px}
+.lead b{color:var(--ink);font-weight:500}
+
+/* glass panel */
+.glass{background:var(--glass);border:1px solid var(--glass-line);border-radius:18px;backdrop-filter:blur(18px) saturate(1.3);
+  -webkit-backdrop-filter:blur(18px) saturate(1.3);box-shadow:0 30px 80px -30px rgba(0,0,0,.7),inset 0 1px 0 rgba(255,255,255,.05)}
+
+/* ---------- ACT layouts ---------- */
+.act{display:grid;gap:46px;align-items:center;max-width:1180px;margin:0 auto;width:100%}
+.act.split{grid-template-columns:.85fr 1.15fr}
+.act.split-r{grid-template-columns:1.15fr .85fr}
+
+/* power area chart */
+.chartcard{padding:26px 28px 22px}
+.chartcard .ch-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}
+.chartcard .ch-title{font-family:var(--mono);font-size:11px;letter-spacing:.2em;color:var(--dim);text-transform:uppercase}
+.chartcard .ch-now{font-family:var(--mono);font-size:13px;color:var(--amber)}
+.chartcard svg{width:100%;display:block;overflow:visible}
+.axislbl{font-family:var(--mono);font-size:9px;fill:var(--dim);letter-spacing:.1em}
+.gridln{stroke:var(--line);stroke-width:1}
+
+/* metro map */
+.metro-wrap{position:relative}
+.metro-wrap svg{width:100%;display:block}
+.metro-legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:14px;font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.05em}
+.metro-legend span{display:flex;align-items:center;gap:6px}
+.metro-legend i{width:10px;height:10px;border-radius:2px;display:inline-block}
+
+/* EKG */
+.ekgcard{padding:24px 26px}
+.ekgcard .bpm{font-family:var(--mono);font-size:46px;font-weight:300;color:var(--pink);line-height:1;
+  text-shadow:0 0 24px rgba(255,93,143,.4)}
+.ekgcard .bpm .u{font-size:14px;color:var(--dim);margin-left:6px;font-weight:400}
+.ekgcard svg{width:100%;height:120px;display:block;margin-top:8px}
+
+/* radial noise */
+.radialcard{padding:26px;display:flex;flex-direction:column;align-items:center}
+.radialcard canvas{width:260px;height:260px;max-width:100%}
+.radialcard .db{font-family:var(--mono);font-size:13px;color:var(--cyan);margin-top:-150px;text-align:center;pointer-events:none}
+.radialcard .db b{font-size:40px;font-weight:300;display:block;color:var(--cyan-soft);text-shadow:0 0 22px rgba(55,224,216,.45)}
+
+/* big counters block */
+.counters{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:16px;overflow:hidden;margin-top:8px}
+.ctr{background:var(--bg2);padding:30px 24px;position:relative;overflow:hidden}
+.ctr::before{content:"";position:absolute;inset:0;background:radial-gradient(120% 90% at 0% 0%,rgba(255,138,60,.07),transparent 60%);opacity:0;transition:opacity .5s}
+.ctr:hover::before{opacity:1}
+.ctr .cv{font-family:var(--mono);font-size:clamp(28px,3.6vw,46px);font-weight:300;line-height:1;color:var(--ink)}
+.ctr .cv .u{font-size:15px;color:var(--amber);margin-left:3px}
+.ctr .ck{font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;color:var(--dim);text-transform:uppercase;margin-top:12px}
+.ctr .cd{font-size:11.5px;margin-top:7px;line-height:1.5;color:#5a6788}
+
+/* timeline bars */
+.tl-rows{display:flex;flex-direction:column;gap:10px;margin-top:8px}
+.tl-row{display:grid;grid-template-columns:60px 1fr 70px;align-items:center;gap:14px}
+.tl-row .tl-lab{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.06em}
+.tl-row .tl-track{height:18px;background:var(--bg2);border-radius:5px;overflow:hidden;position:relative;border:1px solid var(--line)}
+.tl-row .tl-bar{height:100%;width:0;border-radius:5px;transition:width 1.2s cubic-bezier(.2,.8,.2,1)}
+.tl-row .tl-val{font-family:var(--mono);font-size:10.5px;color:var(--ink);text-align:right}
+
+/* quote / serif breath section */
+#breath{align-items:center;text-align:center}
+.breath-q{font-family:var(--serif);font-weight:200;font-size:clamp(26px,4.4vw,58px);line-height:1.4;letter-spacing:.01em;max-width:980px;margin:0 auto}
+.breath-q .em{font-weight:700;background:linear-gradient(120deg,var(--cyan),var(--amber));
+  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.breath-cite{font-family:var(--mono);font-size:10.5px;letter-spacing:.3em;color:var(--dim);margin-top:34px;text-transform:uppercase}
+
+/* footer / outro */
+#outro{align-items:center;text-align:center;min-height:100vh}
+.outro-big{font-family:var(--grotesk);font-weight:700;font-size:clamp(48px,11vw,168px);line-height:.85;letter-spacing:-.04em;
+  background:linear-gradient(178deg,#fff,var(--violet));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.outro-meta{display:flex;gap:40px;justify-content:center;flex-wrap:wrap;margin-top:46px;font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;color:var(--dim);text-transform:uppercase}
+.outro-meta b{color:var(--ink);font-weight:500;display:block;margin-top:6px;font-size:13px;letter-spacing:.04em}
+.credit{font-family:var(--mono);font-size:9.5px;letter-spacing:.24em;color:var(--faint);margin-top:60px;color:#3a455e}
+
+/* sound + replay control */
+.ctrlbtn{position:fixed;bottom:24px;right:24px;z-index:60;pointer-events:auto;
+  width:auto;padding:0 16px;height:40px;display:flex;align-items:center;gap:9px;
+  background:var(--glass);border:1px solid var(--glass-line);border-radius:30px;backdrop-filter:blur(14px);
+  font-family:var(--mono);font-size:10px;letter-spacing:.16em;color:var(--dim);text-transform:uppercase;cursor:pointer;
+  transition:.25s}
+.ctrlbtn:hover{color:var(--ink);border-color:var(--amber);box-shadow:0 0 22px -6px var(--amber)}
+.ctrlbtn .dot{width:7px;height:7px;border-radius:50%;background:var(--dim);transition:.25s}
+.ctrlbtn.on .dot{background:var(--cyan);box-shadow:0 0 8px var(--cyan)}
+.ctrlbtn .eq{display:flex;gap:2px;align-items:flex-end;height:12px}
+.ctrlbtn .eq i{width:2px;background:var(--cyan);height:4px;border-radius:1px}
+.ctrlbtn.on .eq i{animation:eq .9s ease-in-out infinite}
+.ctrlbtn.on .eq i:nth-child(2){animation-delay:.2s}
+.ctrlbtn.on .eq i:nth-child(3){animation-delay:.4s}
+@keyframes eq{0%,100%{height:3px}50%{height:12px}}
+
+/* responsive */
+@media(max-width:860px){
+  .act.split,.act.split-r{grid-template-columns:1fr}
+  .counters{grid-template-columns:repeat(2,1fr)}
+  section{padding:80px 6vw}
+  #hero{padding:0}
+  #rail{display:none}
+  .hud.tr{display:none}
+  .hero-stats{gap:26px}
+}
+@media(max-width:480px){
+  .counters{grid-template-columns:1fr 1fr}
+  #clockHud .t{font-size:24px}
+}
+</style>
+</head>
+<body>
+
+<canvas id="sky"></canvas>
+<svg id="grain"><filter id="gf"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch"/></filter><rect width="100%" height="100%" filter="url(#gf)"/></svg>
+<div id="vignette"></div>
+
+<!-- HUD frame -->
+<span class="corner tl"></span><span class="corner tr"></span><span class="corner bl"></span><span class="corner br"></span>
+<div class="hud tl"><div class="big">PULSE<span class="acc">/</span>24H</div>도시 생체신호 해부</div>
+<div class="hud tr"><div class="big">37.5661°N · 126.9779°E</div>대도시권 · 표본 N=9.7M</div>
+<div class="hud bl mono">REC ● <span class="acc" id="recsec">00:00:00</span></div>
+<div id="clockHud"><div class="t" id="clockT">00:00<span class="blink">:</span>00</div><div class="lbl" id="clockLbl">자정 · 도시가 잠들다</div></div>
+
+<div id="rail"><div id="railFill"></div></div>
+
+<button class="ctrlbtn" id="snd"><span class="eq"><i></i><i></i><i></i></span><span id="sndtxt">SOUND OFF</span></button>
+
+<main id="scroll">
+
+  <!-- HERO -->
+  <section id="hero">
+    <div class="hero-inner">
+      <div class="hero-tag">INTERACTIVE DATA DOCUMENTARY · NO.02</div>
+      <h1 class="hero-title">PULSE</h1>
+      <div class="hero-sub-kr">한 도시의 <b>24시간</b>을, 숫자로 해부하다</div>
+      <p class="hero-desc">도시는 거대한 생명체다. 전력으로 호흡하고, 지하철로 피가 돌며, 970만 개의 심장이 동시에 뛴다.
+      스크롤을 내려 자정부터 다음 자정까지 — 도시의 맥박을 따라가 보라.</p>
+      <div class="hero-stats">
+        <div class="hstat"><div class="v" id="hs1">0<span class="u">M</span></div><div class="k">시민</div></div>
+        <div class="hstat"><div class="v" id="hs2">0<span class="u">GW</span></div><div class="k">피크 전력</div></div>
+        <div class="hstat"><div class="v" id="hs3">0<span class="u">km</span></div><div class="k">지하철 연장</div></div>
+        <div class="hstat"><div class="v" id="hs4">0<span class="u">db</span></div><div class="k">평균 소음</div></div>
+      </div>
+    </div>
+    <div class="scrollcue">SCROLL TO BEGIN<span class="ar"></span></div>
+  </section>
+
+  <!-- ACT I — POWER -->
+  <section id="act1">
+    <div class="act split rv">
+      <div>
+        <div class="kick"><span class="n">01 / 06</span> 호흡 · 전력</div>
+        <h2 class="h2">도시는<br><span class="em">전기로 숨</span>쉰다</h2>
+        <p class="lead">새벽 4시, 도시는 가장 얕게 숨 쉰다. <b>14.2GW</b>까지 가라앉았다가, 출근 시간이면 폐가 부풀듯 전력 곡선이 솟구친다.
+        아래 곡선은 24시간 실측 부하 곡선 — <b>스크롤하면 하루가 흐른다</b>.</p>
+      </div>
+      <div class="chartcard glass rv d2">
+        <div class="ch-head"><span class="ch-title">GRID LOAD · 24H</span><span class="ch-now" id="pwNow">14.2 GW</span></div>
+        <svg id="pwChart" viewBox="0 0 600 280" preserveAspectRatio="none"></svg>
+      </div>
+    </div>
+  </section>
+
+  <!-- ACT II — METRO -->
+  <section id="act2">
+    <div class="act split-r">
+      <div class="metro-wrap glass rv" style="padding:26px">
+        <svg id="metro" viewBox="0 0 560 360"></svg>
+        <div class="metro-legend">
+          <span><i style="background:var(--amber)"></i>1호선</span>
+          <span><i style="background:var(--cyan)"></i>2호선 순환</span>
+          <span><i style="background:var(--pink)"></i>3호선</span>
+          <span><i style="background:var(--violet)"></i>4호선</span>
+          <span style="color:var(--ink)">● 운행 열차</span>
+        </div>
+      </div>
+      <div class="rv d2">
+        <div class="kick"><span class="n">02 / 06</span> 순환 · 지하철</div>
+        <h2 class="h2"><span class="em">철로의 강</span>이<br>도시를 돌린다</h2>
+        <p class="lead">지하철은 도시의 혈관이다. 매 순간 <b id="metroTrains">0</b>대의 열차가 <b>338km</b>의 노선을 따라 흐른다.
+        러시아워엔 1분 36초 간격 — 혈류가 가장 빨라지는 시간이다.</p>
+        <div class="tl-rows" style="margin-top:24px">
+          <div class="tl-row"><span class="tl-lab">07–09시</span><span class="tl-track"><span class="tl-bar" data-w="96" style="background:linear-gradient(90deg,var(--amber),var(--pink))"></span></span><span class="tl-val">2.71M</span></div>
+          <div class="tl-row"><span class="tl-lab">12–14시</span><span class="tl-track"><span class="tl-bar" data-w="54" style="background:linear-gradient(90deg,var(--amber),var(--gold))"></span></span><span class="tl-val">1.52M</span></div>
+          <div class="tl-row"><span class="tl-lab">18–20시</span><span class="tl-track"><span class="tl-bar" data-w="89" style="background:linear-gradient(90deg,var(--cyan),var(--violet))"></span></span><span class="tl-val">2.51M</span></div>
+          <div class="tl-row"><span class="tl-lab">23–01시</span><span class="tl-track"><span class="tl-bar" data-w="31" style="background:linear-gradient(90deg,var(--violet),var(--night))"></span></span><span class="tl-val">0.87M</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ACT III — HEARTBEAT -->
+  <section id="act3">
+    <div class="act split rv">
+      <div>
+        <div class="kick"><span class="n">03 / 06</span> 맥박 · 심장</div>
+        <h2 class="h2">970만 개의<br><span class="em">심장 박동</span></h2>
+        <p class="lead">출근길 만원 지하철에서 평균 심박은 <b>92bpm</b>까지 오른다. 도시 전체의 심장을 하나로 합치면 —
+        매 분 <b id="totBeats">0</b>억 번의 박동. 아래는 통근자 한 명의 실시간 EKG다.</p>
+        <div style="display:flex;gap:30px;margin-top:26px;flex-wrap:wrap">
+          <div><div class="mono" style="font-size:9.5px;letter-spacing:.2em;color:var(--dim)">RUSH HOUR</div><div class="mono" style="font-size:24px;color:var(--pink)">92<span style="font-size:12px;color:var(--dim)"> bpm</span></div></div>
+          <div><div class="mono" style="font-size:9.5px;letter-spacing:.2em;color:var(--dim)">DEEP NIGHT</div><div class="mono" style="font-size:24px;color:var(--cyan)">58<span style="font-size:12px;color:var(--dim)"> bpm</span></div></div>
+          <div><div class="mono" style="font-size:9.5px;letter-spacing:.2em;color:var(--dim)">CITY HRV</div><div class="mono" style="font-size:24px;color:var(--gold)">±18<span style="font-size:12px;color:var(--dim)"> ms</span></div></div>
+        </div>
+      </div>
+      <div class="ekgcard glass rv d2">
+        <div class="bpm" id="bpmNum">72<span class="u">bpm · 통근자 #4471</span></div>
+        <svg id="ekg" viewBox="0 0 600 130" preserveAspectRatio="none"></svg>
+      </div>
+    </div>
+  </section>
+
+  <!-- ACT IV — NOISE -->
+  <section id="act4">
+    <div class="act split-r">
+      <div class="radialcard glass rv">
+        <canvas id="noise" width="520" height="520"></canvas>
+        <div class="db"><b id="dbNum">32</b>dB(A) · 도심 평균</div>
+      </div>
+      <div class="rv d2">
+        <div class="kick"><span class="n">04 / 06</span> 목소리 · 소음</div>
+        <h2 class="h2"><span class="em">소리의 지문</span><br>도시의 목소리</h2>
+        <p class="lead">도시는 결코 침묵하지 않는다. 새벽 32dB의 속삭임에서 정오 71dB의 함성까지 —
+        소음 스펙트럼은 도시의 감정 곡선이다. 원형 그래프의 각 가시는 한 주파수 대역의 에너지다.</p>
+        <div class="tl-rows" style="margin-top:24px">
+          <div class="tl-row"><span class="tl-lab">교통</span><span class="tl-track"><span class="tl-bar" data-w="82" style="background:linear-gradient(90deg,var(--amber),var(--gold))"></span></span><span class="tl-val">61 dB</span></div>
+          <div class="tl-row"><span class="tl-lab">공사</span><span class="tl-track"><span class="tl-bar" data-w="68" style="background:linear-gradient(90deg,var(--pink),var(--amber))"></span></span><span class="tl-val">73 dB</span></div>
+          <div class="tl-row"><span class="tl-lab">인파</span><span class="tl-track"><span class="tl-bar" data-w="58" style="background:linear-gradient(90deg,var(--cyan),var(--violet))"></span></span><span class="tl-val">54 dB</span></div>
+          <div class="tl-row"><span class="tl-lab">자연</span><span class="tl-track"><span class="tl-bar" data-w="22" style="background:linear-gradient(90deg,var(--cyan),var(--cyan-soft))"></span></span><span class="tl-val">28 dB</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- BREATH — quote -->
+  <section id="breath">
+    <div class="rv">
+      <p class="breath-q">도시는 잠들지 않는다.<br>다만 <span class="em">숨을 고를</span> 뿐이다.</p>
+      <div class="breath-cite">— PULSE · 도시 생체신호 해부 프로젝트</div>
+    </div>
+  </section>
+
+  <!-- ACT V — STATS GRID -->
+  <section id="act5">
+    <div style="max-width:1180px;margin:0 auto;width:100%">
+      <div class="rv">
+        <div class="kick"><span class="n">05 / 06</span> 총량 · 하루의 무게</div>
+        <h2 class="h2">하루치 도시,<br><span class="em">숫자로 압축</span>하면</h2>
+        <p class="lead">자정에서 다음 자정까지, 도시 한 곳이 소비하고 생산하고 흘려보낸 모든 것. <b>지금 이 페이지를 보는 동안에도</b> 카운터는 멈추지 않는다.</p>
+      </div>
+      <div class="counters rv d2">
+        <div class="ctr"><div class="cv" id="c1">0<span class="u">M</span></div><div class="ck">소비 식수 (L)</div><div class="cd">한강 수면 1.4m 상승분</div></div>
+        <div class="ctr"><div class="cv" id="c2">0<span class="u">t</span></div><div class="ck">배출 CO₂</div><div class="cd">소나무 290만 그루 흡수량</div></div>
+        <div class="ctr"><div class="cv" id="c3">0<span class="u">M</span></div><div class="ck">배달 콜 (건)</div><div class="cd">1초마다 41건 호출</div></div>
+        <div class="ctr"><div class="cv" id="c4">0<span class="u">TB</span></div><div class="ck">모바일 데이터</div><div class="cd">넷플릭스 1,200만 시간</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- OUTRO -->
+  <section id="outro">
+    <div class="rv">
+      <div class="outro-big">00:00</div>
+      <div class="hero-sub-kr" style="margin-top:20px">다시 <b>자정</b>. 도시는 한 번의 호흡을 마쳤다.</div>
+      <div class="outro-meta">
+        <div>SOURCE<b>도시 오픈데이터 · 합성 모델</b></div>
+        <div>FRAMES<b id="frames">0</b></div>
+        <div>RUNTIME<b id="rt">00:00</b></div>
+        <div>BUILD<b>PULSE v2 · single-file</b></div>
+      </div>
+      <div class="credit">A2-1 · SINGLE DESIGNER-CODER · ZERO DEPENDENCY · CANVAS + WEBAUDIO</div>
+    </div>
+  </section>
+
+</main>
+
+<script>
+"use strict";
+const $=(s,c)=>(c||document).querySelector(s);
+const $$=(s,c)=>[...(c||document).querySelectorAll(s)];
+const TAU=Math.PI*2, clamp=(v,a,b)=>v<a?a:v>b?b:v, lerp=(a,b,t)=>a+(b-a)*t;
+const ease=t=>t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2;
+
+/* ====================================================================
+   SCROLL STATE — drives the whole documentary "time of day"
+   dayT 0..1 maps to 24h. progress drives clock, sky, charts.
+==================================================================== */
+let scrollMax=1, prog=0, dayT=0;
+function recalc(){scrollMax=Math.max(1,document.documentElement.scrollHeight-window.innerHeight);}
+function onScroll(){
+  prog=clamp(window.scrollY/scrollMax,0,1);
+  dayT=prog; // 0 = midnight start, 1 = next midnight
+  $('#railFill').style.height=(prog*100)+'%';
+  updateClock(dayT);
+  // sky tint via canvas handled in raf; nudge filter for depth
+}
+window.addEventListener('scroll',onScroll,{passive:true});
+window.addEventListener('resize',()=>{recalc();sizeSky();sizeNoise();},{passive:true});
+
+/* rail dots */
+(function(){
+  const r=$('#rail'); const ids=['#hero','#act1','#act2','#act3','#act4','#act5','#outro'];
+  ids.forEach((id,i)=>{const d=document.createElement('div');d.className='railDot';d.style.top=(i/(ids.length-1)*100)+'%';d.dataset.id=id;r.appendChild(d);});
+})();
+
+/* ====================================================================
+   CLOCK — hours/minutes from dayT, plus poetic label per phase
+==================================================================== */
+const phases=[
+  [0.00,"자정 · 도시가 잠들다"],
+  [0.13,"새벽 · 가장 얕은 호흡"],
+  [0.29,"여명 · 첫 지하철이 깨어난다"],
+  [0.38,"출근 · 혈류가 빨라진다"],
+  [0.52,"정오 · 도시의 절정"],
+  [0.66,"오후 · 긴 그림자"],
+  [0.78,"퇴근 · 두 번째 밀물"],
+  [0.88,"야간 · 네온이 켜진다"],
+  [0.96,"심야 · 다시 고요로"]
+];
+function phaseLabel(t){let l=phases[0][1];for(const[p,s]of phases){if(t>=p)l=s;}return l;}
+function updateClock(t){
+  const totalMin=Math.floor(t*24*60)%(24*60);
+  const hh=Math.floor(totalMin/60), mm=totalMin%60;
+  const ss=Math.floor((t*24*3600)%60);
+  $('#clockT').innerHTML=String(hh).padStart(2,'0')+'<span class="blink">:</span>'+String(mm).padStart(2,'0');
+  $('#clockLbl').textContent=phaseLabel(t);
+  $('#outro') && ($('.outro-big').textContent=String(hh).padStart(2,'0')+':'+String(mm).padStart(2,'0'));
+  // rail dots active
+  $$('.railDot').forEach((d,i)=>{const span=1/($$('.railDot').length-1);d.classList.toggle('on',t>=i*span-0.06);});
+}
+
+/* ====================================================================
+   SKY CANVAS — city skyline that lights up with the time of day
+==================================================================== */
+const sky=$('#sky'), sx=sky.getContext('2d');
+let SW,SH,DPR,buildings=[],stars=[],birds=[];
+function rnd(a,b){return a+Math.random()*(b-a);}
+function sizeSky(){
+  DPR=Math.min(2,window.devicePixelRatio||1);
+  SW=window.innerWidth; SH=window.innerHeight;
+  sky.width=SW*DPR; sky.height=SH*DPR; sky.style.width=SW+'px'; sky.style.height=SH+'px';
+  sx.setTransform(DPR,0,0,DPR,1?0:0,0);
+  buildSkyline();
+}
+function buildSkyline(){
+  buildings=[]; stars=[]; birds=[];
+  const baseY=SH*0.82;
+  // three depth layers
+  const layers=[
+    {n:Math.max(16,SW/70),y:baseY+30,h:[.10,.20],w:[40,90],col:'#070a12',win:0},
+    {n:Math.max(20,SW/52),y:baseY,h:[.16,.34],w:[32,70],col:'#0b1020',win:.6},
+    {n:Math.max(24,SW/40),y:baseY-26,h:[.22,.48],w:[26,58],col:'#11172b',win:1}
+  ];
+  layers.forEach((L,li)=>{
+    let x=-30;
+    while(x<SW+40){
+      const w=rnd(L.w[0],L.w[1]);
+      const h=SH*rnd(L.h[0],L.h[1]);
+      const windows=[];
+      if(L.win>0){
+        const cols=Math.max(1,Math.floor(w/14)), rows=Math.max(2,Math.floor(h/18));
+        for(let c=0;c<cols;c++)for(let r=0;r<rows;r++){
+          windows.push({c,r,cols,rows,on:Math.random(),flick:rnd(0.2,1.2),ph:Math.random()*TAU});
+        }
+      }
+      buildings.push({x,y:L.y,w,h,col:L.col,win:L.win,windows,layer:li,
+        // each building has a "wake time" — earlier downtown wakes sooner
+        wake:rnd(0.20,0.42),sleep:rnd(0.86,0.99)});
+      x+=w+rnd(6,18);
+    }
+  });
+  // stars
+  for(let i=0;i<140;i++)stars.push({x:Math.random()*SW,y:Math.random()*SH*0.6,r:rnd(.4,1.6),tw:Math.random()*TAU,sp:rnd(.6,2)});
+  // birds (appear at dawn/day)
+  for(let i=0;i<8;i++)birds.push({x:Math.random()*SW,y:rnd(SH*.12,SH*.4),sp:rnd(.3,.8),ph:Math.random()*TAU,sz:rnd(5,9)});
+}
+// sky gradient palette by time of day
+function skyColors(t){
+  // keyframes: midnight, predawn, dawn, day, dusk, night
+  const stops=[
+    {t:0.00,top:[5,8,18],mid:[10,14,28],horizon:[14,20,40]},
+    {t:0.22,top:[8,10,24],mid:[16,18,40],horizon:[40,30,55]},
+    {t:0.32,top:[30,28,58],mid:[80,52,72],horizon:[210,120,90]},  // dawn glow
+    {t:0.50,top:[46,82,140],mid:[110,150,190],horizon:[200,210,225]}, // day
+    {t:0.74,top:[40,40,80],mid:[140,80,90],horizon:[235,130,70]},  // dusk
+    {t:0.86,top:[12,12,30],mid:[26,20,46],horizon:[60,30,50]},
+    {t:1.00,top:[5,8,18],mid:[10,14,28],horizon:[14,20,40]}
+  ];
+  let a=stops[0],b=stops[stops.length-1];
+  for(let i=0;i<stops.length-1;i++){if(t>=stops[i].t&&t<=stops[i+1].t){a=stops[i];b=stops[i+1];break;}}
+  const f=(b.t-a.t)?(t-a.t)/(b.t-a.t):0;
+  const mix=(p,q)=>p.map((v,i)=>Math.round(lerp(v,q[i],f)));
+  return {top:mix(a.top,b.top),mid:mix(a.mid,b.mid),horizon:mix(a.horizon,b.horizon)};
+}
+const rgb=a=>`rgb(${a[0]},${a[1]},${a[2]})`;
+const rgba=(a,al)=>`rgba(${a[0]},${a[1]},${a[2]},${al})`;
+
+let tNow=0; // animated frame time
+function drawSky(){
+  const t=dayT, c=skyColors(t);
+  // gradient sky
+  const g=sx.createLinearGradient(0,0,0,SH*0.84);
+  g.addColorStop(0,rgb(c.top)); g.addColorStop(.55,rgb(c.mid)); g.addColorStop(1,rgb(c.horizon));
+  sx.fillStyle=g; sx.fillRect(0,0,SW,SH);
+
+  // sun/moon arc
+  const arcT=(t)%1;
+  const ax=lerp(SW*0.12,SW*0.88,arcT);
+  const ay=SH*0.78 - Math.sin(arcT*Math.PI)*SH*0.62;
+  const isDay=arcT>0.27&&arcT<0.77;
+  // glow
+  const og=sx.createRadialGradient(ax,ay,0,ax,ay,isDay?180:90);
+  if(isDay){og.addColorStop(0,'rgba(255,238,200,.9)');og.addColorStop(.3,'rgba(255,200,120,.45)');og.addColorStop(1,'rgba(255,180,90,0)');}
+  else{og.addColorStop(0,'rgba(220,230,255,.6)');og.addColorStop(.5,'rgba(160,180,230,.16)');og.addColorStop(1,'rgba(160,180,230,0)');}
+  sx.fillStyle=og; sx.beginPath(); sx.arc(ax,ay,isDay?180:90,0,TAU); sx.fill();
+  // body
+  sx.beginPath(); sx.arc(ax,ay,isDay?26:18,0,TAU);
+  sx.fillStyle=isDay?'#fff2d4':'#dde6ff'; sx.fill();
+  if(!isDay){ // moon craters
+    sx.fillStyle='rgba(150,160,200,.4)';
+    sx.beginPath();sx.arc(ax-5,ay-4,4,0,TAU);sx.arc(ax+6,ay+3,3,0,TAU);sx.arc(ax-2,ay+6,2.5,0,TAU);sx.fill();
+  }
+
+  // stars (fade out during day)
+  const starAlpha=clamp(1-Math.sin(arcT*Math.PI)*1.5,0,1);
+  if(starAlpha>0.02){
+    stars.forEach(s=>{const a=starAlpha*(0.4+0.6*Math.abs(Math.sin(tNow*0.0012*s.sp+s.tw)));
+      sx.fillStyle=`rgba(255,255,255,${a})`;sx.beginPath();sx.arc(s.x,s.y,s.r,0,TAU);sx.fill();});
+  }
+
+  // distant haze band above horizon (atmosphere)
+  const hg=sx.createLinearGradient(0,SH*0.55,0,SH*0.84);
+  hg.addColorStop(0,'rgba(0,0,0,0)'); hg.addColorStop(1,rgba(c.horizon,isDay?.25:.5));
+  sx.fillStyle=hg; sx.fillRect(0,SH*0.55,SW,SH*0.3);
+
+  // birds at day
+  if(isDay){
+    const ba=clamp((arcT-0.27)/0.1,0,1)*clamp((0.77-arcT)/0.1,0,1);
+    birds.forEach(b=>{
+      b.x+=b.sp; if(b.x>SW+20)b.x=-20;
+      const wy=Math.sin(tNow*0.006+b.ph)*4;
+      sx.strokeStyle=`rgba(20,20,30,${0.5*ba})`; sx.lineWidth=1.6; sx.beginPath();
+      sx.moveTo(b.x-b.sz,b.y+wy);sx.quadraticCurveTo(b.x,b.y-b.sz*0.5+wy,b.x+b.sz,b.y+wy);sx.stroke();
+    });
+  }
+
+  // buildings (back to front)
+  buildings.forEach(b=>{
+    sx.fillStyle=b.col;
+    // subtle silhouette top edge highlight at dusk/dawn
+    sx.fillRect(b.x,b.y-b.h,b.w,b.h+SH);
+    if(b.win>0){
+      // windows light up based on building wake/sleep + time
+      let litFactor=0;
+      if(t>b.wake) litFactor=clamp((t-b.wake)/0.08,0,1);
+      if(t>b.sleep) litFactor*=clamp(1-(t-b.sleep)/0.06,0,1);
+      // also more lights at night even when "asleep" city (always-on)
+      const nightBase=clamp(1-Math.sin(arcT*Math.PI)*1.6,0,1)*0.5;
+      const lit=Math.max(litFactor*0.85,nightBase);
+      const cw=b.w/b.windows[0]?.cols||14;
+      b.windows.forEach(w=>{
+        const flick=0.5+0.5*Math.sin(tNow*0.001*w.flick+w.ph);
+        const onP=w.on< lit*1.1 ? (0.55+0.45*flick) : 0;
+        if(onP>0.05){
+          const wx=b.x+ (w.c+0.22)*(b.w/w.cols);
+          const wy=b.y-b.h+ (w.r+0.22)*(b.h/w.rows);
+          const ww=(b.w/w.cols)*0.56, wh=(b.h/w.rows)*0.5;
+          const warm=isDay?'rgba(255,255,235,':'rgba(255,200,120,';
+          sx.fillStyle=warm+(onP*0.9)+')';
+          sx.fillRect(wx,wy,Math.max(1.5,ww),Math.max(1.5,wh));
+        }
+      });
+    }
+  });
+
+  // ground reflection glow (city light bleed up)
+  const glow=sx.createLinearGradient(0,SH*0.78,0,SH);
+  const gc = isDay? 'rgba(180,200,230,':'rgba(255,150,70,';
+  glow.addColorStop(0,gc+'0)'); glow.addColorStop(1,gc+(isDay?'.12':'.22')+')');
+  sx.fillStyle=glow; sx.fillRect(0,SH*0.78,SW,SH*0.22);
+}
+
+/* ====================================================================
+   POWER CHART — animated SVG area, "fill sweep" follows dayT
+==================================================================== */
+const PW=$('#pwChart'); const PWW=600,PWH=280, PWpad=34;
+// 24-hour synthetic grid-load profile (GW). realistic double-hump.
+const loadData=(()=>{
+  const a=[];
+  for(let h=0;h<=24;h++){
+    let v=18 + 8*Math.exp(-Math.pow((h-9.5)/2.6,2)) + 9*Math.exp(-Math.pow((h-19)/2.4,2)) - 5*Math.exp(-Math.pow((h-4)/3,2));
+    v+= -2.5*Math.exp(-Math.pow((h-14)/2.2,2)); // midday dip
+    a.push(Math.max(12.5,v));
+  }
+  return a;
+})();
+const loadMin=12, loadMax=29;
+function pwX(i){return PWpad+ (i/24)*(PWW-PWpad*2);}
+function pwY(v){return PWH-PWpad - ((v-loadMin)/(loadMax-loadMin))*(PWH-PWpad*1.4);}
+function buildPower(){
+  let grid='';
+  for(let g=14;g<=28;g+=4){const y=pwY(g);grid+=`<line class="gridln" x1="${PWpad}" y1="${y}" x2="${PWW-PWpad}" y2="${y}"/><text class="axislbl" x="${PWpad-6}" y="${y+3}" text-anchor="end">${g}</text>`;}
+  for(let h=0;h<=24;h+=6){const x=pwX(h);grid+=`<text class="axislbl" x="${x}" y="${PWH-12}" text-anchor="middle">${String(h).padStart(2,'0')}:00</text>`;}
+  let line='M'+pwX(0)+','+pwY(loadData[0]);
+  let area='M'+pwX(0)+','+(PWH-PWpad);
+  for(let i=0;i<=24;i++){line+=' L'+pwX(i)+','+pwY(loadData[i]); }
+  for(let i=0;i<=24;i++){area+=' L'+pwX(i)+','+pwY(loadData[i]); }
+  area+=' L'+pwX(24)+','+(PWH-PWpad)+' Z';
+  PW.innerHTML=`
+    <defs>
+      <linearGradient id="pwG" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#ff8a3c" stop-opacity=".55"/>
+        <stop offset="1" stop-color="#ff8a3c" stop-opacity="0"/>
+      </linearGradient>
+      <linearGradient id="pwL" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0" stop-color="#ffd25c"/><stop offset=".5" stop-color="#ff8a3c"/><stop offset="1" stop-color="#ff5d8f"/>
+      </linearGradient>
+      <clipPath id="pwClip"><rect id="pwClipRect" x="${PWpad}" y="0" width="0" height="${PWH}"/></clipPath>
+    </defs>
+    ${grid}
+    <g clip-path="url(#pwClip)">
+      <path d="${area}" fill="url(#pwG)"/>
+      <path d="${line}" fill="none" stroke="url(#pwL)" stroke-width="2.4" stroke-linejoin="round"/>
+    </g>
+    <circle id="pwDot" r="4.5" fill="#fff" stroke="#ff8a3c" stroke-width="2" opacity="0"/>
+  `;
+}
+function updatePower(){
+  const w=(PWW-PWpad)* dayT - PWpad*0 ;
+  const cr=$('#pwClipRect'); if(!cr)return;
+  cr.setAttribute('width', Math.max(0,(PWW-PWpad*2)*dayT));
+  // moving dot at current hour
+  const h=dayT*24; const i=clamp(h,0,24);
+  const v=lerp(loadData[Math.floor(i)],loadData[Math.min(24,Math.ceil(i))],i-Math.floor(i));
+  const dot=$('#pwDot');
+  if(dot){dot.setAttribute('cx',pwX(i));dot.setAttribute('cy',pwY(v));dot.setAttribute('opacity',dayT>0.005?1:0);}
+  $('#pwNow').textContent=v.toFixed(1)+' GW';
+}
+
+/* ====================================================================
+   METRO MAP — schematic lines + trains flowing, density by dayT
+==================================================================== */
+const MV=$('#metro');
+const metroLines=[
+  {col:'var(--amber)',pts:[[40,300],[120,300],[200,240],[300,240],[400,180],[520,180]]},
+  {col:'var(--cyan)',pts:[[280,60],[420,80],[480,180],[440,300],[300,330],[150,300],[90,200],[120,90],[280,60]]}, // loop
+  {col:'var(--pink)',pts:[[60,80],[160,120],[260,180],[360,260],[480,320]]},
+  {col:'var(--violet)',pts:[[80,330],[180,260],[280,200],[360,120],[440,40]]}
+];
+function pathFrom(pts){return 'M'+pts.map(p=>p.join(',')).join(' L');}
+function buildMetro(){
+  let s='<defs><filter id="mglow"><feGaussianBlur stdDeviation="2.5"/></filter></defs>';
+  // station dots
+  metroLines.forEach((L,li)=>{
+    s+=`<path d="${pathFrom(L.pts)}" fill="none" stroke="${L.col}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity=".55"/>`;
+  });
+  metroLines.forEach(L=>{L.pts.forEach(p=>{s+=`<circle cx="${p[0]}" cy="${p[1]}" r="3.2" fill="#0a0e18" stroke="#9fb0d8" stroke-width="1.4"/>`;});});
+  // train holders
+  for(let i=0;i<60;i++) s+=`<circle class="train" id="tr${i}" r="3.4" fill="#fff" opacity="0"/>`;
+  MV.innerHTML=s;
+}
+// precompute polyline lengths for smooth travel
+function lineLength(pts){let L=0;const segs=[];for(let i=0;i<pts.length-1;i++){const dx=pts[i+1][0]-pts[i][0],dy=pts[i+1][1]-pts[i][1];const d=Math.hypot(dx,dy);segs.push({a:pts[i],b:pts[i+1],d,acc:L});L+=d;}return{total:L,segs};}
+const metroGeom=metroLines.map(L=>({col:L.col,...lineLength(L.pts)}));
+function ptAt(geo,dist){dist=((dist%geo.total)+geo.total)%geo.total;for(const s of geo.segs){if(dist<=s.acc+s.d){const f=(dist-s.acc)/s.d;return[lerp(s.a[0],s.b[0],f),lerp(s.a[1],s.b[1],f)];}}return geo.segs[0].a;}
+const trains=[];
+(function(){for(let i=0;i<60;i++){const li=i%metroGeom.length;trains.push({li,off:Math.random()*metroGeom[li].total,sp:rnd(.25,.55)*(Math.random()<.5?1:-1)});}})();
+function updateMetro(){
+  // density: rush hours have more active trains
+  const t=dayT;
+  const rush=Math.max(Math.exp(-Math.pow((t-0.34)/0.05,2)),Math.exp(-Math.pow((t-0.78)/0.05,2)));
+  const day=clamp((t-0.26)/0.05,0,1)*clamp((0.98-t)/0.04,0,1);
+  const active=Math.round(lerp(6,58,Math.max(rush, day*0.55)));
+  $('#metroTrains') && ($('#metroTrains').textContent=active);
+  trains.forEach((tr,i)=>{
+    const el=$('#tr'+i); if(!el)return;
+    if(i<active){
+      tr.off+=tr.sp*(0.6+rush*1.6);
+      const geo=metroGeom[tr.li];
+      const p=ptAt(geo,tr.off);
+      el.setAttribute('cx',p[0]);el.setAttribute('cy',p[1]);
+      el.setAttribute('fill',getComputedStyle(document.documentElement).getPropertyValue('--ink'));
+      el.setAttribute('opacity',0.9);
+      el.style.filter='drop-shadow(0 0 4px '+tr.li+')';
+    } else el.setAttribute('opacity',0);
+  });
+}
+
+/* ====================================================================
+   EKG — heartbeat trace, rate scales with dayT (rush=fast)
+==================================================================== */
+const EK=$('#ekg'); const EKW=600,EKH=130;
+let ekgT=0, ekgBuf=[], ekgPath, lastBeat=0;
+function buildEkg(){
+  EK.innerHTML=`<defs><linearGradient id="ekgG" x1="0" x2="1"><stop offset="0" stop-color="#ff5d8f" stop-opacity="0"/><stop offset=".15" stop-color="#ff5d8f" stop-opacity=".5"/><stop offset="1" stop-color="#ff5d8f"/></linearGradient></defs>
+  <line x1="0" y1="${EKH/2}" x2="${EKW}" y2="${EKH/2}" stroke="rgba(255,93,143,.12)" stroke-width="1"/>
+  <path id="ekgPath" fill="none" stroke="url(#ekgG)" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  ekgPath=$('#ekgPath');
+  for(let i=0;i<EKW;i++)ekgBuf.push(EKH/2);
+}
+function ekgWave(phase){ // one PQRST-ish complex over phase 0..1
+  if(phase<0.10) return 0;
+  if(phase<0.16) return -4*Math.sin((phase-0.10)/0.06*Math.PI); // P
+  if(phase<0.22) return 0;
+  if(phase<0.25) return 10*((phase-0.22)/0.03); // Q->R rise
+  if(phase<0.29) return 10-58*((phase-0.25)/0.04); // R spike down (screen y)
+  if(phase<0.33) return -48+58*((phase-0.29)/0.04); // back up (S)
+  if(phase<0.36) return 10-10*((phase-0.33)/0.03);
+  if(phase<0.55) return 0;
+  if(phase<0.66) return -7*Math.sin((phase-0.55)/0.11*Math.PI); // T
+  return 0;
+}
+function getBPM(){
+  const t=dayT;
+  const rush=Math.max(Math.exp(-Math.pow((t-0.34)/0.06,2)),Math.exp(-Math.pow((t-0.78)/0.06,2)));
+  const night=Math.exp(-Math.pow((t-0.0)/0.12,2))+Math.exp(-Math.pow((t-1.0)/0.12,2));
+  return Math.round(lerp(62,94,rush) - night*6);
+}
+function updateEkg(dt){
+  const bpm=getBPM();
+  $('#bpmNum').innerHTML=bpm+'<span class="u">bpm · 통근자 #4471</span>';
+  $('#bpmText') ;
+  const beatDur=60/bpm; // seconds
+  ekgT+=dt;
+  const speed=2.4; // px per frame baseline scaled
+  const px=Math.max(1,Math.round(speed));
+  for(let k=0;k<px;k++){
+    ekgBuf.shift();
+    lastBeat+=dt/px;
+    const phase=(lastBeat%beatDur)/beatDur;
+    ekgBuf.push(EKH/2 + ekgWave(phase)*1.7);
+  }
+  let d='M0,'+ekgBuf[0];
+  for(let i=1;i<ekgBuf.length;i++)d+=' L'+i+','+ekgBuf[i].toFixed(1);
+  ekgPath.setAttribute('d',d);
+  // beat sound trigger
+  const ph=(lastBeat%beatDur)/beatDur;
+  if(soundOn && ph<0.05 && (lastBeat-beatSndLast)>beatDur*0.5){beatSndLast=lastBeat;blip(bpm);}
+}
+let beatSndLast=0;
+
+/* ====================================================================
+   NOISE RADIAL — frequency spectrum bars in a ring, dB by dayT
+==================================================================== */
+const NC=$('#noise'); const nx=NC.getContext('2d');
+let NBINS=64, noiseBins=new Array(NBINS).fill(0.2), nrDPR=2;
+function sizeNoise(){nrDPR=Math.min(2,window.devicePixelRatio||1);NC.width=520*nrDPR;NC.height=520*nrDPR;nx.setTransform(nrDPR,0,0,nrDPR,0,0);}
+function getDB(){const t=dayT;return Math.round(lerp(32,71,clamp(Math.sin((t-0.05)*Math.PI),0,1)) + Math.max(Math.exp(-Math.pow((t-0.34)/0.05,2)),Math.exp(-Math.pow((t-0.78)/0.05,2)))*6);}
+function drawNoise(){
+  const W=520,H=520,cx=W/2,cy=H/2,inner=78;
+  nx.clearRect(0,0,W,H);
+  const db=getDB();
+  const energy=(db-30)/45; // 0..1
+  // update bins (smooth random spectrum, louder = taller & spikier)
+  for(let i=0;i<NBINS;i++){
+    const target=energy*(0.35+0.65*Math.abs(Math.sin(tNow*0.002 + i*0.5)) )*(0.5+Math.random()*0.5);
+    noiseBins[i]=lerp(noiseBins[i],target,0.18);
+  }
+  // ring guide
+  nx.strokeStyle='rgba(55,224,216,.12)';nx.lineWidth=1;
+  [inner,inner+60,inner+120].forEach(r=>{nx.beginPath();nx.arc(cx,cy,r,0,TAU);nx.stroke();});
+  // bars
+  for(let i=0;i<NBINS;i++){
+    const ang=(i/NBINS)*TAU - Math.PI/2;
+    const len=10+noiseBins[i]*150;
+    const x1=cx+Math.cos(ang)*inner, y1=cy+Math.sin(ang)*inner;
+    const x2=cx+Math.cos(ang)*(inner+len), y2=cy+Math.sin(ang)*(inner+len);
+    const hue=lerp(180,30,noiseBins[i]); // cyan->amber as louder
+    nx.strokeStyle=`hsla(${hue},85%,${55+noiseBins[i]*15}%,${0.5+noiseBins[i]*0.5})`;
+    nx.lineWidth=4; nx.lineCap='round';
+    nx.beginPath();nx.moveTo(x1,y1);nx.lineTo(x2,y2);nx.stroke();
+  }
+  // center pulse
+  const pr=inner-14 + Math.sin(tNow*0.004)*4*energy;
+  const cg=nx.createRadialGradient(cx,cy,0,cx,cy,pr+30);
+  cg.addColorStop(0,`rgba(55,224,216,${0.25+energy*0.4})`);cg.addColorStop(1,'rgba(55,224,216,0)');
+  nx.fillStyle=cg;nx.beginPath();nx.arc(cx,cy,pr+30,0,TAU);nx.fill();
+  nx.strokeStyle=`rgba(122,240,234,${0.5+energy*0.3})`;nx.lineWidth=1.5;
+  nx.beginPath();nx.arc(cx,cy,pr,0,TAU);nx.stroke();
+  $('#dbNum') && ($('#dbNum').textContent=db);
+}
+
+/* ====================================================================
+   COUNT-UP STATS (hero + counters grid)
+==================================================================== */
+function animateCount(el,target,dur,fmt){
+  const start=performance.now();
+  function step(now){
+    const t=clamp((now-start)/dur,0,1); const e=ease(t);
+    const v=target*e;
+    el.firstChild.nodeValue=fmt?fmt(v):Math.round(v).toLocaleString();
+    if(t<1)requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+let heroCounted=false;
+function runHeroCounts(){
+  if(heroCounted)return;heroCounted=true;
+  animateCount($('#hs1'),9.7,1400,v=>v.toFixed(1));
+  animateCount($('#hs2'),28.4,1400,v=>v.toFixed(1));
+  animateCount($('#hs3'),338,1400,v=>Math.round(v));
+  animateCount($('#hs4'),52,1400,v=>Math.round(v));
+}
+let gridCounted=false;
+function runGridCounts(){
+  if(gridCounted)return;gridCounted=true;
+  animateCount($('#c1'),1240,1800,v=>v.toFixed(0));
+  animateCount($('#c2'),38400,1800,v=>Math.round(v).toLocaleString());
+  animateCount($('#c3'),3.6,1800,v=>v.toFixed(1));
+  animateCount($('#c4'),842,1800,v=>Math.round(v));
+}
+
+/* ====================================================================
+   REVEAL OBSERVER
+==================================================================== */
+const io=new IntersectionObserver((es)=>{
+  es.forEach(e=>{
+    if(e.isIntersecting){
+      e.target.classList.add('in');
+      // trigger timeline bars inside
+      $$('.tl-bar',e.target).forEach(b=>{b.style.width=(b.dataset.w||0)+'%';});
+      if(e.target.closest('#act5'))runGridCounts();
+    }
+  });
+},{threshold:0.18});
+$$('.rv').forEach(el=>io.observe(el));
+
+/* ====================================================================
+   WEBAUDIO — procedural city ambient drone + heartbeat blips
+==================================================================== */
+let actx,ambGain,soundOn=false,droneNodes=[];
+function initAudio(){
+  if(actx)return; actx=new (window.AudioContext||window.webkitAudioContext)();
+  ambGain=actx.createGain();ambGain.gain.value=0;ambGain.connect(actx.destination);
+  // layered low drones (city hum)
+  [55,82.4,110,164.8].forEach((f,i)=>{
+    const o=actx.createOscillator(),g=actx.createGain(),flt=actx.createBiquadFilter();
+    o.type=i<2?'sine':'triangle'; o.frequency.value=f;
+    flt.type='lowpass';flt.frequency.value=400;
+    g.gain.value=[0.12,0.08,0.05,0.03][i];
+    // slow LFO detune for movement
+    const lfo=actx.createOscillator(),lg=actx.createGain();
+    lfo.frequency.value=0.05+i*0.03; lg.gain.value=1.5+i;
+    lfo.connect(lg);lg.connect(o.detune);lfo.start();
+    o.connect(flt);flt.connect(g);g.connect(ambGain);o.start();
+    droneNodes.push({o,g,flt});
+  });
+  // subtle filtered-noise wind/traffic bed
+  const buf=actx.createBuffer(1,actx.sampleRate*4,actx.sampleRate);
+  const dch=buf.getChannelData(0); for(let i=0;i<dch.length;i++)dch[i]=(Math.random()*2-1)*0.5;
+  const src=actx.createBufferSource();src.buffer=buf;src.loop=true;
+  const nf=actx.createBiquadFilter();nf.type='bandpass';nf.frequency.value=320;nf.Q.value=0.7;
+  const ng=actx.createGain();ng.gain.value=0.05;
+  src.connect(nf);nf.connect(ng);ng.connect(ambGain);src.start();
+  droneNodes.push({noiseFilter:nf});
+}
+function blip(bpm){
+  if(!actx||!soundOn)return;
+  const t0=actx.currentTime;
+  const o=actx.createOscillator(),g=actx.createGain();
+  o.type='sine'; o.frequency.setValueAtTime(180,t0); o.frequency.exponentialRampToValueAtTime(60,t0+0.12);
+  g.gain.setValueAtTime(0.0001,t0); g.gain.exponentialRampToValueAtTime(0.12,t0+0.01); g.gain.exponentialRampToValueAtTime(0.0001,t0+0.18);
+  o.connect(g);g.connect(actx.destination);o.start(t0);o.stop(t0+0.2);
+}
+$('#snd').addEventListener('click',()=>{
+  initAudio();
+  if(actx.state==='suspended')actx.resume();
+  soundOn=!soundOn;
+  $('#snd').classList.toggle('on',soundOn);
+  $('#sndtxt').textContent=soundOn?'SOUND ON':'SOUND OFF';
+  ambGain.gain.setTargetAtTime(soundOn?0.9:0, actx.currentTime, 0.5);
+});
+// modulate drone with time of day (busier = brighter filter)
+function updateAudio(){
+  if(!actx||!soundOn)return;
+  const t=dayT;
+  const busy=clamp(Math.sin((t-0.05)*Math.PI),0.1,1);
+  droneNodes.forEach(n=>{if(n.flt)n.flt.frequency.setTargetAtTime(300+busy*900,actx.currentTime,0.4);
+    if(n.noiseFilter)n.noiseFilter.frequency.setTargetAtTime(260+busy*500,actx.currentTime,0.4);});
+}
+
+/* ====================================================================
+   MAIN RAF LOOP
+==================================================================== */
+let last=performance.now(), frameCount=0, startTime=performance.now();
+function frame(now){
+  const dt=Math.min(0.05,(now-last)/1000); last=now; tNow=now; frameCount++;
+  drawSky();
+  updatePower();
+  updateMetro();
+  updateEkg(dt);
+  drawNoise();
+  updateAudio();
+  // big "total beats" live number (act3)
+  const tb=(9.7e6 * getBPM())/1e8; // 억 beats per min
+  $('#totBeats') && ($('#totBeats').textContent=tb.toFixed(1));
+  // REC timer + outro
+  const el=(now-startTime)/1000;
+  const mm=String(Math.floor(el/60)).padStart(2,'0'),ss=String(Math.floor(el%60)).padStart(2,'0');
+  $('#recsec') && ($('#recsec').textContent='00:'+mm+':'+ss);
+  $('#rt') && ($('#rt').textContent=mm+':'+ss);
+  $('#frames') && ($('#frames').textContent=frameCount.toLocaleString());
+  requestAnimationFrame(frame);
+}
+
+/* ====================================================================
+   BOOT
+==================================================================== */
+function boot(){
+  sizeSky(); sizeNoise();
+  buildPower(); buildMetro(); buildEkg();
+  recalc(); onScroll();
+  // hero counts fire immediately (first paint impact)
+  setTimeout(runHeroCounts,200);
+  requestAnimationFrame(frame);
+}
+boot();
+window.addEventListener('load',()=>{recalc();onScroll();});
+</script>
+</body>
+</html>

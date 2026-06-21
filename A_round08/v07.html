@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>FLUX — streamline field</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%;
+    background: #04060a;
+    overflow: hidden;
+    cursor: crosshair;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #stage {
+    position: fixed;
+    inset: 0;
+    display: block;
+  }
+  /* subtle vignette + grain feel via overlays, drawn on top, no interaction */
+  .ui {
+    position: fixed;
+    z-index: 5;
+    pointer-events: none;
+    font-family: "SF Mono", ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+    color: rgba(220,235,255,0.62);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    mix-blend-mode: screen;
+    user-select: none;
+  }
+  #title {
+    left: clamp(16px, 3.4vw, 54px);
+    top: clamp(16px, 3.2vw, 46px);
+    font-size: clamp(20px, 3.4vw, 40px);
+    font-weight: 600;
+    letter-spacing: 0.32em;
+    color: rgba(235,245,255,0.92);
+    text-shadow: 0 0 24px rgba(90,160,255,0.45);
+  }
+  #subtitle {
+    left: clamp(16px, 3.4vw, 56px);
+    top: clamp(46px, 8.2vw, 96px);
+    font-size: clamp(9px, 1.15vw, 12px);
+    color: rgba(150,180,220,0.55);
+    letter-spacing: 0.42em;
+  }
+  #hint {
+    right: clamp(16px, 3.4vw, 54px);
+    bottom: clamp(16px, 3.2vw, 42px);
+    font-size: clamp(8px, 1.05vw, 11px);
+    text-align: right;
+    line-height: 2.1;
+    color: rgba(150,180,220,0.46);
+    letter-spacing: 0.3em;
+  }
+  #hint b { color: rgba(150,210,255,0.85); font-weight: 600; }
+  #readout {
+    left: clamp(16px, 3.4vw, 56px);
+    bottom: clamp(16px, 3.2vw, 42px);
+    font-size: clamp(8px, 1.05vw, 11px);
+    line-height: 2.1;
+    color: rgba(150,180,220,0.4);
+    letter-spacing: 0.26em;
+  }
+  #readout span { color: rgba(150,210,255,0.78); }
+  @media (max-width: 520px) {
+    #subtitle { display: none; }
+    #hint { line-height: 1.95; }
+  }
+  .fade { animation: fadein 1.6s ease 0.2s both; }
+  @keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div id="title" class="ui fade">F L U X</div>
+<div id="subtitle" class="ui fade">vector&nbsp;field&nbsp;·&nbsp;streamline&nbsp;flow</div>
+<div id="readout" class="ui fade">
+  PARTICLES <span id="rCount">0</span><br>
+  FPS <span id="rFps">0</span> · MODE <span id="rMode">CURL</span>
+</div>
+<div id="hint" class="ui fade">
+  MOVE — <b>bend the field</b><br>
+  DRAG — <b>steer a jet</b><br>
+  CLICK — <b>pulse</b> · WHEEL — <b>warp scale</b><br>
+  SPACE — palette · C — clear
+</div>
+
+<script>
+"use strict";
+(function () {
+  /* ---------------------------------------------------------------
+     FLUX — a living vector-field streamline visualization.
+     Single file. Canvas 2D, additive trails, curl-noise flow.
+     First paint IS the artwork. Tuned for 60fps with caps.
+  ----------------------------------------------------------------*/
+
+  const cv  = document.getElementById('stage');
+  const ctx = cv.getContext('2d', { alpha: false, desynchronized: true });
+
+  // ---- sizing / DPR cap -----------------------------------------
+  let W = 0, H = 0, DPR = 1;
+  let diag = 1;
+  function resize() {
+    const w = window.innerWidth, h = window.innerHeight;
+    // cap device pixel ratio for fill-rate sanity on hi-dpi phones
+    DPR = Math.min(window.devicePixelRatio || 1, w < 640 ? 2 : 1.6);
+    W = Math.round(w * DPR);
+    H = Math.round(h * DPR);
+    cv.width = W; cv.height = H;
+    cv.style.width = w + 'px';
+    cv.style.height = h + 'px';
+    diag = Math.hypot(W, H);
+    // re-seed the fade base so resized canvas isn't a black flash mid-run
+    ctx.fillStyle = '#04060a';
+    ctx.fillRect(0, 0, W, H);
+    recountTargets();
+  }
+
+  // ---- value-noise gradient field (cheap, smooth, tileable-ish) --
+  // Build a hashed gradient lattice; sample with quintic smoothing.
+  const PERM = new Uint8Array(512);
+  (function seedPerm() {
+    const p = new Uint8Array(256);
+    for (let i = 0; i < 256; i++) p[i] = i;
+    // deterministic shuffle
+    let s = 1337;
+    for (let i = 255; i > 0; i--) {
+      s = (s * 1103515245 + 12345) & 0x7fffffff;
+      const j = s % (i + 1);
+      const t = p[i]; p[i] = p[j]; p[j] = t;
+    }
+    for (let i = 0; i < 512; i++) PERM[i] = p[i & 255];
+  })();
+  const GRAD = [
+    1,1, -1,1, 1,-1, -1,-1,
+    1,0, -1,0, 0,1, 0,-1
+  ];
+  function fade(t){ return t*t*t*(t*(t*6-15)+10); }
+  function gradDot(hash, x, y){
+    const g = (hash & 7) << 1;
+    return GRAD[g]*x + GRAD[g+1]*y;
+  }
+  // 2D gradient (Perlin-style) noise in roughly [-1,1]
+  function noise2(x, y){
+    let xi = Math.floor(x), yi = Math.floor(y);
+    const xf = x - xi, yf = y - yi;
+    xi &= 255; yi &= 255;
+    const u = fade(xf), v = fade(yf);
+    const aa = PERM[PERM[xi]   + yi];
+    const ab = PERM[PERM[xi]   + yi+1];
+    const ba = PERM[PERM[xi+1] + yi];
+    const bb = PERM[PERM[xi+1] + yi+1];
+    const x1 = gradDot(aa, xf,   yf)   + u*(gradDot(ba, xf-1, yf)   - gradDot(aa, xf,   yf));
+    const x2 = gradDot(ab, xf,   yf-1) + u*(gradDot(bb, xf-1, yf-1) - gradDot(ab, xf,   yf-1));
+    return x1 + v*(x2 - x1);
+  }
+  // fractal sum
+  function fbm(x, y){
+    let f = 0, amp = 0.6, frq = 1;
+    for (let o = 0; o < 3; o++){
+      f += amp * noise2(x*frq, y*frq);
+      frq *= 2.03; amp *= 0.5;
+    }
+    return f;
+  }
+
+  // ---- flow field: angle from curl of a scalar potential --------
+  // We get organic, divergence-free-ish swirls by taking the
+  // gradient of fbm and rotating it 90deg (curl of potential).
+  let baseScale = 0.0016;      // spatial frequency of the field (warps with wheel)
+  let targetScale = baseScale;
+  let fieldRot = 0;            // global rotation of the field (wheel)
+  let targetRot = 0;
+  let tFlow = 0;               // time evolution of the field
+
+  // mode: how the angle is derived
+  const MODES = ['CURL', 'GRAD', 'SWIRL'];
+  let modeIdx = 0;
+
+  const EPS = 1.0;
+  function flowAngle(px, py){
+    const s = baseScale;
+    const x = px * s, y = py * s, z = tFlow;
+    // gradient of fbm potential
+    const n1 = fbm(x + EPS*s, y) ;
+    const n0 = fbm(x - EPS*s, y) ;
+    const n3 = fbm(x, y + EPS*s) ;
+    const n2 = fbm(x, y - EPS*s) ;
+    let gx = (n1 - n0);
+    let gy = (n3 - n2);
+    // add slow temporal swirl via a second low-freq field
+    const swirl = fbm(x*0.5 + z, y*0.5 - z) * 2.2;
+    let ang;
+    if (modeIdx === 0) {            // CURL: perpendicular to gradient
+      ang = Math.atan2(gx, -gy) + swirl * 0.6;
+    } else if (modeIdx === 1) {     // GRAD: along the gradient (sources/sinks)
+      ang = Math.atan2(gy, gx) + swirl * 0.25;
+    } else {                        // SWIRL: dominated by rotational term
+      ang = swirl * 1.6 + Math.atan2(gx, -gy) * 0.4;
+    }
+    return ang + fieldRot;
+  }
+
+  // ---- pointer state: attractor / vortex / jet ------------------
+  const ptr = {
+    x: -9999, y: -9999, px: -9999, py: -9999,
+    active: false, down: false,
+    vx: 0, vy: 0, strength: 0
+  };
+  // pulses (clicks) ripple outward and shove particles
+  const pulses = [];
+
+  function setPtr(cx, cy){
+    const x = cx * DPR, y = cy * DPR;
+    ptr.px = ptr.x; ptr.py = ptr.y;
+    if (!ptr.active) { ptr.px = x; ptr.py = y; }
+    ptr.x = x; ptr.y = y;
+    ptr.vx = ptr.x - ptr.px;
+    ptr.vy = ptr.y - ptr.py;
+    ptr.active = true;
+  }
+
+  // ---- particles ------------------------------------------------
+  let particles = null;     // Float32Array packed: x,y, vx,vy, life, hue, seed
+  const STRIDE = 7;
+  let CAP = 0;              // particle count (set by area)
+
+  function recountTargets(){
+    // scale particle count with screen area, capped hard for perf
+    const area = W * H;
+    const isSmall = window.innerWidth < 640;
+    const target = Math.round(area * (isSmall ? 0.0042 : 0.0048));
+    CAP = Math.max(3200, Math.min(isSmall ? 7000 : 13000, target));
+    const arr = new Float32Array(CAP * STRIDE);
+    for (let i = 0; i < CAP; i++) spawn(arr, i, true);
+    particles = arr;
+    document.getElementById('rCount').textContent = CAP.toLocaleString();
+  }
+
+  function rnd(){ return Math.random(); }
+  function spawn(arr, i, fresh){
+    const o = i * STRIDE;
+    arr[o]   = rnd() * W;                       // x
+    arr[o+1] = rnd() * H;                       // y
+    arr[o+2] = 0;                               // vx
+    arr[o+3] = 0;                               // vy
+    arr[o+4] = fresh ? rnd() * 1 : 0;           // life (0..1 normalized progress)
+    arr[o+5] = rnd();                           // hue offset 0..1
+    arr[o+6] = 0.55 + rnd() * 0.9;              // per-particle speed seed
+  }
+
+  // ---- palettes (drift over time, switchable w/ space) ----------
+  // each palette = function(t01) -> [h, s, l] using flow speed + hue offset
+  const PALETTES = [
+    // 0: aurora ice  (cyan->violet->magenta)
+    (spd, hoff, glob) => {
+      const h = 190 + hoff*120 + glob*40 + spd*60;
+      const s = 90;
+      const l = 46 + spd*30;
+      return [h, s, l];
+    },
+    // 1: magma  (deep red->orange->gold)
+    (spd, hoff, glob) => {
+      const h = 8 + hoff*46 + spd*22 + glob*12;
+      const s = 95 - spd*15;
+      const l = 40 + spd*34;
+      return [h, s, l];
+    },
+    // 2: bio  (teal->lime->yellow)
+    (spd, hoff, glob) => {
+      const h = 140 + hoff*90 + spd*40 + glob*30;
+      const s = 88;
+      const l = 42 + spd*32;
+      return [h, s, l];
+    },
+    // 3: ink spectrum  (full wheel, painterly)
+    (spd, hoff, glob) => {
+      const h = (hoff*360 + glob*90 + spd*30) % 360;
+      const s = 82;
+      const l = 44 + spd*30;
+      return [h, s, l];
+    }
+  ];
+  let palIdx = 0;
+
+  // ---- main loop ------------------------------------------------
+  let last = performance.now();
+  let fpsSmooth = 60, fpsTimer = 0, frame = 0;
+  let globHue = 0;
+
+  function step(now){
+    let dt = (now - last) / 16.6667;     // ~frames
+    last = now;
+    if (dt > 3) dt = 3;                   // clamp after tab-away
+    frame++;
+
+    // smooth field controls
+    baseScale += (targetScale - baseScale) * 0.06;
+    fieldRot  += (targetRot  - fieldRot ) * 0.06;
+    tFlow += 0.0016 * dt;
+    globHue += 0.0009 * dt;
+
+    // pointer decay
+    if (!ptr.down) { ptr.vx *= 0.86; ptr.vy *= 0.86; }
+    const pSpeed = Math.hypot(ptr.vx, ptr.vy);
+    ptr.strength += ((ptr.active ? 1 : 0) - ptr.strength) * 0.08;
+
+    // ---- fade previous frame (trails) ----
+    // additive look: low-alpha dark rect keeps glow lingering.
+    // alpha scales with dt so a stalled/slow frame doesn't over-erase
+    // the field (which would decay it to black under CPU contention).
+    ctx.globalCompositeOperation = 'source-over';
+    const fadeA = Math.min(0.20, 0.058 * dt);
+    ctx.fillStyle = 'rgba(4,6,10,' + fadeA + ')';
+    ctx.fillRect(0, 0, W, H);
+
+    // ---- draw particles additively ----
+    ctx.globalCompositeOperation = 'lighter';
+
+    const pal = PALETTES[palIdx];
+    const influR = diag * 0.20;          // pointer influence radius
+    const influR2 = influR * influR;
+    const arr = particles;
+    const lineW = Math.max(0.6, DPR * 0.85);
+    ctx.lineWidth = lineW;
+    ctx.lineCap = 'round';
+
+    for (let i = 0; i < CAP; i++){
+      const o = i * STRIDE;
+      let x = arr[o], y = arr[o+1];
+      const seed = arr[o+6];
+
+      // base flow velocity
+      const ang = flowAngle(x, y);
+      const baseSpd = (1.4 + seed * 1.7) * DPR;
+      let ax = Math.cos(ang) * baseSpd;
+      let ay = Math.sin(ang) * baseSpd;
+
+      // pointer interaction
+      if (ptr.active){
+        const dx = x - ptr.x, dy = y - ptr.y;
+        const d2 = dx*dx + dy*dy;
+        if (d2 < influR2){
+          const d = Math.sqrt(d2) + 0.001;
+          const f = (1 - d / influR);      // 0..1 falloff
+          const f2 = f * f;
+          const nx = dx / d, ny = dy / d;
+          if (ptr.down){
+            // DRAG: emit a directional jet in pointer motion dir
+            ax += ptr.vx * f2 * 0.55;
+            ay += ptr.vy * f2 * 0.55;
+            // plus gentle pull toward pointer (gather)
+            ax -= nx * f2 * 2.2 * DPR;
+            ay -= ny * f2 * 2.2 * DPR;
+          } else {
+            // HOVER: vortex — swirl around pointer + soft push
+            const tx = -ny, ty = nx;             // tangent
+            const swirlDir = 1;
+            ax += tx * f2 * (3.4 + pSpeed*0.15) * swirlDir;
+            ay += ty * f2 * (3.4 + pSpeed*0.15) * swirlDir;
+            ax += nx * f2 * 1.1 * DPR;            // slight outward push
+            ay += ny * f2 * 1.1 * DPR;
+          }
+        }
+      }
+
+      // pulses (clicks): radial shove that expands
+      for (let k = 0; k < pulses.length; k++){
+        const pl = pulses[k];
+        const dx = x - pl.x, dy = y - pl.y;
+        const d = Math.hypot(dx, dy) + 0.001;
+        const ring = Math.abs(d - pl.r);
+        if (ring < pl.width){
+          const f = (1 - ring / pl.width) * pl.power;
+          ax += (dx / d) * f * 9 * DPR;
+          ay += (dy / d) * f * 9 * DPR;
+        }
+      }
+
+      // integrate (velocity smoothing -> silky streamlines)
+      let vx = arr[o+2], vy = arr[o+3];
+      vx += (ax - vx) * 0.28;
+      vy += (ay - vy) * 0.28;
+      const nx2 = x + vx * dt;
+      const ny2 = y + vy * dt;
+
+      // speed for color/alpha
+      const spd = Math.min(1, Math.hypot(vx, vy) / (7 * DPR));
+
+      // life: respawn to keep field freshly seeded & avoid clumps
+      let life = arr[o+4] + (0.0016 + spd * 0.004) * dt;
+      let outside = nx2 < -4 || nx2 > W+4 || ny2 < -4 || ny2 > H+4;
+      if (life >= 1 || outside){
+        spawn(arr, i, false);
+        continue;
+      }
+
+      // color
+      const hoff = arr[o+5];
+      const [h, s, l] = pal(spd, hoff, globHue % 1);
+      // alpha: fade in/out across life for soft births/deaths
+      const lifeFade = Math.min(life * 6, (1 - life) * 4, 1);
+      const a = 0.07 + spd * 0.52 * lifeFade + 0.08 * lifeFade;
+
+      ctx.strokeStyle = 'hsla(' + h + ',' + s + '%,' + l + '%,' + a + ')';
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(nx2, ny2);
+      ctx.stroke();
+
+      // write back
+      arr[o]   = nx2;
+      arr[o+1] = ny2;
+      arr[o+2] = vx;
+      arr[o+3] = vy;
+      arr[o+4] = life;
+    }
+
+    // ---- render + age pulses ----
+    for (let k = pulses.length - 1; k >= 0; k--){
+      const pl = pulses[k];
+      pl.r += pl.speed * dt;
+      pl.power *= 0.965;
+      pl.width = Math.min(pl.width + 0.4*dt, 90 * DPR);
+      // faint glow ring
+      const ga = Math.max(0, pl.power) * 0.5;
+      if (ga > 0.01){
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.strokeStyle = 'hsla(' + ((globHue*360 + 200) % 360) + ',90%,70%,' + ga + ')';
+        ctx.lineWidth = 1.4 * DPR;
+        ctx.beginPath();
+        ctx.arc(pl.x, pl.y, pl.r, 0, Math.PI*2);
+        ctx.stroke();
+        ctx.lineWidth = lineW;
+      }
+      if (pl.r > diag || pl.power < 0.02) pulses.splice(k, 1);
+    }
+
+    // ---- pointer halo (subtle, screen-space glow) ----
+    if (ptr.strength > 0.02){
+      ctx.globalCompositeOperation = 'lighter';
+      const rg = ctx.createRadialGradient(ptr.x, ptr.y, 0, ptr.x, ptr.y, influR * 0.55);
+      const hue = (globHue*360 + 210) % 360;
+      rg.addColorStop(0, 'hsla(' + hue + ',90%,70%,' + (0.10 * ptr.strength) + ')');
+      rg.addColorStop(1, 'hsla(' + hue + ',90%,70%,0)');
+      ctx.fillStyle = rg;
+      ctx.beginPath();
+      ctx.arc(ptr.x, ptr.y, influR * 0.55, 0, Math.PI*2);
+      ctx.fill();
+    }
+
+    // ---- fps readout ----
+    fpsTimer += (now - (step._lastNow || now));
+    step._lastNow = now;
+    const inst = 1000 / Math.max(1, now - (step._prev || (now - 16)));
+    step._prev = now;
+    fpsSmooth += (inst - fpsSmooth) * 0.05;
+    if (frame % 18 === 0){
+      document.getElementById('rFps').textContent = Math.round(fpsSmooth);
+      document.getElementById('rMode').textContent = MODES[modeIdx];
+    }
+
+    requestAnimationFrame(step);
+  }
+
+  // ---- seed an initial textured frame so first paint = art -------
+  function seedFirstPaint(){
+    // draw a quick burst of streak segments using the field so the
+    // very first visible frame already looks like flowing ink.
+    ctx.fillStyle = '#04060a';
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round';
+    ctx.lineWidth = Math.max(0.6, DPR * 0.85);
+    const pal = PALETTES[palIdx];
+    // seed density scales with area so 1440 is as rich as a phone
+    const N = Math.min(20000, Math.max(6000, Math.round(W * H * 0.0075)));
+    ctx.lineWidth = Math.max(0.7, DPR * 1.0);
+    for (let i = 0; i < N; i++){
+      let x = Math.random() * W, y = Math.random() * H;
+      const hoff = Math.random();
+      // trace a streamline so the first frame is clearly *flow*, not dots
+      let segs = 16 + (Math.random()*20 | 0);
+      for (let sgi = 0; sgi < segs; sgi++){
+        const ang = flowAngle(x, y);
+        const sp = (1.6 + Math.random()*1.6) * DPR * 2.4;
+        const nx = x + Math.cos(ang) * sp;
+        const ny = y + Math.sin(ang) * sp;
+        const spd = 0.4 + Math.random()*0.45;
+        const [h, s, l] = pal(spd, hoff, 0);
+        ctx.strokeStyle = 'hsla(' + h + ',' + s + '%,' + l + '%,' + (0.08 + spd*0.22) + ')';
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(nx, ny); ctx.stroke();
+        x = nx; y = ny;
+        if (x < 0 || x > W || y < 0 || y > H) break;
+      }
+    }
+  }
+
+  // ---- input handlers -------------------------------------------
+  function clientToCanvas(e){
+    const t = (e.touches && e.touches[0]) || e;
+    return [t.clientX, t.clientY];
+  }
+  window.addEventListener('mousemove', e => { const [x,y]=clientToCanvas(e); setPtr(x,y); }, { passive:true });
+  window.addEventListener('mousedown', e => { const [x,y]=clientToCanvas(e); setPtr(x,y); ptr.down=true; }, { passive:true });
+  window.addEventListener('mouseup',   () => { ptr.down=false; }, { passive:true });
+  window.addEventListener('mouseleave',() => { ptr.active=false; ptr.down=false; }, { passive:true });
+
+  window.addEventListener('touchstart', e => { const [x,y]=clientToCanvas(e); setPtr(x,y); ptr.down=true; }, { passive:true });
+  window.addEventListener('touchmove',  e => { const [x,y]=clientToCanvas(e); setPtr(x,y); }, { passive:true });
+  window.addEventListener('touchend',   () => { ptr.down=false; ptr.active=false; }, { passive:true });
+
+  function addPulse(cx, cy){
+    pulses.push({
+      x: cx * DPR, y: cy * DPR,
+      r: 4 * DPR, speed: 7.5 * DPR,
+      width: 14 * DPR, power: 1.0
+    });
+    if (pulses.length > 12) pulses.shift();
+  }
+  // click = pulse (mouse + touch tap)
+  window.addEventListener('click', e => { const [x,y]=clientToCanvas(e); addPulse(x,y); }, { passive:true });
+
+  // wheel = warp the field scale + spin it
+  window.addEventListener('wheel', e => {
+    e.preventDefault();
+    const d = Math.sign(e.deltaY);
+    targetScale = Math.max(0.0006, Math.min(0.005, targetScale * (1 + d * 0.10)));
+    targetRot += d * 0.18;
+  }, { passive:false });
+
+  // keyboard: space = cycle palette, m = mode, c = clear
+  window.addEventListener('keydown', e => {
+    if (e.code === 'Space'){ e.preventDefault(); palIdx = (palIdx + 1) % PALETTES.length; }
+    else if (e.key === 'm' || e.key === 'M'){ modeIdx = (modeIdx + 1) % MODES.length; }
+    else if (e.key === 'c' || e.key === 'C'){
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = '#04060a'; ctx.fillRect(0,0,W,H);
+    }
+  });
+
+  window.addEventListener('resize', resize);
+
+  // ---- boot -----------------------------------------------------
+  resize();
+  seedFirstPaint();          // first visible frame is already flowing ink
+  requestAnimationFrame(step);
+})();
+</script>
+</body>
+</html>

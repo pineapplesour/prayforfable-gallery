@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>해시계 · The Hour Garden</title>
+<style>
+  html,body{margin:0;height:100%;background:#05060a;overflow:hidden;
+    font-family:"Cormorant Garamond",Georgia,"Times New Roman",serif;
+    -webkit-tap-highlight-color:transparent;touch-action:none;cursor:crosshair;}
+  #stage{position:fixed;inset:0;display:block;}
+  .hud{position:fixed;left:0;right:0;pointer-events:none;color:#e9e2cf;
+    mix-blend-mode:screen;user-select:none;}
+  #top{top:18px;text-align:center;}
+  #top h1{margin:0;font-weight:300;letter-spacing:.55em;font-size:15px;
+    text-transform:uppercase;opacity:.72;text-indent:.55em;}
+  #clock{margin-top:4px;font-size:40px;font-weight:300;letter-spacing:.12em;
+    font-variant-numeric:tabular-nums;opacity:.92;}
+  #phase{margin-top:-2px;font-size:12px;letter-spacing:.42em;opacity:.5;
+    text-transform:uppercase;}
+  #hint{bottom:16px;text-align:center;font-size:11px;letter-spacing:.3em;
+    opacity:.34;text-transform:uppercase;transition:opacity 1.2s;}
+  #hint.gone{opacity:0;}
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="top" class="hud">
+  <h1>The Hour Garden</h1>
+  <div id="clock">12:00</div>
+  <div id="phase">MERIDIES · NOON</div>
+</div>
+<div id="hint" class="hud">드래그 · 시간을 빚다 &nbsp;|&nbsp; 휠 · 계절을 돌리다</div>
+<script>
+(()=>{
+"use strict";
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', {alpha:false});
+const clockEl = document.getElementById('clock');
+const phaseEl = document.getElementById('phase');
+const hintEl  = document.getElementById('hint');
+
+let W=0,H=0,DPR=1,CX=0,CY=0,SCALE=1;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = Math.floor(W*DPR); cv.height = Math.floor(H*DPR);
+  cv.style.width=W+'px'; cv.style.height=H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  // dial centre sits a little low so the shadow has room to fall upward
+  CX = W*0.5;
+  CY = H*0.60;
+  const r = Math.min(W, H*1.05);
+  SCALE = r/1000;           // base unit
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* ---------- time model ----------------------------------------------------
+   dayT in [0,1): 0=midnight, .25=06h, .5=noon, .75=18h
+   We keep it auto-advancing; dragging the sun overrides it smoothly.
+--------------------------------------------------------------------------- */
+let dayT = 0.5;            // start at noon
+let season = 0.5;          // 0..1 winter->summer->winter ; .5 = equinox-ish high arc
+let autoT = true;
+let pointer = {x:CX, y:CY-200, active:false, hasPointer:false};
+
+// sun azimuth/elevation derived from dayT + season
+function sunGeom(t, s){
+  // hour angle: -PI (midnight) .. +PI ; noon at top
+  const ang = (t - 0.25) * Math.PI*2;          // 0.25 -> 0 (sunrise east horizon)
+  // elevation: bell curve over the day, scaled by season
+  const dayFrac = Math.sin(t*Math.PI*2 - Math.PI/2)*0.5+0.5; // 0 night,1 noon
+  const maxEl = 0.30 + s*0.55;                  // season raises noon height
+  const el = (dayFrac*2-1);                     // -1..1
+  const elev = el * maxEl;                      // negative => below horizon (night)
+  // azimuth sweep east->south->west
+  const az = ang;
+  return {az, elev, dayFrac};
+}
+
+/* shadow direction on the plate: directly opposite the sun's screen position,
+   length grows as the sun sinks toward the horizon. */
+function shadowVec(g){
+  const e = Math.max(0.05, g.elev);
+  let len = (1/e) * 52 * SCALE;
+  len = Math.min(len, 900*SCALE);
+  // planar tuned so morning sun (east) throws shadow west, noon throws up(north)
+  const planar = g.az + Math.PI/2;
+  return {dx: Math.cos(planar)*len, dy:-Math.sin(planar)*len*0.60, len,
+          planar:Math.atan2(-(-Math.sin(planar)*0.60), Math.cos(planar))};
+}
+
+/* ---------- colour: sky palette by dayFrac & elevation -------------------- */
+function lerp(a,b,t){return a+(b-a)*t;}
+function mix(c1,c2,t){return [lerp(c1[0],c2[0],t),lerp(c1[1],c2[1],t),lerp(c1[2],c2[2],t)];}
+function rgb(c,a){return 'rgba('+(c[0]|0)+','+(c[1]|0)+','+(c[2]|0)+','+(a==null?1:a)+')';}
+
+// keyframes of [topColor, horizonColor, groundColor]
+const SKY = [
+  // night
+  {at:0.00, top:[6,8,20],   hor:[14,16,38],  gnd:[8,9,16]},
+  // pre-dawn
+  {at:0.20, top:[20,22,52], hor:[70,52,84],  gnd:[16,16,28]},
+  // sunrise
+  {at:0.27, top:[58,76,140],hor:[245,150,96],gnd:[40,32,40]},
+  // morning
+  {at:0.37, top:[96,150,212],hor:[210,206,196],gnd:[70,62,58]},
+  // noon
+  {at:0.50, top:[70,140,224],hor:[182,212,236],gnd:[96,86,76]},
+  // afternoon
+  {at:0.63, top:[96,150,212],hor:[222,196,168],gnd:[74,64,58]},
+  // sunset
+  {at:0.73, top:[64,70,150],hor:[252,128,72], gnd:[44,30,38]},
+  // dusk
+  {at:0.80, top:[24,24,64], hor:[96,58,108],  gnd:[18,16,30]},
+  // night
+  {at:1.00, top:[6,8,20],   hor:[14,16,38],   gnd:[8,9,16]},
+];
+function skyAt(t){
+  for(let i=0;i<SKY.length-1;i++){
+    const a=SKY[i], b=SKY[i+1];
+    if(t>=a.at && t<=b.at){
+      const k=(t-a.at)/(b.at-a.at);
+      return {top:mix(a.top,b.top,k), hor:mix(a.hor,b.hor,k), gnd:mix(a.gnd,b.gnd,k)};
+    }
+  }
+  return {top:SKY[0].top, hor:SKY[0].hor, gnd:SKY[0].gnd};
+}
+
+/* ---------- stars (precomputed) ------------------------------------------- */
+const STARS = [];
+for(let i=0;i<220;i++){
+  STARS.push({x:Math.random(), y:Math.random()*0.62, r:Math.random()*1.3+0.2,
+              ph:Math.random()*Math.PI*2, sp:0.6+Math.random()*1.6});
+}
+
+/* ---------- dust motes ---------------------------------------------------- */
+const MOTES=[];
+for(let i=0;i<70;i++){
+  MOTES.push({x:Math.random(), y:Math.random(), z:Math.random()*0.8+0.2,
+              ph:Math.random()*Math.PI*2});
+}
+
+/* ---------- Roman hour numerals around the dial --------------------------- */
+const ROMAN = ['VI','VII','VIII','IX','X','XI','XII','I','II','III','IV','V','VI'];
+// from 6 (left) sweeping over top to 6 (right) — a classic horizontal dial face
+
+/* ---------- shadow particle field (lazy) ---------------------------------- */
+// We stipple the shadow with soft dots; recomputed cheaply each frame.
+
+let last=performance.now();
+let tGlobal=0;
+let hintGone=false;
+// luminous trail of the shadow tip (in plate-local coords)
+const TRAIL=[]; const TRAIL_MAX=140; let trailAccum=0;
+
+function fmtClock(t){
+  let h = (t*24)%24;
+  let hh = Math.floor(h);
+  let mm = Math.floor((h-hh)*60);
+  return (hh<10?'0':'')+hh+':'+(mm<10?'0':'')+mm;
+}
+const PHASES=[
+  {at:0.00,n:'NOX · NIGHT'},{at:0.22,n:'DILUCULUM · DAWN'},
+  {at:0.27,n:'ORTUS · SUNRISE'},{at:0.40,n:'MANE · MORNING'},
+  {at:0.50,n:'MERIDIES · NOON'},{at:0.62,n:'POMERIDIES · AFTERNOON'},
+  {at:0.73,n:'OCCASUS · SUNSET'},{at:0.82,n:'CREPUSCULUM · DUSK'},
+  {at:0.92,n:'NOX · NIGHT'},
+];
+function phaseAt(t){let r=PHASES[0].n;for(const p of PHASES){if(t>=p.at)r=p.n;}return r;}
+
+function draw(now){
+  const dt = Math.min(0.05,(now-last)/1000); last=now; tGlobal+=dt;
+
+  // advance time
+  if(autoT && !pointer.active){
+    dayT = (dayT + dt*0.012) % 1;   // ~83s per day
+  }
+  if(pointer.active){
+    // map pointer to dayT via angle around centre
+    const ax = pointer.x-CX, ay = pointer.y-CY;
+    let a = Math.atan2(-ay, ax);            // screen angle, up positive
+    // top(noon)=PI/2 -> dayT .5 ; right -> .. left -> ..
+    // planar = az + PI/2 ; az = a - PI/2 ; t = az/2PI + .25
+    let az = a - Math.PI/2;
+    let t = az/(Math.PI*2) + 0.25;
+    t = ((t%1)+1)%1;
+    // gently steer dayT toward target (no jumps)
+    let d = t - dayT; if(d>0.5)d-=1; if(d<-0.5)d+=1;
+    dayT = ((dayT + d*0.25)%1+1)%1;
+  }
+
+  const g = skyAt(dayT);
+  const sun = sunGeom(dayT, season);
+  const sv = shadowVec(sun);
+  const dawnGlow = Math.max(0, 1-Math.abs(sun.elev)*3.2); // strong near horizon
+
+  /* ===== SKY ===== */
+  const grd = ctx.createLinearGradient(0,0,0,H);
+  grd.addColorStop(0, rgb(g.top));
+  grd.addColorStop(0.52, rgb(g.hor));
+  grd.addColorStop(0.62, rgb(mix(g.hor,g.gnd,0.6)));
+  grd.addColorStop(1, rgb(g.gnd));
+  ctx.fillStyle=grd; ctx.fillRect(0,0,W,H);
+
+  // night veil for stars
+  const nightAmt = Math.max(0, 1 - Math.max(0,sun.elev)*4.5);
+  if(nightAmt>0.02){
+    ctx.save();
+    for(const s of STARS){
+      const tw = 0.5+0.5*Math.sin(tGlobal*s.sp+s.ph);
+      ctx.globalAlpha = nightAmt*tw*0.9;
+      ctx.fillStyle='#dfe6ff';
+      ctx.beginPath();
+      ctx.arc(s.x*W, s.y*H, s.r, 0, 7); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  /* ===== SUN / MOON glow in sky ===== */
+  // sun screen position: arc across sky
+  const sunX = CX + Math.cos(sun.az+Math.PI/2)*W*0.46;
+  const sunY = CY - 60*SCALE - Math.max(-0.2,sun.elev)*H*0.62;
+  const isDay = sun.elev>-0.02;
+  {
+    const glowR = (isDay?160:120)*SCALE;
+    const core  = isDay? mix([255,250,225],[255,170,90], dawnGlow)
+                       : [225,232,255];
+    const rg = ctx.createRadialGradient(sunX,sunY,0, sunX,sunY,glowR*3.2);
+    rg.addColorStop(0, rgb(core, isDay?0.95:0.6));
+    rg.addColorStop(0.12, rgb(core, isDay?0.6:0.32));
+    rg.addColorStop(1, rgb(core,0));
+    ctx.fillStyle=rg;
+    ctx.fillRect(sunX-glowR*3.2,sunY-glowR*3.2,glowR*6.4,glowR*6.4);
+    ctx.beginPath(); ctx.fillStyle=rgb(core, isDay?1:0.85);
+    ctx.arc(sunX,sunY, glowR*0.42,0,7); ctx.fill();
+    if(!isDay){ // moon bite
+      ctx.globalCompositeOperation='destination-out';
+      ctx.beginPath(); ctx.arc(sunX+glowR*0.16, sunY-glowR*0.10, glowR*0.40,0,7); ctx.fill();
+      ctx.globalCompositeOperation='source-over';
+    }
+  }
+
+  /* ===== horizon haze band ===== */
+  {
+    const hy = CY-2*SCALE;
+    const hz = ctx.createLinearGradient(0,hy-120*SCALE,0,hy+40*SCALE);
+    const hc = mix(g.hor, [255,200,140], dawnGlow*0.7);
+    hz.addColorStop(0, rgb(hc,0));
+    hz.addColorStop(1, rgb(hc, 0.30+dawnGlow*0.3));
+    ctx.fillStyle=hz; ctx.fillRect(0,hy-120*SCALE,W,160*SCALE);
+  }
+
+  /* ===== THE DIAL PLATE (ellipse, slightly tilted) ===== */
+  const RX = 360*SCALE, RY = 224*SCALE;
+  ctx.save();
+  ctx.translate(CX,CY);
+
+  // plate shadow on ground
+  ctx.save();
+  ctx.scale(1, 1);
+  const ps = ctx.createRadialGradient(0,18*SCALE,0, 0,18*SCALE, RX*1.25);
+  ps.addColorStop(0,'rgba(0,0,0,0.45)');
+  ps.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=ps; ctx.beginPath();
+  ctx.ellipse(0,22*SCALE, RX*1.2, RY*1.15, 0,0,7); ctx.fill();
+  ctx.restore();
+
+  // plate body — warm sandstone, sun-tinted
+  const lum = 0.42+Math.max(0,sun.elev)*0.55;
+  const warmth = mix([1,1,1],[1.10,0.92,0.72], dawnGlow); // golden at dawn/dusk
+  const stoneHi=[ (118+58*lum)*warmth[0], (104+50*lum)*warmth[1], (84+38*lum)*warmth[2]];
+  const stoneLo=[ (44+22*lum)*warmth[0],  (38+18*lum)*warmth[1],  (32+12*lum)*warmth[2]];
+  const plate = ctx.createLinearGradient(0,-RY,0,RY);
+  plate.addColorStop(0, rgb(stoneHi));
+  plate.addColorStop(1, rgb(stoneLo));
+  ctx.beginPath(); ctx.ellipse(0,0,RX,RY,0,0,7);
+  ctx.fillStyle=plate; ctx.fill();
+  // sun-side radial sheen on the polished stone
+  if(isDay){
+    const sdx=Math.cos(sun.az+Math.PI/2), sdy=-Math.sin(sun.az+Math.PI/2)*0.6;
+    const shx=-sdx*RX*0.45, shy=-sdy*RY*0.45;
+    const sheen=ctx.createRadialGradient(shx,shy,0,shx,shy,RX*0.9);
+    const sc=mix([255,238,200],[255,180,110],dawnGlow);
+    sheen.addColorStop(0,rgb(sc,0.22*Math.max(0.2,sun.elev+0.3)));
+    sheen.addColorStop(1,rgb(sc,0));
+    ctx.save(); ctx.globalCompositeOperation='screen';
+    ctx.beginPath(); ctx.ellipse(0,0,RX,RY,0,0,7); ctx.fillStyle=sheen; ctx.fill();
+    ctx.restore();
+  }
+  // polished bronze rim (double bevel)
+  ctx.lineWidth=5*SCALE;
+  ctx.strokeStyle=rgb(mix([212,168,96],[255,224,150],Math.max(0,sun.elev)),0.85); ctx.stroke();
+  ctx.lineWidth=1.6*SCALE; ctx.strokeStyle='rgba(20,12,4,0.5)';
+  ctx.beginPath(); ctx.ellipse(0,0,RX-6*SCALE,RY-3.6*SCALE,0,0,7); ctx.stroke();
+  ctx.lineWidth=1*SCALE; ctx.strokeStyle=rgb([255,235,180],0.25);
+  ctx.beginPath(); ctx.ellipse(0,-2*SCALE,RX-3*SCALE,RY-2*SCALE,0,Math.PI*1.05,Math.PI*1.95); ctx.stroke();
+
+  // engraved concentric guide circle
+  ctx.lineWidth=1*SCALE; ctx.strokeStyle='rgba(20,16,10,0.30)';
+  ctx.beginPath(); ctx.ellipse(0,0,RX*0.80,RY*0.80,0,0,7); ctx.stroke();
+
+  /* ----- hour lines radiating from gnomon base ----- */
+  // gnomon base at centre-bottom of plate
+  const baseX=0, baseY= RY*0.30;
+  for(let h=0; h<ROMAN.length; h++){
+    // hour fraction along the dial 6..18
+    const frac = h/(ROMAN.length-1);            // 0..1
+    // line angle: from base out across the plate top
+    const a = Math.PI*(1.0 - frac);             // PI(left) -> 0(right)
+    const ex = baseX + Math.cos(a)*RX*0.92;
+    const ey = baseY - Math.sin(a)*RY*0.92;
+    // does the live shadow cross near this hour? -> glow
+    // compare shadow planar angle
+    const shA = Math.atan2(-(sv.dy), sv.dx);
+    let near = Math.abs(((a-shA+Math.PI)%(Math.PI*2))-Math.PI);
+    const glowH = Math.max(0, 1 - near*2.4) * (isDay?1:0);
+    ctx.lineWidth=(h%6===0?2.4:1.2)*SCALE;
+    ctx.strokeStyle = glowH>0.02
+        ? rgb(mix([60,46,28],[255,196,110], glowH), 0.85)
+        : 'rgba(30,24,16,0.42)';
+    ctx.beginPath(); ctx.moveTo(baseX,baseY); ctx.lineTo(ex,ey); ctx.stroke();
+
+    // numeral — carved gold, brightening as the shadow passes
+    const nx = baseX + Math.cos(a)*RX*0.90;
+    const ny = baseY - Math.sin(a)*RY*0.90;
+    ctx.save();
+    ctx.font = '600 '+(20*SCALE).toFixed(1)+'px "Cormorant Garamond",Georgia,serif';
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    const ng = glowH;
+    // engraved dark base
+    ctx.fillStyle='rgba(20,12,4,0.55)';
+    ctx.fillText(ROMAN[h], nx+0.8*SCALE, ny+0.8*SCALE);
+    // gold face
+    ctx.fillStyle = rgb(mix([164,128,72],[255,224,150], ng), 0.85);
+    if(ng>0.15){ ctx.shadowColor=rgb([255,200,120],ng); ctx.shadowBlur=18*SCALE*ng; }
+    ctx.fillText(ROMAN[h], nx, ny);
+    ctx.restore();
+  }
+
+  /* ----- THE SHADOW (bold cast wedge, confined to the plate) ----- */
+  const gnH = 150*SCALE;                        // gnomon height
+  const lean = 22*SCALE;                        // tip lean
+  const tipX = baseX+lean, tipY = baseY - gnH;  // gnomon top
+  // the shadow of the TIP marks the hour: from base, extending along sv
+  const shEndX = baseX + sv.dx;
+  const shEndY = baseY + sv.dy*0.9;
+
+  // record the tip position (clamped to plate) for the luminous trail
+  if(isDay){
+    trailAccum += dt;
+    if(trailAccum>0.05){
+      trailAccum=0;
+      // clamp tip into plate ellipse so the trail stays on the stone
+      let tx=shEndX, ty=shEndY;
+      const e=Math.hypot(tx/(RX*0.95), ty/(RY*0.95));
+      if(e>1){ tx/=e; ty/=e; }
+      TRAIL.push({x:tx,y:ty,born:tGlobal});
+      if(TRAIL.length>TRAIL_MAX) TRAIL.shift();
+    }
+  }
+
+  if(isDay){
+    const shadowStrength = Math.min(1, 0.40+Math.max(0,sun.elev)*1.0);
+    // clip everything to the dial plate so the shadow lives ON the stone
+    ctx.save();
+    ctx.beginPath(); ctx.ellipse(0,0,RX-5*SCALE,RY-3*SCALE,0,0,7); ctx.clip();
+
+    // ---- luminous tip-trail: the day's path traced in golden light ----
+    if(TRAIL.length>1){
+      ctx.save();
+      ctx.globalCompositeOperation='screen';
+      ctx.lineCap='round'; ctx.lineJoin='round';
+      for(let i=1;i<TRAIL.length;i++){
+        const p0=TRAIL[i-1], p1=TRAIL[i];
+        const age=(tGlobal-p1.born);
+        const fade=Math.max(0, 1-age/14);         // ~14s memory
+        if(fade<=0) continue;
+        const f=i/TRAIL.length;
+        const col=mix([255,150,70],[255,225,150], f);
+        ctx.strokeStyle=rgb(col, 0.30*fade*f);
+        ctx.lineWidth=(1.2+2.6*f)*SCALE;
+        ctx.beginPath(); ctx.moveTo(p0.x,p0.y); ctx.lineTo(p1.x,p1.y); ctx.stroke();
+      }
+      // glowing head at the current tip
+      const head=TRAIL[TRAIL.length-1];
+      const hg=ctx.createRadialGradient(head.x,head.y,0,head.x,head.y,16*SCALE);
+      hg.addColorStop(0,'rgba(255,236,180,0.85)');
+      hg.addColorStop(1,'rgba(255,236,180,0)');
+      ctx.fillStyle=hg; ctx.beginPath(); ctx.arc(head.x,head.y,16*SCALE,0,7); ctx.fill();
+      ctx.restore();
+    }
+
+    const ang = Math.atan2(shEndY-baseY, shEndX-baseX);
+    const nx=Math.cos(ang+Math.PI/2), ny=Math.sin(ang+Math.PI/2);
+
+    // 1) soft penumbra wedge
+    ctx.save();
+    ctx.globalCompositeOperation='multiply';
+    const wB=14*SCALE, wT=40*SCALE;
+    const pg2 = ctx.createLinearGradient(baseX,baseY,shEndX,shEndY);
+    pg2.addColorStop(0,'rgba(6,5,8,'+(0.50*shadowStrength)+')');
+    pg2.addColorStop(0.7,'rgba(6,5,8,'+(0.28*shadowStrength)+')');
+    pg2.addColorStop(1,'rgba(6,5,8,0)');
+    ctx.beginPath();
+    ctx.moveTo(baseX+nx*wB, baseY+ny*wB);
+    ctx.lineTo(shEndX+nx*wT, shEndY+ny*wT);
+    ctx.lineTo(shEndX-nx*wT, shEndY-ny*wT);
+    ctx.lineTo(baseX-nx*wB, baseY-ny*wB);
+    ctx.closePath(); ctx.fillStyle=pg2; ctx.fill();
+
+    // 2) crisp umbra core (the real shadow line)
+    const cB=6*SCALE, cT=11*SCALE;
+    const cg = ctx.createLinearGradient(baseX,baseY,shEndX,shEndY);
+    cg.addColorStop(0,'rgba(2,2,4,'+(0.78*shadowStrength)+')');
+    cg.addColorStop(0.82,'rgba(2,2,4,'+(0.55*shadowStrength)+')');
+    cg.addColorStop(1,'rgba(2,2,4,0)');
+    ctx.beginPath();
+    ctx.moveTo(baseX+nx*cB, baseY+ny*cB);
+    ctx.lineTo(shEndX+nx*cT, shEndY+ny*cT);
+    ctx.lineTo(shEndX-nx*cT, shEndY-ny*cT);
+    ctx.lineTo(baseX-nx*cB, baseY-ny*cB);
+    ctx.closePath(); ctx.fillStyle=cg; ctx.fill();
+    ctx.restore();
+
+    // 3) a bright sun-warm rim along the lit edge of the shadow (screen blend)
+    ctx.save();
+    ctx.globalCompositeOperation='screen';
+    const warm = mix([255,210,140],[255,150,80], dawnGlow);
+    ctx.lineWidth=2.2*SCALE;
+    ctx.strokeStyle=rgb(warm, 0.22*shadowStrength);
+    ctx.beginPath();
+    ctx.moveTo(baseX-nx*cB, baseY-ny*cB);
+    ctx.lineTo(shEndX-nx*cT, shEndY-ny*cT);
+    ctx.stroke();
+    ctx.restore();
+
+    // 4) shimmering motes drifting along the umbra (life)
+    ctx.save();
+    const N=64;
+    for(let i=0;i<N;i++){
+      const u=i/N;
+      const px = baseX + (shEndX-baseX)*u;
+      const py = baseY + (shEndY-baseY)*u;
+      const spread = (cB+(cT-cB)*u)*1.6;
+      const jx = nx*Math.sin(i*2.3+tGlobal*1.4)*spread;
+      const jy = ny*Math.sin(i*2.3+tGlobal*1.4)*spread;
+      const a = (1-u)*0.4*shadowStrength*(0.4+0.6*Math.sin(i*1.7+tGlobal*2.2));
+      ctx.fillStyle='rgba(0,0,0,'+(a*0.5)+')';
+      ctx.beginPath(); ctx.arc(px+jx,py+jy,(0.8+u*1.6)*SCALE,0,7); ctx.fill();
+    }
+    ctx.restore();
+
+    ctx.restore(); // unclip
+  }
+
+  /* ----- THE GNOMON (bronze triangular blade) ----- */
+  // a triangle: base (two feet on plate) up to tip leaning slightly
+  ctx.save();
+  const gx0 = baseX-14*SCALE, gy0 = baseY;     // front foot
+  const gx1 = baseX+14*SCALE, gy1 = baseY+8*SCALE;
+  const gtx = tipX, gty = tipY;                // tip already includes lean
+  // body gradient — lit on sun side
+  const litLeft = Math.cos(sun.az)<0;
+  const bg = ctx.createLinearGradient(gx0,gy0,gtx,gty);
+  const bronzeHi=[232,182,96], bronzeMid=[176,120,52], bronzeLo=[70,44,22];
+  bg.addColorStop(0, rgb(bronzeLo));
+  bg.addColorStop(0.55, rgb(bronzeMid));
+  bg.addColorStop(1, rgb(mix(bronzeHi, [255,230,170], Math.max(0,sun.elev))));
+  ctx.beginPath();
+  ctx.moveTo(gx0,gy0); ctx.lineTo(gx1,gy1); ctx.lineTo(gtx,gty); ctx.closePath();
+  ctx.fillStyle=bg; ctx.fill();
+  // edge highlight
+  ctx.lineWidth=1.6*SCALE;
+  ctx.strokeStyle=rgb(mix(bronzeHi,[255,240,200],Math.max(0,sun.elev)),0.85);
+  ctx.beginPath(); ctx.moveTo(gx0,gy0); ctx.lineTo(gtx,gty); ctx.stroke();
+  // glint at tip
+  if(isDay){
+    const gl=ctx.createRadialGradient(gtx,gty,0,gtx,gty,18*SCALE*(0.5+sun.elev));
+    gl.addColorStop(0,'rgba(255,244,210,0.95)');
+    gl.addColorStop(1,'rgba(255,244,210,0)');
+    ctx.fillStyle=gl; ctx.beginPath();
+    ctx.arc(gtx,gty,18*SCALE*(0.5+Math.max(0,sun.elev)),0,7); ctx.fill();
+  }
+  ctx.restore();
+
+  /* ----- dust motes catching light ----- */
+  ctx.save();
+  ctx.globalCompositeOperation='screen';
+  for(const m of MOTES){
+    const mx = (m.x-0.5)*RX*2 + Math.sin(tGlobal*0.3*m.z+m.ph)*30*SCALE;
+    const my = (m.y-0.7)*RY*2.2 + Math.cos(tGlobal*0.22*m.z+m.ph)*22*SCALE - 40*SCALE;
+    // brighter near sun direction
+    const dlit = isDay? (0.3+dawnGlow*0.5+Math.max(0,sun.elev)*0.4):0.12;
+    const tw = 0.4+0.6*Math.sin(tGlobal*1.3+m.ph);
+    ctx.globalAlpha = dlit*tw*0.5*m.z;
+    const c = isDay? mix([255,240,200],[255,180,120],dawnGlow):[200,210,255];
+    ctx.fillStyle=rgb(c);
+    ctx.beginPath(); ctx.arc(mx,my,(1.0+m.z*1.6)*SCALE,0,7); ctx.fill();
+  }
+  ctx.restore();
+
+  ctx.restore(); // dial transform
+
+  /* ===== foreground vignette ===== */
+  const vg = ctx.createRadialGradient(CX,CY*0.9,H*0.2, CX,CY,H*0.9);
+  vg.addColorStop(0,'rgba(0,0,0,0)');
+  vg.addColorStop(1,'rgba(0,0,0,0.55)');
+  ctx.fillStyle=vg; ctx.fillRect(0,0,W,H);
+
+  /* ===== HUD update ===== */
+  clockEl.textContent = fmtClock(dayT);
+  phaseEl.textContent = phaseAt(dayT);
+
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+
+/* ---------- interaction ---------------------------------------------------- */
+function setPointer(x,y){pointer.x=x;pointer.y=y;}
+function killHint(){ if(!hintGone){hintGone=true;hintEl.classList.add('gone');} }
+
+cv.addEventListener('pointerdown', e=>{
+  pointer.active=true; pointer.hasPointer=true; autoT=false;
+  setPointer(e.clientX,e.clientY); killHint();
+  cv.setPointerCapture(e.pointerId);
+});
+cv.addEventListener('pointermove', e=>{
+  if(pointer.active) setPointer(e.clientX,e.clientY);
+});
+window.addEventListener('pointerup', ()=>{ pointer.active=false; });
+window.addEventListener('pointercancel', ()=>{ pointer.active=false; });
+
+// release => resume drifting after a pause
+let resumeTimer=null;
+window.addEventListener('pointerup', ()=>{
+  clearTimeout(resumeTimer);
+  resumeTimer=setTimeout(()=>{autoT=true;}, 2600);
+});
+
+// wheel => season (the sun's yearly arc rises/falls)
+cv.addEventListener('wheel', e=>{
+  e.preventDefault();
+  season = Math.max(0, Math.min(1, season - e.deltaY*0.0009));
+  killHint();
+}, {passive:false});
+
+// double tap / click => toggle auto
+let lastTap=0;
+cv.addEventListener('pointerup', e=>{
+  const now=performance.now();
+  if(now-lastTap<300){ autoT=!autoT; }
+  lastTap=now;
+});
+
+// auto-hide hint after a while
+setTimeout(killHint, 9000);
+})();
+</script>
+</body>
+</html>

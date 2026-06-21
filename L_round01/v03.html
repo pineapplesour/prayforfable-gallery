@@ -1,0 +1,954 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>심해 — 나우틸로스 내부</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+KR:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#e8efef;   /* 인트로 페이퍼(심해 푸른 종이) */
+    --ink:#1d2b2e;
+    --abyss:#04090d;   /* 심연 배경 */
+    --steel:#cfe2e6;   /* 화면 글자 */
+    --hud:#7fd6c9;     /* HUD 청록 */
+    --warn:#e9b06a;
+    --amber:#f2c97d;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--abyss);}
+  body{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;color:var(--steel);
+       -webkit-tap-highlight-color:transparent;}
+
+  /* ====== 3D 뷰 ====== */
+  #stage{position:fixed;inset:0;}
+  #view{
+    margin:0;position:absolute;left:0;top:0;width:100vw;height:100vh;
+    font:13px/13px ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    white-space:pre;overflow:hidden;letter-spacing:0;user-select:none;cursor:crosshair;
+    background:radial-gradient(120% 90% at 50% 42%, #07131a 0%, #04090d 70%, #020507 100%);
+  }
+  /* 비네팅 + 수중 결 */
+  #vignette{position:fixed;inset:0;pointer-events:none;z-index:3;
+    background:radial-gradient(120% 100% at 50% 45%, rgba(0,0,0,0) 52%, rgba(0,8,10,.55) 100%);
+    mix-blend-mode:multiply;}
+  #scan{position:fixed;inset:0;pointer-events:none;z-index:3;opacity:.10;
+    background:repeating-linear-gradient(0deg, rgba(127,214,201,.55) 0 1px, rgba(0,0,0,0) 1px 3px);}
+
+  /* ====== HUD ====== */
+  #hud{position:fixed;left:0;right:0;top:0;z-index:4;display:flex;justify-content:space-between;
+    align-items:flex-start;padding:10px 14px;pointer-events:none;
+    font:12px/1.5 ui-monospace,Menlo,monospace;color:var(--hud);
+    text-shadow:0 0 6px rgba(127,214,201,.35);}
+  #hud .panel{background:rgba(4,11,14,.55);border:1px solid rgba(127,214,201,.25);
+    padding:6px 10px;border-radius:3px;backdrop-filter:blur(2px);}
+  #depth b{color:var(--amber);font-weight:600}
+  #roomName{font-weight:600;color:var(--steel);letter-spacing:1px}
+  #compass{font-variant-numeric:tabular-nums}
+  #invPanel{max-width:42vw;text-align:right}
+  #invPanel .lbl{color:#5e8c87}
+  #invPanel .it{color:var(--amber)}
+
+  /* ====== 상태바 ====== */
+  #status{position:fixed;left:0;right:0;bottom:0;z-index:4;min-height:40px;
+    background:linear-gradient(0deg,#04090d 60%, rgba(4,9,13,0));
+    color:var(--steel);font:12.5px/1.5 ui-monospace,Menlo,monospace;
+    padding:9px 16px 12px;white-space:pre-wrap;}
+  #status .tag{color:var(--hud)}
+  #status .key{color:var(--amber);font-weight:600}
+  #status .em{color:#f0d9a0}
+
+  /* 상호작용 프롬프트(중앙 하단) */
+  #prompt{position:fixed;left:50%;bottom:64px;transform:translateX(-50%);z-index:5;
+    background:rgba(4,11,14,.8);border:1px solid rgba(242,201,125,.5);color:var(--amber);
+    padding:7px 14px;border-radius:4px;font:13px/1.4 ui-monospace,Menlo,monospace;
+    opacity:0;transition:opacity .18s;pointer-events:none;text-shadow:0 0 6px rgba(242,201,125,.4);
+    white-space:nowrap;}
+  #prompt.on{opacity:1}
+  /* 조준점 */
+  #cross{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:5;
+    color:rgba(127,214,201,.5);font:14px/1 monospace;pointer-events:none}
+
+  /* 토스트(상호작용 결과 대사) */
+  #toast{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:8;
+    width:min(560px,82vw);background:rgba(3,9,12,.94);border:1px solid rgba(127,214,201,.35);
+    border-radius:6px;padding:20px 22px;color:var(--steel);
+    font:14px/1.7 ui-monospace,Menlo,monospace;box-shadow:0 10px 40px rgba(0,0,0,.6);
+    opacity:0;pointer-events:none;transition:opacity .22s;}
+  #toast.on{opacity:1;pointer-events:auto}
+  #toast h3{margin:0 0 10px;font-size:15px;color:var(--amber);letter-spacing:1px;
+    font-family:"Noto Serif KR",serif;font-weight:600}
+  #toast .desc{color:#bcd2d0}
+  #toast .hintline{margin-top:14px;color:#5e8c87;font-size:12px}
+  #toast .hintline b{color:var(--amber)}
+
+  /* ====== 인트로 ====== */
+  #intro{position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;text-align:center;padding:28px;
+    background:radial-gradient(120% 120% at 50% 30%, #eef4f3 0%, #dfeae9 55%, #cfdedd 100%);
+    color:var(--ink);font-family:"Noto Serif KR",serif;transition:opacity 1.1s ease;}
+  #intro h1{font-size:clamp(30px,6vw,48px);font-weight:600;letter-spacing:16px;
+    text-indent:16px;margin:0 0 6px;}
+  #intro .sub{font-size:13px;letter-spacing:7px;color:#5d7470;margin-bottom:22px;
+    font-family:ui-monospace,Menlo,monospace}
+  #intro p{font-size:clamp(13px,2.4vw,15px);line-height:2;max-width:520px;margin:5px 0;color:#33474a}
+  #intro .art{font-family:ui-monospace,Menlo,monospace;font-size:11px;line-height:1.2;
+    color:#5a6f6c;white-space:pre;margin:18px 0 8px;opacity:.85}
+  #intro .keys{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;color:#46615d;
+    margin-top:18px;line-height:1.9}
+  #intro .keys b{color:#1d2b2e}
+  #intro .go{margin-top:24px;font-family:ui-monospace,Menlo,monospace;font-size:13px;
+    color:#1d2b2e;border:1px solid #1d2b2e;border-radius:4px;padding:10px 22px;cursor:pointer;
+    background:rgba(255,255,255,.4);transition:.2s;letter-spacing:2px}
+  #intro .go:hover{background:#1d2b2e;color:#eef4f3}
+  .gone{opacity:0!important;pointer-events:none!important}
+
+  /* ====== 모바일 터치 컨트롤 ====== */
+  #touch{position:fixed;inset:0;z-index:6;display:none;pointer-events:none}
+  #touch .pad{position:absolute;bottom:74px;left:18px;width:148px;height:148px;
+    pointer-events:auto;}
+  #touch .padbg{position:absolute;inset:0;border:1px solid rgba(127,214,201,.3);
+    border-radius:50%;background:rgba(4,11,14,.4)}
+  #touch .nub{position:absolute;left:50%;top:50%;width:54px;height:54px;margin:-27px;
+    border-radius:50%;background:rgba(127,214,201,.28);border:1px solid rgba(127,214,201,.5)}
+  #touch .btns{position:absolute;right:16px;bottom:80px;display:flex;flex-direction:column;
+    gap:12px;pointer-events:auto}
+  #touch .btn{width:62px;height:62px;border-radius:50%;border:1px solid rgba(242,201,125,.5);
+    background:rgba(4,11,14,.55);color:var(--amber);display:flex;align-items:center;
+    justify-content:center;font:600 13px/1 ui-monospace,Menlo,monospace;text-align:center}
+  #touch .btn.act{border-color:rgba(242,201,125,.8)}
+  #touch .turn{position:absolute;bottom:150px;right:16px;display:flex;gap:10px;pointer-events:auto}
+  #touch .tbtn{width:54px;height:54px;border-radius:50%;border:1px solid rgba(127,214,201,.4);
+    background:rgba(4,11,14,.5);color:var(--hud);display:flex;align-items:center;justify-content:center;font:18px/1 monospace}
+  body.is-touch #touch{display:block}
+</style>
+</head>
+<body>
+<div id="stage">
+  <pre id="view"></pre>
+</div>
+<div id="vignette"></div>
+<div id="scan"></div>
+
+<div id="cross">+</div>
+
+<div id="hud">
+  <div class="panel">
+    <div id="roomName">—</div>
+    <div id="depth">심도 <b id="depthVal">0000</b> m</div>
+    <div id="compass">방위 ---</div>
+  </div>
+  <div class="panel" id="invPanel">
+    <div class="lbl">소지품</div>
+    <div id="invList" class="it">없음</div>
+  </div>
+</div>
+
+<div id="prompt"></div>
+<div id="status"></div>
+<div id="toast"><h3 id="toastTitle"></h3><div class="desc" id="toastDesc"></div><div class="hintline" id="toastHint"></div></div>
+
+<!-- 모바일 컨트롤 -->
+<div id="touch">
+  <div class="pad" id="pad"><div class="padbg"></div><div class="nub" id="nub"></div></div>
+  <div class="turn">
+    <div class="tbtn" id="tL">↺</div>
+    <div class="tbtn" id="tR">↻</div>
+  </div>
+  <div class="btns">
+    <div class="btn act" id="bAct">살펴<br>보기</div>
+    <div class="btn" id="bMap">지도</div>
+  </div>
+</div>
+
+<!-- 인트로 -->
+<div id="intro">
+  <h1>심 해</h1>
+  <div class="sub">N A U T I L O S · I N T E R I O R</div>
+  <p>당신은 심해 잠수정 <b>나우틸로스</b>의 내부에 있다.</p>
+  <p>전력은 비상등뿐. 함은 격벽으로 나뉘어 있고, 어떤 해치는 잠겨 있다.<br>
+     수압이 선체를 누르는 소리 사이로, 무언가가 관측창 밖에서 헤엄친다.</p>
+  <div class="art">      .-""""""""-.
+   .-'   .--.    '-.
+  /     (    )      \   ~ ~ ~
+ |   .---'  '---.    |     ~ ~
+  \  '---.  .---'   /   ~ ~ ~
+   '-.    '--'   .-'
+      '-........-'</div>
+  <div class="keys">
+    <b>W A S D</b> 이동 · <b>← →</b> 회전 · <b>E</b> 상호작용 · <b>M</b> 함내도<br>
+    해치를 지나 구획을 탐사하고, 가라앉은 함의 심장을 찾아라.
+  </div>
+  <div class="go" id="enterBtn">▷  하 강  시 작</div>
+</div>
+
+<script>
+(() => {
+"use strict";
+
+/* ============================================================
+   심해 나우틸로스 — 1인칭 3D 아스키 탐험
+   raycaster(DDA) + 빌보드 스프라이트 + 방 시스템 + 상호작용
+   레퍼런스(2_내부.html)의 렌더 철학을 계승, 심해 잠수함으로 변주
+   ============================================================ */
+
+/* ---------- DOM ---------- */
+const view = document.getElementById("view");
+const statusEl = document.getElementById("status");
+const promptEl = document.getElementById("prompt");
+const roomNameEl = document.getElementById("roomName");
+const depthEl = document.getElementById("depthVal");
+const compassEl = document.getElementById("compass");
+const invListEl = document.getElementById("invList");
+const toastEl = document.getElementById("toast");
+const toastTitle = document.getElementById("toastTitle");
+const toastDesc = document.getElementById("toastDesc");
+const toastHint = document.getElementById("toastHint");
+const introEl = document.getElementById("intro");
+
+/* ---------- 맵 정의 ----------
+   각 방은 격자 텍스트. '#'=벽, ' '/'.'=바닥, 글자 D0..D5=해치(문),
+   대문자 P=플레이어 스폰. 사물은 별도 좌표 배열.
+   모든 방은 동일 좌표계의 한 큰 그리드 위에 배치(셀=1유닛).
+*/
+const TILE = {WALL:1, FLOOR:0, HATCH:2, GLASS:3};
+
+/* ============================================================
+   최종 월드: 8개 구획(room)을 명시적으로 배치.
+   각 방은 직사각형 영역 + 인접 방과 해치로 연결.
+   타일 그리드 GW x GH.
+   ============================================================ */
+
+const GW = 41, GH = 27;
+let grid = []; // grid[y][x] = TILE.*
+function reset(){ grid = Array.from({length:GH},()=>Array(GW).fill(TILE.WALL)); }
+
+/* 방 메타: id, 이름, 사각영역(x0,y0,x1,y1 내부 바닥영역, 벽 포함은 -1/+1) */
+const rooms = [
+  {id:"helm",  name:"조타실",   x0:2,  y0:2,  x1:11, y1:7,  desc:"녹슨 키와 항법 콘솔"},
+  {id:"sonar", name:"소나실",   x0:2,  y0:10, x1:11, y1:15, desc:"음파 탐지기가 깜빡인다"},
+  {id:"spine", name:"중앙 통로", x0:14, y0:2,  x1:18, y1:24, desc:"함의 척추를 따라"},
+  {id:"engine",name:"기관실",   x0:21, y0:2,  x1:31, y1:7,  desc:"멈춘 추진 기관"},
+  {id:"torp",  name:"어뢰실",   x0:21, y0:10, x1:31, y1:15, desc:"장전된 어뢰관"},
+  {id:"crew",  name:"거주구",   x0:21, y0:18, x1:31, y1:24, desc:"승조원의 침상"},
+  {id:"dome",  name:"관측돔",   x0:34, y0:2,  x1:38, y1:24, desc:"심해를 향한 유리"},
+  {id:"reactor",name:"노심실",  x0:2,  y0:18, x1:11, y1:24, desc:"함의 심장이 잠든 곳"},
+];
+
+function carve(){
+  reset();
+  for(const r of rooms){
+    for(let y=r.y0;y<=r.y1;y++)
+      for(let x=r.x0;x<=r.x1;x++)
+        grid[y][x] = TILE.FLOOR;
+  }
+}
+
+/* 해치(문) 정의: 두 점 사이의 벽 1칸을 뚫는다. locked면 카드키 필요. */
+const hatches = [
+  // 조타실 <-> 중앙통로 (y=4)
+  {id:"h1", x:12, y:4, a:"helm",   b:"spine",  locked:false},
+  {id:"h2", x:13, y:4, a:"helm",   b:"spine",  locked:false},
+  // 소나실 <-> 중앙통로 (y=12)
+  {id:"h3", x:12, y:12, a:"sonar", b:"spine",  locked:false},
+  {id:"h4", x:13, y:12, a:"sonar", b:"spine",  locked:false},
+  // 중앙통로 <-> 기관실 (y=4)
+  {id:"h5", x:19, y:4, a:"spine",  b:"engine", locked:false},
+  {id:"h6", x:20, y:4, a:"spine",  b:"engine", locked:false},
+  // 중앙통로 <-> 어뢰실 (y=12)
+  {id:"h7", x:19, y:12, a:"spine", b:"torp",   locked:false},
+  {id:"h8", x:20, y:12, a:"spine", b:"torp",   locked:false},
+  // 중앙통로 <-> 거주구 (y=21)
+  {id:"h9", x:19, y:21, a:"spine", b:"crew",   locked:false},
+  {id:"h10",x:20, y:21, a:"spine", b:"crew",   locked:false},
+  // 기관실 <-> 관측돔 (y=4)  잠김(카드키)
+  {id:"h11",x:32, y:4, a:"engine", b:"dome",   locked:true, key:"keycard"},
+  {id:"h12",x:33, y:4, a:"engine", b:"dome",   locked:true, key:"keycard"},
+  // 어뢰실/거주구 <-> 관측돔
+  {id:"h13",x:32, y:12, a:"torp",  b:"dome",   locked:false},
+  {id:"h14",x:33, y:12, a:"torp",  b:"dome",   locked:false},
+  {id:"h15",x:32, y:21, a:"crew",  b:"dome",   locked:false},
+  {id:"h16",x:33, y:21, a:"crew",  b:"dome",   locked:false},
+  // 소나실 <-> 노심실 (y=16~17 세로 연결) — 소나 y0..15, reactor y0=18
+  {id:"h17",x:6, y:16, a:"sonar", b:"reactor", locked:true, key:"fuse"},
+  {id:"h18",x:7, y:16, a:"sonar", b:"reactor", locked:true, key:"fuse"},
+  // 중앙통로 아래쪽도 거주구로 (이미 h9/h10), 노심으로 진입은 소나경유만(퍼즐)
+  // 조타실 <-> 소나실 (세로, x=6 y=8~9)
+  {id:"h19",x:6, y:8, a:"helm", b:"sonar", locked:false},
+  {id:"h20",x:7, y:9, a:"helm", b:"sonar", locked:false},
+];
+
+function applyHatches(){
+  for(const h of hatches){
+    grid[h.y][h.x] = h.locked ? TILE.WALL /*닫혀있으면 벽처럼*/ : TILE.HATCH;
+    h.open = !h.locked;
+  }
+}
+
+/* 관측돔 외벽 일부를 유리(GLASS)로: 심해 생물 보이게 */
+function applyGlass(){
+  const d = rooms.find(r=>r.id==="dome");
+  // 돔의 우측 외벽을 유리로 (x = d.x1+? -> 외곽). 외곽 벽은 GW-1.
+  for(let y=d.y0;y<=d.y1;y++){
+    grid[y][d.x1+1] = TILE.GLASS; // 돔 우측 벽
+  }
+  // 노심실 좌측 외벽도 유리 한 칸(심해)
+  const rc = rooms.find(r=>r.id==="reactor");
+  grid[rc.y0+1][rc.x0-1] = TILE.GLASS;
+  grid[rc.y0+2][rc.x0-1] = TILE.GLASS;
+  // 소나실 좌현 관측창(생물 위치)
+  const so = rooms.find(r=>r.id==="sonar");
+  grid[11][so.x0-1] = TILE.GLASS;
+  grid[12][so.x0-1] = TILE.GLASS;
+  grid[13][so.x0-1] = TILE.GLASS;
+}
+
+carve(); applyHatches(); applyGlass();
+
+/* ============================================================
+   사물(스프라이트): 빌보드 방식으로 3D 합성.
+   kind: 사물 시각 종류(아스키 아트 키), x,y: 월드 좌표(셀 중심)
+   action: 상호작용 함수, prompt: 근접 시 표시 문구
+   ============================================================ */
+let inventory = [];
+function hasItem(k){ return inventory.includes(k); }
+function addItem(k){ if(!hasItem(k)){ inventory.push(k); renderInv(); } }
+function renderInv(){
+  const names = {keycard:"카드키", fuse:"퓨즈", log:"항해일지", wrench:"렌치", valve:"밸브핸들"};
+  invListEl.textContent = inventory.length? inventory.map(k=>names[k]||k).join(" · ") : "없음";
+}
+
+const flags = { reactorOnline:false, ending:false };
+
+const sprites = [
+  // 조타실
+  {kind:"console", x:5.5, y:3.5, room:"helm", name:"항법 콘솔",
+   prompt:"항법 콘솔 — <span class='key'>E</span> 작동",
+   act(){ toast("항법 콘솔","화면이 잠시 깜빡이더니 좌표 한 줄을 토해낸다.\n「 11°N 142°E · 챌린저 해연 · 하강 깊이 10,924m 」\n\n나우틸로스는 인간이 닿은 가장 깊은 곳에 가라앉아 있다.","항법 데이터를 읽었다."); }},
+  {kind:"wheel", x:9.5, y:5.5, room:"helm", name:"조타륜",
+   prompt:"녹슨 조타륜 — <span class='key'>E</span> 돌려보기",
+   act(){ toast("조타륜","돌리려 하자 금속이 비명을 지른다. 키는 영원히 우현으로 꺾인 채 굳었다.\n이 함은 다시는 방향을 바꾸지 못한다.","조타륜은 고착되어 있다."); }},
+  {kind:"log", x:5.5, y:6.2, room:"helm", name:"항해일지",
+   prompt:"펼쳐진 항해일지 — <span class='key'>E</span> 줍기",
+   once:true, act(self){ addItem("log"); toast("항해일지","마지막 장에 번진 잉크: 「관측돔의 봉인을 풀면, 우리가 본 것을 너도 보게 된다. 부디 보지 마라.」","항해일지를 챙겼다."); }},
+
+  // 소나실
+  {kind:"sonar", x:5.5, y:11.5, room:"sonar", name:"소나 스코프",
+   prompt:"소나 스코프 — <span class='key'>E</span> 청취",
+   act(){ toast("소나 스코프","핑—…… 핑—………… 핑.\n반사음이 점점 길어진다. 무언가 거대한 것이 함체 주위를 천천히 돌고 있다. 한 마리가 아니다.","소나에 다수의 거대 음영이 잡힌다."); }},
+  {kind:"fuse", x:9.5, y:14.2, room:"sonar", name:"예비 퓨즈",
+   prompt:"공구함의 예비 퓨즈 — <span class='key'>E</span> 줍기",
+   once:true, act(){ addItem("fuse"); toast("예비 퓨즈","두툼한 세라믹 퓨즈. 노심실 격벽의 잠금이 퓨즈 부족으로 내려가 있었다.\n이걸로 노심실 해치를 복구할 수 있겠다.","퓨즈를 획득했다. 노심실 해치를 열 수 있다."); }},
+  {kind:"creature_far", x:0.6, y:12.0, room:"sonar", name:"좌현 관측창", scale:1.6, seeThruGlass:true,
+   prompt:"좌현 관측창 — <span class='key'>E</span> 응시",
+   act(){ toast("좌현 관측창","유리 너머, 빛도 닿지 않는 곳에서 두 점의 인광이 켜졌다 꺼진다.\n그것은 눈이다. 그리고 그 간격이, 사람 키의 열 배는 된다.","무언가가 당신을 마주 본다."); }},
+
+  // 기관실
+  {kind:"engine", x:26, y:4, room:"engine", name:"추진 기관",
+   prompt:"멈춘 추진 기관 — <span class='key'>E</span> 점검",
+   act(){ toast("추진 기관","거대한 축이 한쪽으로 휘어 멈춰 있다. 베어링 사이에 검은 모래 같은 것이 가득하다.\n바다가 이미 함의 근육을 먹어치우는 중이다.","기관은 영구히 정지했다."); }},
+  {kind:"keycard", x:23.5, y:6.2, room:"engine", name:"기관장 카드키",
+   prompt:"기관장의 카드키 — <span class='key'>E</span> 줍기",
+   once:true, act(){ addItem("keycard"); toast("기관장 카드키","끈이 끊어진 신분 카드. 사진 속 얼굴은 긁혀 지워졌다.\n뒷면에 손톱으로 새긴 글자: 「돔을 열지 마」.","카드키 획득 — 관측돔 해치를 열 수 있다."); }},
+  {kind:"valve", x:29.5, y:6.5, room:"engine", name:"냉각 밸브",
+   prompt:"냉각 밸브 핸들 — <span class='key'>E</span> 떼어내기",
+   once:true, act(){ addItem("valve"); toast("냉각 밸브","핸들이 헐겁다. 비틀어 떼어냈다. 노심 냉각수를 수동으로 돌릴 때 쓸 수 있을 것이다.","밸브 핸들을 챙겼다."); }},
+
+  // 어뢰실
+  {kind:"torpedo", x:23.5, y:11.5, room:"torp", name:"1번 어뢰관",
+   prompt:"1번 어뢰관 — <span class='key'>E</span> 살펴보기",
+   act(){ toast("1번 어뢰관","어뢰는 발사되지 않았다. 신관의 안전핀에 누군가 손글씨 메모를 묶어 두었다.\n「쏘지 마라. 저것은 적이 아니다. 우리가 침입자다.」","어뢰는 봉인되어 있다."); }},
+  {kind:"wrench", x:29.5, y:14, room:"torp", name:"대형 렌치",
+   prompt:"벽에 걸린 대형 렌치 — <span class='key'>E</span> 줍기",
+   once:true, act(){ addItem("wrench"); toast("대형 렌치","묵직한 강철 렌치. 굳은 볼트나 고착된 해치를 강제로 돌릴 때 쓸 만하다.","렌치를 획득했다."); }},
+
+  // 거주구
+  {kind:"bunk", x:24, y:20, room:"crew", name:"승조원 침상",
+   prompt:"비어 있는 침상 — <span class='key'>E</span> 살펴보기",
+   act(){ toast("승조원 침상","담요가 단정히 개켜져 있다. 베개 밑에 가족 사진 한 장.\n뒷면: 「곧 돌아갈게.」 날짜는 11년 전이다.","아무도 돌아가지 못했다."); }},
+  {kind:"radio", x:29, y:22, room:"crew", name:"고장난 무전기",
+   prompt:"고장난 무전기 — <span class='key'>E</span> 두드려보기",
+   act(){ const t = flags.reactorOnline
+      ? "노심이 돌아온 덕인지 스피커에서 잡음이 흐른다. 잡음 속, 사람의 목소리가 아닌 노래 같은 진동이 섞여 있다."
+      : "전원이 들어오지 않는다. 노심을 복구하면 다시 켜질지도 모른다.";
+     toast("무전기", t, flags.reactorOnline?"수신 중…":"전력 없음."); }},
+
+  // 관측돔
+  {kind:"glasswall", x:38.2, y:8, room:"dome", name:"대형 관측 유리", scale:1.5,
+   prompt:"심해를 향한 거대한 유리 — <span class='key'>E</span> 다가서기",
+   act(){ toast("관측돔","유리 전체가 어둠으로 가득하다. 그러나 어둠이 아니다 — 그것은 거대한 몸이다.\n당신과 그것 사이를 가르는 건 손가락 두 마디 두께의 유리뿐. 유리에 김이 서린다. 안쪽이 아니라, 바깥에서.","경고: 외부 압력 한계 접근."); }},
+  {kind:"creature_big", x:39.6, y:16, room:"dome", name:"형체", scale:2.2, lift:0.0, seeThruGlass:true,
+   prompt:"유리 너머의 형체 — <span class='key'>E</span> 마주 보기",
+   act(){ toast("형체","그것이 천천히 머리를 돌린다. 함 전체보다 크다.\n분노도 호기심도 아닌, 그저 깊은 무심함. 당신은 이곳에서 손님조차 되지 못한다. 그저 작은 빛 하나.","돔에 오래 머물 수 없다."); }},
+
+  // 노심실
+  {kind:"reactor", x:5, y:21, room:"reactor", name:"노심",
+   prompt:"잠든 노심 — <span class='key'>E</span> 점화",
+   act(self){
+     if(flags.ending) return;
+     const need = [];
+     if(!hasItem("fuse"))  need.push("퓨즈");
+     if(!hasItem("valve")) need.push("밸브 핸들");
+     if(need.length){ toast("노심","제어반에 결손 부품 경고: "+need.join(", ")+".\n이것들 없이는 노심을 점화할 수 없다.","필요: "+need.join(", ")); return; }
+     // 점화 → 엔딩
+     flags.reactorOnline = true;
+     toast("노심 점화","퓨즈를 끼우고 밸브를 돌리자, 11년을 잠들었던 노심이 깊은 곳에서 박동을 시작한다.\n함 전체에 푸른 빛이 돈다 — 그리고 그 빛에 이끌려, 관측창 밖의 모든 눈이 일제히 이쪽을 향한다.\n\n당신은 함의 심장을 되살렸다. 그러나 심해는, 잠든 함보다 깨어난 함을 더 좋아한다.","— 나우틸로스, 다시 박동하다 —");
+     setTimeout(showEnding, 5200);
+   }},
+];
+
+/* 사물 아스키 아트(빌보드 컬럼-텍스처용). 각 kind는 행 배열.
+   렌더 시 스프라이트 박스 안에 비율 매핑하여 그린다. */
+const ART = {
+  console:[
+    "  ____  ",
+    " |[..]| ",
+    " |####| ",
+    " |_==_| ",
+    " /____\\ "],
+  wheel:[
+    "  __|__  ",
+    " /  |  \\ ",
+    "|---O---|",
+    " \\__|__/ ",
+    "    |    "],
+  log:[
+    " ______ ",
+    "/      \\",
+    "|~~~~~~|",
+    "|~~~~~~|",
+    "\\______/"],
+  sonar:[
+    "  ___  ",
+    " /. .\\ ",
+    "| (+) |",
+    " \\._./ ",
+    "  |||  "],
+  fuse:[
+    " ==== ",
+    "[####]",
+    " ==== "],
+  creature_far:[
+    "  .  ",
+    " .o. ",
+    "  .  "],
+  engine:[
+    " [O]==[O] ",
+    " ||XXXX|| ",
+    " [O]==[O] ",
+    "  |____|  "],
+  keycard:[
+    " ______ ",
+    "|=[]   |",
+    "|  ..  |",
+    "|______|"],
+  valve:[
+    "  _||_  ",
+    " /    \\ ",
+    "| (==) |",
+    " \\____/ "],
+  torpedo:[
+    "  ____________ ",
+    " /            )=",
+    "(  >>>>>>>>>>  )",
+    " \\____________/="],
+  wrench:[
+    " (==)__   ",
+    "      \\=\\ ",
+    "       \\=\\",
+    "      (==)"],
+  bunk:[
+    " ______ ",
+    "[##____]",
+    "|      |",
+    "|______|"],
+  radio:[
+    " ______ ",
+    "|.oOo .|",
+    "|::::''|",
+    "|______|"],
+  glasswall:[
+    "::::::::::",
+    ":  ~  ~  :",
+    ": ~   ~ ~:",
+    ":  ~  ~  :",
+    "::::::::::"],
+  creature_big:[
+    "   .-~~~-.   ",
+    " .-(  o o )-.",
+    "(   \\  ^  / )",
+    " '-.\\vvvvv/.-'",
+    "    )))(((   ",
+    "   /  | |  \\ "],
+  reactor:[
+    "  ./==\\.  ",
+    " | (oo) | ",
+    " |((**))| ",
+    " | \\__/ | ",
+    "  '===='  "],
+};
+
+/* ---------- 플레이어 상태 ---------- */
+let px = 16.5, py = 13.5, dir = -Math.PI/2; // 중앙통로 한가운데, 위쪽 향함
+const keys = {};
+let entered = false;
+
+/* ---------- 화면 적응 ---------- */
+let W=120, H=44, CW=7.8, FOV=0.7;
+function fit(){
+  const probe=document.createElement("span");
+  probe.style.cssText="position:absolute;visibility:hidden;font:13px/13px ui-monospace,Menlo,monospace;white-space:pre";
+  probe.textContent="M".repeat(100); document.body.appendChild(probe);
+  CW = probe.getBoundingClientRect().width/100 || 7.8; probe.remove();
+  W = Math.max(54, Math.min(240, Math.floor(innerWidth/CW)-1));
+  H = Math.max(22, Math.floor(innerHeight/13));
+  FOV = innerWidth < 560 ? 0.85 : 0.7; // 좁은 화면은 시야각 넓게
+}
+fit(); addEventListener("resize", fit);
+
+/* ---------- 벽 텍스처 ----------
+   레퍼런스처럼 '문서/소재'를 글자로. 여기선 잠수함 소재 텍스트를 ASCII 풀로 쓴다. */
+const HULL = ("나우틸로스의선체는강철과침묵으로지어졌다THENAUTILOShullbuiltofsteelandsilence"+
+  "압력수심온도산소경보LOGPRESSUREDEPTHO2RIVETSEAMBOLT0123456789=#|+:.").replace(/[^\x21-\x7E]/g,"");
+const HULLPOOL = HULL.length? HULL : "#=|+:.RIVET0123456789";
+function wallTex(mx,my,tx,ty,d,tile){
+  // 유리는 결이 다르게
+  if(tile===TILE.GLASS){
+    if(d>10) return " ";
+    if(d>6) return ":";
+    return (((tx*7+ty*11)|0)%5===0)?"~":":";
+  }
+  if(tile===TILE.HATCH){ // 열린 해치 프레임
+    if(ty<0.12||ty>0.88) return "=";
+    if(tx<0.10||tx>0.90) return "|";
+    if(d>9) return " ";
+    return d>5? "·":" ";
+  }
+  // 일반 선체 벽 — 거리 LOD로 입체감
+  if(d>16) return " ";
+  if(d>11.5) return (((tx*9+ty*9)|0)%4===0)?"·":" ";
+  const seed=((mx*73856093)^(my*19349663))>>>0;
+  const idx=(seed + ((tx*16)|0)*131 + ((ty*16)|0)*37) % HULLPOOL.length;
+  let ch=HULLPOOL[idx];
+  // 패널 이음새(리벳 라인): 일정 간격마다 진한 경계
+  const seam = (((tx*8)|0)%8===0) || (((ty*8)|0)%8===0);
+  if(d>8) return seam?":" : (/[a-z0-9가-힣]/i.test(ch)?".":ch);
+  if(d>5) return seam?"+" : ch;
+  // 근거리: 원본 글자, 이음새는 강조
+  return seam? (ch===" "?"#":ch) : ch;
+}
+
+/* 바닥: 가까울수록(화면 아래) 진한 격자 발판, 멀수록 옅게 */
+const FLOOR=" `.`.:'-:=+".split("");
+function floorChar(rowFrac, x, y){
+  // 가로 빔 + 세로 리벳으로 발판 격자 느낌
+  const depth = Math.min(FLOOR.length-1, Math.max(0,(rowFrac*FLOOR.length)|0));
+  // 발판 가로 줄무늬(원근에 따라 간격 변화)
+  if(rowFrac>0.18 && (y % Math.max(2,(5-(rowFrac*4))|0))===0) return rowFrac>0.5?"=":"-";
+  if(rowFrac>0.35 && (x % 8)===((y)%8)) return ":";
+  return FLOOR[depth];
+}
+/* 천장: 함체 내부 파이프/리벳. 위로 갈수록(화면 위) 어두워짐 */
+function ceilChar(x,y,horizon){
+  const up = (horizon - y)/Math.max(1,horizon); // 0(지평선)~1(천장 끝)
+  if(up>0.78) return " ";
+  // 가로 보강 빔
+  if(y % 4 === 1 && up<0.6) return up<0.3? "=":"-";
+  // 리벳 점
+  if(((x*3+y*7)%17)===0 && up<0.5) return "·";
+  if(up<0.22) return ".";
+  return " ";
+}
+
+/* ---------- 렌더 ---------- */
+let zbuf = new Float32Array(W);
+let glassCol = new Uint8Array(W); // 해당 컬럼이 유리벽에 막혔나
+function ensureBuf(){ if(zbuf.length!==W){ zbuf=new Float32Array(W); glassCol=new Uint8Array(W); } }
+
+function render(){
+  ensureBuf();
+  const rows = new Array(H);
+  const horizon = (H*0.5)|0;
+  const colData = new Array(W);
+  const dirX=Math.cos(dir), dirY=Math.sin(dir);
+  const planeX=-Math.sin(dir)*FOV, planeY=Math.cos(dir)*FOV;
+
+  for(let x=0;x<W;x++){
+    const cam=(2*x)/W-1;
+    const rdx=dirX+planeX*cam, rdy=dirY+planeY*cam;
+    let mx=px|0, my=py|0;
+    const ddx=Math.abs(1/(rdx||1e-9)), ddy=Math.abs(1/(rdy||1e-9));
+    let sx,sy,sdx,sdy,side=0;
+    if(rdx<0){sx=-1;sdx=(px-mx)*ddx;}else{sx=1;sdx=(mx+1-px)*ddx;}
+    if(rdy<0){sy=-1;sdy=(py-my)*ddy;}else{sy=1;sdy=(my+1-py)*ddy;}
+    let hit=0,guard=0,tile=TILE.WALL;
+    while(!hit && guard++<80){
+      if(sdx<sdy){sdx+=ddx;mx+=sx;side=0;}else{sdy+=ddy;my+=sy;side=1;}
+      if(mx<0||my<0||mx>=GW||my>=GH){hit=1;tile=TILE.WALL;break;}
+      const t=grid[my][mx];
+      if(t!==TILE.FLOOR && t!==TILE.HATCH){ hit=1; tile=t; }
+      else if(t===TILE.HATCH){ /* 통과 가능 — 그냥 지나감(바닥처럼) */ }
+    }
+    let dist = side===0 ? (sdx-ddx) : (sdy-ddy);
+    if(dist<0.04) dist=0.04;
+    zbuf[x]=dist;
+    glassCol[x] = (tile===TILE.GLASS)?1:0;
+    let wallX = side===0 ? py+dist*rdy : px+dist*rdx; wallX-=wallX|0;
+    const lh = Math.min(H*4, (H/dist)|0);
+    const ds = Math.max(0, horizon-(lh>>1));
+    const de = Math.min(H-1, horizon+(lh>>1));
+    colData[x]={ds,de,mx,my,wallX,dist,lh,side,tile};
+  }
+
+  for(let y=0;y<H;y++){
+    let row="";
+    for(let x=0;x<W;x++){
+      const c=colData[x];
+      if(y<c.ds){                                        // 천장: 파이프/리벳 음영
+        row += ceilChar(x,y,horizon);
+        continue;
+      }
+      if(y>c.de){                                        // 바닥: 격자 발판
+        const fd=(y-horizon)/Math.max(1,(H-horizon));
+        row+=floorChar(fd,x,y);
+        continue;
+      }
+      const ty = c.lh>0 ? (y-(horizon-c.lh/2))/c.lh : 0;
+      let ch = wallTex(c.mx,c.my,c.wallX, Math.abs(ty%1), c.dist+(c.side?1.0:0), c.tile);
+      row += ch;
+    }
+    rows[y]=row.split(""); // 가변 위해 배열로
+  }
+
+  /* ---------- 스프라이트(빌보드) 합성 ---------- */
+  const invDet = 1/(planeX*dirY-dirX*planeY);
+  // 거리순 정렬(먼 것 먼저)
+  const vis=[];
+  for(const s of sprites){
+    if(s.taken) continue;
+    const rx=s.x-px, ry=s.y-py;
+    const tX = invDet*(dirY*rx - dirX*ry);
+    const tY = invDet*(-planeY*rx + planeX*ry); // 카메라 전방 거리
+    if(tY<=0.25) continue; // 뒤/너무 가까움
+    vis.push({s,tX,tY});
+  }
+  vis.sort((a,b)=>b.tY-a.tY);
+  for(const {s,tX,tY} of vis){
+    const screenX = ((W/2)*(1+tX/tY))|0;
+    const art = ART[s.kind]||["?"];
+    const baseH = Math.abs((H/tY))|0;
+    const sh = Math.max(3, Math.min((H*1.4)|0, (baseH*(s.scale||1.0))|0));
+    const aw = art.reduce((m,r)=>Math.max(m,r.length),0);
+    // 모노스페이스 셀 폭:높이 ≈ 0.6 → 같은 물리 비율 유지 위해 폭을 넉넉히
+    const sw = Math.max(3, (sh*(aw/art.length)*0.92)|0);
+    const sy0 = horizon - (sh>>1) + (s.lift!==undefined? (s.lift*sh)|0 : (sh*0.18)|0);
+    const sx0 = screenX-(sw>>1);
+    for(let i=0;i<sw;i++){
+      const xx=sx0+i;
+      if(xx<0||xx>=W) continue;
+      // 벽 뒤면 가림. 단, 유리 너머 표시 스프라이트는 유리 컬럼에선 통과.
+      if(tY>=zbuf[xx] && !(s.seeThruGlass && glassCol[xx])) continue;
+      const ax=Math.min(aw-1,(i/sw*aw)|0);
+      for(let j=0;j<sh;j++){
+        const yy=sy0+j;
+        if(yy<0||yy>=H) continue;
+        const ay=Math.min(art.length-1,(j/sh*art.length)|0);
+        const line=art[ay]||"";
+        const ch=line[ax]||" ";
+        if(ch===" ") continue;
+        rows[yy][xx]=ch;
+      }
+    }
+  }
+
+  view.textContent = rows.map(r=>r.join("")).join("\n");
+}
+
+/* ---------- 충돌/이동 ---------- */
+function passable(x,y){
+  if(x<0||y<0||x>=GW||y>=GH) return false;
+  const t=grid[y|0][x|0];
+  return t===TILE.FLOOR || t===TILE.HATCH;
+}
+function tryMove(nx,ny){
+  const m=0.22;
+  const cx=nx+Math.sign(nx-px)*m, cy=ny+Math.sign(ny-py)*m;
+  if(passable(cx,py)) px=nx;
+  if(passable(px,cy)) py=ny;
+}
+
+/* ---------- 현재 방/심도/방위 ---------- */
+function currentRoom(){
+  for(const r of rooms){
+    if(px>=r.x0-0.5 && px<=r.x1+0.5 && py>=r.y0-0.5 && py<=r.y1+0.5) return r;
+  }
+  return null;
+}
+function dirName(){
+  let a=((dir*180/Math.PI)%360+360)%360;
+  // 0=동, 90=남(화면상 아래) 등 — 시적으로 함수/함미 표기
+  const names=["함수","우현","함미","좌현"];
+  const idx=Math.round(a/90)%4;
+  return names[idx]+" "+a.toFixed(0).padStart(3,"0")+"°";
+}
+
+/* ---------- 상호작용 ---------- */
+let nearSprite=null;
+function findInteract(){
+  let best=null,bestD=1e9;
+  const fx=Math.cos(dir), fy=Math.sin(dir);
+  for(const s of sprites){
+    if(s.taken) continue;
+    const dx=s.x-px, dy=s.y-py;
+    const d=Math.hypot(dx,dy);
+    const reach = s.reach || (s.seeThruGlass? 5.5 : 2.6);
+    if(d>reach) continue;
+    // 시야 정면 가중
+    const dot=(dx*fx+dy*fy)/(d||1);
+    if(dot<0.2) continue;
+    const score=d - dot*0.8;
+    if(score<bestD){bestD=score;best=s;}
+  }
+  return best;
+}
+function interact(){
+  // 잠긴 해치 열기 먼저 확인
+  if(tryOpenHatch()) return;
+  if(!nearSprite) return;
+  const s=nearSprite;
+  s.act && s.act(s);
+  if(s.once){ s.taken=true; }
+}
+function tryOpenHatch(){
+  // 정면 1~2칸 앞 해치(잠김)를 보고 있나
+  const fx=Math.cos(dir), fy=Math.sin(dir);
+  for(let step=1;step<=2;step++){
+    const tx=(px+fx*step)|0, ty=(py+fy*step)|0;
+    const h=hatches.find(hh=>hh.x===tx&&hh.y===ty&&hh.locked&&!hh.open);
+    if(h){
+      if(hasItem(h.key)){
+        h.open=true; grid[h.y][h.x]=TILE.HATCH;
+        // 옆 칸 해치도 같이(쌍)
+        const pair=hatches.find(o=>o!==h&&o.locked&&o.key===h.key&&o.a===h.a&&o.b===h.b);
+        if(pair){pair.open=true;grid[pair.y][pair.x]=TILE.HATCH;}
+        const keyNames={keycard:"카드키",fuse:"퓨즈"};
+        toast("해치 잠금 해제","["+ (keyNames[h.key]||h.key) +"] 인증. 격벽이 무거운 소리를 내며 열린다.",
+          h.key==="keycard"?"관측돔으로 가는 길이 열렸다.":"노심실로 가는 길이 열렸다.");
+        return true;
+      } else {
+        const keyNames={keycard:"카드키",fuse:"퓨즈"};
+        say(`잠긴 해치다. <span class='em'>${keyNames[h.key]||h.key}</span> 가 필요하다.`);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/* ---------- 토스트/상태 메시지 ---------- */
+let toastTimer=null;
+function toast(title,desc,hint){
+  toastTitle.textContent=title;
+  toastDesc.textContent=desc;
+  toastHint.innerHTML=hint? hint : "";
+  toastEl.classList.add("on");
+  clearTimeout(toastTimer);
+  toastTimer=setTimeout(()=>toastEl.classList.remove("on"), 6000);
+}
+function closeToast(){ toastEl.classList.remove("on"); }
+toastEl.addEventListener("click",closeToast);
+
+function say(html){ statusEl.innerHTML=html; }
+function statusIdle(){
+  const r=currentRoom();
+  const c=(rooms.find(x=>x.id==="reactor"));
+  say(`<span class='tag'>${r? r.name : "격벽 사이"}</span> · ${r? r.desc : "좁은 틈"} · `+
+      `소지품 <span class='em'>${inventory.length}</span>개 · `+
+      `<span class='key'>WASD</span> 이동 <span class='key'>← →</span> 회전 <span class='key'>E</span> 상호작용`);
+}
+
+/* ---------- HUD 업데이트 ---------- */
+function hudUpdate(){
+  const r=currentRoom();
+  roomNameEl.textContent = r? r.name : "격벽 통과 중";
+  // 심도: 위로 갈수록(=y 작을수록) 더 얕게? 시적으로 고정 깊이 + 미세 변동
+  const base=10924;
+  const d = base + ((py-2)*1.2 - (px-2)*0.3)|0;
+  depthEl.textContent = String(Math.max(10000,d)).padStart(5,"0");
+  compassEl.textContent = "방위 "+dirName();
+}
+
+/* ---------- 엔딩 ---------- */
+function showEnding(){
+  flags.ending=true;
+  introEl.style.display="flex";
+  introEl.classList.remove("gone");
+  introEl.style.background="radial-gradient(120% 120% at 50% 35%, #0a1a1e 0%, #04090d 70%, #000 100%)";
+  introEl.style.color="#cfe2e6";
+  introEl.innerHTML=
+    `<h1 style="letter-spacing:14px;color:#7fd6c9">박 동</h1>`+
+    `<div class="sub" style="color:#5e8c87">N A U T I L O S · A W A K E</div>`+
+    `<p style="color:#bcd2d0">노심이 깨어났다. 함은 다시 살아 숨 쉰다.<br>그러나 그 빛을 따라, 심해의 모든 눈이 이쪽으로 모인다.</p>`+
+    `<div class="art" style="color:#3f6a64">      .-~~~~~~~~~-.\n   .-( 11°N 142°E )-.\n  (   10,924 m down  )\n   '-.___________.-'\n        )))   (((</div>`+
+    `<p style="color:#7fd6c9">당신은 가라앉은 함의 심장을 되살렸다.<br>이제 나우틸로스는 더 이상 난파선이 아니다 — 손님이다.</p>`+
+    `<div class="go" id="restartBtn" style="border-color:#7fd6c9;color:#7fd6c9">↺  다 시  하 강</div>`;
+  document.getElementById("restartBtn").addEventListener("click",()=>location.reload());
+}
+
+/* ---------- 입력 ---------- */
+function enter(){
+  if(entered) return;
+  entered=true;
+  introEl.classList.add("gone");
+  setTimeout(()=>{introEl.style.display="none";},1200);
+  statusIdle();
+}
+document.getElementById("enterBtn").addEventListener("click",enter);
+
+addEventListener("keydown",e=>{
+  const k=e.key.toLowerCase();
+  if(!entered){ enter(); return; }
+  if(toastEl.classList.contains("on") && (k==="e"||k==="escape"||k==="enter"||k===" ")){ closeToast(); e.preventDefault(); return; }
+  keys[k]=true;
+  if(k==="e"||k==="f"||k==="enter"){ interact(); e.preventDefault(); }
+  if(k==="m"){ toggleMap(); e.preventDefault(); }
+  if(["arrowup","arrowdown","arrowleft","arrowright"," "].includes(k)) e.preventDefault();
+});
+addEventListener("keyup",e=>{ keys[e.key.toLowerCase()]=false; });
+
+/* ---------- 함내도(미니맵 토스트) ---------- */
+function toggleMap(){
+  if(toastEl.classList.contains("on")){ closeToast(); return; }
+  // 텍스트 미니맵 생성
+  let lines=[];
+  for(let y=0;y<GH;y++){
+    let s="";
+    for(let x=0;x<GW;x++){
+      if((x===(px|0))&&(y===(py|0))){ s+="◉"; continue; }
+      const t=grid[y][x];
+      s += t===TILE.WALL?"█":(t===TILE.GLASS?"▒":(t===TILE.HATCH?"+":" "));
+    }
+    lines.push(s);
+  }
+  toastTitle.textContent="나우틸로스 함내도";
+  toastDesc.innerHTML="<pre style='font:9px/9px ui-monospace,monospace;color:#7fd6c9;margin:0'>"+
+    lines.join("\n").replace(/◉/g,"<span style='color:#f2c97d'>◉</span>")+"</pre>";
+  toastHint.innerHTML="◉ 현재 위치 · + 해치 · ▒ 관측창 · <b>M</b> 닫기";
+  toastEl.classList.add("on");
+  clearTimeout(toastTimer);
+}
+
+/* ---------- 터치 ---------- */
+const isTouch = ("ontouchstart" in window) || navigator.maxTouchPoints>0;
+if(isTouch || innerWidth<560) document.body.classList.add("is-touch");
+const touchKeys={};
+function bindHold(el,onDown,onUp){
+  if(!el) return;
+  const d=e=>{e.preventDefault();onDown();};
+  const u=e=>{e.preventDefault();onUp();};
+  el.addEventListener("touchstart",d,{passive:false});
+  el.addEventListener("touchend",u,{passive:false});
+  el.addEventListener("touchcancel",u,{passive:false});
+  el.addEventListener("mousedown",d); addEventListener("mouseup",u);
+}
+// 가상 조이스틱
+const pad=document.getElementById("pad"), nub=document.getElementById("nub");
+let padActive=false, padCX=0, padCY=0;
+function padStart(e){ enter(); padActive=true; const r=pad.getBoundingClientRect();
+  padCX=r.left+r.width/2; padCY=r.top+r.height/2; padMove(e); }
+function padMove(e){
+  if(!padActive) return;
+  const t=e.touches? e.touches[0] : e;
+  let dx=t.clientX-padCX, dy=t.clientY-padCY;
+  const mag=Math.hypot(dx,dy)||1, lim=52;
+  const cl=Math.min(1,mag/lim);
+  const ux=dx/mag, uy=dy/mag;
+  nub.style.transform=`translate(${ux*lim*cl}px,${uy*lim*cl}px)`;
+  touchKeys.fwd = uy<-0.4*1 ? -uy*cl : 0;       // 위로 = 전진
+  touchKeys.back= uy> 0.4 ? uy*cl : 0;          // 아래 = 후진
+  touchKeys.strafeL = dx<-12 ? -ux*cl : 0;
+  touchKeys.strafeR = dx> 12 ?  ux*cl : 0;
+}
+function padEnd(){ padActive=false; nub.style.transform="translate(0,0)";
+  touchKeys.fwd=touchKeys.back=touchKeys.strafeL=touchKeys.strafeR=0; }
+pad.addEventListener("touchstart",e=>{e.preventDefault();padStart(e);},{passive:false});
+pad.addEventListener("touchmove",e=>{e.preventDefault();padMove(e);},{passive:false});
+pad.addEventListener("touchend",e=>{e.preventDefault();padEnd();},{passive:false});
+pad.addEventListener("mousedown",e=>{e.preventDefault();padStart(e);});
+addEventListener("mousemove",e=>{ if(padActive) padMove(e); });
+addEventListener("mouseup",()=>{ if(padActive) padEnd(); });
+
+bindHold(document.getElementById("tL"),()=>touchKeys.turnL=1,()=>touchKeys.turnL=0);
+bindHold(document.getElementById("tR"),()=>touchKeys.turnR=1,()=>touchKeys.turnR=0);
+document.getElementById("bAct").addEventListener("touchstart",e=>{e.preventDefault();enter();
+  if(toastEl.classList.contains("on"))closeToast(); else interact();},{passive:false});
+document.getElementById("bAct").addEventListener("mousedown",e=>{e.preventDefault();enter();
+  if(toastEl.classList.contains("on"))closeToast(); else interact();});
+document.getElementById("bMap").addEventListener("touchstart",e=>{e.preventDefault();toggleMap();},{passive:false});
+document.getElementById("bMap").addEventListener("mousedown",e=>{e.preventDefault();toggleMap();});
+
+/* ---------- 메인 루프 ---------- */
+let lastT=performance.now(), acc=0, statusAcc=0;
+function loop(t){
+  const dt=Math.min(0.05,(t-lastT)/1000); lastT=t;
+  if(entered && !flags.ending && !toastEl.classList.contains("on")){
+    const rs=2.5*dt, ms=2.7*dt;
+    if(keys["arrowleft"]||keys["q"]) dir-=rs;
+    if(keys["arrowright"]) dir+=rs;
+    if(touchKeys.turnL) dir-=rs;
+    if(touchKeys.turnR) dir+=rs;
+    const fx=Math.cos(dir), fy=Math.sin(dir);
+    if(keys["w"]||keys["arrowup"])   tryMove(px+fx*ms,py+fy*ms);
+    if(keys["s"]||keys["arrowdown"]) tryMove(px-fx*ms,py-fy*ms);
+    if(keys["a"]) tryMove(px+fy*ms,py-fx*ms);
+    if(keys["d"]) tryMove(px-fy*ms,py+fx*ms);
+    // 터치 이동
+    if(touchKeys.fwd)  tryMove(px+fx*ms*touchKeys.fwd, py+fy*ms*touchKeys.fwd);
+    if(touchKeys.back) tryMove(px-fx*ms*touchKeys.back,py-fy*ms*touchKeys.back);
+    if(touchKeys.strafeL) tryMove(px+fy*ms*touchKeys.strafeL, py-fx*ms*touchKeys.strafeL);
+    if(touchKeys.strafeR) tryMove(px-fy*ms*touchKeys.strafeR, py+fx*ms*touchKeys.strafeR);
+  }
+  acc+=dt; statusAcc+=dt;
+  if(acc>1/30){ acc=0; render(); hudUpdate();
+    // 상호작용 프롬프트
+    nearSprite=findInteract();
+    let lockHatch=null;
+    {
+      const fxx=Math.cos(dir),fyy=Math.sin(dir);
+      for(let st=1;st<=2;st++){const tx=(px+fxx*st)|0,ty=(py+fyy*st)|0;
+        const h=hatches.find(hh=>hh.x===tx&&hh.y===ty&&hh.locked&&!hh.open); if(h){lockHatch=h;break;}}
+    }
+    if(lockHatch && !nearSprite){
+      const keyNames={keycard:"카드키",fuse:"퓨즈"};
+      promptEl.innerHTML = `잠긴 해치 — <span class='key'>E</span> ${hasItem(lockHatch.key)?"열기":("필요: "+(keyNames[lockHatch.key]||lockHatch.key))}`;
+      promptEl.classList.add("on");
+    } else if(nearSprite){
+      promptEl.innerHTML=nearSprite.prompt; promptEl.classList.add("on");
+    } else { promptEl.classList.remove("on"); }
+  }
+  if(statusAcc>0.4 && entered && !toastEl.classList.contains("on")){ statusAcc=0; statusIdle(); }
+  requestAnimationFrame(loop);
+}
+
+/* 자가검증용 진단 훅(무해) */
+window.__pp = () => ({
+  px:+px.toFixed(3), py:+py.toFixed(3), dir:+dir.toFixed(3),
+  room: (currentRoom()||{}).id||null,
+  inv: inventory.slice(),
+  near: nearSprite? nearSprite.name : null,
+  toastOn: toastEl.classList.contains("on"),
+  ending: flags.ending,
+  viewNonSpace: (view.textContent.match(/[^\s]/g)||[]).length
+});
+window.__teleport = (x,y,d)=>{ px=x;py=y; if(d!==undefined)dir=d; };
+window.__sprites = ()=> sprites.map(s=>({name:s.name,x:s.x,y:s.y,room:s.room,taken:!!s.taken}));
+
+renderInv();
+render();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

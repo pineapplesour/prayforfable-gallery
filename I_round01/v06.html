@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>연꽃 연못 메모 · Lotus Pond Memo</title>
+<style>
+  :root{
+    --ink: #f2f6f4;
+    --glass-fill: rgba(14, 26, 24, 0.30);
+    --glass-fill-soft: rgba(255,255,255,0.05);
+    --glass-line: rgba(255,255,255,0.30);
+    --glass-line-soft: rgba(255,255,255,0.14);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;height:100%;overflow:hidden;background:#06110d;}
+  body{
+    font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Helvetica Neue",
+      "Hiragino Kaku Gothic ProN","Noto Sans KR","Apple SD Gothic Neo",sans-serif;
+    color:var(--ink);
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* ----- ambient pond base ----- */
+  #gl{position:fixed;inset:0;width:100%;height:100%;display:block;cursor:crosshair;touch-action:none;z-index:0;}
+  /* gentle top depth wash + vignette over the canvas, never blocks pointer */
+  #wash{position:fixed;inset:0;z-index:1;pointer-events:none;
+    background:
+      radial-gradient(120% 90% at 50% 8%, rgba(180,210,190,0.10), rgba(0,0,0,0) 55%),
+      radial-gradient(140% 120% at 50% 120%, rgba(0,0,0,0.45), rgba(0,0,0,0) 60%);
+    mix-blend-mode:soft-light;}
+
+  /* ----- floating glass layer ----- */
+  #stage{position:fixed;inset:0;z-index:2;pointer-events:none;}
+  .glass{
+    position:absolute;pointer-events:auto;
+    border-radius:28px;
+    background:var(--glass-fill);
+    border:1px solid var(--glass-line);
+    -webkit-backdrop-filter:blur(18px) saturate(1.5) brightness(1.05);
+    backdrop-filter:blur(18px) saturate(1.5) brightness(1.05);
+    box-shadow:
+      0 22px 60px rgba(0,0,0,0.42),
+      0 4px 14px rgba(0,0,0,0.28),
+      inset 0 1px 0 rgba(255,255,255,0.40),
+      inset 0 -1px 0 rgba(0,0,0,0.22);
+    overflow:hidden;
+    will-change:transform;
+    transition:box-shadow .35s ease, border-color .35s ease;
+  }
+  .glass:active{cursor:grabbing;}
+  /* liquid top-sheen highlight */
+  .glass::before{
+    content:"";position:absolute;left:0;right:0;top:0;height:46%;
+    background:linear-gradient(180deg,
+      rgba(255,255,255,0.22), rgba(255,255,255,0.06) 38%, rgba(255,255,255,0) 100%);
+    pointer-events:none;border-radius:28px 28px 60% 60%/28px 28px 22% 22%;
+    opacity:.9;}
+  /* faint refractive rim glow */
+  .glass::after{
+    content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+    box-shadow:inset 0 0 32px rgba(120,180,150,0.10);}
+  .glass:hover{box-shadow:
+      0 28px 70px rgba(0,0,0,0.48),
+      0 6px 18px rgba(0,0,0,0.30),
+      inset 0 1px 0 rgba(255,255,255,0.52),
+      inset 0 -1px 0 rgba(0,0,0,0.22);
+    border-color:rgba(255,255,255,0.42);}
+
+  .pad{position:relative;z-index:1;padding:24px 26px;}
+
+  .grip{
+    position:absolute;top:10px;left:50%;transform:translateX(-50%);
+    width:46px;height:5px;border-radius:99px;
+    background:rgba(255,255,255,0.30);z-index:3;cursor:grab;}
+
+  /* --- main memo card --- */
+  #card{width:380px;left:7%;top:18%;}
+  .eyebrow{font-size:11px;letter-spacing:.30em;text-transform:uppercase;
+    color:rgba(238,246,242,0.62);margin:6px 0 10px;}
+  h1{margin:0 0 6px;font-size:25px;font-weight:700;letter-spacing:-.01em;
+    text-shadow:0 1px 10px rgba(0,0,0,0.4);}
+  .sub{margin:0 0 18px;font-size:13.5px;color:rgba(238,246,242,0.74);}
+  .memo{
+    margin:0;width:100%;min-height:108px;resize:none;
+    background:rgba(0,0,0,0.18);
+    border:1px solid var(--glass-line-soft);
+    border-radius:16px;padding:13px 14px;
+    color:var(--ink);font:inherit;font-size:14px;line-height:1.65;
+    outline:none;transition:border-color .2s,background .2s;}
+  .memo::placeholder{color:rgba(238,246,242,0.42);}
+  .memo:focus{border-color:rgba(255,255,255,0.40);background:rgba(0,0,0,0.26);}
+  .row{display:flex;gap:10px;margin-top:14px;align-items:center;}
+  .btn{
+    flex:0 0 auto;appearance:none;border:1px solid rgba(255,255,255,0.28);
+    background:rgba(255,255,255,0.12);color:var(--ink);
+    padding:10px 18px;border-radius:13px;font:inherit;font-size:13.5px;font-weight:600;
+    cursor:pointer;transition:transform .12s,background .2s,box-shadow .2s;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.30);}
+  .btn:hover{background:rgba(255,255,255,0.20);}
+  .btn:active{transform:translateY(1px) scale(.98);}
+  .btn.primary{background:rgba(244,250,247,0.90);color:#10241c;border-color:rgba(255,255,255,0.6);}
+  .btn.primary:hover{background:#ffffff;}
+  .hintline{font-size:12px;color:rgba(238,246,242,0.58);margin-left:auto;}
+  .chips{display:flex;gap:8px;margin-top:16px;flex-wrap:wrap;}
+  .chip{font-size:11.5px;padding:6px 12px;border-radius:99px;
+    background:rgba(255,255,255,0.08);border:1px solid var(--glass-line-soft);
+    color:rgba(238,246,242,0.82);}
+
+  /* --- clock / pond stat widget --- */
+  #widget{width:208px;right:7%;top:16%;}
+  #widget .pad{padding:20px 20px 18px;}
+  .wlabel{font-size:10.5px;letter-spacing:.26em;text-transform:uppercase;
+    color:rgba(238,246,242,0.6);}
+  #clock{font-variant-numeric:tabular-nums;font-size:38px;font-weight:700;
+    letter-spacing:.01em;margin:4px 0 2px;text-shadow:0 2px 14px rgba(0,0,0,0.45);}
+  #dateline{font-size:12.5px;color:rgba(238,246,242,0.72);margin-bottom:14px;}
+  .stat{display:flex;justify-content:space-between;align-items:baseline;
+    padding:9px 0;border-top:1px solid var(--glass-line-soft);font-size:13px;}
+  .stat .k{color:rgba(238,246,242,0.68);}
+  .stat .v{font-weight:700;font-variant-numeric:tabular-nums;}
+
+  /* --- little floating lotus tag --- */
+  #tag{right:9%;bottom:13%;width:auto;}
+  #tag .pad{padding:11px 18px;display:flex;align-items:center;gap:10px;}
+  #tag .dot{width:9px;height:9px;border-radius:50%;
+    background:#ffd3a6;box-shadow:0 0 10px #ffb877;animation:pulse 2.6s ease-in-out infinite;}
+  @keyframes pulse{0%,100%{opacity:.55;transform:scale(.85)}50%{opacity:1;transform:scale(1.15)}}
+  #tag .txt{font-size:12.5px;letter-spacing:.04em;color:rgba(238,246,242,0.86);white-space:nowrap;}
+
+  /* bottom ambient hint */
+  #hint{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);z-index:2;
+    color:rgba(238,246,242,0.80);font-size:12.5px;letter-spacing:.12em;
+    background:rgba(8,22,18,0.34);border:1px solid var(--glass-line-soft);
+    padding:8px 20px;border-radius:99px;
+    -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
+    pointer-events:none;transition:opacity 1.4s;white-space:nowrap;}
+
+  @media (max-width:560px){
+    #card{width:86vw;left:7vw;top:9%;}
+    #widget{width:42vw;right:5vw;top:auto;bottom:20%;}
+    #tag{left:5vw;right:auto;bottom:11%;}
+    #clock{font-size:30px;}
+    h1{font-size:22px;}
+    #hint{font-size:11px;padding:7px 14px;}
+  }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="wash"></div>
+
+<div id="stage">
+  <!-- main memo glass -->
+  <section class="glass" id="card" data-parallax="14">
+    <span class="grip" title="드래그해서 옮기기"></span>
+    <div class="pad">
+      <div class="eyebrow">Lotus Pond · 연꽃 연못</div>
+      <h1>연못 메모</h1>
+      <p class="sub">수면을 클릭하면 파문이 번지고 잉어가 모입니다. 카드는 잡아서 옮길 수 있어요.</p>
+      <textarea class="memo" id="memo" placeholder="오늘 연못에 남기고 싶은 한 줄…"></textarea>
+      <div class="row">
+        <button class="btn primary" id="save">남기기</button>
+        <button class="btn" id="ripple">파문 ◌</button>
+        <span class="hintline" id="status">자동 저장됨</span>
+      </div>
+      <div class="chips">
+        <span class="chip">🪷 연꽃 3송이</span>
+        <span class="chip">🐟 잉어 6마리</span>
+        <span class="chip">🌿 잔잔함</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- clock / stats glass -->
+  <aside class="glass" id="widget" data-parallax="26">
+    <span class="grip"></span>
+    <div class="pad">
+      <div class="wlabel">Pond Time</div>
+      <div id="clock">--:--</div>
+      <div id="dateline">—</div>
+      <div class="stat"><span class="k">수온</span><span class="v" id="temp">21.4°</span></div>
+      <div class="stat"><span class="k">파문</span><span class="v" id="ripples">0</span></div>
+      <div class="stat"><span class="k">먹이</span><span class="v" id="food">0</span></div>
+    </div>
+  </aside>
+
+  <!-- tiny tag glass -->
+  <div class="glass" id="tag" data-parallax="40">
+    <div class="pad"><span class="dot"></span><span class="txt">앰비언트 · 실시간 시뮬레이션</span></div>
+  </div>
+</div>
+
+<div id="hint">수면을 클릭 — 파문과 먹이주기 · 글래스 창은 드래그</div>
+
+<script>
+'use strict';
+/* =========================================================================
+   AMBIENT BASE — top-down murky lotus pond (WebGL2 ripple sim + koi + lotus)
+   Engine adapted from a height-field water sim: ping-pong sim FBO drives a
+   render pass that refracts a painted pond bottom + a 2D koi/lotus canvas.
+   ========================================================================= */
+(()=>{
+const TAU=Math.PI*2;
+const canvas=document.getElementById('gl');
+const hint=document.getElementById('hint');
+const gl=canvas.getContext('webgl2',{antialias:false,alpha:false});
+let webgl2=!!gl;
+if(webgl2){gl.getExtension('EXT_color_buffer_float');gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,true);}
+
+/* ---------------- shaders ---------------- */
+const VERT=`#version 300 es
+layout(location=0) in vec2 aPos;
+out vec2 vUv;
+void main(){vUv=aPos*0.5+0.5;gl_Position=vec4(aPos,0.,1.);}`;
+
+const SIM_FRAG=`#version 300 es
+precision highp float;
+uniform sampler2D uPrev;
+uniform vec2 uTexel;
+uniform vec4 uDrops[8];
+uniform int uCount;
+in vec2 vUv; out vec4 o;
+void main(){
+  vec2 c=texture(uPrev,vUv).rg;
+  float sum=
+    texture(uPrev,vUv+vec2(uTexel.x,0.)).r+
+    texture(uPrev,vUv-vec2(uTexel.x,0.)).r+
+    texture(uPrev,vUv+vec2(0.,uTexel.y)).r+
+    texture(uPrev,vUv-vec2(0.,uTexel.y)).r;
+  float nh=(sum*0.5-c.g)*0.9935;
+  vec2 px=vUv/uTexel;
+  for(int i=0;i<8;i++){
+    if(i>=uCount)break;
+    vec4 d=uDrops[i];
+    float dist=distance(px,d.xy);
+    if(dist<d.z) nh+=d.w*(cos(dist/d.z*3.14159)*0.5+0.5);
+  }
+  vec2 e=min(vUv,1.0-vUv);
+  float edge=smoothstep(0.0,0.05,min(e.x,e.y));
+  nh*=mix(0.85,1.0,edge);
+  o=vec4(nh,c.r,0.,1.);
+}`;
+
+const RENDER_FRAG=`#version 300 es
+precision highp float;
+uniform sampler2D uH;
+uniform sampler2D uBottom;
+uniform sampler2D uFish;
+uniform vec2 uTexel;
+uniform float uT;
+in vec2 vUv; out vec4 o;
+void main(){
+  vec2 d=uTexel*1.5;
+  float h =texture(uH,vUv).r;
+  float hL=texture(uH,vUv-vec2(d.x,0.)).r;
+  float hR=texture(uH,vUv+vec2(d.x,0.)).r;
+  float hB=texture(uH,vUv-vec2(0.,d.y)).r;
+  float hT=texture(uH,vUv+vec2(0.,d.y)).r;
+  vec3 n=normalize(vec3((hL-hR)*6.0,(hB-hT)*6.0,1.0));
+  n.xy+=0.0024*vec2(
+    sin(vUv.x*120.0+uT*1.0)+sin(vUv.y*82.0-uT*0.6),
+    cos(vUv.x*70.0-uT*0.8)+cos(vUv.y*132.0+uT*1.2));
+  n=normalize(n);
+  vec2 off=n.xy*0.040;
+  vec3 bottom=texture(uBottom,vUv+off).rgb;
+  float lap=(hL+hR+hB+hT-4.0*h);
+  float caust=min(max(-lap,0.0)*88.0,0.7);
+  bottom+=vec3(0.92,1.0,0.82)*caust*0.50;
+  bottom*=1.0-min(max(lap,0.0)*66.0,0.30);
+  float sh=texture(uFish,vUv+off+vec2(0.012,-0.017)).a;
+  bottom*=1.0-sh*0.30;
+  vec3 water=vec3(0.08,0.24,0.20);
+  vec3 col=mix(bottom,water,0.30);
+  vec4 fish=texture(uFish,vUv+off*0.42);
+  vec3 fcol=mix(fish.rgb,water,0.10);
+  col=mix(col,fcol,fish.a);
+  vec3 L=normalize(vec3(-0.30,0.42,0.86));
+  float spec=pow(max(dot(reflect(vec3(0.,0.,-1.),n),L),0.0),150.0);
+  col+=vec3(0.95,1.0,0.90)*spec*0.85;
+  col+=vec3(0.30,0.45,0.42)*pow(max(dot(n,normalize(vec3(0.2,-0.3,0.9))),0.0),3.0)*0.06;
+  float vg=smoothstep(1.05,0.30,length(vUv-0.5));
+  col*=mix(0.52,1.0,vg);
+  o=vec4(col,1.0);
+}`;
+
+/* ---- WebGL plumbing ---- */
+let simProg,renProg,su,ru,quad,bottomTex,fishTex;
+function compile(type,src){const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(s));return s;}
+function program(vs,fs){const p=gl.createProgram();gl.attachShader(p,compile(gl.VERTEX_SHADER,vs));
+  gl.attachShader(p,compile(gl.FRAGMENT_SHADER,fs));gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(p));return p;}
+
+let cssW=0,cssH=0,dpr=1,fishScale=1;
+let simW=0,simH=0,texA=null,texB=null,fboA=null,fboB=null;
+let fishTexW=0,fishTexH=0;
+const bCan=document.createElement('canvas'),bctx=bCan.getContext('2d');
+const fCan=document.createElement('canvas'),fctx=fCan.getContext('2d');
+
+function texParams(){
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+}
+function makeTarget(w,h){
+  const t=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,t);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA16F,w,h,0,gl.RGBA,gl.HALF_FLOAT,null);texParams();
+  const f=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,f);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,t,0);
+  gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);return[t,f];
+}
+function createSim(){
+  if(texA){gl.deleteTexture(texA);gl.deleteTexture(texB);gl.deleteFramebuffer(fboA);gl.deleteFramebuffer(fboB);}
+  const scale=Math.min(0.5,768/Math.max(cssW,cssH));
+  simW=Math.max(64,Math.round(cssW*scale));simH=Math.max(64,Math.round(cssH*scale));
+  [texA,fboA]=makeTarget(simW,simH);[texB,fboB]=makeTarget(simW,simH);
+}
+function uploadBottom(){gl.bindTexture(gl.TEXTURE_2D,bottomTex);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,bCan);texParams();}
+function uploadFish(){gl.bindTexture(gl.TEXTURE_2D,fishTex);
+  if(fishTexW!==fCan.width||fishTexH!==fCan.height){
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,fCan);texParams();
+    fishTexW=fCan.width;fishTexH=fCan.height;
+  }else gl.texSubImage2D(gl.TEXTURE_2D,0,0,0,gl.RGBA,gl.UNSIGNED_BYTE,fCan);}
+
+/* ---------------- pond bottom (murky green, pebbles, silt) ---------------- */
+function paintBottom(){
+  const c=bctx,w=cssW,h=cssH;
+  c.setTransform(fishScale,0,0,fishScale,0,0);
+  const g=c.createRadialGradient(w*0.5,h*0.40,0,w*0.5,h*0.5,Math.max(w,h)*0.78);
+  g.addColorStop(0,'#4f5e3c');g.addColorStop(0.5,'#3a4a30');g.addColorStop(1,'#1f2c20');
+  c.fillStyle=g;c.fillRect(0,0,w,h);
+  for(let i=0;i<11;i++){
+    const x=Math.random()*w,y=Math.random()*h,r=90+Math.random()*200;
+    const ag=c.createRadialGradient(x,y,0,x,y,r);
+    ag.addColorStop(0,'rgba(20,40,24,0.30)');ag.addColorStop(1,'rgba(20,40,24,0)');
+    c.fillStyle=ag;c.beginPath();c.arc(x,y,r,0,TAU);c.fill();
+  }
+  for(let i=0;i<2600;i++){
+    const x=Math.random()*w,y=Math.random()*h,r=Math.random()*1.7+0.4;
+    c.fillStyle=Math.random()<0.5
+      ?'rgba(220,240,190,'+(Math.random()*0.08).toFixed(3)+')'
+      :'rgba(12,20,12,'+(Math.random()*0.14).toFixed(3)+')';
+    c.beginPath();c.arc(x,y,r,0,TAU);c.fill();
+  }
+  const np=Math.max(12,Math.round(w*h/60000));
+  for(let i=0;i<np;i++)drawPebble(c,Math.random()*w,Math.random()*h,12+Math.random()*42,Math.random()*TAU);
+}
+function drawPebble(c,x,y,r,rot){
+  c.save();c.translate(x,y);c.rotate(rot);
+  const ry=r*(0.62+Math.random()*0.3);
+  c.fillStyle='rgba(0,0,0,0.28)';
+  c.beginPath();c.ellipse(r*0.13,ry*0.2,r*1.02,ry*1.02,0,0,TAU);c.fill();
+  const hue=70+Math.random()*40,sat=8+Math.random()*12,li=30+Math.random()*22;
+  const g=c.createRadialGradient(-r*0.35,-ry*0.4,r*0.08,0,0,r*1.15);
+  g.addColorStop(0,'hsl('+hue+','+sat+'%,'+(li+16)+'%)');
+  g.addColorStop(0.7,'hsl('+hue+','+sat+'%,'+li+'%)');
+  g.addColorStop(1,'hsl('+hue+','+(sat+5)+'%,'+(li-13)+'%)');
+  c.fillStyle=g;c.beginPath();c.ellipse(0,0,r,ry,0,0,TAU);c.fill();c.restore();
+}
+
+/* ---------------- koi ---------------- */
+function palette(type){
+  if(type==='orange')return{core:'#ffb347',mid:'#ff7d17',edge:'#cf4708',fin:'rgba(255,138,38,',patches:[]};
+  if(type==='red')return{core:'#ff7a45',mid:'#f04a12',edge:'#a82803',fin:'rgba(238,76,26,',patches:[]};
+  if(type==='kohaku'){const p=[];const n=3+(Math.random()*2|0);
+    for(let i=0;i<n;i++)p.push({s:0.10+Math.random()*0.62,o:(Math.random()-0.5)*1.2,r:0.13+Math.random()*0.13,col:'rgba(241,71,18,0.92)'});
+    return{core:'#ffffff',mid:'#f4ecdd',edge:'#cdbfa8',fin:'rgba(255,234,214,',patches:p};}
+  if(type==='calico'){const p=[];
+    for(let i=0;i<3;i++)p.push({s:0.12+Math.random()*0.58,o:(Math.random()-0.5)*1.3,r:0.12+Math.random()*0.12,col:'rgba(249,109,30,0.9)'});
+    for(let i=0;i<3;i++)p.push({s:0.10+Math.random()*0.68,o:(Math.random()-0.5)*1.4,r:0.05+Math.random()*0.07,col:'rgba(36,36,48,0.85)'});
+    return{core:'#ffffff',mid:'#f1e9da',edge:'#c9bba2',fin:'rgba(255,240,224,',patches:p};}
+  return{core:'#ffffff',mid:'#f6efe3',edge:'#d3c5ae',fin:'rgba(255,238,222,',
+    patches:[{s:0.07,o:0,r:0.12,col:'rgba(234,40,18,0.95)'}]};
+}
+function makeFish(type,len){const pal=palette(type);return{
+  x:120+Math.random()*Math.max(60,cssW-240),y:120+Math.random()*Math.max(60,cssH-240),
+  a:Math.random()*TAU,len,phase:Math.random()*10,speed:28,spT:30,turn:0,
+  changeT:Math.random()*3,wakeT:Math.random()*0.2,speedN:0.3,po:Math.random()*TAU,
+  core:pal.core,mid:pal.mid,edge:pal.edge,fin:pal.fin,patches:pal.patches};}
+let fishes=[];const foods=[];
+const angDiff=(a,b)=>{let d=a-b;while(d>Math.PI)d-=TAU;while(d<-Math.PI)d+=TAU;return d;};
+function updateFish(f,dt){
+  f.changeT-=dt;
+  if(f.changeT<=0){f.spT=16+Math.random()*36;if(Math.random()<0.16)f.spT=85+Math.random()*45;f.changeT=2.4+Math.random()*4.2;}
+  f.turn+=(Math.random()-0.5)*3.0*dt;f.turn*=Math.exp(-dt*1.4);
+  let target=null,fdist=1e9;
+  for(const fd of foods){const d=Math.hypot(fd.x-f.x,fd.y-f.y);if(d<fdist){fdist=d;target=fd;}}
+  let ta;
+  if(target&&fdist<560){ta=Math.atan2(target.y-f.y,target.x-f.x);f.spT=Math.max(f.spT,fdist<90?55:95);}
+  else{target=null;ta=f.a+f.turn;}
+  const m=85;
+  if(f.x<m||f.y<m||f.x>cssW-m||f.y>cssH-m)ta=Math.atan2(cssH*0.5-f.y,cssW*0.5-f.x);
+  for(const g2 of fishes){if(g2===f)continue;const dx=f.x-g2.x,dy=f.y-g2.y;if(dx*dx+dy*dy<5600){ta=Math.atan2(dy,dx);break;}}
+  const da=angDiff(ta,f.a);const mt=(target?2.6:1.0)*dt;
+  f.a+=Math.max(-mt,Math.min(mt,da));
+  f.speed+=(f.spT-f.speed)*Math.min(1,dt*1.8);
+  f.x+=Math.cos(f.a)*f.speed*dt;f.y+=Math.sin(f.a)*f.speed*dt;
+  f.x=Math.max(24,Math.min(cssW-24,f.x));f.y=Math.max(24,Math.min(cssH-24,f.y));
+  f.speedN=Math.min(1,f.speed/120);
+  f.phase+=dt*(3.2+f.speed*0.072)*2.4;
+  f.wakeT-=dt;
+  if(f.wakeT<=0&&f.speed>30){addDrop(f.x+Math.cos(f.a)*f.len*0.42,f.y+Math.sin(f.a)*f.len*0.42,6+f.speedN*8,0.05+0.15*f.speedN);f.wakeT=0.10+Math.random()*0.08;}
+  if(target&&fdist<16){foods.splice(foods.indexOf(target),1);addDrop(f.x,f.y,10,0.5);f.spT=14;f.changeT=1.2;updFoodStat();}
+}
+function bodyOutline(pts,wfun){const top=[],bot=[];
+  for(let i=0;i<pts.length;i++){const p=pts[i];const pa=pts[Math.max(0,i-1)],pb=pts[Math.min(pts.length-1,i+1)];
+    let dx=pb.x-pa.x,dy=pb.y-pa.y;const l=Math.hypot(dx,dy)||1;dx/=l;dy/=l;const w=wfun(p.s);
+    top.push({x:p.x-dy*w,y:p.y+dx*w});bot.push({x:p.x+dy*w,y:p.y-dx*w});}
+  return{top,bot};}
+function tailLobe(c,len,spread,sw){const ty=spread+sw;c.beginPath();c.moveTo(0,0);
+  c.bezierCurveTo(len*0.32,spread*0.06+sw*0.2,len*0.72,ty*0.6,len,ty);
+  c.bezierCurveTo(len*0.78,ty*0.98,len*0.30,spread*0.55+sw*0.25,0,0);c.closePath();c.fill();}
+function finShape(c,x,y,ang,len,flip){c.save();c.translate(x,y);c.rotate(ang);if(flip)c.scale(1,-1);
+  c.beginPath();c.moveTo(0,0);c.quadraticCurveTo(len*0.55,-len*0.10,len,len*0.22);
+  c.quadraticCurveTo(len*0.45,len*0.34,0,0);c.closePath();c.fill();c.restore();}
+function drawFish(c,f){const L=f.len;c.save();c.translate(f.x,f.y);c.rotate(f.a);
+  const segs=16,pts=[];const amp=L*(0.05+0.06*f.speedN);
+  for(let i=0;i<=segs;i++){const s=i/segs;pts.push({x:L*0.48-s*L*0.96,y:Math.sin(f.phase-s*4.4)*amp*Math.pow(s,1.5),s});}
+  const wmax=L*0.16;const wf=s=>wmax*Math.pow(Math.sin(Math.PI*Math.min(0.10+s*0.90,1)),0.85)*(1-0.58*s)+L*0.018;
+  const tp=pts[segs],tq=pts[segs-1];const tang=Math.atan2(tp.y-tq.y,tp.x-tq.x);
+  c.save();c.translate(tp.x,tp.y);c.rotate(tang);
+  const tl=L*0.66;const sw=Math.sin(f.phase-5.2)*tl*0.30;
+  const tg=c.createRadialGradient(0,0,tl*0.06,0,0,tl);
+  tg.addColorStop(0,f.fin+'0.85)');tg.addColorStop(0.55,f.fin+'0.5)');tg.addColorStop(1,f.fin+'0)');c.fillStyle=tg;
+  tailLobe(c,tl,tl*0.52,sw);tailLobe(c,tl,-tl*0.52,sw*0.85);tailLobe(c,tl*0.72,tl*0.16,sw*0.7);tailLobe(c,tl*0.72,-tl*0.16,sw*0.6);
+  c.restore();
+  const pp=pts[5],wp=wf(pts[5].s);const fl=Math.sin(f.phase*1.2+f.po)*0.22;
+  c.fillStyle=f.fin+'0.55)';finShape(c,pp.x,pp.y+wp*0.85,2.3+fl,L*0.24,false);finShape(c,pp.x,pp.y-wp*0.85,-2.3-fl,L*0.24,true);
+  const o=bodyOutline(pts,wf);
+  const path=()=>{c.beginPath();c.moveTo(o.top[0].x,o.top[0].y);
+    for(let i=1;i<o.top.length;i++)c.lineTo(o.top[i].x,o.top[i].y);
+    for(let i=o.bot.length-1;i>=0;i--)c.lineTo(o.bot[i].x,o.bot[i].y);
+    c.quadraticCurveTo(pts[0].x+L*0.16,pts[0].y,o.top[0].x,o.top[0].y);c.closePath();};
+  const bg=c.createRadialGradient(L*0.12,0,L*0.05,L*0.05,0,L*0.62);
+  bg.addColorStop(0,f.core);bg.addColorStop(0.55,f.mid);bg.addColorStop(1,f.edge);
+  path();c.fillStyle=bg;c.fill();
+  if(f.patches.length){c.save();path();c.clip();
+    for(const p of f.patches){const i=Math.min(segs,Math.round(p.s*segs));const pt=pts[i],w=wf(p.s);
+      c.beginPath();c.ellipse(pt.x,pt.y+p.o*w,p.r*L,p.r*L*0.75,0,0,TAU);c.fillStyle=p.col;c.fill();}c.restore();}
+  c.save();path();c.clip();
+  const hg=c.createRadialGradient(L*0.15,0,0,L*0.10,0,L*0.5);
+  hg.addColorStop(0,'rgba(255,255,255,0.30)');hg.addColorStop(1,'rgba(255,255,255,0)');c.fillStyle=hg;
+  c.beginPath();c.ellipse(L*0.10,0,L*0.45,wmax*0.55,0,0,TAU);c.fill();
+  c.strokeStyle='rgba(60,20,0,0.18)';c.lineWidth=L*0.016;
+  c.beginPath();c.moveTo(pts[3].x,pts[3].y);for(let i=4;i<=11;i++)c.lineTo(pts[i].x,pts[i].y);c.stroke();
+  c.restore();
+  path();c.strokeStyle='rgba(40,15,0,0.18)';c.lineWidth=1;c.stroke();
+  const ep=pts[1],ew=wf(pts[1].s);c.fillStyle='#19120a';
+  c.beginPath();c.arc(ep.x,ep.y+ew*0.72,L*0.026,0,TAU);c.fill();
+  c.beginPath();c.arc(ep.x,ep.y-ew*0.72,L*0.026,0,TAU);c.fill();
+  c.fillStyle='rgba(255,255,255,0.6)';
+  c.beginPath();c.arc(ep.x-L*0.008,ep.y+ew*0.72-L*0.008,L*0.008,0,TAU);c.fill();
+  c.beginPath();c.arc(ep.x-L*0.008,ep.y-ew*0.72-L*0.008,L*0.008,0,TAU);c.fill();
+  c.restore();}
+
+/* ---------------- lotus pads + blooms (float on the surface) ---------------- */
+let lilies=[];
+function makeLilies(){
+  lilies=[];
+  const n=Math.max(4,Math.round(cssW*cssH/220000));
+  for(let i=0;i<n;i++){
+    lilies.push({
+      x:60+Math.random()*Math.max(40,cssW-120),
+      y:60+Math.random()*Math.max(40,cssH-120),
+      r:34+Math.random()*46,rot:Math.random()*TAU,
+      drift:0.04+Math.random()*0.06,ph:Math.random()*TAU,
+      bloom:Math.random()<0.5,bcol:Math.random()<0.5?'#ffd2e4':'#fff3dc'
+    });
+  }
+}
+function drawPad(c,p,t){
+  const x=p.x+Math.sin(t*p.drift+p.ph)*7;
+  const y=p.y+Math.cos(t*p.drift*0.8+p.ph)*7;
+  const r=p.r;
+  c.save();c.translate(x,y);c.rotate(p.rot+Math.sin(t*0.05+p.ph)*0.05);
+  // soft shadow into water
+  c.fillStyle='rgba(0,0,0,0.22)';
+  c.beginPath();c.ellipse(r*0.10,r*0.12,r*1.02,r*1.02,0,0,TAU);c.fill();
+  // pad body with the classic notch
+  const g=c.createRadialGradient(-r*0.25,-r*0.3,r*0.1,0,0,r*1.05);
+  g.addColorStop(0,'#5f8f4a');g.addColorStop(0.6,'#3f6f34');g.addColorStop(1,'#274d24');
+  c.fillStyle=g;
+  c.beginPath();
+  const notch=0.34;
+  c.arc(0,0,r,notch,TAU-notch,false);
+  c.lineTo(0,0);c.closePath();c.fill();
+  // radial veins
+  c.strokeStyle='rgba(20,40,18,0.40)';c.lineWidth=1.1;
+  for(let k=0;k<9;k++){const a=notch+ (TAU-2*notch)*(k/8);
+    c.beginPath();c.moveTo(0,0);c.lineTo(Math.cos(a)*r*0.92,Math.sin(a)*r*0.92);c.stroke();}
+  // rim light
+  c.strokeStyle='rgba(180,220,150,0.30)';c.lineWidth=1.4;
+  c.beginPath();c.arc(0,0,r*0.97,notch,TAU-notch,false);c.stroke();
+  // bloom
+  if(p.bloom){
+    const br=r*0.42;
+    c.save();c.translate(-r*0.12,-r*0.1);
+    for(let layer=0;layer<2;layer++){
+      const pr=br*(1-layer*0.34),pet=layer===0?7:6;
+      for(let k=0;k<pet;k++){
+        const a=(k/pet)*TAU+layer*0.4+Math.sin(t*0.2+p.ph)*0.02;
+        c.save();c.rotate(a);
+        const pg=c.createLinearGradient(0,0,0,-pr);
+        pg.addColorStop(0,p.bcol);pg.addColorStop(1,'rgba(255,255,255,0.85)');
+        c.fillStyle=pg;
+        c.beginPath();c.moveTo(0,0);
+        c.quadraticCurveTo(pr*0.4,-pr*0.7,0,-pr);
+        c.quadraticCurveTo(-pr*0.4,-pr*0.7,0,0);c.closePath();c.fill();
+        c.restore();
+      }
+    }
+    c.fillStyle='#ffe7a3';c.beginPath();c.arc(0,0,br*0.28,0,TAU);c.fill();
+    c.restore();
+  }
+  c.restore();
+}
+
+function drawSurfaceCanvas(t){
+  fctx.setTransform(fishScale,0,0,fishScale,0,0);
+  fctx.clearRect(0,0,cssW,cssH);
+  for(const fd of foods){
+    const bob=Math.sin(t*3+fd.ph)*1.3;
+    fctx.fillStyle='rgba(238,228,180,0.92)';
+    fctx.beginPath();fctx.arc(fd.x+bob,fd.y+Math.cos(t*2.4+fd.ph)*1.1,2.3,0,TAU);fctx.fill();
+  }
+  for(const f of fishes)drawFish(fctx,f);
+  for(const p of lilies)drawPad(fctx,p,t);
+}
+
+/* ---------------- ripples / drops ---------------- */
+const drops=[];let rippleCount=0;
+function addDrop(x,y,r,s){drops.push({x,y,r,s});if(drops.length>24)drops.shift();}
+const dropArr=new Float32Array(32);
+function simulate(){
+  gl.useProgram(simProg);gl.viewport(0,0,simW,simH);gl.uniform2f(su.texel,1/simW,1/simH);
+  for(let step=0;step<2;step++){
+    let n=0;
+    if(step===0){n=Math.min(drops.length,8);
+      for(let j=0;j<n;j++){const d=drops[j];
+        dropArr[j*4]=d.x/cssW*simW;dropArr[j*4+1]=(1-d.y/cssH)*simH;
+        dropArr[j*4+2]=Math.max(2,d.r*simW/cssW);dropArr[j*4+3]=d.s;}
+      drops.splice(0,n);}
+    gl.uniform4fv(su.drops,dropArr);gl.uniform1i(su.count,n);
+    gl.bindFramebuffer(gl.FRAMEBUFFER,fboB);
+    gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,texA);gl.uniform1i(su.prev,0);
+    gl.drawArrays(gl.TRIANGLES,0,3);
+    let tt=texA;texA=texB;texB=tt;tt=fboA;fboA=fboB;fboB=tt;}
+}
+function render(t){
+  gl.useProgram(renProg);gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+  gl.viewport(0,0,canvas.width,canvas.height);
+  gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,texA);gl.uniform1i(ru.h,0);
+  gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D,bottomTex);gl.uniform1i(ru.bottom,1);
+  gl.activeTexture(gl.TEXTURE2);gl.bindTexture(gl.TEXTURE_2D,fishTex);gl.uniform1i(ru.fish,2);
+  gl.uniform2f(ru.texel,1/simW,1/simH);gl.uniform1f(ru.t,t);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+}
+
+/* ---------------- layout / input ---------------- */
+function resize(){
+  cssW=window.innerWidth;cssH=window.innerHeight;
+  dpr=Math.min(window.devicePixelRatio||1,2);
+  canvas.width=Math.round(cssW*dpr);canvas.height=Math.round(cssH*dpr);
+  fishScale=Math.min(dpr,1.5);
+  fCan.width=Math.round(cssW*fishScale);fCan.height=Math.round(cssH*fishScale);fishTexW=0;
+  bCan.width=fCan.width;bCan.height=fCan.height;
+  if(webgl2){paintBottom();uploadBottom();createSim();}
+  else paint2D();
+  for(const f of fishes){f.x=Math.max(40,Math.min(cssW-40,f.x));f.y=Math.max(40,Math.min(cssH-40,f.y));}
+  makeLilies();
+}
+window.addEventListener('resize',resize);
+
+function pondPointer(x,y){addDrop(x,y,18,1.3);rippleCount++;updRippleStat();
+  if(foods.length<25)foods.push({x:x+(Math.random()-0.5)*16,y:y+(Math.random()-0.5)*16,ph:Math.random()*TAU});
+  updFoodStat();hint.style.opacity=0;}
+canvas.addEventListener('pointerdown',e=>pondPointer(e.clientX,e.clientY));
+let lmx=-1,lmy=-1;
+canvas.addEventListener('pointermove',e=>{
+  if(lmx<0){lmx=e.clientX;lmy=e.clientY;return;}
+  const d=Math.hypot(e.clientX-lmx,e.clientY-lmy);
+  if(d>26){addDrop(e.clientX,e.clientY,7,0.06);lmx=e.clientX;lmy=e.clientY;}});
+
+/* ---------------- 2D fallback (no WebGL2) ---------------- */
+let f2d=null;
+function paint2D(){f2d=canvas.getContext('2d');}
+function render2D(t){
+  if(!f2d)return;
+  const w=canvas.width,h=canvas.height;
+  f2d.setTransform(dpr,0,0,dpr,0,0);
+  const g=f2d.createRadialGradient(cssW*0.5,cssH*0.42,0,cssW*0.5,cssH*0.5,Math.max(cssW,cssH)*0.8);
+  g.addColorStop(0,'#3f5a38');g.addColorStop(0.6,'#2c4329');g.addColorStop(1,'#16241a');
+  f2d.fillStyle=g;f2d.fillRect(0,0,cssW,cssH);
+  f2d.setTransform(dpr/fishScale,0,0,dpr/fishScale,0,0);
+  for(const fd of foods){f2d.fillStyle='rgba(238,228,180,0.9)';
+    f2d.beginPath();f2d.arc(fd.x,fd.y,2.3,0,TAU);f2d.fill();}
+  for(const f of fishes)drawFish(f2d,f);
+  for(const p of lilies)drawPad(f2d,p,t);
+  f2d.setTransform(dpr,0,0,dpr,0,0);
+  const vg=f2d.createRadialGradient(cssW*0.5,cssH*0.5,cssH*0.2,cssW*0.5,cssH*0.5,Math.max(cssW,cssH)*0.75);
+  vg.addColorStop(0,'rgba(0,0,0,0)');vg.addColorStop(1,'rgba(0,0,0,0.5)');
+  f2d.fillStyle=vg;f2d.fillRect(0,0,cssW,cssH);
+}
+
+/* ---------------- init engine ---------------- */
+function initWebgl(){
+  simProg=program(VERT,SIM_FRAG);renProg=program(VERT,RENDER_FRAG);
+  su={prev:gl.getUniformLocation(simProg,'uPrev'),texel:gl.getUniformLocation(simProg,'uTexel'),
+    drops:gl.getUniformLocation(simProg,'uDrops[0]'),count:gl.getUniformLocation(simProg,'uCount')};
+  ru={h:gl.getUniformLocation(renProg,'uH'),bottom:gl.getUniformLocation(renProg,'uBottom'),
+    fish:gl.getUniformLocation(renProg,'uFish'),texel:gl.getUniformLocation(renProg,'uTexel'),t:gl.getUniformLocation(renProg,'uT')};
+  quad=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,quad);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
+  bottomTex=gl.createTexture();fishTex=gl.createTexture();
+}
+try{ if(webgl2) initWebgl(); }catch(err){ webgl2=false; }
+
+resize();
+fishes=[makeFish('orange',118),makeFish('kohaku',104),makeFish('calico',92),
+        makeFish('red',128),makeFish('orange',72),makeFish('tancho',86)];
+for(let i=0;i<3;i++)addDrop(Math.random()*cssW,Math.random()*cssH,14,0.6);
+setTimeout(()=>{hint.style.opacity=0;},9000);
+
+let ambT=3,last=0;
+function frame(ts){
+  requestAnimationFrame(frame);
+  const t=ts/1000;const dt=Math.min(0.05,Math.max(0.001,t-last));last=t;
+  ambT-=dt;
+  if(ambT<=0){addDrop(Math.random()*cssW,Math.random()*cssH,8,0.30);ambT=3+Math.random()*5;}
+  for(const f of fishes)updateFish(f,dt);
+  if(webgl2){drawSurfaceCanvas(t);uploadFish();simulate();render(t);}
+  else render2D(t);
+}
+requestAnimationFrame(frame);
+
+/* =========================================================================
+   GLASS LAYER — parallax, drag, widget logic, memo persistence
+   ========================================================================= */
+const stage=document.getElementById('stage');
+const panels=[...document.querySelectorAll('.glass')];
+
+/* --- pointer parallax (panels drift opposite to cursor by depth factor) --- */
+let px=0,py=0,tpx=0,tpy=0;
+window.addEventListener('pointermove',e=>{
+  tpx=(e.clientX/window.innerWidth-0.5);
+  tpy=(e.clientY/window.innerHeight-0.5);
+},{passive:true});
+const baseOff=new WeakMap();
+function applyParallax(){
+  px+=(tpx-px)*0.06;py+=(tpy-py)*0.06;
+  for(const p of panels){
+    if(p._dragging)continue;
+    const depth=parseFloat(p.dataset.parallax||0);
+    const b=baseOff.get(p)||{x:0,y:0};
+    p.style.transform=`translate(${b.x - px*depth}px, ${b.y - py*depth}px)`;
+  }
+  requestAnimationFrame(applyParallax);
+}
+panels.forEach(p=>baseOff.set(p,{x:0,y:0}));
+requestAnimationFrame(applyParallax);
+
+/* --- dragging glass panels --- */
+panels.forEach(p=>{
+  let sx,sy,ox,oy;
+  function down(e){
+    // don't start drag from interactive controls
+    if(e.target.closest('textarea,button')) return;
+    p._dragging=true;p.style.transition='none';p.style.zIndex=10;
+    const b=baseOff.get(p);sx=e.clientX;sy=e.clientY;ox=b.x;oy=b.y;
+    p.setPointerCapture(e.pointerId);
+    document.body.style.cursor='grabbing';
+  }
+  function move(e){
+    if(!p._dragging)return;
+    const b={x:ox+(e.clientX-sx),y:oy+(e.clientY-sy)};baseOff.set(p,b);
+    p.style.transform=`translate(${b.x}px, ${b.y}px)`;
+  }
+  function up(e){
+    if(!p._dragging)return;p._dragging=false;document.body.style.cursor='';
+    try{p.releasePointerCapture(e.pointerId);}catch(_){}}
+  p.addEventListener('pointerdown',down);
+  p.addEventListener('pointermove',move);
+  p.addEventListener('pointerup',up);
+  p.addEventListener('pointercancel',up);
+});
+
+/* --- widget: clock, water temp, ripple/food counters --- */
+const clockEl=document.getElementById('clock');
+const dateEl=document.getElementById('dateline');
+const tempEl=document.getElementById('temp');
+const ripEl=document.getElementById('ripples');
+const foodEl=document.getElementById('food');
+const days=['일','월','화','수','목','금','토'];
+function tick(){
+  const d=new Date();
+  const hh=String(d.getHours()).padStart(2,'0');
+  const mm=String(d.getMinutes()).padStart(2,'0');
+  const ss=String(d.getSeconds()).padStart(2,'0');
+  clockEl.textContent=`${hh}:${mm}`;
+  clockEl.title=`${hh}:${mm}:${ss}`;
+  dateEl.textContent=`${d.getMonth()+1}월 ${d.getDate()}일 (${days[d.getDay()]})`;
+  // gently wandering water temperature
+  const base=21+Math.sin(d.getTime()/90000)*1.6;
+  tempEl.textContent=base.toFixed(1)+'°';
+}
+function updRippleStat(){ripEl.textContent=rippleCount;}
+function updFoodStat(){foodEl.textContent=foods.length;}
+tick();setInterval(tick,1000);updRippleStat();updFoodStat();
+
+/* --- memo: persistence + buttons --- */
+const memo=document.getElementById('memo');
+const status=document.getElementById('status');
+const KEY='lotus-pond-memo-v1';
+try{const saved=localStorage.getItem(KEY);if(saved)memo.value=saved;}catch(_){}
+let saveT;
+function flash(msg){status.textContent=msg;status.style.opacity='1';}
+memo.addEventListener('input',()=>{
+  clearTimeout(saveT);flash('입력 중…');
+  saveT=setTimeout(()=>{try{localStorage.setItem(KEY,memo.value);}catch(_){}flash('자동 저장됨');},600);
+});
+document.getElementById('save').addEventListener('click',()=>{
+  try{localStorage.setItem(KEY,memo.value);}catch(_){}
+  flash('연못에 남겼습니다 🪷');
+  // a soft ripple where the card sits, for delight
+  const r=document.getElementById('card').getBoundingClientRect();
+  addDrop(r.left+r.width/2,r.top+r.height/2,30,0.9);rippleCount++;updRippleStat();
+});
+document.getElementById('ripple').addEventListener('click',()=>{
+  for(let i=0;i<3;i++)addDrop(Math.random()*cssW,Math.random()*cssH,16+Math.random()*14,0.8);
+  rippleCount+=3;updRippleStat();
+});
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>ASCII REACTOR</title>
+<style>
+  :root{
+    --bg0:#03040a;
+    --bg1:#070512;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;width:100%;overflow:hidden;background:#03040a;}
+  body{
+    font-family:"SF Mono",ui-monospace,Menlo,Consolas,"Liberation Mono",monospace;
+    color:#cdd6ff;
+    -webkit-tap-highlight-color:transparent;
+    cursor:crosshair;
+    touch-action:none;
+  }
+  #stage{position:fixed;inset:0;display:block}
+  canvas{position:fixed;inset:0;display:block}
+
+  /* subtle vignette + grain layer above the glyph canvas */
+  #vignette{
+    position:fixed;inset:0;pointer-events:none;
+    background:
+      radial-gradient(120% 120% at 50% 45%, rgba(0,0,0,0) 38%, rgba(2,2,8,.55) 78%, rgba(1,1,5,.92) 100%);
+    mix-blend-mode:multiply;
+  }
+
+  /* HUD */
+  #hud{
+    position:fixed;left:18px;top:16px;pointer-events:none;
+    font-size:11px;letter-spacing:.22em;line-height:1.7;
+    text-transform:uppercase;
+    color:rgba(173,190,255,.55);
+    text-shadow:0 0 14px rgba(70,120,255,.35);
+    user-select:none;mix-blend-mode:screen;
+  }
+  #hud .big{
+    font-size:15px;letter-spacing:.42em;color:#eaf0ff;
+    text-shadow:0 0 22px rgba(120,160,255,.7);
+  }
+  #hud .dim{color:rgba(140,160,225,.4);letter-spacing:.16em}
+  #hud .tag{color:#7df0d2;text-shadow:0 0 16px rgba(60,255,200,.55)}
+
+  #shapebar{
+    position:fixed;right:18px;top:16px;text-align:right;pointer-events:none;
+    font-size:10px;letter-spacing:.28em;text-transform:uppercase;
+    color:rgba(173,190,255,.45);user-select:none;mix-blend-mode:screen;line-height:2;
+  }
+  #shapebar b{display:block;color:#eaf0ff;font-size:12px;letter-spacing:.34em;
+    text-shadow:0 0 18px rgba(120,160,255,.7)}
+  #shapebar .lst i{font-style:normal;opacity:.32;transition:opacity .4s, color .4s}
+  #shapebar .lst i.on{opacity:1;color:#7df0d2;text-shadow:0 0 14px rgba(60,255,200,.6)}
+
+  #foot{
+    position:fixed;left:0;right:0;bottom:14px;text-align:center;pointer-events:none;
+    font-size:10px;letter-spacing:.3em;text-transform:uppercase;
+    color:rgba(150,168,225,.42);user-select:none;mix-blend-mode:screen;
+    transition:opacity 1.2s;
+  }
+  #foot kbd{
+    font-family:inherit;border:1px solid rgba(140,160,225,.28);border-radius:4px;
+    padding:1px 6px;color:rgba(200,212,255,.7);margin:0 2px;
+  }
+  @media (max-width:560px){
+    #hud .big{font-size:13px;letter-spacing:.3em}
+    #shapebar{font-size:9px}
+    #foot{font-size:9px;letter-spacing:.18em}
+  }
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <div id="vignette"></div>
+
+  <div id="hud">
+    <div class="big">ASCII&nbsp;REACTOR</div>
+    <div class="dim">luminance field · curl flow</div>
+    <div><span class="tag">●</span> <span id="fps">live</span></div>
+  </div>
+
+  <div id="shapebar">
+    <b id="shapeName">PLASMA</b>
+    <div class="lst" id="lst"></div>
+  </div>
+
+  <div id="foot">
+    move / drag&nbsp;—&nbsp;warp the field &nbsp;·&nbsp; <kbd>scroll</kbd>&nbsp;or&nbsp;<kbd>tap</kbd>&nbsp;morph shape &nbsp;·&nbsp; <kbd>click</kbd>&nbsp;pulse
+  </div>
+
+<script>
+(()=>{
+"use strict";
+
+/* ============================================================
+   ASCII REACTOR
+   A living luminance field rendered entirely as ASCII glyphs.
+   - signed-distance "target" shapes (plasma / ring / wave / grid / orb / heart / word)
+   - curl-noise flow advects a per-cell intensity that relaxes toward the target
+   - mouse / touch = gravity well that warps the flow and brightens
+   - scroll / tap = morph between shapes ; click = radial shock pulse
+   First paint IS the artwork. No loading gate.
+   ============================================================ */
+
+  const cv  = document.getElementById('stage');
+  const ctx = cv.getContext('2d', { alpha:false });
+  const fpsEl = document.getElementById('fps');
+  const shapeNameEl = document.getElementById('shapeName');
+  const lstEl = document.getElementById('lst');
+  const footEl = document.getElementById('foot');
+
+  // ---- glyph ramp: dark -> bright (perceptual-ish) ----
+  const RAMP = " .'`^\",:;Il!i~+_-?][}{1)(|/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$".split("");
+  const RAMP_N = RAMP.length;
+
+  // ---- responsive cell sizing ----
+  let DPR = Math.min(window.devicePixelRatio || 1, 2);
+  let W=0,H=0;          // css px
+  let cell=0;           // css px per glyph cell (square-ish step)
+  let cols=0, rows=0;
+  let glyphW=0, glyphH=0;
+  let fontPx=0;
+
+  function pickCell(){
+    const minSide = Math.min(window.innerWidth, window.innerHeight);
+    // smaller cells on big screens for fine detail, larger on phones for perf
+    if(window.innerWidth < 560)      return 9;
+    if(window.innerWidth < 1100)     return 8.2;
+    return 7.4;
+  }
+
+  let field=null, target=null, flowX=null, flowY=null; // Float32 grids
+  function resize(){
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    cell = pickCell();
+    glyphW = cell;
+    glyphH = cell * 1.62;            // monospace cells are tall
+    cols = Math.ceil(W / glyphW) + 1;
+    rows = Math.ceil(H / glyphH) + 1;
+    fontPx = Math.round(glyphH * 0.96);
+
+    cv.width  = Math.floor(W * DPR);
+    cv.height = Math.floor(H * DPR);
+    cv.style.width = W+'px';
+    cv.style.height= H+'px';
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    ctx.textBaseline = 'top';
+    ctx.font = `${fontPx}px ${getComputedStyle(document.body).fontFamily}`;
+
+    const n = cols*rows;
+    field = new Float32Array(n);
+    target= new Float32Array(n);
+    flowX = new Float32Array(n);
+    flowY = new Float32Array(n);
+  }
+
+  // ---------- cheap value-noise (smooth, tileable-ish) ----------
+  const PERM = new Uint8Array(512);
+  (function(){ const p=new Uint8Array(256); for(let i=0;i<256;i++)p[i]=i;
+    let s=1337; const rnd=()=>{ s=(s*1664525+1013904223)>>>0; return s/4294967296; };
+    for(let i=255;i>0;i--){ const j=(rnd()*(i+1))|0; const t=p[i];p[i]=p[j];p[j]=t; }
+    for(let i=0;i<512;i++)PERM[i]=p[i&255];
+  })();
+  const fade=t=>t*t*t*(t*(t*6-15)+10);
+  const lerp=(a,b,t)=>a+(b-a)*t;
+  function grad(h,x,y){ switch(h&3){case 0:return x+y;case 1:return -x+y;case 2:return x-y;default:return -x-y;} }
+  function noise2(x,y){
+    const X=Math.floor(x)&255, Y=Math.floor(y)&255;
+    x-=Math.floor(x); y-=Math.floor(y);
+    const u=fade(x), v=fade(y);
+    const aa=PERM[PERM[X]+Y], ab=PERM[PERM[X]+Y+1];
+    const ba=PERM[PERM[X+1]+Y], bb=PERM[PERM[X+1]+Y+1];
+    return lerp(lerp(grad(aa,x,y),grad(ba,x-1,y),u),
+                lerp(grad(ab,x,y-1),grad(bb,x-1,y-1),u),v);
+  }
+  function fbm(x,y){
+    let v=0,a=.5,f=1;
+    for(let o=0;o<4;o++){ v+=a*noise2(x*f,y*f); f*=2; a*=.5; }
+    return v;
+  }
+
+  // ---------- "word" stencil rendered once to an offscreen, sampled as a shape ----------
+  let wordCanvas=null, wordCtx=null, wordW=0, wordH=0;
+  function buildWord(text){
+    wordCanvas = document.createElement('canvas');
+    wordW = 256; wordH = 64;
+    wordCanvas.width=wordW; wordCanvas.height=wordH;
+    wordCtx = wordCanvas.getContext('2d');
+    wordCtx.fillStyle='#000'; wordCtx.fillRect(0,0,wordW,wordH);
+    wordCtx.fillStyle='#fff';
+    wordCtx.textAlign='center'; wordCtx.textBaseline='middle';
+    wordCtx.font='bold 46px '+getComputedStyle(document.body).fontFamily;
+    wordCtx.fillText(text, wordW/2, wordH/2+2);
+  }
+  function sampleWord(u,v){ // u,v in [-1,1]
+    if(!wordCtx) return 0;
+    const px = Math.floor((u*0.92*0.5+0.5)*wordW);
+    const py = Math.floor((v*0.46*0.5+0.5)*wordH);
+    if(px<0||py<0||px>=wordW||py>=wordH) return 0;
+    const d = wordCtx.getImageData(px,py,1,1).data[0]/255;
+    return d;
+  }
+  // Pre-sample word to a small grid for speed
+  let wordGrid=null; const WG=120, WGH=46;
+  function bakeWord(){
+    wordGrid=new Float32Array(WG*WGH);
+    for(let j=0;j<WGH;j++)for(let i=0;i<WG;i++){
+      const u=(i/(WG-1))*2-1, v=(j/(WGH-1))*2-1;
+      wordGrid[j*WG+i]=sampleWord(u,v);
+    }
+  }
+  function wordAt(u,v){
+    const i=Math.round((u*0.5+0.5)*(WG-1));
+    const j=Math.round((v*0.5+0.5)*(WGH-1));
+    if(i<0||j<0||i>=WG||j>=WGH) return 0;
+    return wordGrid[j*WG+i];
+  }
+
+  // ---------- shapes: return target intensity 0..1 for normalized coords ----------
+  // u in roughly [-asp,asp], v in [-1,1]; t = time seconds
+  const SHAPES = [
+    { name:"PLASMA",  f:(u,v,t)=>{
+        const n=fbm(u*1.7+t*0.18, v*1.7-t*0.12)
+              + 0.5*fbm(u*3.4-t*0.1, v*3.4+t*0.07);
+        // ridged -> rivers of bright between darker valleys (real negative space)
+        const ridged=1-Math.abs(n);
+        const r=Math.hypot(u/asp(),v);
+        return clamp01((0.18 + ridged*0.95) * (1.05 - r*0.35));
+      }},
+    { name:"RING",    f:(u,v,t)=>{
+        const r=Math.hypot(u,v);
+        const ringR=0.62 + 0.06*Math.sin(t*0.9);
+        const d=Math.abs(r-ringR);
+        const band=0.16;
+        let s=clamp01(1 - d/band);
+        const ang=Math.atan2(v,u);
+        s*= 0.6+0.5*Math.cos(ang*6 - t*1.4);
+        // inner glow core
+        s=Math.max(s, clamp01(0.5 - r*0.9));
+        return clamp01(s);
+      }},
+    { name:"WAVE",    f:(u,v,t)=>{
+        const y = 0.42*Math.sin(u*2.1 + t*1.1)
+                + 0.22*Math.sin(u*4.3 - t*1.7)
+                + 0.12*Math.sin(u*7.7 + t*0.6);
+        const d=Math.abs(v - y);
+        return clamp01(1 - d/0.34) * (0.7+0.3*Math.sin(u*3+t));
+      }},
+    { name:"LATTICE", f:(u,v,t)=>{
+        const sx=Math.abs(Math.sin((u*5.5 + t*0.3)*Math.PI));
+        const sy=Math.abs(Math.sin((v*5.5 - t*0.2)*Math.PI));
+        const grid=Math.max(sx,sy);
+        const pulse=0.5+0.5*Math.sin((u+v)*2.0 - t*1.6);
+        return clamp01(Math.pow(grid,3.0)*0.9*pulse + 0.04);
+      }},
+    { name:"ORB",     f:(u,v,t)=>{
+        // a fake-3D shaded sphere with rotating bands
+        const r=Math.hypot(u,v);
+        if(r>0.78) return 0;
+        const z=Math.sqrt(Math.max(0,0.78*0.78 - r*r));
+        // light from upper-left
+        const lx=-0.5,ly=-0.6,lz=0.62;
+        const nx=u/0.78, ny=v/0.78, nz=z/0.78;
+        let lit=clamp01(nx*lx+ny*ly+nz*lz);
+        const lon=Math.atan2(u,z)*3 + t*1.1;
+        const lat=Math.asin(clamp(v/0.78,-1,1))*3;
+        const bands=0.5+0.5*Math.sin(lon)*Math.cos(lat - t*0.4);
+        return clamp01(lit*(0.55+0.5*bands)+0.08);
+      }},
+    { name:"VORTEX",  f:(u,v,t)=>{
+        const r=Math.hypot(u,v)+1e-3;
+        const a=Math.atan2(v,u);
+        const spiral=Math.sin(a*3 + r*9 - t*2.4);
+        const fall=clamp01(1 - r*0.95);
+        return clamp01((0.5+0.5*spiral)*fall + 0.05);
+      }},
+    { name:"REACTOR", f:(u,v,t)=>{ // the word
+        const w=wordAt(u/ (asp()) , v);
+        return clamp01(w);
+      }},
+  ];
+  function asp(){ return Math.max(1, W/H); }
+
+  const clamp=(x,a,b)=>x<a?a:x>b?b:x;
+  const clamp01=x=>x<0?0:x>1?1:x;
+
+  // build the shape selector list
+  let shapeIdx=0, shapePrev=0, morph=1; // morph 0..1 from prev->cur
+  function renderList(){
+    lstEl.innerHTML = SHAPES.map((s,i)=>`<i class="${i===shapeIdx?'on':''}">${s.name}</i>`).join(' · ');
+  }
+  function setShape(i, instant){
+    i=(i%SHAPES.length+SHAPES.length)%SHAPES.length;
+    if(i===shapeIdx) return;
+    shapePrev=shapeIdx; shapeIdx=i; morph=instant?1:0;
+    shapeNameEl.textContent=SHAPES[i].name;
+    renderList();
+  }
+
+  // ---------- interaction state ----------
+  const pointer={ x:.5,y:.5, px:.5,py:.5, vx:0,vy:0, down:false, active:false, lastMove:0 };
+  const pulses=[]; // {x,y,t0,strength}
+  let scrollAccum=0;
+  let idle=true;
+
+  function pointAt(clientX,clientY){
+    pointer.px=pointer.x; pointer.py=pointer.y;
+    pointer.x=clientX/W; pointer.y=clientY/H;
+    pointer.vx=pointer.x-pointer.px; pointer.vy=pointer.y-pointer.py;
+    pointer.active=true; pointer.lastMove=performance.now();
+    idle=false;
+  }
+  cv.addEventListener('mousemove', e=>pointAt(e.clientX,e.clientY));
+  cv.addEventListener('mousedown', e=>{ pointer.down=true; pointAt(e.clientX,e.clientY);
+    pulses.push({x:pointer.x,y:pointer.y,t0:performance.now(),s:1}); });
+  window.addEventListener('mouseup', ()=>pointer.down=false);
+  cv.addEventListener('mouseleave', ()=>{ pointer.active=false; });
+
+  cv.addEventListener('touchstart', e=>{ e.preventDefault();
+    const t=e.touches[0]; pointAt(t.clientX,t.clientY); pointer.down=true;
+    pulses.push({x:pointer.x,y:pointer.y,t0:performance.now(),s:1});
+  },{passive:false});
+  cv.addEventListener('touchmove', e=>{ e.preventDefault();
+    const t=e.touches[0]; pointAt(t.clientX,t.clientY);
+  },{passive:false});
+  cv.addEventListener('touchend', e=>{ e.preventDefault(); pointer.down=false;
+    // tap (short, little movement) => morph next
+    setShape(shapeIdx+1);
+  },{passive:false});
+
+  window.addEventListener('wheel', e=>{
+    scrollAccum += e.deltaY;
+    if(Math.abs(scrollAccum) > 120){
+      setShape(shapeIdx + (scrollAccum>0?1:-1));
+      scrollAccum=0;
+    }
+    idle=false;
+  },{passive:true});
+
+  window.addEventListener('keydown', e=>{
+    if(e.key===' '){ pulses.push({x:pointer.x,y:pointer.y,t0:performance.now(),s:1.4}); }
+    if(e.key==='ArrowRight') setShape(shapeIdx+1);
+    if(e.key==='ArrowLeft')  setShape(shapeIdx-1);
+  });
+
+  window.addEventListener('resize', ()=>{ resize(); bakeWord(); });
+
+  // hide footer hint after first interaction
+  let footHidden=false;
+  function maybeHideFoot(){ if(!footHidden && !idle){ footHidden=true; footEl.style.opacity='0'; } }
+
+  // ---------- color: map intensity -> luminous gradient ----------
+  // cool blue (low) -> teal -> warm amber/white (high), tinted by flow & pulse
+  function colorFor(t, warm){
+    // t 0..1
+    let r,g,b;
+    if(t<0.5){
+      const k=t/0.5;
+      r=lerp(20,40,k); g=lerp(60,190,k); b=lerp(150,235,k);
+    }else{
+      const k=(t-0.5)/0.5;
+      r=lerp(40,255,k); g=lerp(190,238,k); b=lerp(235,150,k);
+    }
+    // warm boost near pointer / pulses
+    r=clamp(r+warm*150,0,255);
+    g=clamp(g+warm*70,0,255);
+    b=clamp(b-warm*40,0,255);
+    return `rgb(${r|0},${g|0},${b|0})`;
+  }
+  // pre-bucket colors to reduce string churn: quantize to N levels
+  const COLOR_LEVELS=22, WARM_LEVELS=5;
+  const colorCache=[];
+  for(let w=0;w<WARM_LEVELS;w++){ colorCache[w]=[];
+    for(let i=0;i<COLOR_LEVELS;i++){ colorCache[w][i]=colorFor(i/(COLOR_LEVELS-1), w/(WARM_LEVELS-1)); }
+  }
+
+  // ---------- main loop ----------
+  let t0=performance.now(), lastT=t0, frame=0;
+  let fpsSmooth=60, fpsLast=t0, fpsFrames=0;
+  let started=false;
+
+  function step(now){
+    const dt=Math.min(0.05,(now-lastT)/1000); lastT=now;
+    const T=(now-t0)/1000;
+
+    // fps meter
+    fpsFrames++;
+    if(now-fpsLast>500){ fpsSmooth=Math.round(fpsFrames*1000/(now-fpsLast)); fpsFrames=0; fpsLast=now;
+      fpsEl.textContent = fpsSmooth+' fps · '+cols+'×'+rows; }
+
+    // morph progress
+    if(morph<1){ morph=Math.min(1, morph + dt*1.6); }
+
+    // pointer auto-orbit when idle (keeps it alive on first paint) — gentle, small radius
+    const idleNow = idle || (now - pointer.lastMove > 2600);
+    if(idleNow){
+      const a=T*0.5;
+      const tx=0.5 + 0.18*Math.cos(a)*Math.cos(a*0.37);
+      const ty=0.5 + 0.15*Math.sin(a*1.2);
+      pointer.x += (tx-pointer.x)*0.03;
+      pointer.y += (ty-pointer.y)*0.03;
+    }
+
+    // pointer in normalized shape coords
+    const asV=asp();
+    const pUx=(pointer.x*2-1)*asV, pUy=(pointer.y*2-1);
+    // idle pointer is a soft presence; active pointer is strong
+    const pStrength = pointer.down?1.6:(idleNow?0.55:1.0);
+
+    // ---- compute targets + advect field ----
+    const shapeCur=SHAPES[shapeIdx].f, shapePre=SHAPES[shapePrev].f;
+    const invC=1/(cols-1), invR=1/(rows-1);
+
+    // decay pulses
+    for(let i=pulses.length-1;i>=0;i--){ if(now-pulses[i].t0>1400) pulses.splice(i,1); }
+
+    // global gentle drift of where each cell SAMPLES its target -> flowing distortion
+    // (we displace the sample point, not accumulate brightness -> can't flood)
+    const flowT = T*0.16;
+    const wantInstant = morph>=1;
+    for(let j=0;j<rows;j++){
+      const v=(j*invR*2-1);
+      for(let i=0;i<cols;i++){
+        const u=(i*invC*2-1)*asV;
+        const idx=j*cols+i;
+
+        // curl-ish displacement field from fbm gradient (SMALL, just shimmer)
+        const e=0.20;
+        const n1=fbm(u*0.85+flowT, v*0.85),
+              n2=fbm(u*0.85+flowT+e, v*0.85),
+              n3=fbm(u*0.85+flowT, v*0.85+e);
+        let fx=(n3-n1)/e, fy=-(n2-n1)/e;          // ~[-1,1]
+
+        // pointer = a LOCAL lens: bends sample coords toward it + swirls, but only nearby
+        const dx=u-pUx, dy=v-pUy;
+        const r2=dx*dx+dy*dy;
+        const well=Math.exp(-r2*3.2)*pStrength;    // tighter falloff
+        fx += -dx*well*1.6 - dy*well*1.6;
+        fy += -dy*well*1.6 + dx*well*1.6;
+
+        // displaced sample coords for the TARGET shape (gentle => form stays readable)
+        const su=u + fx*0.045, sv=v + fy*0.045;
+        let tg;
+        if(wantInstant) tg=shapeCur(su,sv,T);
+        else { const a=shapePre(su,sv,T), b=shapeCur(su,sv,T); tg=lerp(a,b, smooth(morph)); }
+
+        // pulses: a travelling bright RING that scours the field
+        let pulseAmt=0;
+        for(let p=0;p<pulses.length;p++){
+          const pp=pulses[p];
+          const age=(now-pp.t0)/1000;
+          const pr=age*1.9;
+          const pux=(pp.x*2-1)*asV, puy=(pp.y*2-1);
+          const pd=Math.hypot(u-pux,v-puy);
+          pulseAmt += Math.exp(-((pd-pr)*(pd-pr))*7)*Math.max(0,1-age/1.4)*pp.s;
+        }
+
+        // brightness near pointer (bounded; only ADD where the form already exists,
+        // plus a soft independent glow so the cursor reads as a light)
+        const boost = well*(0.25 + tg*0.55) + pulseAmt*0.8;
+
+        // FIELD relaxes toward (target + transient boost), clamped.
+        const goal = clamp01(tg + boost);
+        let cur = field[idx];
+        cur += (goal - cur) * 0.30;
+        field[idx]=cur;
+        flowX[idx]=fx; flowY[idx]=fy;
+      }
+    }
+
+    draw(T);
+    maybeHideFoot();
+    frame++;
+    requestAnimationFrame(step);
+  }
+  const smooth=t=>t*t*(3-2*t);
+
+  // ---------- draw glyphs ----------
+  const THRESH=0.16;         // below this => empty cell (true black, keeps negative space)
+  function draw(T){
+    // hard clear with a short trail (small alpha keeps faint motion ghost, no pile-up)
+    ctx.fillStyle='rgba(3,4,11,0.55)';
+    ctx.fillRect(0,0,W,H);
+
+    const asV=asp();
+    const pUx=(pointer.x*2-1)*asV, pUy=(pointer.y*2-1);
+
+    // opaque glyphs (NO additive accumulation -> can't flood to white)
+    const invC=1/(cols-1), invR=1/(rows-1);
+    for(let j=0;j<rows;j++){
+      const py=j*glyphH;
+      const v=(j*invR*2-1);
+      for(let i=0;i<cols;i++){
+        let inten=field[j*cols+i];
+        if(inten<THRESH) continue;            // empty -> stays black
+
+        const u=(i*invC*2-1)*asV;
+        // remap above threshold to 0..1 then contrast curve
+        let m=(inten-THRESH)/(1-THRESH);
+        m=Math.pow(m,0.72);                   // lift mids a touch
+
+        // warmth = closeness to pointer
+        const dx=u-pUx, dy=v-pUy;
+        const warm=Math.exp(-(dx*dx+dy*dy)*2.4)*(pointer.down?1:0.55);
+
+        // glyph from ramp (gamma for punchy highs)
+        let gi=(m*m*(RAMP_N-1))|0;
+        if(gi<0)gi=0; if(gi>=RAMP_N)gi=RAMP_N-1;
+        const ch=RAMP[gi];
+
+        // quantized color
+        const ci=Math.min(COLOR_LEVELS-1,(m*(COLOR_LEVELS-1))|0);
+        const wi=Math.min(WARM_LEVELS-1,(warm*(WARM_LEVELS-1))|0);
+        ctx.fillStyle=colorCache[wi][ci];
+        ctx.fillText(ch, i*glyphW, py);
+      }
+    }
+
+    // pointer halo ring (screen)
+    const hx=pointer.x*W, hy=pointer.y*H;
+    const g=ctx.createRadialGradient(hx,hy,0,hx,hy,Math.min(W,H)*0.14);
+    g.addColorStop(0,'rgba(120,200,255,0.085)');
+    g.addColorStop(1,'rgba(120,200,255,0)');
+    ctx.globalCompositeOperation='lighter';
+    ctx.fillStyle=g;
+    ctx.fillRect(0,0,W,H);
+    ctx.globalCompositeOperation='source-over';
+  }
+
+  // ---------- boot ----------
+  function boot(){
+    resize();
+    buildWord("REACTOR"); bakeWord();
+    renderList();
+    // seed the field with the initial shape so first paint is already alive
+    const T0=0, asV=asp();
+    for(let j=0;j<rows;j++){ const v=(j/(rows-1)*2-1);
+      for(let i=0;i<cols;i++){ const u=(i/(cols-1)*2-1)*asV;
+        field[j*cols+i]=SHAPES[shapeIdx].f(u,v,T0); } }
+    // paint one frame instantly (before rAF) so there's no blank flash
+    ctx.fillStyle='#03040a'; ctx.fillRect(0,0,W,H);
+    draw(0);
+    requestAnimationFrame(step);
+  }
+  // wait for font to be ready for crisp metrics, but don't gate visuals long
+  if(document.fonts && document.fonts.ready){
+    document.fonts.ready.then(()=>{}).catch(()=>{});
+  }
+  boot();
+
+  // expose for verification
+  window.__reactor = {
+    forceShape:i=>setShape(i,true),
+    pulse:()=>pulses.push({x:pointer.x,y:pointer.y,t0:performance.now(),s:1.4}),
+    state:()=>({cols,rows,shape:SHAPES[shapeIdx].name,fps:fpsSmooth,nonEmpty:(()=>{let c=0;for(let k=0;k<field.length;k++)if(field[k]>0.05)c++;return c;})()})
+  };
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Liquid Glass · Now Playing</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    /* liquidness-driven tokens (updated live by slider) */
+    --blur: 26px;
+    --sat: 1.45;
+    --hl: 0.42;        /* inner top highlight strength */
+    --tint: 0.07;      /* glass fill opacity */
+    --border: 0.30;    /* glass border opacity */
+    --tiltx: 0deg;
+    --tilty: 0deg;
+    --mx: 50%;
+    --my: 30%;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    background: #000;
+    color: #fff;
+    font-family: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  body {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 48px 20px;
+    position: relative;
+    isolation: isolate;
+  }
+
+  /* ===== colorful glow field behind the glass so the blur has something to drink ===== */
+  .field {
+    position: fixed;
+    inset: 0;
+    z-index: -2;
+    overflow: hidden;
+    pointer-events: none;
+  }
+  .orb {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(70px);
+    opacity: 0.9;
+    mix-blend-mode: screen;
+    will-change: transform;
+  }
+  .orb.a { width: 520px; height: 520px; left: 18%;  top: 8%;
+           background: radial-gradient(circle at 30% 30%, #ff5ea3, #6d1f6b 60%, transparent 72%);
+           animation: drift1 18s ease-in-out infinite; }
+  .orb.b { width: 560px; height: 560px; right: 12%; top: 30%;
+           background: radial-gradient(circle at 40% 40%, #4f8bff, #122a6b 60%, transparent 72%);
+           animation: drift2 22s ease-in-out infinite; }
+  .orb.c { width: 480px; height: 480px; left: 38%;  bottom: 4%;
+           background: radial-gradient(circle at 50% 50%, #38e2c8, #0e5a55 58%, transparent 72%);
+           animation: drift3 26s ease-in-out infinite; }
+  .orb.d { width: 360px; height: 360px; right: 30%; bottom: 14%;
+           background: radial-gradient(circle at 50% 50%, #ffb347, #7a3d00 58%, transparent 72%);
+           opacity: 0.7; animation: drift1 20s ease-in-out infinite reverse; }
+
+  /* faint grain */
+  .field::after {
+    content: "";
+    position: absolute; inset: -50%;
+    background-image: radial-gradient(rgba(255,255,255,0.04) 1px, transparent 1px);
+    background-size: 4px 4px;
+    opacity: 0.5;
+  }
+
+  @keyframes drift1 { 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(40px,-30px) scale(1.08)} }
+  @keyframes drift2 { 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(-50px,30px) scale(1.1)} }
+  @keyframes drift3 { 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(30px,40px) scale(1.06)} }
+
+  /* heavy black vignette so the base reads as pure black liquid glass over color */
+  body::before {
+    content: "";
+    position: fixed; inset: 0; z-index: -1; pointer-events: none;
+    background: radial-gradient(ellipse 80% 70% at 50% 40%, rgba(0,0,0,0.55), rgba(0,0,0,0.92) 75%);
+  }
+
+  /* ===================== shared glass recipe ===================== */
+  .glass {
+    background:
+      linear-gradient(155deg, rgba(255,255,255,calc(var(--tint) + 0.05)) 0%, rgba(255,255,255,var(--tint)) 38%, rgba(255,255,255,calc(var(--tint) * 0.4)) 100%);
+    border: 1px solid rgba(255,255,255,var(--border));
+    backdrop-filter: blur(var(--blur)) saturate(var(--sat));
+    -webkit-backdrop-filter: blur(var(--blur)) saturate(var(--sat));
+    box-shadow:
+      0 30px 80px -20px rgba(0,0,0,0.85),
+      0 8px 24px rgba(0,0,0,0.45),
+      inset 0 1px 0 rgba(255,255,255,var(--hl)),
+      inset 0 0 0 1px rgba(255,255,255,0.04),
+      inset 0 -20px 40px -30px rgba(0,0,0,0.6);
+    position: relative;
+    overflow: hidden;
+  }
+  /* moving sheen that follows the cursor */
+  .glass::before {
+    content: "";
+    position: absolute; inset: 0;
+    background: radial-gradient(420px circle at var(--mx) var(--my), rgba(255,255,255,0.16), transparent 55%);
+    opacity: 0.9;
+    pointer-events: none;
+    transition: opacity 0.4s ease;
+  }
+  /* top edge specular line */
+  .glass::after {
+    content: "";
+    position: absolute; left: 12%; right: 12%; top: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.7), transparent);
+    pointer-events: none;
+  }
+
+  /* ===================== the card ===================== */
+  .card {
+    width: 380px;
+    max-width: 100%;
+    border-radius: 30px;
+    padding: 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    transform: perspective(1200px) rotateX(var(--tiltx)) rotateY(var(--tilty));
+    transition: transform 0.18s ease-out;
+    will-change: transform;
+    z-index: 1;
+  }
+
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    color: rgba(255,255,255,0.6);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+  }
+  .topbar .live {
+    display: inline-flex; align-items: center; gap: 7px;
+    color: rgba(255,255,255,0.85);
+  }
+  .pulse {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #4ade80;
+    box-shadow: 0 0 0 0 rgba(74,222,128,0.6);
+    animation: pulse 1.6s infinite;
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(74,222,128,0.55); }
+    70% { box-shadow: 0 0 0 8px rgba(74,222,128,0); }
+    100% { box-shadow: 0 0 0 0 rgba(74,222,128,0); }
+  }
+  .topbar .src { display:inline-flex; align-items:center; gap:6px; }
+  .topbar .src svg { opacity:0.7; }
+
+  /* album art */
+  .art-wrap {
+    position: relative;
+    border-radius: 22px;
+    overflow: hidden;
+    aspect-ratio: 1 / 1;
+    box-shadow:
+      0 24px 50px -16px rgba(0,0,0,0.7),
+      inset 0 1px 0 rgba(255,255,255,0.25),
+      inset 0 0 0 1px rgba(255,255,255,0.08);
+  }
+  .art {
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(120% 90% at 20% 15%, #ff9a5a 0%, transparent 45%),
+      radial-gradient(120% 110% at 85% 25%, #ff4d8d 0%, transparent 50%),
+      radial-gradient(140% 130% at 70% 90%, #7b5cff 0%, transparent 55%),
+      linear-gradient(135deg, #1b1030, #2a0f3f 50%, #0c0a1f);
+  }
+  /* vinyl-ish ring + shimmer */
+  .art .grooves {
+    position: absolute; inset: 0;
+    background: repeating-radial-gradient(circle at 78% 80%, rgba(255,255,255,0.05) 0 1px, transparent 1px 7px);
+    opacity: 0.6;
+    mix-blend-mode: overlay;
+  }
+  .art .shine {
+    position: absolute; inset: 0;
+    background: linear-gradient(115deg, transparent 35%, rgba(255,255,255,0.28) 50%, transparent 65%);
+    transform: translateX(-120%);
+    animation: sweep 5.5s ease-in-out infinite;
+  }
+  @keyframes sweep { 0%,55%{transform:translateX(-120%)} 80%,100%{transform:translateX(120%)} }
+  .art .badge {
+    position: absolute; left: 12px; bottom: 12px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
+    padding: 6px 11px; border-radius: 999px;
+    color: #fff;
+    background: rgba(0,0,0,0.35);
+    border: 1px solid rgba(255,255,255,0.22);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    display:inline-flex; align-items:center; gap:6px;
+  }
+
+  /* track meta */
+  .meta { display: flex; flex-direction: column; gap: 3px; padding: 0 2px; }
+  .title {
+    font-size: 23px; font-weight: 800; letter-spacing: -0.01em;
+    line-height: 1.15;
+    background: linear-gradient(180deg, #fff, rgba(255,255,255,0.78));
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .artist {
+    font-size: 14px; font-weight: 500;
+    color: rgba(255,255,255,0.6);
+    display: inline-flex; align-items: center; gap: 7px;
+  }
+  .artist .dot { width:3px;height:3px;border-radius:50%;background:rgba(255,255,255,0.4); }
+
+  /* progress */
+  .progress { display: flex; flex-direction: column; gap: 8px; padding: 2px; }
+  .bar {
+    position: relative; height: 6px; border-radius: 999px;
+    background: rgba(255,255,255,0.14);
+    overflow: visible;
+    cursor: pointer;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.4);
+  }
+  .fill {
+    position: absolute; left:0; top:0; bottom:0;
+    width: 38%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, rgba(255,255,255,0.95), rgba(255,255,255,0.7));
+    box-shadow: 0 0 12px rgba(255,255,255,0.5);
+  }
+  .knob {
+    position: absolute; top: 50%;
+    left: 38%;
+    width: 14px; height: 14px; border-radius: 50%;
+    transform: translate(-50%, -50%);
+    background: #fff;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.9);
+  }
+  .times { display:flex; justify-content:space-between; font-size: 11px; font-variant-numeric: tabular-nums;
+           color: rgba(255,255,255,0.55); font-weight: 600; }
+
+  /* controls */
+  .controls { display: flex; align-items: center; justify-content: center; gap: 14px; }
+  .ctl {
+    border: 1px solid rgba(255,255,255,0.28);
+    background: rgba(255,255,255,0.06);
+    color: rgba(255,255,255,0.85);
+    width: 46px; height: 46px;
+    border-radius: 50%;
+    display: grid; place-items: center;
+    cursor: pointer;
+    transition: transform 0.12s ease, background 0.2s ease, border-color 0.2s ease;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.22), 0 6px 16px rgba(0,0,0,0.35);
+  }
+  .ctl:hover { background: rgba(255,255,255,0.14); border-color: rgba(255,255,255,0.45); transform: translateY(-1px); }
+  .ctl:active { transform: scale(0.94); }
+  .ctl.play {
+    width: 62px; height: 62px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.95), rgba(255,255,255,0.82));
+    color: #111;
+    border-color: rgba(255,255,255,0.7);
+    box-shadow: 0 12px 28px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.9);
+  }
+  .ctl.play:hover { transform: translateY(-1px) scale(1.03); }
+  .ctl.small svg { width:18px; height:18px; }
+
+  /* stat tiles floating */
+  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .tile {
+    border-radius: 16px;
+    padding: 12px 10px;
+    text-align: center;
+    border: 1px solid rgba(255,255,255,0.22);
+    background: rgba(255,255,255,0.05);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.25), 0 8px 20px -8px rgba(0,0,0,0.5);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    transition: transform 0.18s ease, background 0.2s ease;
+  }
+  .tile:hover { transform: translateY(-3px); background: rgba(255,255,255,0.09); }
+  .tile .v { font-size: 16px; font-weight: 800; letter-spacing: -0.01em; }
+  .tile .l { font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
+             color: rgba(255,255,255,0.5); margin-top: 3px; }
+
+  /* volume + liquidness footer */
+  .sliders { display: flex; flex-direction: column; gap: 14px; padding: 4px 2px 2px; }
+  .slider-row { display:flex; flex-direction:column; gap:7px; }
+  .slabel { display:flex; justify-content:space-between; align-items:center;
+            font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+            color: rgba(255,255,255,0.55); }
+  .slabel .val { color: rgba(255,255,255,0.85); font-variant-numeric: tabular-nums; }
+
+  input[type=range] {
+    -webkit-appearance: none; appearance: none;
+    width: 100%; height: 6px; border-radius: 999px;
+    background: rgba(255,255,255,0.14);
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.4);
+    outline: none; cursor: pointer;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.9);
+    border: none;
+  }
+  input[type=range]::-moz-range-thumb {
+    width: 16px; height: 16px; border-radius: 50%; border: none;
+    background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+  }
+
+  .credit { text-align:center; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
+            color: rgba(255,255,255,0.28); font-weight: 700; margin-top: 2px; }
+
+  /* paused state visuals */
+  .card.paused .pulse { animation: none; background: rgba(255,255,255,0.4); box-shadow:none; }
+  .card.paused .shine { animation-play-state: paused; }
+  .card.paused .live span { color: rgba(255,255,255,0.5); }
+
+  @media (max-width: 430px) {
+    body { padding: 28px 14px; }
+    .card { width: 100%; border-radius: 26px; padding: 18px; gap: 16px; }
+    .title { font-size: 21px; }
+    .ctl { width: 42px; height: 42px; }
+    .ctl.play { width: 56px; height: 56px; }
+    .tile .v { font-size: 15px; }
+  }
+</style>
+</head>
+<body>
+  <div class="field" aria-hidden="true">
+    <div class="orb a"></div>
+    <div class="orb b"></div>
+    <div class="orb c"></div>
+    <div class="orb d"></div>
+  </div>
+
+  <main class="glass card" id="card" aria-label="음악 재생 위젯">
+    <div class="topbar">
+      <span class="live"><span class="pulse" id="pulse"></span><span>Now Playing</span></span>
+      <span class="src">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+        Liquid FM
+      </span>
+    </div>
+
+    <div class="art-wrap">
+      <div class="art">
+        <div class="grooves"></div>
+        <div class="shine"></div>
+      </div>
+      <span class="badge">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M2 12h20"/></svg>
+        Lossless · 24-bit
+      </span>
+    </div>
+
+    <div class="meta">
+      <div class="title">Aurora Drift</div>
+      <div class="artist">Nova Mirage <span class="dot"></span> Spectral Tides</div>
+    </div>
+
+    <div class="progress">
+      <div class="bar" id="bar">
+        <div class="fill" id="fill"></div>
+        <div class="knob" id="knob"></div>
+      </div>
+      <div class="times"><span id="cur">1:34</span><span id="dur">4:07</span></div>
+    </div>
+
+    <div class="controls">
+      <button class="ctl small" id="shuffle" title="셔플">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>
+      </button>
+      <button class="ctl" id="prev" title="이전">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zM20 6v12l-9-6z"/></svg>
+      </button>
+      <button class="ctl play" id="play" title="재생/일시정지">
+        <svg id="playIcon" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+      </button>
+      <button class="ctl" id="next" title="다음">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM4 6v12l9-6z"/></svg>
+      </button>
+      <button class="ctl small" id="repeat" title="반복">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4M3 11V9a4 4 0 0 1 4-4h14M7 22l-4-4 4-4M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+      </button>
+    </div>
+
+    <div class="tiles">
+      <div class="tile"><div class="v">128</div><div class="l">BPM</div></div>
+      <div class="tile"><div class="v">2.4M</div><div class="l">Plays</div></div>
+      <div class="tile"><div class="v">A♭ min</div><div class="l">Key</div></div>
+    </div>
+
+    <div class="sliders">
+      <div class="slider-row">
+        <div class="slabel"><span>Volume</span><span class="val" id="volVal">72%</span></div>
+        <input type="range" id="vol" min="0" max="100" value="72" />
+      </div>
+      <div class="slider-row">
+        <div class="slabel"><span>Liquidness</span><span class="val" id="liqVal">60%</span></div>
+        <input type="range" id="liq" min="0" max="100" value="60" />
+      </div>
+    </div>
+
+    <div class="credit">Dark Liquid Glass · v02</div>
+  </main>
+
+<script>
+  const card = document.getElementById('card');
+
+  /* ---- mouse-follow glow + subtle tilt ---- */
+  function onMove(e){
+    const r = card.getBoundingClientRect();
+    const px = (e.clientX - r.left) / r.width;
+    const py = (e.clientY - r.top) / r.height;
+    card.style.setProperty('--mx', (px*100)+'%');
+    card.style.setProperty('--my', (py*100)+'%');
+    card.style.setProperty('--tilty', ((px-0.5)*9).toFixed(2)+'deg');
+    card.style.setProperty('--tiltx', (-(py-0.5)*9).toFixed(2)+'deg');
+  }
+  function resetTilt(){
+    card.style.setProperty('--tiltx','0deg');
+    card.style.setProperty('--tilty','0deg');
+    card.style.setProperty('--mx','50%');
+    card.style.setProperty('--my','30%');
+  }
+  card.addEventListener('mousemove', onMove);
+  card.addEventListener('mouseleave', resetTilt);
+
+  /* ---- liquidness slider: drives the glass tokens live ---- */
+  const liq = document.getElementById('liq');
+  const liqVal = document.getElementById('liqVal');
+  function applyLiq(){
+    const t = liq.value/100;            // 0..1
+    liqVal.textContent = liq.value+'%';
+    document.documentElement.style.setProperty('--blur', (8 + t*40).toFixed(1)+'px');
+    document.documentElement.style.setProperty('--sat', (1.0 + t*1.1).toFixed(2));
+    document.documentElement.style.setProperty('--hl',  (0.18 + t*0.42).toFixed(3));
+    document.documentElement.style.setProperty('--tint',(0.03 + t*0.10).toFixed(3));
+    document.documentElement.style.setProperty('--border',(0.16 + t*0.30).toFixed(3));
+  }
+  liq.addEventListener('input', applyLiq);
+  applyLiq();
+
+  /* ---- volume ---- */
+  const vol = document.getElementById('vol');
+  const volVal = document.getElementById('volVal');
+  vol.addEventListener('input', ()=> volVal.textContent = vol.value+'%');
+
+  /* ---- transport / fake playback ---- */
+  const DUR = 247;            // 4:07 in seconds
+  let cur = 94;              // 1:34
+  let playing = true;
+  const fill = document.getElementById('fill');
+  const knob = document.getElementById('knob');
+  const curEl = document.getElementById('cur');
+  const playIcon = document.getElementById('playIcon');
+
+  const PLAY = '<path d="M8 5v14l11-7z"/>';
+  const PAUSE = '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>';
+
+  function fmt(s){ s=Math.max(0,Math.round(s)); return Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); }
+  function render(){
+    const p = (cur/DUR)*100;
+    fill.style.width = p+'%';
+    knob.style.left = p+'%';
+    curEl.textContent = fmt(cur);
+  }
+  function setPlaying(v){
+    playing = v;
+    playIcon.innerHTML = playing ? PAUSE : PLAY;
+    card.classList.toggle('paused', !playing);
+  }
+  document.getElementById('play').addEventListener('click', ()=> setPlaying(!playing));
+  document.getElementById('next').addEventListener('click', ()=>{ cur = 0; render(); });
+  document.getElementById('prev').addEventListener('click', ()=>{ cur = 0; render(); });
+
+  /* seek by clicking the bar */
+  const bar = document.getElementById('bar');
+  bar.addEventListener('click', (e)=>{
+    const r = bar.getBoundingClientRect();
+    cur = Math.min(DUR, Math.max(0, ((e.clientX-r.left)/r.width)*DUR));
+    render();
+  });
+
+  setPlaying(true);
+  render();
+  setInterval(()=>{ if(playing){ cur += 1; if(cur>=DUR) cur = 0; render(); } }, 1000);
+</script>
+</body>
+</html>

@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>끝없는 미궁 도서관</title>
+<style>
+  :root{ --paper:#e9e1cc; --ink:#2b2620; --dim:#6f6450; --line:#c9bfa4; }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; overflow:hidden; background:var(--paper); color:var(--ink); }
+  body{ font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; }
+
+  /* ---- 3D 뷰 ---- */
+  #view{
+    position:fixed; left:0; top:0; right:0; bottom:42px;
+    font:13px/13px ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    color:var(--ink); white-space:pre; overflow:hidden;
+    letter-spacing:0; user-select:none; cursor:crosshair;
+    margin:0; padding:0;
+    background:radial-gradient(120% 90% at 50% 38%, #f1ead7 0%, #e9e1cc 55%, #ddd2b4 100%);
+  }
+  /* 조준점 */
+  #reticle{
+    position:fixed; left:50%; top:calc(50% - 21px); transform:translate(-50%,-50%);
+    color:var(--dim); font-size:15px; opacity:.55; pointer-events:none; z-index:4;
+    text-shadow:0 0 2px var(--paper);
+  }
+  /* ---- 하단 상태바 ---- */
+  #status{
+    position:fixed; left:0; right:0; bottom:0; height:42px;
+    background:var(--ink); color:var(--paper);
+    font:12px/42px ui-monospace,Menlo,monospace;
+    padding:0 14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; z-index:5;
+    display:flex; align-items:center; gap:14px;
+  }
+  #status .seg{ overflow:hidden; text-overflow:ellipsis; }
+  #status .msg{ flex:1 1 auto; min-width:0; }
+  #status .meta{ flex:0 0 auto; color:#cdbf9b; }
+
+  /* ---- 좌상단 인벤토리/방 패널 ---- */
+  #hud{
+    position:fixed; left:12px; top:12px; z-index:4; max-width:240px;
+    background:rgba(43,38,32,.78); color:var(--paper);
+    border:1px solid rgba(201,191,164,.5);
+    padding:8px 10px; font-size:11.5px; line-height:1.55; border-radius:3px;
+    backdrop-filter:blur(2px);
+  }
+  #hud b{ color:#e7d9b3; font-weight:600; letter-spacing:.5px; }
+  #hud .inv{ margin-top:5px; color:#d9cca8; }
+  #hud .inv .it{ display:block; }
+  #hud .empty{ color:#9c906f; font-style:italic; }
+  #hud.faded{ opacity:.32; transition:opacity .4s; }
+
+  /* ---- 우상단 키 도움말 ---- */
+  #help{
+    position:fixed; right:12px; top:12px; z-index:4;
+    background:rgba(43,38,32,.62); color:#d9cca8;
+    border:1px solid rgba(201,191,164,.4);
+    padding:7px 10px; font-size:11px; line-height:1.5; border-radius:3px; text-align:right;
+  }
+  #help kbd{ display:inline-block; background:#41392e; color:#f0e6c8; border-radius:2px;
+    padding:0 4px; margin:0 1px; font-size:10px; }
+
+  /* ---- 상호작용 프롬프트(중앙 하단) ---- */
+  #prompt{
+    position:fixed; left:50%; bottom:58px; transform:translateX(-50%);
+    z-index:6; background:rgba(43,38,32,.92); color:#f0e6c8;
+    border:1px solid var(--line); padding:9px 16px; border-radius:4px;
+    font-size:12.5px; max-width:80vw; text-align:center; white-space:normal; line-height:1.5;
+    opacity:0; pointer-events:none; transition:opacity .18s; box-shadow:0 6px 20px rgba(0,0,0,.25);
+  }
+  #prompt.on{ opacity:1; }
+  #prompt em{ color:#bfb18c; font-style:normal; }
+  #prompt .act{ color:#ffe9a8; font-weight:600; }
+
+  /* ---- 살펴보기 모달 ---- */
+  #examine{
+    position:fixed; inset:0; z-index:9; display:flex; align-items:center; justify-content:center;
+    background:rgba(28,24,19,.72); opacity:0; pointer-events:none; transition:opacity .3s; padding:20px;
+  }
+  #examine.on{ opacity:1; pointer-events:auto; }
+  #examine .card{
+    background:var(--paper); color:var(--ink); border:1px solid var(--ink);
+    max-width:560px; width:100%; padding:22px 26px 20px; border-radius:4px;
+    box-shadow:0 18px 60px rgba(0,0,0,.5); max-height:86vh; overflow:auto;
+  }
+  #examine h3{ margin:0 0 4px; font-size:19px; letter-spacing:3px; font-family:"Noto Serif KR",serif; }
+  #examine .tag{ color:var(--dim); font-size:11px; letter-spacing:1px; margin-bottom:12px; }
+  #examine pre.art{
+    font:12px/12px ui-monospace,Menlo,monospace; color:var(--ink);
+    background:#f3ecd9; border:1px solid var(--line); padding:12px; margin:0 0 14px;
+    white-space:pre; overflow:auto; border-radius:3px;
+  }
+  #examine .desc{ font-size:13.5px; line-height:1.85; font-family:"Noto Serif KR",serif; }
+  #examine .ex-foot{ margin-top:16px; font-size:11.5px; color:var(--dim); text-align:right; }
+  #examine .ex-foot kbd{ background:var(--ink); color:var(--paper); border-radius:2px; padding:1px 5px; }
+
+  /* ---- 인트로/엔딩 오버레이 ---- */
+  #intro,#ending{
+    position:fixed; inset:0; z-index:20; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; text-align:center; padding:24px;
+    background:rgba(233,225,204,.97); font-family:"Noto Serif KR",serif; color:var(--ink);
+    transition:opacity 1.1s ease;
+  }
+  #intro h1{ font-size:46px; font-weight:600; letter-spacing:14px; margin:0 0 6px; text-indent:14px; }
+  #intro .sub{ font-size:13px; letter-spacing:6px; color:var(--dim); margin:0 0 22px; }
+  #intro p{ font-size:15px; line-height:2; max-width:480px; margin:5px 0; }
+  #intro .frame{
+    font:11px/11px ui-monospace,Menlo,monospace; color:var(--dim);
+    white-space:pre; margin:14px 0 4px; opacity:.85;
+  }
+  #intro .keys{ font-family:ui-monospace,Menlo,monospace; font-size:12.5px; color:var(--dim); margin-top:22px; line-height:1.9; }
+  #intro .enter{
+    margin-top:20px; font-family:ui-monospace,Menlo,monospace; font-size:13px; color:var(--ink);
+    border:1px solid var(--ink); padding:9px 22px; border-radius:3px; cursor:pointer;
+    background:transparent; animation:pulse 2.4s ease-in-out infinite;
+  }
+  @keyframes pulse{ 0%,100%{ opacity:.55 } 50%{ opacity:1 } }
+  #ending{ background:rgba(43,38,32,.97); color:var(--paper); opacity:0; pointer-events:none; }
+  #ending h2{ font-size:28px; font-weight:600; letter-spacing:8px; margin:0 0 16px; }
+  #ending p{ font-size:14.5px; line-height:1.95; max-width:520px; margin:6px 0; }
+  #ending .small{ font-size:12px; color:#bdb08c; margin-top:18px; }
+  .hidden{ opacity:0 !important; pointer-events:none !important; }
+
+  /* ---- 모바일 터치 패드 ---- */
+  #pad{ position:fixed; inset:0; z-index:3; display:none; }
+  .touch #pad{ display:block; }
+  #pad .tz{
+    position:fixed; z-index:3; border-radius:50%;
+    background:rgba(43,38,32,.30); border:1px solid rgba(240,230,200,.45);
+    color:#f0e6c8; font:14px/1 ui-monospace,Menlo,monospace;
+    display:flex; align-items:center; justify-content:center; user-select:none;
+    width:48px; height:48px; touch-action:none;
+  }
+  #pad .big{ width:58px; height:58px; }
+  #t-up{ left:60px; bottom:150px; } #t-dn{ left:60px; bottom:48px; }
+  #t-lf{ left:8px;  bottom:99px; } #t-rt{ left:112px; bottom:99px; }
+  #t-ql{ left:20px; bottom:215px; } #t-qr{ left:96px; bottom:215px; }
+  #t-act{ right:20px; bottom:58px; width:74px; height:74px; background:rgba(120,98,52,.55); }
+  #t-grab{ right:104px; bottom:70px; }
+  .touch #help{ display:none; }
+
+  @media (max-width:760px){
+    #hud{ font-size:10.5px; max-width:46vw; padding:6px 8px; }
+    #view{ font-size:11px; line-height:11px; }
+    #examine .card{ padding:18px; }
+    #examine pre.art{ font-size:10px; line-height:10px; }
+  }
+</style>
+</head>
+<body>
+<pre id="view"></pre>
+<div id="reticle">+</div>
+
+<div id="hud">
+  <b id="hud-room">미궁 도서관</b>
+  <div class="inv" id="hud-inv"><span class="empty">소지품 없음</span></div>
+</div>
+
+<div id="help">
+  <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 이동 · <kbd>←</kbd><kbd>→</kbd> 회전<br>
+  <kbd>E</kbd> 살펴보기/작동 · <kbd>F</kbd> 줍기 · <kbd>M</kbd> 지도
+</div>
+
+<div id="prompt"></div>
+
+<div id="status">
+  <span class="seg msg" id="msg">…</span>
+  <span class="seg meta" id="meta"></span>
+</div>
+
+<!-- 살펴보기 모달 -->
+<div id="examine"><div class="card">
+  <h3 id="ex-name"></h3>
+  <div class="tag" id="ex-tag"></div>
+  <pre class="art" id="ex-art"></pre>
+  <div class="desc" id="ex-desc"></div>
+  <div class="ex-foot">닫기 <kbd>E</kbd> 또는 <kbd>Esc</kbd></div>
+</div></div>
+
+<!-- 인트로 -->
+<div id="intro">
+  <h1>미궁 도서관</h1>
+  <div class="sub">ENDLESS&nbsp;&nbsp;LIBRARY&nbsp;&nbsp;LABYRINTH</div>
+  <p>끝이 없는 서가의 미궁에 들어선다.<br>
+  복도마다 책등이 벽이 되어 솟아 있고, 방마다 잊혀진 물건들이 놓여 있다.</p>
+  <p>책을 살펴보고, 기계를 작동시키고, 빛을 모아<br>이 도서관의 중심 — <em>색인의 방</em>으로 가라.</p>
+  <pre class="frame">┌───────────────┐
+│  ▓▓ ▓ ▓▓ ▓▓ ▓ │
+│  ▓ ▓▓ ▓  ▓ ▓▓ │
+│  ░░ ░ ▒▒ ░ ▒▒░ │
+└───────────────┘</pre>
+  <div class="keys">W A S D 이동 · ← → 회전 · E 살펴보기/작동 · F 줍기 · M 지도</div>
+  <button class="enter" id="enter-btn">들어가기</button>
+</div>
+
+<!-- 엔딩 -->
+<div id="ending" class="hidden">
+  <h2 id="end-title">색인의 방</h2>
+  <p id="end-text"></p>
+  <div class="small" id="end-small">아무 키나 눌러 더 깊은 층으로 내려간다 · 같은 미궁은 두 번 지어지지 않는다</div>
+</div>
+
+<!-- 터치 패드 -->
+<div id="pad">
+  <div class="tz" id="t-ql">↺</div><div class="tz" id="t-qr">↻</div>
+  <div class="tz big" id="t-up">▲</div>
+  <div class="tz" id="t-lf">◀</div><div class="tz" id="t-rt">▶</div>
+  <div class="tz big" id="t-dn">▼</div>
+  <div class="tz" id="t-act">E</div>
+  <div class="tz" id="t-grab">F</div>
+</div>
+
+<script>
+(() => {
+"use strict";
+
+/* ============================================================
+   끝없는 미궁 도서관 — 3D 아스키 레이캐스트 탐험
+   벽 = 책등으로 텍스처된 서가. 방마다 빌보드 3D 아스키 사물 배치.
+   살펴보기 / 줍기 / 작동 상호작용 + 인벤토리 + 다층(층 = round).
+   ============================================================ */
+
+/* ---------- 결정적 난수 ---------- */
+function hashStr(s){ let h=2166136261>>>0; for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,16777619);} return h>>>0; }
+function mulberry32(a){ return ()=>{ a|=0; a=(a+0x6D2B79F5)|0; let t=Math.imul(a^(a>>>15),1|a); t=(t+Math.imul(t^(t>>>7),61|t))^t; return ((t^(t>>>14))>>>0)/4294967296; }; }
+
+/* ---------- 자재: 이 문서의 소스(책등 텍스처) ---------- */
+const rawSrc = document.documentElement.outerHTML;
+let SRC = rawSrc.replace(/[^\x21-\x7E]/g,"");
+const BOOKWORDS = ["巻","章","典","録","誌","書","綴","索","図","譜"]; // 책등 장식용(예비)
+
+/* ---------- 미로 생성 ---------- */
+const M = 23; // 홀수
+let map=[], rooms=[], objects=[];
+let floorN = 1;
+
+/* 셀 값: 0=복도, 1=벽(서가), 2=방 바닥, 3=중심(색인의 방) */
+function buildMaze(seed){
+  const rnd = mulberry32(seed);
+  map = Array.from({length:M},()=>Array(M).fill(1));
+  // 백트래킹 미로
+  const stack=[[1,1]]; map[1][1]=0;
+  while(stack.length){
+    const [cx,cy]=stack[stack.length-1];
+    const dirs=[[2,0],[-2,0],[0,2],[0,-2]].sort(()=>rnd()-0.5);
+    let carved=false;
+    for(const [dx,dy] of dirs){
+      const nx=cx+dx, ny=cy+dy;
+      if(nx>0&&ny>0&&nx<M-1&&ny<M-1&&map[ny][nx]===1){
+        map[ny][nx]=0; map[cy+dy/2][cx+dx/2]=0; stack.push([nx,ny]); carved=true; break;
+      }
+    }
+    if(!carved) stack.pop();
+  }
+  // 방(room) 개방: 미로 곳곳에 3x3 챔버를 뚫는다
+  rooms=[];
+  const roomCenters = pickRoomCenters(rnd, 5);
+  for(const [rx,ry] of roomCenters){
+    for(let y=ry-1;y<=ry+1;y++) for(let x=rx-1;x<=rx+1;x++){
+      if(x>0&&y>0&&x<M-1&&y<M-1) map[y][x]=2;
+    }
+    // 방을 미로에 잇는 통로 보장 (사방으로 한 칸 뚫어 복도와 연결)
+    if(rx-2>0)   { map[ry][rx-2]=0; }
+    if(rx+2<M-1) { map[ry][rx+2]=0; }
+    if(ry-2>0)   { map[ry-2][rx]=0; }
+    if(ry+2<M-1) { map[ry+2][rx]=0; }
+    rooms.push([rx,ry,"chamber"]);
+  }
+  // 중심: 색인의 방 (3x3 + 사방통로)
+  const c=(M-1)/2;
+  for(let y=c-1;y<=c+1;y++) for(let x=c-1;x<=c+1;x++) map[y][x]=3;
+  map[c][c-2]=0; map[c][c+2]=0; map[c-2][c]=0; map[c+2][c]=0;
+  rooms.push([c,c,"core"]);
+
+  placeObjects(rnd, roomCenters, [c,c]);
+}
+
+function pickRoomCenters(rnd, n){
+  // 미로 셀(홀수 좌표)을 후보로 모아 셔플 후, 간격을 두고 n개 선택.
+  const cc=(M-1)/2;
+  const cands=[];
+  for(let y=2;y<=M-3;y+=2) for(let x=2;x<=M-3;x+=2){
+    if(Math.abs(x-cc)<3 && Math.abs(y-cc)<3) continue;      // 중심 방과 겹침 방지
+    cands.push([x,y]);
+  }
+  // 셔플
+  for(let i=cands.length-1;i>0;i--){ const j=(rnd()*(i+1))|0; const t=cands[i]; cands[i]=cands[j]; cands[j]=t; }
+  const out=[];
+  for(const [x,y] of cands){
+    if(out.length>=n) break;
+    if(out.some(([ox,oy])=>Math.abs(ox-x)+Math.abs(oy-y)<5)) continue; // 너무 가까운 방 방지
+    out.push([x,y]);
+  }
+  // 최소 3개 보장
+  let gi=0;
+  while(out.length<3 && gi<cands.length){ const c=cands[gi++]; if(!out.some(o=>o[0]===c[0]&&o[1]===c[1])) out.push(c); }
+  return out;
+}
+
+/* ---------- 사물 카탈로그 (3D처럼 보이는 아스키 빌보드) ---------- */
+/* type: examine(살펴보기) / pickup(줍기) / operate(작동) */
+const CATALOG = [
+  { key:"lamp", name:"놋쇠 독서등", tag:"가구 · 작동 가능", kind:"operate",
+    sprite:[
+      "   .-=-.   ",
+      "  /     \\  ",
+      " | () () | ",
+      "  \\__|__/  ",
+      "     ||    ",
+      "    /||\\   ",
+      "   /_||_\\  ",
+      "  '------' "],
+    desc:"녹청이 앉은 놋쇠 독서등. 갓 아래 필라멘트가 가늘게 떨린다. 작동시키면 주변 서가의 책등 글자가 또렷이 떠오른다.",
+    onOperate(o){ o.lit=!o.lit; toggleLight(o.lit);
+      return o.lit? "독서등이 켜졌다. 복도의 글자들이 선명해진다." : "독서등이 꺼졌다. 미궁이 다시 흐려진다."; } },
+
+  { key:"shelf", name:"표류하는 서가", tag:"구조물 · 살펴보기", kind:"examine",
+    sprite:[
+      " ___________ ",
+      "|=|=|=|=|=|=|",
+      "|_|_|_|_|_|_|",
+      "|≡|≡| |≡|≡|≡|",
+      "|=|=|=|=|=|=|",
+      "|_|_|_|_|_|_|",
+      "|≡| |≡|≡| |≡|",
+      "'-----------'"],
+    desc:"바닥에 닿지 않고 떠 있는 서가. 책등에는 읽을 수 없는 분류기호가 새겨져 있다. 한 칸이 비어 있는데, 그 자리에 무언가가 꽂혀 있었던 흔적이 있다." },
+
+  { key:"key", name:"청동 색인열쇠", tag:"물건 · 줍기", kind:"pickup",
+    sprite:[
+      "    ___    ",
+      "   /   \\   ",
+      "  | (o) |  ",
+      "   \\___/   ",
+      "     |     ",
+      "     |     ",
+      "     |__   ",
+      "     |_|_  "],
+    desc:"세 갈래로 갈라진 청동 열쇠. 손잡이에 ‘색인(索引)’이라 새겨져 있다. 중심의 방을 여는 데 쓰일 듯하다.",
+    item:"청동 색인열쇠" },
+
+  { key:"orb", name:"빛을 머금은 구체", tag:"물건 · 줍기", kind:"pickup",
+    sprite:[
+      "    .---.    ",
+      "  ./ ~ ~ \\.  ",
+      " / ~  *  ~ \\ ",
+      "|  ~ (O) ~  |",
+      " \\ ~  *  ~ / ",
+      "  '\\ ~ ~ /'  ",
+      "    '---'    ",
+      "   '. .'     "],
+    desc:"손바닥만 한 유리 구체. 안에서 작은 별빛이 회전한다. 색인의 방으로 가져가면 길을 비춘다고 적혀 있다.",
+    item:"빛의 구체" },
+
+  { key:"clock", name:"멈춘 천문시계", tag:"기계 · 작동 가능", kind:"operate",
+    sprite:[
+      "   ______   ",
+      "  /  12  \\  ",
+      " | 9  +  3 | ",
+      " |    |    | ",
+      "  \\   6   /  ",
+      "   \\_____/   ",
+      "    |   |    ",
+      "   _|   |_   "],
+    desc:"바늘이 멎은 천문시계. 태엽 구멍이 보인다. 작동시키면 한 번, 깊고 낮은 종소리가 미궁 전체에 울린다.",
+    onOperate(o){ o.wound=true; chime();
+      return "태엽을 감자 종이 한 번 울린다. 멀리서 서가들이 자리를 바꾸는 소리가 난다…"; } },
+
+  { key:"plant", name:"종이로 자란 식물", tag:"생물 · 살펴보기", kind:"examine",
+    sprite:[
+      "   \\  |  /   ",
+      "  \\ \\ | / /  ",
+      "   \\\\\\|///   ",
+      "    \\\\|//    ",
+      "   ~~\\|/~~   ",
+      "  .--[#]--.  ",
+      "  |  ___  |  ",
+      "  '-------'  "],
+    desc:"책장에서 자라난 종이 식물. 잎맥이 활자처럼 뻗어 있고, 바람도 없는데 페이지처럼 사각인다. 살아 있는지 인쇄된 것인지 알 수 없다." },
+
+  { key:"statue", name:"사서(司書)의 석상", tag:"구조물 · 살펴보기", kind:"examine",
+    sprite:[
+      "    ___    ",
+      "   /. .\\   ",
+      "   \\ - /   ",
+      "  /|   |\\  ",
+      " / | [ ]| \\ ",
+      "   |   |   ",
+      "   /   \\   ",
+      "  /_____\\  "],
+    desc:"눈을 감은 사서의 석상. 두 손에 영원히 펼쳐진 책을 받쳐 들고 있다. 책장 위에는 ‘대출 기한 없음’이라 적혀 있다." },
+
+  { key:"machine", name:"분류 기계", tag:"기계 · 작동 가능", kind:"operate",
+    sprite:[
+      " .========. ",
+      " |[#][#][#]| ",
+      " | ::::::: | ",
+      " | >  o  < | ",
+      " |_________| ",
+      "  | || || |  ",
+      "  |_||_||_|  ",
+      "  o-------o  "],
+    desc:"책을 받아 분류기호를 찍어내던 황동 기계. 레버가 하나 남아 있다. 작동시키면 한 장의 카드가 튀어나온다.",
+    onOperate(o){ if(!o.done){ o.done=true; addItem("분류 카드");
+        return "레버를 당기자 카드가 튀어나왔다. ‘분류 카드’를 얻었다."; }
+      return "기계는 이미 마지막 카드를 뱉어냈다. 텅 빈 소리만 난다."; } },
+];
+
+let lightOn=false;
+function toggleLight(on){ lightOn=on;
+  document.getElementById("view").style.filter = on? "contrast(1.18) brightness(1.06)" : "none"; }
+function chime(){ /* 시각적 종소리: 화면 살짝 점멸 */ const v=document.getElementById("view");
+  v.style.transition="opacity .12s"; v.style.opacity=".5"; setTimeout(()=>v.style.opacity="1",130); }
+
+/* ---------- 사물 배치 ---------- */
+function placeObjects(rnd, roomCenters, core){
+  objects=[];
+  const occupied=new Set();           // "x,y" — 한 셀에 사물 하나
+  const cellKey=(x,y)=>x+","+y;
+  // 방 안의 비어 있는(방 셀=2) 좌표 후보를 중앙 우선 순으로 반환
+  function freeSpotInRoom(rx,ry){
+    const order=[[rx,ry],[rx-1,ry],[rx+1,ry],[rx,ry-1],[rx,ry+1],
+                 [rx-1,ry-1],[rx+1,ry+1],[rx-1,ry+1],[rx+1,ry-1]];
+    for(const [x,y] of order){
+      if(x<0||y<0||x>=M||y>=M) continue;
+      if(map[y][x]!==2) continue;     // 방 바닥만
+      if(occupied.has(cellKey(x,y))) continue;
+      occupied.add(cellKey(x,y));
+      return [x,y];
+    }
+    return null;
+  }
+
+  // ----- 필수 아이템 먼저: 열쇠(가장 먼 방) + 구체(두 번째 먼 방) -----
+  const sorted=[...roomCenters].sort((a,b)=>
+    (Math.hypot(b[0]-1,b[1]-1))-(Math.hypot(a[0]-1,a[1]-1)));
+  const keyRoom = sorted[0];
+  const orbRoom = sorted[1] || sorted[0];
+  let sp=freeSpotInRoom(keyRoom[0],keyRoom[1]);
+  if(sp) objects.push(makeObj(CATALOG.find(c=>c.key==="key"), sp[0]+0.5, sp[1]+0.5));
+  sp=freeSpotInRoom(orbRoom[0],orbRoom[1]);
+  if(sp) objects.push(makeObj(CATALOG.find(c=>c.key==="orb"), sp[0]+0.5, sp[1]+0.5));
+
+  // ----- 나머지 방을 풍경 사물(열쇠/구체 제외)로 채운다 -----
+  const pool = CATALOG.filter(c=>c.key!=="key" && c.key!=="orb");
+  for(const [rx,ry] of roomCenters){
+    const cnt = 1 + (rnd()<.6?1:0);   // 방마다 1~2개
+    const usedKinds=new Set();
+    for(let i=0;i<cnt;i++){
+      const slot=freeSpotInRoom(rx,ry);
+      if(!slot) break;                // 방이 가득 참
+      let cat,g=0;
+      do{ cat=pool[(rnd()*pool.length)|0]; g++; }while(usedKinds.has(cat.key)&&g<12);
+      usedKinds.add(cat.key);
+      objects.push(makeObj(cat, slot[0]+0.5, slot[1]+0.5));
+    }
+  }
+}
+let objId=0;
+function makeObj(cat,x,y){ return { id:objId++, cat, x, y, taken:false, lit:false, wound:false, done:false }; }
+
+/* ---------- 인벤토리 ---------- */
+let inventory=[];
+function addItem(name){ inventory.push(name); renderInv(); }
+function renderInv(){
+  const el=document.getElementById("hud-inv");
+  if(!inventory.length){ el.innerHTML='<span class="empty">소지품 없음</span>'; return; }
+  el.innerHTML = inventory.map(n=>`<span class="it">· ${n}</span>`).join("");
+}
+
+/* ---------- 상태 ---------- */
+let px=1.5, py=1.5, dir=0;
+let entered=false, inEnding=false, examineOpen=false, showMap=false;
+const keys={};
+buildMaze(hashStr(SRC));
+
+/* ---------- 화면/렌더 ---------- */
+const view=document.getElementById("view");
+const msgEl=document.getElementById("msg");
+const metaEl=document.getElementById("meta");
+let W=110,H=40,CW=7.8;
+function fit(){
+  const probe=document.createElement("span");
+  probe.style.cssText="position:absolute;visibility:hidden;font:13px/13px ui-monospace,Menlo,monospace;white-space:pre";
+  probe.textContent="M".repeat(100); document.body.appendChild(probe);
+  CW=probe.getBoundingClientRect().width/100||7.8; probe.remove();
+  const fs = innerWidth<760?11:13;
+  view.style.fontSize=fs+"px"; view.style.lineHeight=fs+"px";
+  CW = CW*(fs/13);
+  W=Math.max(50,Math.min(240,Math.floor(innerWidth/CW)-1));
+  H=Math.max(22,Math.floor((innerHeight-42)/fs));
+}
+fit(); addEventListener("resize",fit);
+
+const FLOOR=" .,'`·".split("");
+const CEIL =" .`'".split("");
+
+/* 벽(책등) 텍스처: 거리/세로위치에 따라 글자 선택 */
+function wallChar(ix,iy,tx,ty,d,side){
+  if(d>13) return " ";
+  if(d>9.5) return "·";
+  // 선반 상하 테두리(가로 줄)
+  const shelfLine = (ty>0.94 || ty<0.06);
+  if(shelfLine) return "=";
+  const seed=((ix*73856093)^(iy*19349663))>>>0;
+  const idx=(seed + ((tx*64)|0)*131 + ((ty*40)|0)*37) % SRC.length;
+  let ch=SRC[idx];
+  // 책 한 권당 세로 솔기(약 8권/벽), 솔기는 가늘게
+  const tcol=(tx*8)%1;
+  if(tcol<0.05) return "|";
+  if(d>6.0){ return /[a-z0-9]/i.test(ch)? ch.toLowerCase() : (side? "░":"▒"); }
+  if(d>3.2){ return /[a-z0-9]/i.test(ch)? ch : (side?":":"#"); }
+  return ch;
+}
+
+function render(){
+  if(showMap){ renderMap(); return; }
+  const horizon=H>>1;
+  const cols=[]; const zbuf=new Float32Array(W);
+  for(let x=0;x<W;x++){
+    const cam=(2*x)/W-1;
+    const rdx=Math.cos(dir)+Math.cos(dir+Math.PI/2)*0.66*cam;
+    const rdy=Math.sin(dir)+Math.sin(dir+Math.PI/2)*0.66*cam;
+    let mx=px|0,my=py|0;
+    const ddx=Math.abs(1/(rdx||1e-9)), ddy=Math.abs(1/(rdy||1e-9));
+    let sx,sy,sdx,sdy,side=0;
+    if(rdx<0){sx=-1;sdx=(px-mx)*ddx;} else {sx=1;sdx=(mx+1-px)*ddx;}
+    if(rdy<0){sy=-1;sdy=(py-my)*ddy;} else {sy=1;sdy=(my+1-py)*ddy;}
+    let hit=0,guard=0;
+    while(!hit&&guard++<80){
+      if(sdx<sdy){sdx+=ddx;mx+=sx;side=0;} else {sdy+=ddy;my+=sy;side=1;}
+      if(mx<0||my<0||mx>=M||my>=M|| map[my][mx]===1) hit=1;
+    }
+    const dist=Math.max(0.08, side===0? sdx-ddx : sdy-ddy);
+    zbuf[x]=dist;
+    const lh=Math.min(H*3,(H/dist)|0);
+    const ds=Math.max(0,horizon-(lh>>1));
+    const de=Math.min(H-1,horizon+(lh>>1));
+    let wallX=side===0? py+dist*rdy : px+dist*rdx; wallX-=wallX|0;
+    cols.push([ds,de,mx,my,wallX,dist,lh,side]);
+  }
+
+  // 바닥/천장/벽 베이스 래스터
+  const grid=Array.from({length:H},()=>new Array(W).fill(" "));
+  for(let x=0;x<W;x++){
+    const [ds,de,ix,iy,tx,d,lh,side]=cols[x];
+    for(let y=0;y<H;y++){
+      if(y<ds){ // 천장
+        const cd=(horizon-y)/(horizon+1);
+        grid[y][x]=CEIL[Math.min(CEIL.length-1,((1-cd)*CEIL.length)|0)]||" ";
+      } else if(y>de){ // 바닥
+        const fd=(y-horizon)/(H-horizon);
+        grid[y][x]=FLOOR[Math.min(FLOOR.length-1,((1-fd)*FLOOR.length)|0)]||" ";
+      } else { // 벽
+        const ty=lh>0?(y-(horizon-lh/2))/lh:0;
+        grid[y][x]=wallChar(ix,iy,tx,(ty%1+1)%1,d+(side?1.0:0),side);
+      }
+    }
+  }
+
+  // ----- 사물 빌보드 스프라이트 -----
+  let reticleObj=null, reticleDist=999;
+  const sorted=objects.filter(o=>!o.taken)
+    .map(o=>({o,dx:o.x-px,dy:o.y-py}))
+    .map(s=>({...s,dist:Math.hypot(s.dx,s.dy)}))
+    .sort((a,b)=>b.dist-a.dist); // 먼 것 먼저
+  const inv=1/(Math.cos(dir)*Math.cos(dir+Math.PI/2)*0.66 - Math.cos(dir+Math.PI/2)*0.66*Math.sin(dir)); // not used
+  for(const s of sorted){
+    const {o,dx,dy,dist}=s;
+    if(dist<0.25||dist>15) continue;
+    // 카메라 공간 변환
+    const invDet=1.0/(0.66*Math.cos(dir+Math.PI/2)*Math.sin(dir) - Math.cos(dir)*0.66*Math.sin(dir+Math.PI/2));
+    const transX = invDet*(Math.sin(dir)*dx - Math.cos(dir)*dy);
+    const transY = invDet*(-0.66*Math.sin(dir+Math.PI/2)*dx + 0.66*Math.cos(dir+Math.PI/2)*dy);
+    if(transY<=0.15) continue; // 뒤
+    const screenX=((W/2)*(1+transX/transY))|0;
+    const art=o.cat.sprite; const aH=art.length; const aW=Math.max(...art.map(r=>r.length));
+    // 스프라이트 크기: 거리 비례, 방 바닥 위에 세움
+    const scale=Math.min(3.4, 1.0/transY);
+    const spH=Math.max(7, Math.min(H-2, (aH* (H*0.17) * scale )|0 ));
+    const spW=Math.max(5, (spH*(aW/aH)*0.62)|0 );
+    const horizon=H>>1;
+    const groundY=Math.min(H-1, horizon + ((H/ (transY*2.0))|0)); // 바닥 접지
+    const top=Math.max(0, groundY-spH);
+    const left=(screenX-(spW>>1))|0;
+    let touched=false;
+    for(let sxp=0;sxp<spW;sxp++){
+      const cx=left+sxp; if(cx<0||cx>=W) continue;
+      if(transY>=zbuf[cx]-0.02) continue; // 벽 뒤 가림
+      const axf=(sxp/spW*aW)|0;
+      for(let syp=0;syp<spH;syp++){
+        const cy=top+syp; if(cy<0||cy>=H) continue;
+        const ayf=(syp/spH*aH)|0;
+        const line=art[Math.min(aH-1,ayf)]||"";
+        const chr=line[Math.min(line.length-1,axf)]||" ";
+        if(chr!==" "){ grid[cy][cx]=chr; touched=true; }
+      }
+    }
+    // 조준점(화면 중앙) 위에 가까운 사물 → 상호작용 대상
+    if(touched){
+      const midX=W>>1, midY=(H>>1);
+      if(screenX>left-2 && screenX<left+spW+2 && dist<3.4 && dist<reticleDist){
+        // 중앙 정렬 + 충분히 가까움
+        if(Math.abs(screenX-midX) < spW*0.7){ reticleObj=o; reticleDist=dist; }
+      }
+    }
+  }
+
+  view.textContent = grid.map(r=>r.join("")).join("\n");
+  currentTarget = reticleObj;
+  updatePrompt();
+}
+
+/* ---------- 미니맵 ---------- */
+function renderMap(){
+  const lines=[];
+  lines.push(" 미궁 지도 — 당신 @ · 중심 ★ · 방 □ · 사물 *");
+  lines.push("");
+  for(let y=0;y<M;y++){
+    let row=" ";
+    for(let x=0;x<M;x++){
+      const cell=map[y][x];
+      const here=(x===(px|0)&&y===(py|0));
+      const obj=objects.some(o=>!o.taken && (o.x|0)===x && (o.y|0)===y);
+      if(here) row+="@";
+      else if(cell===3) row+="★";
+      else if(obj) row+="*";
+      else if(cell===2) row+="□";
+      else if(cell===1) row+="█";
+      else row+="·";
+    }
+    lines.push(row);
+  }
+  lines.push(""); lines.push(" M 키로 닫기");
+  view.textContent=lines.join("\n");
+}
+
+/* ---------- 상호작용 ---------- */
+let currentTarget=null;
+const promptEl=document.getElementById("prompt");
+function updatePrompt(){
+  if(examineOpen||showMap||inEnding){ promptEl.classList.remove("on"); return; }
+  if(currentTarget){
+    const o=currentTarget, k=o.cat.kind;
+    let verb = k==="pickup"? `<span class="act">F</span> 줍기` :
+               k==="operate"? `<span class="act">E</span> 작동` :
+               `<span class="act">E</span> 살펴보기`;
+    promptEl.innerHTML=`<em>${o.cat.name}</em> &nbsp;—&nbsp; ${verb}`;
+    promptEl.classList.add("on");
+  } else promptEl.classList.remove("on");
+}
+
+function doExamine(){
+  if(examineOpen){ closeExamine(); return; }
+  const o=currentTarget; if(!o) return;
+  if(o.cat.kind==="operate"){
+    const res = o.cat.onOperate? o.cat.onOperate(o) : "아무 일도 일어나지 않는다.";
+    flash(res); return;
+  }
+  // examine 모달
+  document.getElementById("ex-name").textContent=o.cat.name;
+  document.getElementById("ex-tag").textContent=o.cat.tag;
+  document.getElementById("ex-art").textContent=o.cat.sprite.join("\n");
+  document.getElementById("ex-desc").textContent=o.cat.desc;
+  document.getElementById("examine").classList.add("on");
+  examineOpen=true; updatePrompt();
+}
+function closeExamine(){ document.getElementById("examine").classList.remove("on"); examineOpen=false; }
+
+function doPickup(){
+  const o=currentTarget; if(!o) return;
+  if(o.cat.kind!=="pickup"){ doExamine(); return; }
+  o.taken=true; addItem(o.cat.item||o.cat.name);
+  flash(`${o.cat.name}을(를) 손에 넣었다.`);
+  currentTarget=null; updatePrompt();
+  checkProgress();
+}
+
+let flashUntil=0;
+function flash(t){ msgEl.textContent=t; flashUntil=performance.now()+3600; }
+
+/* ---------- 진행/엔딩 ---------- */
+function checkProgress(){
+  const hasKey=inventory.includes("청동 색인열쇠");
+  const hasOrb=inventory.includes("빛의 구체");
+  if(hasKey&&hasOrb && !coreUnlocked){
+    coreUnlocked=true;
+    flash("열쇠와 구체가 공명한다. 중심 — 색인의 방이 열렸다. 별을 따라가라.");
+  }
+}
+let coreUnlocked=false;
+
+function heartCheck(){
+  const c=(M-1)/2;
+  const inside=Math.abs(px-c-0.5)<1.5 && Math.abs(py-c-0.5)<1.5;
+  if(inside && coreUnlocked && !inEnding){
+    inEnding=true;
+    const collected = inventory.length;
+    document.getElementById("end-title").textContent = `색인의 방 · ${floorN}층`;
+    document.getElementById("end-text").innerHTML =
+      `당신은 미궁의 중심에 도착했다.<br>` +
+      `열쇠가 자물쇠를 풀고, 구체의 별빛이 천장의 색인을 밝힌다.<br><br>` +
+      `이 층에서 ${collected}개의 물건을 모았다.<br>` +
+      `그러나 색인은 끝나지 않는다 — 한 층 아래, 또 다른 서가가 자라난다.`;
+    const e=document.getElementById("ending");
+    e.classList.remove("hidden"); e.style.opacity="1"; e.style.pointerEvents="auto";
+  } else if(inside && !coreUnlocked){
+    if(performance.now()-lastLock>3000){ lastLock=performance.now();
+      flash("중심의 문은 잠겨 있다. ‘청동 색인열쇠’와 ‘빛의 구체’가 필요하다."); }
+  }
+}
+let lastLock=0;
+
+function descend(){
+  // 다음 층: 소스 + 층번호로 새 미로
+  inEnding=false; coreUnlocked=false;
+  floorN++;
+  inventory=[]; renderInv();
+  buildMaze(hashStr(SRC) ^ (floorN*2654435761>>>0));
+  px=1.5; py=1.5; dir=0; lightOn=false; toggleLight(false);
+  document.getElementById("hud-room").textContent=`미궁 도서관 · ${floorN}층`;
+  const e=document.getElementById("ending"); e.style.opacity="0"; e.style.pointerEvents="none";
+  setTimeout(()=>e.classList.add("hidden"),1100);
+  flash(`${floorN}층으로 내려간다. 같은 미궁은 두 번 지어지지 않는다.`);
+}
+
+/* ---------- 이동 ---------- */
+function passable(x,y){ const mx=x|0,my=y|0; if(mx<0||my<0||mx>=M||my>=M) return false; return map[my][mx]!==1; }
+function objBlocked(x,y){ // 사물은 부드럽게 막되 통과 가능(살짝 밀림 방지 위해 비충돌로 둠)
+  return false; }
+function tryMove(nx,ny){
+  const m=0.2;
+  const cx=nx+Math.sign(nx-px)*m, cy=ny+Math.sign(ny-py)*m;
+  if(passable(cx,py)) px=nx;
+  if(passable(px,cy)) py=ny;
+}
+
+/* ---------- 입력 ---------- */
+const intro=document.getElementById("intro");
+function enter(){
+  if(entered) return; entered=true;
+  intro.classList.add("hidden");
+  flash("미궁에 들어섰다. 방을 찾아 물건을 모으고 중심으로 향하라.");
+  setTimeout(()=>document.getElementById("hud").classList.add("faded"),5000);
+}
+document.getElementById("enter-btn").addEventListener("click",enter);
+
+addEventListener("keydown",e=>{
+  const k=e.key.toLowerCase();
+  if(!entered){ enter(); return; }
+  if(inEnding){ descend(); return; }
+  if(examineOpen){ if(k==="e"||k==="escape") closeExamine(); return; }
+  if(k==="m"){ showMap=!showMap; if(showMap) render(); promptEl.classList.remove("on"); return; }
+  if(k==="e"){ doExamine(); return; }
+  if(k==="f"){ doPickup(); return; }
+  if(k==="escape"){ if(showMap) showMap=false; return; }
+  keys[k]=true;
+  if(["arrowup","arrowdown","arrowleft","arrowright"," ","w","a","s","d"].includes(k)) e.preventDefault();
+  document.getElementById("hud").classList.remove("faded");
+});
+addEventListener("keyup",e=>{ keys[e.key.toLowerCase()]=false; });
+
+/* ---------- 터치 ---------- */
+if(("ontouchstart" in window) || navigator.maxTouchPoints>0){
+  document.body.classList.add("touch");
+}
+function bindTZ(id,onDown,onUp){
+  const el=document.getElementById(id); if(!el) return;
+  const dn=e=>{ e.preventDefault(); onDown(); };
+  const up=e=>{ e.preventDefault(); if(onUp)onUp(); };
+  el.addEventListener("touchstart",dn,{passive:false});
+  el.addEventListener("touchend",up,{passive:false});
+  el.addEventListener("touchcancel",up,{passive:false});
+  el.addEventListener("mousedown",dn);
+  el.addEventListener("mouseup",up);
+  el.addEventListener("mouseleave",up);
+}
+bindTZ("t-up",()=>{ if(!entered){enter();return;} if(inEnding){descend();return;} keys["w"]=true; },()=>keys["w"]=false);
+bindTZ("t-dn",()=>keys["s"]=true,()=>keys["s"]=false);
+bindTZ("t-lf",()=>keys["a"]=true,()=>keys["a"]=false);
+bindTZ("t-rt",()=>keys["d"]=true,()=>keys["d"]=false);
+bindTZ("t-ql",()=>keys["arrowleft"]=true,()=>keys["arrowleft"]=false);
+bindTZ("t-qr",()=>keys["arrowright"]=true,()=>keys["arrowright"]=false);
+bindTZ("t-act",()=>{ if(!entered){enter();return;} if(inEnding){descend();return;}
+  if(examineOpen){closeExamine();return;} doExamine(); });
+bindTZ("t-grab",()=>{ if(examineOpen){closeExamine();return;} doPickup(); });
+
+/* ---------- 메인 루프 ---------- */
+let lastT=performance.now(), acc=0;
+function loop(t){
+  const dt=Math.min(0.05,(t-lastT)/1000); lastT=t;
+  if(entered && !inEnding && !examineOpen && !showMap){
+    const rs=2.3*dt, ms=2.5*dt;
+    if(keys["arrowleft"]||keys["q"]) dir-=rs;
+    if(keys["arrowright"]||keys["e"]) dir+=rs; // e는 살펴보기로 쓰지만 keydown에서 가로채므로 안전
+    const fx=Math.cos(dir), fy=Math.sin(dir);
+    if(keys["w"]||keys["arrowup"]) tryMove(px+fx*ms, py+fy*ms);
+    if(keys["s"]||keys["arrowdown"]) tryMove(px-fx*ms, py-fy*ms);
+    if(keys["a"]) tryMove(px+fy*ms, py-fx*ms);
+    if(keys["d"]) tryMove(px-fy*ms, py+fx*ms);
+    heartCheck();
+  }
+  acc+=dt;
+  if(acc>1/30){ acc=0; render();
+    if(performance.now()>flashUntil){
+      const c=(M-1)/2; const dx=c+0.5-px, dy=c+0.5-py;
+      const lockTxt = coreUnlocked? "중심 개방됨 — 별 ★ 을 따라가라" : "중심 잠김 — 열쇠·구체 필요";
+      msgEl.textContent = `${floorN}층 · ${lockTxt}`;
+    }
+    metaEl.textContent = `소지품 ${inventory.length} · 위치(${px.toFixed(1)},${py.toFixed(1)}) · 자재 ${SRC.length.toLocaleString()}자`;
+  }
+  requestAnimationFrame(loop);
+}
+renderInv();
+render();
+requestAnimationFrame(loop);
+
+// 디버그 훅(자가검증용)
+window.__lib = { get px(){return px;}, get py(){return py;}, get floor(){return floorN;},
+  get inv(){return inventory.slice();}, get coreUnlocked(){return coreUnlocked;},
+  get target(){return currentTarget&&currentTarget.cat.name;},
+  get objCount(){return objects.filter(o=>!o.taken).length;},
+  get rooms(){return rooms.length;}, enter, force(x,y,d){px=x;py=y;if(d!=null)dir=d;},
+  // 자가검증용: 첫 사물 앞에 서서 그쪽을 바라본다
+  faceFirstObject(){ const o=objects.find(x=>!x.taken); if(!o) return null;
+    px=o.x - 1.2; py=o.y; dir=0; // 사물 서쪽 1.2칸에서 동쪽(+x)을 봄
+    return {name:o.cat.name, kind:o.cat.kind, x:o.x, y:o.y}; },
+  objList(){ return objects.filter(o=>!o.taken).map(o=>({name:o.cat.name,kind:o.cat.kind,x:o.x,y:o.y})); } };
+})();
+</script>
+</body>
+</html>

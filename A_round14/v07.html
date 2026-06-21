@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Néon Manuscrit</title>
+<style>
+  :root{ color-scheme: dark; }
+  html,body{margin:0;height:100%;background:#05060a;overflow:hidden;
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    -webkit-tap-highlight-color:transparent;touch-action:none;cursor:crosshair;}
+  #stage{position:fixed;inset:0;display:block;}
+  /* HUD */
+  .hud{position:fixed;z-index:5;color:#9fb0d8;pointer-events:none;
+    text-shadow:0 0 12px rgba(80,140,255,.35);user-select:none;}
+  #brand{left:clamp(14px,3.2vw,40px);top:clamp(12px,2.6vh,30px);
+    font-weight:600;letter-spacing:.42em;font-size:clamp(9px,1.05vw,12px);
+    text-transform:uppercase;opacity:.78;}
+  #brand b{display:block;letter-spacing:.14em;font-weight:800;
+    font-size:clamp(13px,1.5vw,17px);margin-top:5px;color:#cfe0ff;opacity:.92;}
+  #hint{right:clamp(14px,3.2vw,40px);top:clamp(12px,2.6vh,30px);
+    text-align:right;font-size:clamp(8.5px,.95vw,11px);line-height:1.85;
+    letter-spacing:.16em;opacity:.62;}
+  #hint span{color:#7fffd0;opacity:.85;}
+  #gas{left:50%;bottom:clamp(12px,3vh,26px);transform:translateX(-50%);
+    font-size:clamp(8.5px,.95vw,11px);letter-spacing:.34em;opacity:.55;
+    text-transform:uppercase;white-space:nowrap;}
+  #gas i{font-style:normal;color:#ffd8a8;opacity:.9;}
+  @media (max-width:560px){ #hint{display:none;} #gas{letter-spacing:.22em;} }
+  .vig{position:fixed;inset:0;z-index:4;pointer-events:none;
+    background:radial-gradient(120% 90% at 50% 42%,transparent 38%,rgba(2,3,7,.55) 100%);}
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div class="vig"></div>
+<div class="hud" id="brand">Néon<b>Manuscrit</b></div>
+<div class="hud" id="hint">
+  <div>MOVE — <span>bend the glass</span></div>
+  <div>CLICK — <span>power surge</span></div>
+  <div>SCROLL — <span>change the gas</span></div>
+</div>
+<div class="hud" id="gas">gas mix · <i id="gasname">neon</i></div>
+
+<script>
+"use strict";
+(()=>{
+const cv=document.getElementById("stage");
+const ctx=cv.getContext("2d",{alpha:false});
+const gasEl=document.getElementById("gasname");
+
+/* ---------- viewport / DPR cap ---------- */
+let W=0,H=0,DPR=1,DIAG=1;
+function resize(){
+  DPR=Math.min(window.devicePixelRatio||1, 1.5);
+  W=window.innerWidth; H=window.innerHeight;
+  cv.width=Math.round(W*DPR); cv.height=Math.round(H*DPR);
+  cv.style.width=W+"px"; cv.style.height=H+"px";
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  DIAG=Math.hypot(W,H);
+  layout();
+}
+
+/* ====================================================================
+   STROKE FONT — hand-written single-line vector glyphs.
+   Coordinates in an em box: x 0..(advance), y 0(top)..1(baseline-ish).
+   Each glyph = array of polylines (cursive-ish), drawn as neon tube.
+   ==================================================================== */
+const G = {};
+// helper builder using control-point-free smooth polylines (already dense)
+function P(...pts){ return pts; }
+// Letters tuned to read as flowing handwriting. y grows downward.
+G[" "]={a:.42,s:[]};
+G["r"]={a:.62,s:[ P([.05,.95],[.07,.42],[.10,.40]),
+                  P([.10,.45],[.30,.32],[.50,.40]) ]};
+G["ê"]={a:.60,s:[ P([.04,.62],[.50,.55],[.52,.40],[.40,.30],[.20,.32],[.06,.50],[.06,.74],[.20,.95],[.46,.92]),
+                  P([.16,.18],[.28,.05],[.42,.18]) ]};
+G["e"]={a:.60,s:[ P([.04,.62],[.50,.55],[.52,.40],[.40,.30],[.20,.32],[.06,.50],[.06,.74],[.20,.95],[.46,.92]) ]};
+G["v"]={a:.62,s:[ P([.04,.36],[.28,.95],[.56,.36]) ]};
+G["e2"]=G["e"];
+G["E"]={a:.66,s:[ P([.56,.10],[.10,.10],[.06,.50],[.10,.95],[.56,.95]), P([.10,.52],[.42,.50]) ]};
+G["m"]={a:.92,s:[ P([.05,.95],[.07,.40]),
+                  P([.05,.45],[.18,.32],[.30,.40],[.30,.95]),
+                  P([.30,.45],[.46,.32],[.58,.40],[.58,.95]),
+                  P([.58,.45],[.74,.32],[.86,.40],[.86,.95]) ]};
+G["a"]={a:.62,s:[ P([.52,.40],[.50,.95]),
+                  P([.52,.46],[.38,.30],[.18,.34],[.07,.52],[.07,.78],[.20,.95],[.42,.90],[.52,.74]) ]};
+G["n"]={a:.66,s:[ P([.05,.95],[.07,.40]),
+                  P([.05,.45],[.22,.32],[.42,.38],[.46,.58],[.46,.95]) ]};
+G["u"]={a:.66,s:[ P([.06,.36],[.06,.78],[.20,.95],[.40,.90],[.48,.74],[.48,.36]),
+                  P([.48,.40],[.50,.95]) ]};
+G["s"]={a:.56,s:[ P([.46,.40],[.30,.30],[.14,.34],[.10,.48],[.24,.58],[.40,.66],[.42,.82],[.26,.95],[.08,.88]) ]};
+G["c"]={a:.58,s:[ P([.48,.42],[.32,.30],[.16,.34],[.07,.52],[.07,.78],[.20,.95],[.42,.92]) ]};
+G["i"]={a:.32,s:[ P([.10,.95],[.12,.40]), P([.11,.20],[.11,.16]) ]};
+G["t"]={a:.46,s:[ P([.18,.16],[.16,.80],[.30,.95],[.42,.88]), P([.02,.38],[.36,.36]) ]};
+G["o"]={a:.64,s:[ P([.28,.30],[.10,.40],[.06,.62],[.18,.92],[.40,.92],[.52,.66],[.46,.40],[.28,.30]) ]};
+G["l"]={a:.34,s:[ P([.12,.10],[.10,.80],[.18,.95],[.30,.90]) ]};
+G["é"]=G["e"];
+G["·"]={a:.34,s:[ P([.14,.55],[.14,.51]) ]};
+
+const TITLE = "rêve en néon"; // "dream in neon" — handwritten neon
+
+/* layout of strokes into screen space */
+let strokes=[];            // flattened sampled points: {pts:[{x,y,bx,by}], hueOff}
+let totalLen=0;
+let baseX=0, baseY=0, scaleEm=1;
+let words=[];
+
+// sample a polyline into dense points, return arc length too
+function samplePoly(poly, step){
+  const out=[]; let len=0;
+  for(let i=0;i<poly.length-1;i++){
+    const a=poly[i], b=poly[i+1];
+    const dx=b[0]-a[0], dy=b[1]-a[1];
+    const d=Math.hypot(dx,dy);
+    const n=Math.max(2,Math.ceil(d/step));
+    for(let k=0;k<n;k++){
+      const t=k/n;
+      out.push([a[0]+dx*t, a[1]+dy*t]);
+    }
+    len+=d;
+  }
+  out.push(poly[poly.length-1].slice());
+  return {out,len};
+}
+
+function layout(){
+  // measure advance
+  let adv=0;
+  for(const ch of TITLE){ const g=G[ch]||G[" "]; adv+=g.a+0.06; }
+  // fit width
+  const targetW = Math.min(W*0.86, W- (W<560? 36: 120));
+  scaleEm = targetW/adv;
+  // cap em height
+  const maxEm = H*0.30;
+  if(scaleEm> maxEm) scaleEm=maxEm;
+  const realW = adv*scaleEm;
+  baseX = (W-realW)/2;
+  baseY = H*0.40;
+  strokes=[]; totalLen=0;
+  let penX=baseX;
+  const step = 0.018; // em sampling
+  let hueWalk=0;
+  for(const ch of TITLE){
+    const g=G[ch]||G[" "];
+    for(const poly of g.s){
+      const sp=samplePoly(poly, step);
+      const pts=sp.out.map(p=>({
+        x: penX + p[0]*scaleEm,
+        y: baseY + p[1]*scaleEm,
+        bx:0, by:0   // bend offset (interaction)
+      }));
+      strokes.push({pts, len:sp.len*scaleEm, start:totalLen, hueOff:hueWalk});
+      totalLen += sp.len*scaleEm;
+    }
+    penX += (g.a+0.06)*scaleEm;
+    hueWalk += 4;
+  }
+  // dust field sized to viewport
+  seedDust();
+}
+
+/* ---------- gases / palettes ---------- */
+const GASES = [
+  {name:"neon",     hue:6,   sat:100, core:"#fff2e8"},
+  {name:"argon",    hue:205, sat:90,  core:"#eaf4ff"},
+  {name:"krypton",  hue:150, sat:88,  core:"#eafff4"},
+  {name:"helium",   hue:38,  sat:96,  core:"#fff5df"},
+  {name:"mercury",  hue:272, sat:78,  core:"#f3e9ff"},
+  {name:"xenon",    hue:188, sat:84,  core:"#e7feff"},
+  {name:"crimson",  hue:340, sat:96,  core:"#ffe9f1"},
+];
+let gasF=0;            // continuous gas index (scroll target)
+let gasFv=0;           // smoothed
+function gas(){ return gasF; }
+function lerp(a,b,t){return a+(b-a)*t;}
+function curGas(){
+  const n=GASES.length;
+  let f=((gasFv%n)+n)%n;
+  const i=Math.floor(f), t=f-i;
+  const A=GASES[i], B=GASES[(i+1)%n];
+  return {
+    hue: lerpHue(A.hue,B.hue,t),
+    sat: lerp(A.sat,B.sat,t),
+    name: t<0.5?A.name:B.name
+  };
+}
+function lerpHue(a,b,t){
+  let d=((b-a+540)%360)-180;
+  return (a+d*t+360)%360;
+}
+
+/* ---------- interaction state ---------- */
+const M={x:-9999,y:-9999, px:-9999,py:-9999, vx:0,vy:0, down:false, active:false};
+let surge=0;             // power surge envelope 0..1
+let shorts=[];           // shorted-out flicker segments
+let time=0;
+let scrollPulse=0;
+
+function setPointer(x,y){
+  M.px=M.x; M.py=M.y;
+  M.x=x; M.y=y;
+  M.vx=M.x-M.px; M.vy=M.y-M.py;
+  M.active=true;
+}
+cv.addEventListener("pointermove",e=>{ setPointer(e.clientX,e.clientY); },{passive:true});
+cv.addEventListener("pointerdown",e=>{ setPointer(e.clientX,e.clientY); M.down=true; triggerSurge(e.clientX,e.clientY); audioCrack(); },{passive:true});
+window.addEventListener("pointerup",()=>{ M.down=false; },{passive:true});
+cv.addEventListener("pointerleave",()=>{ M.active=false; M.x=-9999;M.y=-9999; },{passive:true});
+
+window.addEventListener("wheel",e=>{
+  gasF += (e.deltaY>0?1:-1)*0.28;
+  scrollPulse=1;
+  e.preventDefault();
+},{passive:false});
+// keyboard nicety
+window.addEventListener("keydown",e=>{
+  if(e.key==="ArrowRight"){gasF+=0.5;scrollPulse=1;}
+  if(e.key==="ArrowLeft"){gasF-=0.5;scrollPulse=1;}
+  if(e.key===" "){triggerSurge(W/2,H*0.4);audioCrack();}
+});
+
+function triggerSurge(x,y){
+  surge=1;
+  // short out a few random strokes briefly
+  shorts=[];
+  const n=2+Math.floor(Math.random()*3);
+  for(let i=0;i<n;i++){
+    shorts.push({ idx: Math.floor(Math.random()*strokes.length),
+                  t: 0.18+Math.random()*0.5,
+                  life: 0.55+Math.random()*0.5 });
+  }
+}
+
+/* ---------- dust motes ---------- */
+let dust=[];
+function seedDust(){
+  const target = Math.min(150, Math.round(DIAG/12));
+  dust=[];
+  for(let i=0;i<target;i++){
+    dust.push({
+      x:Math.random()*W, y:Math.random()*H,
+      z:0.3+Math.random()*0.9,
+      vx:(Math.random()-.5)*0.12,
+      vy:-0.05-Math.random()*0.18,
+      ph:Math.random()*6.28
+    });
+  }
+}
+
+/* ====================================================================
+   AUDIO — soft neon power hum + crackle on surge. Lazy-init on gesture.
+   ==================================================================== */
+let AC=null, hum=null, humGain=null, humGain2=null, lp=null;
+function initAudio(){
+  if(AC) return;
+  try{
+    AC=new (window.AudioContext||window.webkitAudioContext)();
+    const o1=AC.createOscillator(); o1.type="sawtooth"; o1.frequency.value=60;
+    const o2=AC.createOscillator(); o2.type="sine";    o2.frequency.value=120.5;
+    lp=AC.createBiquadFilter(); lp.type="lowpass"; lp.frequency.value=340; lp.Q.value=6;
+    humGain=AC.createGain(); humGain.gain.value=0.0;
+    o1.connect(lp); o2.connect(lp); lp.connect(humGain); humGain.connect(AC.destination);
+    o1.start(); o2.start();
+    hum={o1,o2};
+    // gentle flicker LFO on filter
+    const lfo=AC.createOscillator(); lfo.type="sine"; lfo.frequency.value=0.7;
+    const lg=AC.createGain(); lg.gain.value=60;
+    lfo.connect(lg); lg.connect(lp.frequency); lfo.start();
+    humGain.gain.linearRampToValueAtTime(0.045, AC.currentTime+1.2);
+  }catch(e){ AC=null; }
+}
+function audioCrack(){
+  initAudio();
+  if(!AC) return;
+  if(AC.state==="suspended") AC.resume();
+  const t=AC.currentTime;
+  const buf=AC.createBuffer(1, AC.sampleRate*0.18, AC.sampleRate);
+  const d=buf.getChannelData(0);
+  for(let i=0;i<d.length;i++){ d[i]=(Math.random()*2-1)*Math.pow(1-i/d.length,2.5); }
+  const src=AC.createBufferSource(); src.buffer=buf;
+  const bp=AC.createBiquadFilter(); bp.type="bandpass"; bp.frequency.value=1800; bp.Q.value=1.2;
+  const g=AC.createGain(); g.gain.value=0.14;
+  src.connect(bp); bp.connect(g); g.connect(AC.destination);
+  src.start(t);
+  // hum overdrive blip
+  if(humGain){ humGain.gain.cancelScheduledValues(t);
+    humGain.gain.setValueAtTime(0.13,t);
+    humGain.gain.exponentialRampToValueAtTime(0.045,t+0.5); }
+}
+window.addEventListener("pointerdown",initAudio,{once:true});
+
+/* ====================================================================
+   RENDER
+   ==================================================================== */
+let writeProg=0;          // 0..1 how much of the sign has "lit up" (first paint = animated reveal but instantly partially lit)
+function tubeColor(hue,sat,light,alpha){
+  return `hsla(${hue},${sat}%,${light}%,${alpha})`;
+}
+
+function frame(dt){
+  time+=dt;
+  // smooth gas
+  gasFv += (gasF-gasFv)*Math.min(1,dt*4);
+  const g=curGas();
+  gasEl.textContent=g.name;
+  // envelopes
+  surge*= Math.pow(0.0009, dt);     // fast decay
+  scrollPulse*=Math.pow(0.02,dt);
+  // pointer decay of velocity
+  if(!M.down){ M.vx*=0.9; M.vy*=0.9; }
+  // write-on reveal (loops subtly — re-writes when idle long)
+  writeProg = Math.min(1, writeProg + dt*0.62);
+
+  // ---- bend strokes toward/away from pointer (magnetic glass) ----
+  const R = DIAG*0.20;
+  const R2=R*R;
+  const push = M.down? -1.15 : 0.72;   // attract normally, repel on press
+  for(const st of strokes){
+    const pts=st.pts;
+    for(const p of pts){
+      // target home + bend
+      let bx=0,by=0;
+      if(M.active){
+        const dx=p.x+p.bx-M.x, dy=p.y+p.by-M.y;
+        const d2=dx*dx+dy*dy;
+        if(d2<R2){
+          const d=Math.sqrt(d2)+0.001;
+          const f=(1-d/R);
+          const strength=f*f* R*0.62*push;
+          bx += (dx/d)*strength;
+          by += (dy/d)*strength;
+          // swirl from pointer velocity
+          const sp=Math.min(55,Math.hypot(M.vx,M.vy));
+          bx += (-dy/d)*f*sp*0.5*Math.sign(M.vx+0.0001);
+          by += ( dx/d)*f*sp*0.5*Math.sign(M.vx+0.0001);
+        }
+      }
+      // breathing wobble
+      const wob=Math.sin(time*1.6 + p.x*0.02 + p.y*0.03)*1.1*(1+surge*2);
+      p.bx += (bx + Math.cos(p.y*0.05+time)*wob - p.bx)*Math.min(1,dt*6);
+      p.by += (by + Math.sin(p.x*0.05+time*1.2)*wob - p.by)*Math.min(1,dt*6);
+    }
+  }
+
+  draw(g, dt);
+}
+
+function draw(g, dt){
+  // ----- background: deep room with subtle colored ambient from sign -----
+  const amb=ctx.createLinearGradient(0,0,0,H);
+  amb.addColorStop(0,"#070912");
+  amb.addColorStop(0.45,"#05060d");
+  amb.addColorStop(1,"#020207");
+  ctx.fillStyle=amb;
+  ctx.fillRect(0,0,W,H);
+
+  // ambient glow wash behind sign (color of gas)
+  const wash=ctx.createRadialGradient(W/2,baseY+scaleEm*0.4,0, W/2,baseY+scaleEm*0.4, DIAG*0.55);
+  const a = 0.18 + surge*0.30 + scrollPulse*0.08;
+  wash.addColorStop(0, tubeColor(g.hue,g.sat,58, a));
+  wash.addColorStop(0.45, tubeColor(g.hue,g.sat,42, a*0.4));
+  wash.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.globalCompositeOperation="screen";
+  ctx.fillStyle=wash; ctx.fillRect(0,0,W,H);
+  ctx.globalCompositeOperation="source-over";
+
+  // ----- floor reflection plane marker (subtle) -----
+  const floorY=baseY+scaleEm*1.05;
+  // ----- DUST (behind & through light) -----
+  drawDust(g);
+
+  // ===== draw the sign: real (top) + reflection (bottom, flipped, faded) =====
+  ctx.globalCompositeOperation="lighter"; // additive bloom
+
+  // reflection first
+  ctx.save();
+  ctx.translate(0, floorY*2);
+  ctx.scale(1,-1);
+  ctx.globalAlpha=0.30;
+  drawSign(g, true, floorY);
+  ctx.restore();
+  ctx.globalAlpha=1;
+
+  // wet-floor gradient overlay to fade reflection downward (normal blend on top)
+  ctx.globalCompositeOperation="source-over";
+  const fl=ctx.createLinearGradient(0,floorY,0,H);
+  fl.addColorStop(0,"rgba(3,4,9,0)");
+  fl.addColorStop(0.35,"rgba(3,4,9,.55)");
+  fl.addColorStop(1,"rgba(2,2,6,.92)");
+  ctx.fillStyle=fl; ctx.fillRect(0,floorY-2,W,H-floorY+2);
+
+  // real sign
+  ctx.globalCompositeOperation="lighter";
+  drawSign(g, false, floorY);
+  ctx.globalCompositeOperation="source-over";
+
+  // pointer "hand of light"
+  if(M.active){
+    ctx.globalCompositeOperation="screen";
+    const r=DIAG*0.10;
+    const rg=ctx.createRadialGradient(M.x,M.y,0,M.x,M.y,r);
+    rg.addColorStop(0,tubeColor(g.hue,g.sat,70,0.16));
+    rg.addColorStop(1,"rgba(0,0,0,0)");
+    ctx.fillStyle=rg;
+    ctx.beginPath();ctx.arc(M.x,M.y,r,0,6.2832);ctx.fill();
+    ctx.globalCompositeOperation="source-over";
+  }
+}
+
+function drawDust(g){
+  ctx.globalCompositeOperation="screen";
+  for(const m of dust){
+    m.x+=m.vx*m.z; m.y+=m.vy*m.z;
+    // drift influenced by pointer drag
+    if(M.active && M.down){
+      const dx=m.x-M.x, dy=m.y-M.y; const d=Math.hypot(dx,dy)+1;
+      if(d<DIAG*0.18){ m.x+=(-dy/d)*1.2; m.y+=(dx/d)*1.2; }
+    }
+    if(m.y<-10){m.y=H+10;m.x=Math.random()*W;}
+    if(m.x<-10)m.x=W+10; if(m.x>W+10)m.x=-10;
+    const tw=0.4+0.6*Math.abs(Math.sin(time*2+m.ph));
+    const r=m.z*1.6;
+    ctx.fillStyle=tubeColor(g.hue,g.sat*0.6,75, 0.06*tw*m.z);
+    ctx.beginPath();ctx.arc(m.x,m.y,r*3,0,6.2832);ctx.fill();
+    ctx.fillStyle=tubeColor(g.hue,40,92, 0.5*tw*m.z);
+    ctx.beginPath();ctx.arc(m.x,m.y,r*0.5,0,6.2832);ctx.fill();
+  }
+  ctx.globalCompositeOperation="source-over";
+}
+
+// draw the whole neon sign. reflection=true => slightly dimmer/blurrier feel
+function drawSign(g, reflection, floorY){
+  const lit = totalLen*writeProg;
+  const baseW = Math.max(2.6, scaleEm*0.058);   // tube thickness scales with size
+  const flick = 0.86 + 0.14*Math.sin(time*40)*Math.sin(time*7.3)  // gas flicker
+              + 0.05*Math.sin(time*113.0);
+  const surgeBoost = 1 + surge*1.4;
+
+  for(let si=0; si<strokes.length; si++){
+    const st=strokes[si];
+    if(st.start > lit) continue;       // not yet written
+    const partial = Math.min(1, (lit-st.start)/Math.max(1,st.len));
+    const hue = (g.hue + st.hueOff*0.6 + 360)%360;
+    // shorted-out handling
+    let shortFlick=1, shorted=false;
+    for(const s of shorts){
+      if(s.idx===si){ shorted=true;
+        const f = s.life>0.2 ? (Math.random()<0.45?0.12:0.9) : 1;
+        shortFlick = f;
+      }
+    }
+    const intensity = flick*surgeBoost*shortFlick*(reflection?0.9:1);
+
+    if(reflection){
+      // cheaper reflection: 3 passes only (faded + flipped, detail wasted)
+      drawTubePass(st, partial, baseW*7.0,  hue, g.sat, 52, 0.09*intensity);
+      drawTubePass(st, partial, baseW*3.0,  hue, g.sat, 62, 0.22*intensity);
+      drawTubePass(st, partial, baseW*0.9,  hue, g.sat, 82, 0.85*intensity);
+      continue;
+    }
+    // ----- glass tube casing (subtle dark body so unlit parts read as glass) -----
+    drawTubePass(st, partial, baseW*1.5, hue, 30, 8, 0.30, "source-over");
+    // ----- multi-pass glow: soft bloom -> mid -> tight -> hot core (explicit strokes) -----
+    drawTubePass(st, partial, baseW*9.0,  hue, g.sat, 50, 0.06*intensity);
+    drawTubePass(st, partial, baseW*5.0,  hue, g.sat, 55, 0.11*intensity);
+    drawTubePass(st, partial, baseW*2.8,  hue, g.sat, 62, 0.22*intensity);
+    drawTubePass(st, partial, baseW*1.5,  hue, g.sat, 70, 0.52*intensity);
+    drawTubePass(st, partial, baseW*0.95, hue, g.sat, 80, 0.88*intensity);
+    // hot white-ish core
+    drawTubePass(st, partial, baseW*0.5, hue, Math.min(100,g.sat*0.35), 99, 1.0*intensity);
+
+    // electrode caps (endpoints) — small bright nubs
+    if(!reflection){
+      const endIdx = Math.floor((st.pts.length-1)*partial);
+      const a=st.pts[0], b=st.pts[Math.max(0,endIdx)];
+      drawCap(a,hue,g.sat,intensity,baseW);
+      if(partial>0.04) drawCap(b,hue,g.sat,intensity,baseW);
+      // glowing "writing tip" while being drawn
+      if(partial<1 && writeProg<1){
+        const tip=st.pts[Math.max(0,endIdx)];
+        ctx.fillStyle=tubeColor(hue,g.sat,90,0.9);
+        ctx.beginPath();ctx.arc(tip.x+tip.bx,tip.y+tip.by,baseW*1.6,0,6.2832);ctx.fill();
+      }
+    }
+  }
+}
+
+function drawTubePass(st, partial, width, hue, sat, light, alpha, comp){
+  const pts=st.pts;
+  const n=pts.length;
+  const upto=Math.max(1, Math.floor((n-1)*partial));
+  if(comp){ ctx.globalCompositeOperation=comp; }
+  ctx.lineWidth=width;
+  ctx.lineCap="round";
+  ctx.lineJoin="round";
+  ctx.strokeStyle=tubeColor(hue,sat,light,alpha);
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x+pts[0].bx, pts[0].y+pts[0].by);
+  for(let i=1;i<=upto;i++){
+    const p=pts[i];
+    ctx.lineTo(p.x+p.bx, p.y+p.by);
+  }
+  ctx.stroke();
+  if(comp){ ctx.globalCompositeOperation="lighter"; }
+}
+
+function drawCap(p,hue,sat,intensity,baseW){
+  ctx.fillStyle=tubeColor(hue,sat,70,0.5*intensity);
+  ctx.beginPath();ctx.arc(p.x+p.bx,p.y+p.by,baseW*2.0,0,6.2832);ctx.fill();
+  ctx.fillStyle=tubeColor(hue,sat*0.3,98,0.9*intensity);
+  ctx.beginPath();ctx.arc(p.x+p.bx,p.y+p.by,baseW*0.7,0,6.2832);ctx.fill();
+}
+
+/* ---------- shorts lifecycle ---------- */
+function updateShorts(dt){
+  for(const s of shorts){ s.life-=dt; }
+  shorts=shorts.filter(s=>s.life>0);
+}
+
+/* ---------- main loop ---------- */
+let last=performance.now();
+function tick(now){
+  let dt=(now-last)/1000; last=now;
+  if(dt>0.05) dt=0.05; // clamp after tab switch
+  updateShorts(dt);
+  frame(dt);
+  requestAnimationFrame(tick);
+}
+
+window.addEventListener("resize",resize,{passive:true});
+resize();
+// expose for verification
+window.__neon = {
+  state:()=>({ gas:curGas().name, gasF:gasFv, surge, writeProg, strokes:strokes.length, dust:dust.length }),
+  surge:()=>{triggerSurge(W/2,H*0.4);},
+  scroll:(d)=>{gasF+=d;scrollPulse=1;},
+  move:(x,y)=>setPointer(x,y),
+  press:(v)=>{M.down=!!v;}
+};
+requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>

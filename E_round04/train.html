@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DITHER_RAIL.EXE — 486 LINE</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<style>
+  :root{
+    /* constrained warm palette — rust / salmon / deep maroon / peach + teal / green */
+    --c-void:#1a0d0f;      /* deepest maroon-black */
+    --c-maroon:#2c1417;    /* deep maroon */
+    --c-rust:#7a3320;      /* rust */
+    --c-rust2:#9c4a28;     /* rust light */
+    --c-salmon:#d4795a;    /* salmon */
+    --c-peach:#e8b48a;     /* peach */
+    --c-cream:#f2d9b8;     /* cream highlight */
+    --c-teal:#2b6b6b;      /* teal */
+    --c-teal2:#3f8f86;     /* teal light */
+    --c-green:#5a8a5a;     /* dusty green */
+    --c-amber:#e8a23a;     /* amber readout */
+    --c-line:#5a2a22;      /* panel border */
+    --c-line2:#7a3a2c;
+    --c-ink:#e8b48a;
+    --c-dim:#a9694e;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:
+      radial-gradient(circle at 50% 30%, #2c1417 0%, #1a0d0f 70%, #110809 100%);
+    color:var(--c-ink);
+    font-family:'VT323',monospace;
+    display:flex;align-items:center;justify-content:center;
+    min-height:100vh;padding:18px;
+    image-rendering:pixelated;
+    overflow-x:hidden;
+  }
+  /* ===== WINDOW CHROME ===== */
+  .win{
+    width:min(1180px,100%);
+    background:linear-gradient(180deg,#241013,#1c0c0f);
+    border:2px solid var(--c-line2);
+    box-shadow:0 0 0 2px #160a0c, 0 18px 50px rgba(0,0,0,.6), inset 0 0 0 1px #341a18;
+    border-radius:3px;
+    overflow:hidden;
+  }
+  .titlebar{
+    display:flex;align-items:center;gap:8px;
+    background:linear-gradient(180deg,#7a3320,#5a2418);
+    border-bottom:2px solid #160a0c;
+    padding:5px 8px;
+    font-family:'Press Start 2P';font-size:9px;color:#f2d9b8;
+    letter-spacing:1px;
+    user-select:none;
+  }
+  .dots{display:flex;gap:5px;margin-right:4px}
+  .dot{width:11px;height:11px;border:1px solid #160a0c;border-radius:1px;image-rendering:pixelated}
+  .dot.r{background:#d4795a}.dot.y{background:#e8a23a}.dot.g{background:#5a8a5a}
+  .title-txt{flex:0 0 auto;text-shadow:1px 1px 0 #160a0c}
+  .title-blip{color:#e8b48a;opacity:.85;font-size:8px;margin-left:6px}
+  .titlebar .clock{margin-left:auto;font-family:'VT323';font-size:18px;line-height:1;color:#f2d9b8;letter-spacing:0}
+  /* menu strip */
+  .menu{
+    display:flex;gap:0;flex-wrap:wrap;
+    background:#1c0c0f;border-bottom:1px solid #160a0c;
+    font-size:17px;color:var(--c-dim);
+  }
+  .menu span{padding:3px 11px;border-right:1px solid #2c1417;cursor:default}
+  .menu span:hover{background:#2c1417;color:var(--c-peach)}
+  .menu .mk{color:var(--c-salmon)}
+
+  /* ===== BODY GRID ===== */
+  .body{display:flex;gap:0;background:#160a0c}
+  .stage{
+    flex:1 1 auto;min-width:0;position:relative;
+    border-right:2px solid #160a0c;
+    background:#1a0d0f;
+  }
+  .screen-wrap{position:relative;width:100%;aspect-ratio:16/10;overflow:hidden}
+  #scene{display:block;width:100%;height:100%;image-rendering:pixelated}
+  /* CRT scanlines + vignette over the canvas */
+  .crt{
+    position:absolute;inset:0;pointer-events:none;
+    background:
+      repeating-linear-gradient(0deg, rgba(0,0,0,.16) 0 1px, rgba(0,0,0,0) 1px 3px);
+    mix-blend-mode:multiply;
+  }
+  .vig{position:absolute;inset:0;pointer-events:none;
+    box-shadow:inset 0 0 90px 18px rgba(20,8,9,.7);}
+  /* overlay HUD inside the window viewport */
+  .hud{position:absolute;inset:0;pointer-events:none;font-family:'Press Start 2P';color:#f2d9b8}
+  .hud .corner{position:absolute;font-size:8px;letter-spacing:1px;text-shadow:1px 1px 0 #160a0c;
+    background:rgba(26,13,15,.45);padding:4px 6px;border:1px solid rgba(122,58,44,.6)}
+  .hud .tl{top:8px;left:8px}
+  .hud .tr{top:8px;right:8px;text-align:right}
+  .hud .bl{bottom:8px;left:8px;font-family:'VT323';font-size:16px;padding:2px 7px;color:#e8b48a}
+  .hud .br{bottom:8px;right:8px;font-family:'VT323';font-size:16px;padding:2px 7px}
+  .blink{animation:bl 1.1s steps(1) infinite}
+  @keyframes bl{50%{opacity:.15}}
+  .reticle{position:absolute;top:50%;left:50%;width:54px;height:54px;transform:translate(-50%,-50%);
+    border:1px solid rgba(242,217,184,.35);pointer-events:none}
+  .reticle:before,.reticle:after{content:"";position:absolute;background:rgba(242,217,184,.5)}
+  .reticle:before{left:50%;top:-7px;width:1px;height:14px;transform:translateX(-50%)}
+  .reticle:after{top:50%;left:-7px;height:1px;width:14px;transform:translateY(-50%)}
+
+  /* ===== RIGHT PANEL ===== */
+  .panel{
+    flex:0 0 268px;width:268px;
+    background:linear-gradient(180deg,#1f0e11,#190b0e);
+    padding:9px;display:flex;flex-direction:column;gap:8px;
+    font-size:16px;
+  }
+  .pblock{border:1px solid var(--c-line);background:#160a0c;padding:7px 8px}
+  .ph{font-family:'Press Start 2P';font-size:8px;color:var(--c-salmon);
+    letter-spacing:1px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center}
+  .ph .led{width:7px;height:7px;background:var(--c-amber);border-radius:50%;
+    box-shadow:0 0 5px var(--c-amber);animation:pulse 1.6s infinite}
+  @keyframes pulse{50%{opacity:.35}}
+  .row{display:flex;justify-content:space-between;align-items:center;line-height:1.35;color:var(--c-dim)}
+  .row b{color:var(--c-peach);font-weight:400}
+  .row .v{color:var(--c-cream)}
+  .bar{height:8px;background:#2c1417;border:1px solid #3a1a18;margin:3px 0 6px;position:relative;overflow:hidden}
+  .bar i{position:absolute;left:0;top:0;bottom:0;background:
+    repeating-linear-gradient(90deg,var(--c-salmon) 0 4px,#9c4a28 4px 6px)}
+  /* palette strip */
+  .pal{display:grid;grid-template-columns:repeat(8,1fr);gap:3px;margin-top:2px}
+  .sw{aspect-ratio:1/1;border:1px solid #160a0c;image-rendering:pixelated}
+  /* timetable */
+  .tt{font-size:15px;color:var(--c-dim)}
+  .tt .tr-row{display:grid;grid-template-columns:46px 1fr 40px;gap:4px;padding:2px 0;
+    border-bottom:1px dashed #2c1417;align-items:center}
+  .tt .tr-row:last-child{border-bottom:0}
+  .tt .stn{color:var(--c-peach)}
+  .tt .now{color:var(--c-cream);background:#3a1a18}
+  .tt .now .stn{color:var(--c-amber)}
+  .tag{font-family:'Press Start 2P';font-size:7px;padding:2px 4px;border:1px solid;letter-spacing:0}
+  .tag.ok{color:#8fc88f;border-color:#3f6b3f}
+  .tag.via{color:#e8a23a;border-color:#7a5a1a}
+  .tag.next{color:#d4795a;border-color:#7a3a2c}
+  /* control buttons */
+  .ctrls{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:2px}
+  button.btn{
+    font-family:'Press Start 2P';font-size:8px;letter-spacing:1px;
+    padding:9px 4px;cursor:pointer;color:#f2d9b8;
+    background:linear-gradient(180deg,#9c4a28,#7a3320);
+    border:1px solid #160a0c;box-shadow:inset 1px 1px 0 #d4795a, inset -1px -1px 0 #4a1f15;
+    text-shadow:1px 1px 0 #160a0c;
+  }
+  button.btn.alt{background:linear-gradient(180deg,#2b6b6b,#205050);
+    box-shadow:inset 1px 1px 0 #3f8f86, inset -1px -1px 0 #143838}
+  button.btn:active{transform:translateY(1px);box-shadow:inset 1px 1px 0 #4a1f15}
+  button.btn[aria-pressed="true"]{outline:2px solid #e8b48a;outline-offset:-3px}
+  .seg{display:flex;border:1px solid var(--c-line);margin-top:2px}
+  .seg button{flex:1;font-family:'VT323';font-size:15px;background:#160a0c;color:var(--c-dim);
+    border:0;border-right:1px solid var(--c-line);padding:4px 0;cursor:pointer}
+  .seg button:last-child{border-right:0}
+  .seg button.on{background:#7a3320;color:#f2d9b8}
+
+  /* ===== STATUS BAR ===== */
+  .statusbar{
+    display:flex;align-items:center;gap:0;
+    background:linear-gradient(180deg,#7a3320,#5a2418);
+    border-top:2px solid #160a0c;
+    font-family:'Press Start 2P';font-size:8px;color:#f2d9b8;letter-spacing:1px;
+  }
+  .statusbar .seg2{padding:5px 10px;border-right:1px solid #160a0c;text-shadow:1px 1px 0 #160a0c}
+  .statusbar .grow{flex:1;border-right:0;text-align:right;color:#f2d9b8}
+  .statusbar .marq{flex:1;overflow:hidden;white-space:nowrap;border-right:1px solid #160a0c}
+  .statusbar .marq span{display:inline-block;padding-left:100%;animation:mq 16s linear infinite;color:#e8b48a}
+  @keyframes mq{to{transform:translateX(-100%)}}
+
+  /* responsive */
+  @media (max-width:820px){
+    body{padding:8px}
+    .body{flex-direction:column}
+    .stage{border-right:0;border-bottom:2px solid #160a0c}
+    .panel{flex:1 1 auto;width:100%}
+    .titlebar .clock{font-size:15px}
+    .menu{font-size:15px}
+    .menu span:nth-child(n+5){display:none}
+  }
+  @media (max-width:430px){
+    .title-blip{display:none}
+    .titlebar{font-size:8px}
+    .panel{font-size:15px}
+  }
+</style>
+</head>
+<body>
+  <div class="win" role="application" aria-label="DITHER_RAIL 486 line">
+    <!-- TITLE BAR -->
+    <div class="titlebar">
+      <div class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
+      <span class="title-txt">DITHER_RAIL.EXE</span>
+      <span class="title-blip">// 486 LINE &middot; CAR 07</span>
+      <span class="clock" id="clk">--:--:--</span>
+    </div>
+    <!-- MENU -->
+    <div class="menu">
+      <span><span class="mk">F</span>ILE</span>
+      <span><span class="mk">V</span>IEW</span>
+      <span><span class="mk">R</span>OUTE</span>
+      <span><span class="mk">C</span>ABIN</span>
+      <span><span class="mk">P</span>ALETTE</span>
+      <span><span class="mk">A</span>UDIO</span>
+      <span><span class="mk">H</span>ELP</span>
+    </div>
+
+    <div class="body">
+      <!-- STAGE: dithered parallax window -->
+      <div class="stage">
+        <div class="screen-wrap">
+          <canvas id="scene" width="320" height="200"></canvas>
+          <div class="crt"></div>
+          <div class="vig"></div>
+          <div class="hud">
+            <div class="corner tl">WINDOW&middot;SEAT 12A<br>SECTOR <span id="sector">FIELDS</span></div>
+            <div class="corner tr">SPD <span id="spd">000</span> KM/H<br>HDG <span id="hdg">NW</span></div>
+            <div class="reticle"></div>
+            <div class="corner bl">REC <span class="blink">&#9679;</span> OUTBOUND</div>
+            <div class="corner br" id="dist">DIST 000.0 KM</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT PANEL -->
+      <aside class="panel" aria-label="cabin control">
+        <div class="pblock">
+          <div class="ph">CABIN CONTROL <span class="led"></span></div>
+          <div class="row"><b>CAR / SEAT</b><span class="v">07 / 12A</span></div>
+          <div class="row"><b>CLASS</b><span class="v">WINDOW</span></div>
+          <div class="row"><b>NEXT STOP</b><span class="v" id="next">TUNNEL JCT</span></div>
+          <div class="row"><b>ETA</b><span class="v" id="eta">+04:12</span></div>
+          <div class="bar"><i id="etabar" style="width:42%"></i></div>
+          <div class="row"><b>SIGNAL</b><span class="v">CLEAR &#9608;&#9608;&#9608;&#9608;&#9617;</span></div>
+        </div>
+
+        <div class="pblock">
+          <div class="ph">VIEW / SCENE</div>
+          <div class="seg" id="seg">
+            <button data-s="0" class="on">FIELDS</button>
+            <button data-s="1">TUNNEL</button>
+            <button data-s="2">COAST</button>
+          </div>
+          <div class="row" style="margin-top:6px"><b>PARALLAX</b><span class="v" id="plx">x3.2</span></div>
+          <div class="row"><b>DITHER</b><span class="v" id="dmode">BAYER 8&times;8</span></div>
+          <div class="row"><b>QUANTIZE</b><span class="v">14 COL</span></div>
+        </div>
+
+        <div class="pblock">
+          <div class="ph">PALETTE.WARM</div>
+          <div class="pal" id="palstrip"></div>
+        </div>
+
+        <div class="pblock" style="flex:1 1 auto">
+          <div class="ph">TIMETABLE <span style="font-family:VT323;font-size:14px;color:#a9694e">486&middot;LINE</span></div>
+          <div class="tt" id="tt"></div>
+        </div>
+
+        <div class="pblock">
+          <div class="ph">DRIVE</div>
+          <div class="ctrls">
+            <button class="btn" id="runbtn" aria-pressed="true">PAUSE</button>
+            <button class="btn alt" id="ditherbtn" aria-pressed="true">DITHER</button>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <!-- STATUS BAR -->
+    <div class="statusbar">
+      <span class="seg2">RDY</span>
+      <span class="seg2">486DX2/66</span>
+      <div class="marq"><span>OUTBOUND 486 LINE &middot; SUNSET FIELDS &rarr; TUNNEL JCT &rarr; SALMON COAST &middot; ON TIME &middot; QUIET CAR &middot; MIND THE DITHER GAP &middot; </span></div>
+      <span class="seg2 grow" id="fps">FPS 00</span>
+    </div>
+  </div>
+
+<script>
+(function(){
+  "use strict";
+  // ===================== PALETTE (warm constrained, 14 colors) =====================
+  // index order roughly dark -> light, plus teal/green family
+  const PAL = [
+    [0x14,0x08,0x09], // 0  void
+    [0x2c,0x14,0x17], // 1  deep maroon
+    [0x4a,0x1f,0x18], // 2  maroon-rust
+    [0x7a,0x33,0x20], // 3  rust
+    [0x9c,0x4a,0x28], // 4  rust light
+    [0xc0,0x5e,0x3a], // 5  burnt orange
+    [0xd4,0x79,0x5a], // 6  salmon
+    [0xe8,0x9a,0x6a], // 7  salmon light
+    [0xe8,0xb4,0x8a], // 8  peach
+    [0xf2,0xd9,0xb8], // 9  cream
+    [0x20,0x40,0x42], //10  deep teal
+    [0x2b,0x6b,0x6b], //11  teal
+    [0x3f,0x8f,0x86], //12  teal light
+    [0x5a,0x8a,0x5a], //13  dusty green
+  ];
+  // expand palette to swatch strip
+  (function paint(){
+    const strip=document.getElementById('palstrip');
+    PAL.forEach(c=>{const d=document.createElement('div');d.className='sw';
+      d.style.background='rgb('+c[0]+','+c[1]+','+c[2]+')';strip.appendChild(d);});
+  })();
+
+  // ===================== BAYER 8x8 ordered dither matrix =====================
+  const B8=[
+     0,48,12,60, 3,51,15,63,
+    32,16,44,28,35,19,47,31,
+     8,56, 4,52,11,59, 7,55,
+    40,24,36,20,43,27,39,23,
+     2,50,14,62, 1,49,13,61,
+    34,18,46,30,33,17,45,29,
+    10,58, 6,54, 9,57, 5,53,
+    42,26,38,22,41,25,37,21
+  ].map(v=>(v+0.5)/64-0.5); // normalize to [-0.5,0.5)
+  const BN=8;
+
+  // 4x4 for an alternate "coarse" mode
+  const B4=[
+     0, 8, 2,10,
+    12, 4,14, 6,
+     3,11, 1, 9,
+    15, 7,13, 5
+  ].map(v=>(v+0.5)/16-0.5);
+
+  // ===================== CANVAS =====================
+  const cv=document.getElementById('scene');
+  const ctx=cv.getContext('2d',{willReadFrequently:true});
+  let W=cv.width, H=cv.height;
+  // internal float buffers
+  let rB,gB,bB;
+  function alloc(){ rB=new Float32Array(W*H); gB=new Float32Array(W*H); bB=new Float32Array(W*H); }
+  alloc();
+  const img=ctx.createImageData(W,H);
+
+  // nearest palette lookup (small palette, brute force OK at 320x200/scaled)
+  function nearest(r,g,b){
+    let bi=0,bd=1e9;
+    for(let i=0;i<PAL.length;i++){
+      const p=PAL[i];
+      const dr=r-p[0],dg=g-p[1],db=b-p[2];
+      const d=dr*dr+dg*dg+db*db;
+      if(d<bd){bd=d;bi=i;}
+    }
+    return bi;
+  }
+
+  // ===================== STATE =====================
+  let t=0;                 // time accumulator (scrolls scenery)
+  let running=true;
+  let dither=true;
+  let scene=0;             // 0 fields, 1 tunnel, 2 coast (target)
+  let sceneF=0;            // smoothed scene float for blend
+  const SC = [
+    {name:'FIELDS', sector:'FIELDS'},
+    {name:'TUNNEL', sector:'TUNNEL'},
+    {name:'COAST',  sector:'COAST'}
+  ];
+
+  // ---- helpers ----
+  function lerp(a,b,t){return a+(b-a)*t;}
+  function clamp(v,a,b){return v<a?a:(v>b?b:v);}
+  function mix(c1,c2,t){return [lerp(c1[0],c2[0],t),lerp(c1[1],c2[1],t),lerp(c1[2],c2[2],t)];}
+  // hash for star/field noise (stable)
+  function hash(x,y){let n=Math.sin(x*127.1+y*311.7)*43758.5453;return n-Math.floor(n);}
+
+  // ===================== SCENE PAINTERS (write into rB/gB/bB) =====================
+  // common sky gradient helper: deep maroon top -> rust -> salmon near horizon
+  function skyColor(yy, horizon, tint){
+    // yy in [0,1] from top to horizon
+    const f=clamp(yy/horizon,0,1);
+    let c;
+    if(f<0.45) c=mix([0x2c,0x14,0x17],[0x7a,0x33,0x20], f/0.45);
+    else if(f<0.8) c=mix([0x7a,0x33,0x20],[0xc0,0x5e,0x3a], (f-0.45)/0.35);
+    else c=mix([0xc0,0x5e,0x3a],[0xe8,0x9a,0x6a], (f-0.8)/0.2);
+    if(tint){ c=mix(c,tint.col,tint.amt); }
+    return c;
+  }
+
+  // FIELDS scene: big sun, rolling silhouette hills, foreground furrows scrolling
+  function paintFields(off, tint){
+    const horizonY=Math.floor(H*0.60);
+    const sunX=W*0.5, sunY=horizonY*0.50, sunR=H*0.20;
+    for(let y=0;y<H;y++){
+      const onGround = y>=horizonY;
+      for(let x=0;x<W;x++){
+        let r,g,b;
+        if(!onGround){
+          const c=skyColor(y, horizonY, tint);
+          r=c[0];g=c[1];b=c[2];
+          // sun disc + glow
+          const dx=x-sunX, dy=y-sunY, dd=Math.sqrt(dx*dx+dy*dy);
+          if(dd<sunR){
+            const k=1-dd/sunR;
+            const sc=mix([0xe8,0x9a,0x6a],[0xf2,0xd9,0xb8], clamp(k*1.3,0,1));
+            r=sc[0];g=sc[1];b=sc[2];
+          } else if(dd<sunR*1.9){
+            const k=1-(dd-sunR)/(sunR*0.9);
+            const sc=mix([r,g,b],[0xe8,0xb4,0x8a],clamp(k*0.55,0,1));
+            r=sc[0];g=sc[1];b=sc[2];
+          }
+        } else {
+          // ground: warm field that scrolls, perspective furrows
+          const depth=(y-horizonY)/(H-horizonY); // 0..1 near
+          const base=mix([0x4a,0x1f,0x18],[0x9c,0x4a,0x28], depth);
+          // moving furrow stripes (perspective): faster near
+          const speed=lerp(0.4,4.0,depth);
+          const stripe=Math.sin((x*0.08 - off*speed*0.18 + depth*6))*0.5+0.5;
+          const fc=mix(base, mix(base,[0xc0,0x5e,0x3a],0.5), stripe*0.5);
+          r=fc[0];g=fc[1];b=fc[2];
+        }
+        const idx=y*W+x; rB[idx]=r;gB[idx]=g;bB[idx]=b;
+      }
+    }
+    // distant rolling hills (multi-layer parallax silhouettes), drawn above horizon line
+    drawHills(off, horizonY);
+  }
+
+  function drawHills(off, horizonY){
+    const layers=[
+      {amp:10, fy:horizonY-2, freq:0.020, sp:0.10, col:[0x4a,0x1f,0x18]},
+      {amp:16, fy:horizonY-1, freq:0.013, sp:0.20, col:[0x2c,0x14,0x17]},
+    ];
+    for(const L of layers){
+      for(let x=0;x<W;x++){
+        const hy = L.fy - (Math.sin((x+off*L.sp*4)*L.freq)*0.5+0.5)*L.amp
+                        - (Math.sin((x+off*L.sp*4)*L.freq*2.3)*0.5+0.5)*L.amp*0.4;
+        for(let y=Math.floor(hy); y<horizonY; y++){
+          if(y<0)continue;
+          const idx=y*W+x; rB[idx]=L.col[0];gB[idx]=L.col[1];bB[idx]=L.col[2];
+        }
+      }
+    }
+    // tiny telegraph poles flicking past
+    const gap=46;
+    for(let k=0;k<8;k++){
+      let px=W - ((off*2.4 + k*gap) % (W+gap));
+      px=Math.floor(px);
+      const ph=18+ (k%3)*4;
+      for(let y=horizonY-ph;y<horizonY;y++){
+        if(px>=0&&px<W&&y>=0){const idx=y*W+px;rB[idx]=0x2c;gB[idx]=0x14;bB[idx]=0x17;}
+      }
+      // cross arm
+      const ay=horizonY-ph;
+      for(let ax=px-3;ax<=px+3;ax++){if(ax>=0&&ax<W&&ay>=0){const idx=ay*W+ax;rB[idx]=0x2c;gB[idx]=0x14;bB[idx]=0x17;}}
+    }
+  }
+
+  // TUNNEL scene: receding rectangular arch rings into a far light, brick walls,
+  // perspective floor/ceiling, side lamps streaking past.
+  function paintTunnel(off){
+    const cx=W*0.5, cy=H*0.47;
+    // far opening half-size at vanishing point, mouth half-size at viewer
+    const farW=W*0.05, farH=H*0.05;
+    for(let y=0;y<H;y++){
+      for(let x=0;x<W;x++){
+        // "square ring" distance: how far out toward the tunnel mouth (0 center -> 1 edge)
+        const ax=Math.abs(x-cx)/(W*0.5);
+        const ay=Math.abs(y-cy)/(H*0.5);
+        const ring=Math.max(ax,ay);            // chebyshev -> rectangular tunnel cross-section
+        // depth z: ring 0 = far light, ring 1 = near mouth
+        const z=clamp(ring,0,1);
+        // recede bands: scrolling forward gives sense of motion into tunnel
+        const bandPhase = Math.log(1/Math.max(1-z,0.06))*2.2 + off*0.10;
+        const band = Math.sin(bandPhase)*0.5+0.5;       // wall masonry bands
+        // wall brightness: brighter near far light, darker toward mouth, banded
+        let lit = clamp(1.05-z,0,1);
+        lit *= (0.55 + band*0.55);
+        // brick fleck: subtle horizontal/vertical mortar pattern on walls
+        const brick = (Math.sin(x*0.7)+Math.sin(y*0.9))*0.06;
+        let c = mix([0x14,0x08,0x09],[0x9c,0x4a,0x28], clamp(lit+brick,0,1));
+        // warm rim accent on the masonry bands
+        if(band>0.7) c=mix(c,[0xc0,0x5e,0x3a], (band-0.7)*0.9*lit);
+        // far light disc through the opening
+        const dx=(x-cx), dy=(y-cy);
+        const fd=Math.sqrt(dx*dx/(farW*farW) + dy*dy/(farH*farH));
+        if(fd<1.0){ c=mix(c,[0xf2,0xd9,0xb8], clamp((1-fd)*1.4,0,1)); }
+        else if(fd<2.4){ c=mix(c,[0xe8,0xb4,0x8a], clamp((1-(fd-1)/1.4)*0.5,0,1)); }
+        const idx=y*W+x; rB[idx]=c[0];gB[idx]=c[1];bB[idx]=c[2];
+      }
+    }
+    // emphasize a few discrete arch frames (rectangular outlines) receding inward
+    for(let k=0;k<7;k++){
+      const z=((k*55 - off*0.9)%(7*55)+7*55)%(7*55)/(7*55); // 0..1 looping
+      const e=lerp(0.10,0.99,z*z);            // arch half-extent (fraction of mouth)
+      const hw=Math.floor(e*W*0.5), hh=Math.floor(e*H*0.5);
+      const col = z<0.45? [0xe8,0xa2,0x3a] : [0x4a,0x1f,0x18];
+      const th = z>0.7?2:1;
+      // top & bottom edges
+      for(let x=cx-hw;x<=cx+hw;x++){ for(let dt=0;dt<th;dt++){
+        plot(Math.floor(x), Math.floor(cy-hh)-dt, col);
+        plot(Math.floor(x), Math.floor(cy+hh)+dt, col);
+      }}
+      // left & right edges
+      for(let y=cy-hh;y<=cy+hh;y++){ for(let dt=0;dt<th;dt++){
+        plot(Math.floor(cx-hw)-dt, Math.floor(y), col);
+        plot(Math.floor(cx+hw)+dt, Math.floor(y), col);
+      }}
+    }
+    // side lamps streaking by along the walls toward the viewer
+    for(let k=0;k<8;k++){
+      const z=((off*0.5 + k*50) % 400)/400; // 0 far ->1 near
+      const spread=lerp(0.10,0.95,z*z);
+      const ly=Math.floor(cy + (Math.sin(k*1.7)*0.5)*spread*H*0.4 - spread*H*0.18);
+      for(const side of [-1,1]){
+        const lx=Math.floor(cx + side*spread*W*0.5);
+        const sz=Math.max(1,Math.floor(z*3.5));
+        const col= z>0.55? [0xf2,0xd9,0xb8] : [0xe8,0xa2,0x3a];
+        for(let yy=ly-sz;yy<=ly+sz;yy++)for(let xx=lx-sz;xx<=lx+sz;xx++) plot(xx,yy,col);
+      }
+    }
+  }
+  function plot(x,y,c){ if(x>=0&&x<W&&y>=0&&y<H){const i=y*W+x;rB[i]=c[0];gB[i]=c[1];bB[i]=c[2];} }
+
+  // COAST scene: salmon sky + sun, dithered teal sea with shimmering light-path, headland silhouette
+  function paintCoast(off, tint){
+    const horizonY=Math.floor(H*0.50);
+    const sunX=W*0.62, sunY=horizonY*0.55, sunR=H*0.16;
+    for(let y=0;y<H;y++){
+      const sea=y>=horizonY;
+      for(let x=0;x<W;x++){
+        let r,g,b;
+        if(!sea){
+          const c=skyColor(y,horizonY,tint); r=c[0];g=c[1];b=c[2];
+          const dx=x-sunX,dy=y-sunY,dd=Math.sqrt(dx*dx+dy*dy);
+          if(dd<sunR){const k=1-dd/sunR;const sc=mix([0xe8,0x9a,0x6a],[0xf2,0xd9,0xb8],clamp(k*1.3,0,1));r=sc[0];g=sc[1];b=sc[2];}
+          else if(dd<sunR*2.2){const k=1-(dd-sunR)/(sunR*1.2);const sc=mix([r,g,b],[0xe8,0xb4,0x8a],clamp(k*0.5,0,1));r=sc[0];g=sc[1];b=sc[2];}
+        } else {
+          const depth=(y-horizonY)/(H-horizonY);
+          let c=mix([0x20,0x40,0x42],[0x3f,0x8f,0x86], depth);
+          // moving wave bands
+          const wave=Math.sin((y*0.5 - off*0.5) + Math.sin(x*0.05+off*0.1)*1.5)*0.5+0.5;
+          c=mix(c, mix(c,[0x5a,0x8a,0x5a],0.4), wave*0.4);
+          // sun reflection path (warm diamond shimmer under sun)
+          const pw=lerp(2, 26, depth);
+          if(Math.abs(x-sunX)<pw){
+            const sh=Math.sin((y*0.8 - off*0.7))*0.5+0.5;
+            const k=(1-Math.abs(x-sunX)/pw)* (sh*0.7+0.3);
+            c=mix(c,[0xe8,0x9a,0x6a],clamp(k*0.9,0,1));
+          }
+          r=c[0];g=c[1];b=c[2];
+        }
+        const idx=y*W+x; rB[idx]=r;gB[idx]=g;bB[idx]=b;
+      }
+    }
+    // headland silhouette gliding past on the left
+    const hx = ((off*0.5) % (W*2));
+    for(let x=0;x<W;x++){
+      const wx = x + hx;
+      const top = horizonY - (Math.sin(wx*0.02)*0.5+0.5)*22 - (Math.sin(wx*0.05+1)*0.5+0.5)*8;
+      for(let y=Math.floor(top);y<horizonY;y++){
+        if(y<0)continue; const idx=y*W+x; rB[idx]=0x2c;gB[idx]=0x14;bB[idx]=0x17;
+      }
+    }
+  }
+
+  // ===================== DITHER + QUANTIZE + BLIT =====================
+  let MAT=B8, MN=BN; // dither matrix in use
+  const SPREAD=44;   // dither strength (px in color space)
+  function render(){
+    const d=img.data;
+    if(dither){
+      for(let y=0;y<H;y++){
+        const my=(y%MN)*MN;
+        for(let x=0;x<W;x++){
+          const idx=y*W+x;
+          const th=MAT[my + (x%MN)]*SPREAD;
+          const i=nearest(rB[idx]+th, gB[idx]+th, bB[idx]+th);
+          const p=PAL[i]; const o=idx*4;
+          d[o]=p[0];d[o+1]=p[1];d[o+2]=p[2];d[o+3]=255;
+        }
+      }
+    } else {
+      for(let i=0;i<W*H;i++){const o=i*4;d[o]=rB[i];d[o+1]=gB[i];d[o+2]=bB[i];d[o+3]=255;}
+    }
+    ctx.putImageData(img,0,0);
+  }
+
+  // ===================== HUD / TIMETABLE =====================
+  const STOPS=[
+    {t:'08:10', s:'GOLDEN HALT', tag:'ok',  tx:'DEP'},
+    {t:'08:42', s:'SUNSET FIELDS', tag:'ok', tx:'PASS'},
+    {t:'09:05', s:'TUNNEL JCT', tag:'via', tx:'VIA'},
+    {t:'09:31', s:'SALMON COAST', tag:'next', tx:'NEXT'},
+    {t:'09:58', s:'PEACH PIER', tag:'',   tx:'ETA'},
+  ];
+  function buildTT(){
+    const el=document.getElementById('tt'); el.innerHTML='';
+    STOPS.forEach((st,i)=>{
+      const row=document.createElement('div');
+      row.className='tr-row'+(i===2?' now':'');
+      const tag = st.tag? '<span class="tag '+st.tag+'">'+st.tx+'</span>' :
+                          '<span class="tag" style="color:#a9694e;border-color:#4a1f15">'+st.tx+'</span>';
+      row.innerHTML='<span>'+st.t+'</span><span class="stn">'+st.s+'</span>'+tag;
+      el.appendChild(row);
+    });
+  }
+  buildTT();
+
+  // live clock
+  function tick(){
+    const n=new Date();
+    const p=v=>String(v).padStart(2,'0');
+    document.getElementById('clk').textContent=p(n.getHours())+':'+p(n.getMinutes())+':'+p(n.getSeconds());
+  }
+  setInterval(tick,1000); tick();
+
+  // ===================== ANIMATION LOOP =====================
+  let last=performance.now(), fAcc=0, fCnt=0, fpsShown=0;
+  const HDG=['NW','N','NE','E','SE','S','SW','W'];
+  let dist=124.0;
+  function frame(now){
+    const dt=Math.min(0.05,(now-last)/1000); last=now;
+    if(running){ t += dt*60; dist += dt*0.6; }
+    // smooth scene transition
+    sceneF += (scene - sceneF)*Math.min(1,dt*3);
+
+    // paint active scene (with crossfade tint for neighbor when transitioning)
+    const off=t;
+    const tintFor = (target)=>{
+      const diff=Math.abs(sceneF-target);
+      return diff<0.999 ? null : null;
+    };
+    // choose painter by rounded scene but blend tint
+    const near=Math.round(sceneF);
+    const frac=sceneF-near; // -0.5..0.5
+    if(near===0) paintFields(off, null);
+    else if(near===1) paintTunnel(off);
+    else paintCoast(off, null);
+
+    // simple cross-tint at boundaries (darken toward tunnel)
+    if(Math.abs(frac)>0.02){
+      const k=Math.abs(frac)*0.6;
+      const tcol = (sceneF<1)?[0x14,0x08,0x09]:[0x20,0x40,0x42];
+      for(let i=0;i<W*H;i++){
+        rB[i]=lerp(rB[i],tcol[0],k);gB[i]=lerp(gB[i],tcol[1],k);bB[i]=lerp(bB[i],tcol[2],k);
+      }
+    }
+
+    render();
+
+    // HUD updates
+    const spd= running? Math.floor(118+Math.sin(now/700)*9) : 0;
+    document.getElementById('spd').textContent=String(spd).padStart(3,'0');
+    document.getElementById('hdg').textContent=HDG[Math.floor(now/2200)%HDG.length];
+    document.getElementById('sector').textContent=SC[near].sector;
+    document.getElementById('dist').textContent='DIST '+dist.toFixed(1)+' KM';
+    document.getElementById('plx').textContent='x'+(2.4+near*0.8).toFixed(1);
+    // eta bar drifts
+    const eb=document.getElementById('etabar');
+    let w=parseFloat(eb.style.width)|| 42; w+= dt*1.4; if(w>96)w=8; eb.style.width=w+'%';
+
+    // fps
+    fAcc+=dt; fCnt++;
+    if(fAcc>=0.5){ fpsShown=Math.round(fCnt/fAcc); fAcc=0;fCnt=0;
+      document.getElementById('fps').textContent='FPS '+String(fpsShown).padStart(2,'0'); }
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  // ===================== CONTROLS =====================
+  document.getElementById('seg').addEventListener('click',e=>{
+    const b=e.target.closest('button'); if(!b)return;
+    [...e.currentTarget.children].forEach(c=>c.classList.remove('on'));
+    b.classList.add('on');
+    scene=parseInt(b.dataset.s,10);
+  });
+  const runbtn=document.getElementById('runbtn');
+  runbtn.addEventListener('click',()=>{
+    running=!running; runbtn.textContent= running?'PAUSE':'RESUME';
+    runbtn.setAttribute('aria-pressed',running);
+  });
+  const dbtn=document.getElementById('ditherbtn');
+  dbtn.addEventListener('click',()=>{
+    dither=!dither; dbtn.setAttribute('aria-pressed',dither);
+    document.getElementById('dmode').textContent= dither? (MN===8?'BAYER 8×8':'BAYER 4×4') : 'OFF / RAW';
+  });
+  // double-click dither toggles matrix coarseness
+  dbtn.addEventListener('dblclick',()=>{
+    if(MN===8){MAT=B4;MN=4;}else{MAT=B8;MN=BN;}
+    document.getElementById('dmode').textContent= dither? (MN===8?'BAYER 8×8':'BAYER 4×4'):'OFF / RAW';
+  });
+
+  // keyboard: 1/2/3 scenes, space pause, d dither
+  window.addEventListener('keydown',e=>{
+    if(e.key==='1'||e.key==='2'||e.key==='3'){
+      scene=parseInt(e.key,10)-1;
+      const segs=document.querySelectorAll('#seg button');
+      segs.forEach(s=>s.classList.toggle('on', parseInt(s.dataset.s,10)===scene));
+    } else if(e.key===' '){ e.preventDefault(); runbtn.click(); }
+    else if(e.key.toLowerCase()==='d'){ dbtn.click(); }
+  });
+})();
+</script>
+</body>
+</html>

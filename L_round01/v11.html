@@ -1,0 +1,835 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>야간 침대열차</title>
+<style>
+  :root{
+    --paper:#e9e2d0; --ink:#2a2620;
+    --night:#0c0e14; --glow:#cdb98a; --rail:#7c8aa0;
+  }
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--night);}
+  *{box-sizing:border-box;}
+  #view{
+    position:absolute; inset:0 0 38px 0;
+    font:13px/13px ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    color:#d8cba6; background:#06070b;
+    white-space:pre; overflow:hidden; letter-spacing:0;
+    user-select:none; -webkit-user-select:none; cursor:crosshair;
+    display:flex; align-items:center; justify-content:center;
+  }
+  #view b{display:block;}
+  #status{
+    position:fixed; left:0; right:0; bottom:0; height:38px;
+    background:#15110c; color:#cdb98a; border-top:1px solid #3a3122;
+    font:12px/38px ui-monospace,Menlo,monospace;
+    padding:0 14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    display:flex; gap:18px; align-items:center;
+  }
+  #status .car{color:#e9e2d0;font-weight:600;}
+  #status .inv{color:#9ab0a0;}
+  #status .hint{color:#7d7059;margin-left:auto;}
+
+  /* 인트로 — 차분한 페이퍼 톤 */
+  #intro{
+    position:fixed; inset:0; z-index:20;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    text-align:center; padding:24px;
+    background:radial-gradient(120% 90% at 50% 35%, #f1ecdd 0%, #e4dcc7 60%, #d8cfb6 100%);
+    color:var(--ink); font-family:"Noto Serif KR",serif;
+    transition:opacity 1.1s ease;
+  }
+  #intro h1{font-size:42px;font-weight:600;letter-spacing:14px;margin:0 0 6px;text-indent:14px;}
+  #intro .sub{font-size:13px;letter-spacing:8px;color:#8a7d63;margin-bottom:26px;text-indent:8px;}
+  #intro p{font-size:15px;line-height:2;max-width:520px;margin:5px 0;color:#4a4234;}
+  #intro pre{font:11px/11px ui-monospace,Menlo,monospace;color:#6f6450;margin:14px 0 4px;opacity:.85;}
+  #intro .keys{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;color:#7a6e57;margin-top:18px;line-height:1.9;}
+  #intro .go{margin-top:18px;font-family:ui-monospace,Menlo,monospace;font-size:13px;color:#2a2620;
+    border:1px solid #8a7d63;border-radius:2px;padding:9px 22px;background:#efe9da;cursor:pointer;}
+  #intro .go:hover{background:#fff;}
+  .hidden{opacity:0!important;pointer-events:none!important;}
+
+  /* 살펴보기 패널 */
+  #insp{
+    position:fixed; z-index:15; left:50%; top:50%; transform:translate(-50%,-50%);
+    width:min(560px,92vw); max-height:80vh; overflow:auto;
+    background:rgba(12,14,20,.97); color:#e4dcc7; border:1px solid #4a3f2a;
+    border-radius:4px; padding:18px 20px 16px; box-shadow:0 10px 40px rgba(0,0,0,.6);
+    font-family:ui-monospace,Menlo,monospace; opacity:0; pointer-events:none;
+    transition:opacity .25s ease;
+  }
+  #insp.on{opacity:1;pointer-events:auto;}
+  #insp h3{margin:0 0 4px;font-size:16px;color:#e9d9ad;letter-spacing:1px;}
+  #insp .tag{font-size:11px;color:#8b7d5e;margin-bottom:10px;}
+  #insp pre{margin:0 0 12px;font:12px/12px ui-monospace,Menlo,monospace;color:#bcae84;
+    white-space:pre;overflow:auto;border-left:2px solid #3a3122;padding:8px 0 8px 12px;background:#0a0c11;}
+  #insp p{font-size:13px;line-height:1.7;margin:0 0 12px;color:#cfc6ac;}
+  #insp .act{display:flex;gap:10px;flex-wrap:wrap;}
+  #insp .act button,#insp .close{
+    font-family:ui-monospace,Menlo,monospace;font-size:12.5px;cursor:pointer;
+    background:#1c2330;color:#cdb98a;border:1px solid #3a4658;border-radius:2px;padding:7px 14px;}
+  #insp .act button:hover,#insp .close:hover{background:#28323f;color:#fff;}
+  #insp .close{margin-top:6px;background:#241a14;border-color:#4a3320;color:#caa;}
+
+  /* 조준점 */
+  #ret{
+    position:fixed; left:50%; top:calc(50% - 19px); transform:translate(-50%,-50%);
+    z-index:8; font:16px/16px ui-monospace,monospace; color:#cdb98a;
+    text-shadow:0 0 6px #000; pointer-events:none; opacity:.8;
+  }
+  #ret.live{color:#ffe9a8;opacity:1;text-shadow:0 0 8px #6a5a2a;}
+  #prompt{
+    position:fixed; left:50%; top:calc(50% + 10px); transform:translate(-50%,0);
+    z-index:8; font:12px/16px ui-monospace,monospace; color:#ffe9a8;
+    background:rgba(8,10,14,.7); border:1px solid #4a3f2a; border-radius:3px;
+    padding:4px 10px; pointer-events:none; opacity:0; transition:opacity .15s; white-space:nowrap;
+  }
+  #prompt.on{opacity:1;}
+
+  /* 모바일 컨트롤 */
+  #pad{position:fixed;z-index:9;left:0;right:0;bottom:38px;display:none;
+    justify-content:space-between;align-items:flex-end;padding:10px 12px;pointer-events:none;}
+  #pad .grp{display:grid;gap:8px;pointer-events:auto;}
+  #pad .dpad{grid-template-columns:repeat(3,46px);grid-template-rows:repeat(3,46px);}
+  #pad .right{grid-template-columns:repeat(2,52px);gap:10px;}
+  #pad button{font-family:ui-monospace,monospace;font-size:15px;color:#e4dcc7;
+    background:rgba(20,24,32,.82);border:1px solid #46505f;border-radius:8px;
+    width:100%;height:46px;touch-action:none;user-select:none;-webkit-user-select:none;}
+  #pad .right button{height:52px;}
+  #pad button:active{background:#33405a;color:#fff;}
+  #pad .sp{visibility:hidden;}
+  @media (max-width:760px){ #pad{display:flex;} #status .hint{display:none;} }
+</style>
+</head>
+<body>
+<pre id="view"><b id="screen"></b></pre>
+<div id="ret">·</div>
+<div id="prompt"></div>
+<div id="status">
+  <span class="car" id="st-car">—</span>
+  <span class="inv" id="st-inv">소지품 없음</span>
+  <span id="st-msg"></span>
+  <span class="hint">WASD 이동 · ←→ 회전 · E 상호작용 · F 정면 · M 지도</span>
+</div>
+
+<!-- 모바일 패드 -->
+<div id="pad">
+  <div class="grp dpad">
+    <span class="sp"></span><button data-k="w">▲</button><span class="sp"></span>
+    <button data-k="a">◀</button><button data-k="s">▼</button><button data-k="d">▶</button>
+    <span class="sp"></span><span class="sp"></span><span class="sp"></span>
+  </div>
+  <div class="grp right">
+    <button data-k="arrowleft">↺</button><button data-k="arrowright">↻</button>
+    <button data-k="e" style="grid-column:1/3;background:rgba(60,46,20,.85);color:#ffe9a8;">살펴/작동 (E)</button>
+    <button data-k="f" style="grid-column:1/3;">정면 (F)</button>
+  </div>
+</div>
+
+<!-- 인트로 -->
+<div id="intro">
+  <h1>야간 침대열차</h1>
+  <div class="sub">N I G H T &nbsp; S L E E P E R</div>
+  <pre>      ____________________________________
+   __|  o    o    o    o    o    o    |__
+  |__   침대  세면  식당  라운지  승무원  __|
+     |__________________________________|
+        O O          O O          O O
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~</pre>
+  <p>막차가 떠났다. 당신은 어두운 침대칸 통로에 서 있다.<br>
+  창밖으로 도시의 마지막 불빛들이 흘러간다.</p>
+  <p>객실을 지나며 사물을 살펴보고, 작동시키고, 줍는다.<br>
+  어딘가에 당신의 좌석표와, 이 열차가 어디로 가는지에 대한 답이 있다.</p>
+  <div class="keys">W A S D 이동 · ← → 회전 · E 살펴보기/줍기/작동 · M 약식 지도</div>
+  <button class="go" id="go">승차한다 →</button>
+</div>
+
+<!-- 살펴보기 -->
+<div id="insp">
+  <h3 id="insp-t"></h3>
+  <div class="tag" id="insp-tag"></div>
+  <pre id="insp-art"></pre>
+  <p id="insp-d"></p>
+  <div class="act" id="insp-act"></div>
+  <button class="close" id="insp-x">닫기 (Esc)</button>
+</div>
+
+<script>
+(() => {
+"use strict";
+
+/* ======================================================================
+   야간 침대열차 — 3D 아스키 룸 탐험
+   raycasting 1인칭 + 빌보드 스프라이트 객체 + 상호작용/인벤토리
+   여러 칸(방)을 문으로 연결. 단일 자기완결 HTML.
+   ====================================================================== */
+
+const screen = document.getElementById("screen");
+const view   = document.getElementById("view");
+const ret    = document.getElementById("ret");
+const promptEl = document.getElementById("prompt");
+const stCar  = document.getElementById("st-car");
+const stInv  = document.getElementById("st-inv");
+const stMsg  = document.getElementById("st-msg");
+
+/* ---------- 화면 크기 적응 ---------- */
+let W=110, H=42, CW=7.8, CH=13;
+function fit(){
+  const probe=document.createElement("span");
+  probe.style.cssText="position:absolute;visibility:hidden;font:13px/13px ui-monospace,Menlo,monospace;white-space:pre";
+  probe.textContent="M".repeat(100);
+  document.body.appendChild(probe);
+  CW=probe.getBoundingClientRect().width/100||7.8;
+  probe.remove();
+  const availH = innerHeight - 38;
+  W=Math.max(54, Math.min(240, Math.floor(innerWidth/CW)));
+  H=Math.max(22, Math.min(64, Math.floor(availH/CH)));
+}
+fit();
+addEventListener("resize", ()=>{ fit(); });
+
+/* ---------- 난수 ---------- */
+function rng(seed){ let a=seed>>>0; return ()=>{ a|=0;a=(a+0x6D2B79F5)|0;
+  let t=Math.imul(a^(a>>>15),1|a); t=(t+Math.imul(t^(t>>>7),61|t))^t;
+  return ((t^(t>>>14))>>>0)/4294967296; }; }
+
+/* ======================================================================
+   객실(CAR) 정의 — 각 칸은 작은 격자 맵.
+   맵 문자: '#' 벽,  '.' 바닥,  'D' 문(다음/이전 칸으로),  's' 스프라이트 슬롯(객체)
+   각 칸은 좌우 끝에 문이 있어 일렬로 연결된다(앞칸/뒷칸).
+   ====================================================================== */
+
+// 객체(인터랙터블) 정의는 cars 아래에서 좌표와 함께 배치한다.
+const CARS = [
+  {
+    id:"sleeper", name:"침대칸",
+    desc:"좁은 통로 양옆으로 2층 침대가 늘어서 있다. 커튼 너머로 누군가의 숨소리가 들린다.",
+    w:9, h:13,
+    floor:"berth",
+    // y 작은 쪽 = 앞칸(prev), 큰 쪽 = 뒷칸(next)
+  },
+  {
+    id:"wash", name:"세면칸",
+    desc:"스테인리스 세면대 세 개. 거울이 흔들리는 차체를 따라 미세하게 떨린다.",
+    w:9, h:11, floor:"tile",
+  },
+  {
+    id:"dining", name:"식당칸",
+    desc:"작은 테이블마다 갓 씌운 램프가 놓여 흔들린다. 식어버린 커피 향.",
+    w:11, h:15, floor:"carpet",
+  },
+  {
+    id:"lounge", name:"라운지칸",
+    desc:"전면 창이 큰 전망칸. 소파가 창을 향해 놓였고 밤 풍경이 흘러간다.",
+    w:11, h:13, floor:"wood",
+  },
+  {
+    id:"cab", name:"승무원실",
+    desc:"열차의 머리. 계기판과 제동 레버, 그리고 행선지 표시기.",
+    w:9, h:11, floor:"steel",
+  },
+];
+
+/* ---------- 객체(사물) 데이터 ----------
+   각 객체: id, car(인덱스), x,y(맵좌표), 높이 hh, 폭 hw,
+   art(3D 스프라이트 행), col(색조 0~1), name, tag,
+   look(설명), inspectArt(상세 아스키), actions:[{label,fn}] */
+let inventory = [];
+let flags = { lampLit:false, basinOn:false, samovarOn:false, panelOn:false, dest:null, hasTicket:false, foundBerth:false };
+
+function has(id){ return inventory.includes(id); }
+function addInv(id, label){ if(!has(id)){ inventory.push(id); flash(`주웠다: ${label}`); refreshHUD(); } }
+
+const OBJECTS = [];
+function defObj(o){ OBJECTS.push(o); }
+
+/* --- 3D처럼 보이는 아스키 스프라이트들 --- */
+const ART = {
+  bunk:[
+    "  _______________ ",
+    " /              /|",
+    "/______________/ |",
+    "|####커튼#######| |",
+    "|##############|/|",
+    "|  ___________ | |",
+    "| /          /|| |",
+    "|/__________/ ||/ ",
+    "|__베개_____|_|/  ",
+  ],
+  ladder:[
+    " ___ ",
+    "|   |",
+    "|===|",
+    "|   |",
+    "|===|",
+    "|   |",
+    "|===|",
+    "|   |",
+    "|___|",
+  ],
+  basin:[
+    " .-----------. ",
+    "(  o      o  )",
+    " '._______.' ",
+    "  |||   |||  ",
+    "  ===표면===  ",
+    "   |     |   ",
+    "  _|_   _|_  ",
+  ],
+  mirror:[
+    " ______ ",
+    "|.----.|",
+    "||    ||",
+    "|| 你 ||",
+    "||    ||",
+    "|'----'|",
+    "|______|",
+  ],
+  table:[
+    "    .__.    ",
+    "   /램프\\   ",
+    "   |::::|   ",
+    "  _|====|_  ",
+    " /::::::::\\ ",
+    "/__________\\",
+    "  ||    ||  ",
+    "  ||    ||  ",
+  ],
+  samovar:[
+    "   _____   ",
+    "  / ^^^ \\  ",
+    " | ((()) |",
+    " |  | |  | ",
+    "(===|=|===)",
+    " \\__|_|__/ ",
+    "  잔  잔   ",
+  ],
+  sofa:[
+    " .------------------. ",
+    " |  ___   ___   ___ | ",
+    " | |   | |   | |   || ",
+    "_|_|___|_|___|_|___|_|",
+    "|____________________|",
+    " ||              || ",
+    " ||              || ",
+  ],
+  window:[
+    ".==================.",
+    "|  *      .    *   |",
+    "|     *        ~   |",
+    "| .       *      * |",
+    "|    ~        .    |",
+    "|  *     별   *    |",
+    "'=================='",
+  ],
+  panel:[
+    " ._______________. ",
+    " | [ ][ ][ ] (O) | ",
+    " | ===속도===  *  | ",
+    " | [브][레][이][크]| ",
+    " |  || 레버 ||   | ",
+    " '_______________' ",
+  ],
+  dest:[
+    "  _______________  ",
+    " | 다 음 정 차 :  | ",
+    " |               | ",
+    " |  ???????????  | ",
+    " '_______________' ",
+  ],
+  conductor:[
+    "   .---.   ",
+    "  | o o |  ",
+    "   \\ - /   ",
+    "  /|帽 |\\  ",
+    " / | 制 | \\ ",
+    "   |__|   ",
+    "  _|  |_  ",
+  ],
+  ticket:[
+    " .-------------. ",
+    " | 침대열차 표 | ",
+    " | 7호차 03번 | ",
+    " '-------------' ",
+  ],
+  case:[
+    "  ________  ",
+    " /       /| ",
+    "/_______/ | ",
+    "| 가방  | | ",
+    "|       |/  ",
+    "|_______|   ",
+  ],
+};
+
+/* ---------- 객체 배치 ----------
+   ★중요: 가운데 통로(x≈칸 너비/2)는 비워 둔다. 객체는 양쪽 벽에 붙인다.
+   문은 가운데 짧은 변에 있으므로 통로가 막히면 칸 이동이 불가능. */
+// 침대칸(w=9, 통로 x≈4.5): 양옆 침대들, 사다리, 가방
+defObj({id:"bunkL", car:0, x:1.4, y:3.5, hw:1.0, hh:1.05, art:"bunk", name:"2층 침대 (좌)",
+  tag:"침대 · 침대칸", look:"커튼이 반쯤 쳐진 비어 있는 침대다. 시트가 단정히 정돈돼 있다.",
+  actions:[{label:"커튼을 열어본다",fn:o=>flash("아무도 없다. 머리맡에 접힌 담요뿐.")}]});
+defObj({id:"bunkR", car:0, x:7.6, y:5.5, hw:1.0, hh:1.05, art:"bunk", name:"2층 침대 (우)",
+  tag:"침대 · 침대칸", look:"누군가 자고 있는지 커튼이 꼭 닫혀 있다. 규칙적인 숨소리.",
+  actions:[{label:"가만히 둔다",fn:o=>flash("깨우지 않는 편이 좋겠다.")}]});
+defObj({id:"bunkB", car:0, x:1.4, y:9.0, hw:1.0, hh:1.05, art:"bunk", name:"내 침대?",
+  tag:"침대 · 침대칸", look:"머리맡에 작은 명패: '03'. 베개 밑이 살짝 불룩하다.",
+  actions:[{label:"베개 밑을 살핀다",fn:o=>{ if(!flags.hasTicket){ flags.hasTicket=true; addInv("ticket","침대열차 표 (7호차 03번)"); flags.foundBerth=true; checkGoal(); } else flash("이제 빈 베개뿐이다."); }}]});
+defObj({id:"ladder", car:0, x:7.6, y:2.4, hw:0.5, hh:1.15, art:"ladder", name:"사다리",
+  tag:"설비 · 침대칸", look:"2층으로 오르는 금속 사다리. 차가운 손잡이.",
+  actions:[{label:"흔들어본다",fn:o=>flash("덜그럭 — 단단히 고정돼 있다.")}]});
+defObj({id:"case", car:0, x:1.4, y:11.4, hw:0.8, hh:0.8, art:"case", name:"선반의 여행가방",
+  tag:"수하물 · 침대칸", look:"누군가의 낡은 가죽 가방. 이름표가 비어 있다.",
+  actions:[{label:"열어본다",fn:o=>flash("잠겨 있다. 남의 것이다 — 그냥 둔다.")}]});
+
+// 세면칸(w=9, 통로 x≈4.5): 세면대들, 거울 — 양옆 벽
+defObj({id:"basin", car:1, x:1.5, y:3.5, hw:1.0, hh:0.95, art:"basin", name:"세면대",
+  tag:"설비 · 세면칸", look:"버튼을 누르면 물이 잠깐 나오는 구식 수도꼭지.",
+  actions:[{label:()=>flags.basinOn?"잠근다":"물을 튼다",fn:o=>{ flags.basinOn=!flags.basinOn; flash(flags.basinOn?"쏴 — 차가운 물이 흐른다. 손을 씻었다.":"물을 잠갔다."); }}]});
+defObj({id:"basin2", car:1, x:7.5, y:6.5, hw:1.0, hh:0.95, art:"basin", name:"세면대 (옆)",
+  tag:"설비 · 세면칸", look:"배수구에 누군가의 동전이 걸려 있다.",
+  actions:[{label:"동전을 줍는다",fn:o=>{ if(!has("coin")) addInv("coin","오래된 동전"); else flash("배수구는 비었다."); }}]});
+defObj({id:"mirror", car:1, x:1.5, y:8.0, hw:0.7, hh:1.05, art:"mirror", name:"흔들리는 거울",
+  tag:"설비 · 세면칸", look:"차체를 따라 미세하게 떨리는 거울. 피곤한 얼굴이 비친다.",
+  actions:[{label:"거울 뒤를 본다",fn:o=>{ if(!has("key")) addInv("key","승무원실 열쇠"); else flash("거울 뒤엔 먼지뿐이다."); }}]});
+
+// 식당칸(w=11, 통로 x≈5.5): 테이블들, 사모바르 — 양옆 벽
+defObj({id:"table1", car:2, x:1.6, y:4.5, hw:1.0, hh:1.15, art:"table", name:"식탁의 램프",
+  tag:"가구 · 식당칸", look:"갓 씌운 작은 램프. 스위치가 달려 있다.",
+  actions:[{label:()=>flags.lampLit?"끈다":"켠다",fn:o=>{ flags.lampLit=!flags.lampLit; flash(flags.lampLit?"딸깍 — 따뜻한 호박빛이 테이블을 적신다.":"램프를 껐다. 어둠이 돌아온다."); }}]});
+defObj({id:"table2", car:2, x:9.4, y:7.5, hw:1.0, hh:1.15, art:"table", name:"창가 식탁",
+  tag:"가구 · 식당칸", look:"식어버린 커피 한 잔과 펼쳐진 시간표가 놓여 있다.",
+  actions:[{label:"시간표를 읽는다",fn:o=>flash("종착역 칸이 잉크로 번져 읽을 수 없다. 새벽 4:18 도착이라고만.")}]});
+defObj({id:"samovar", car:2, x:1.6, y:11.5, hw:0.9, hh:1.05, art:"samovar", name:"사모바르",
+  tag:"설비 · 식당칸", look:"구리 주전자. 아직 온기가 남아 있다.",
+  actions:[{label:()=>flags.samovarOn?"불을 끈다":"불을 올린다",fn:o=>{ flags.samovarOn=!flags.samovarOn; flash(flags.samovarOn?"보글보글 — 찻물이 데워진다. 차 한 잔을 따랐다.":"사모바르의 불을 줄였다."); }}]});
+
+// 라운지칸(w=11, 통로 x≈5.5): 소파, 큰 창, 승무원 — 양옆 벽 + 끝쪽 모서리
+defObj({id:"sofa", car:3, x:1.7, y:7.0, hw:1.3, hh:0.95, art:"sofa", name:"전망 소파",
+  tag:"가구 · 라운지칸", look:"창을 향해 놓인 긴 소파. 푹신하고 낡았다.",
+  actions:[{label:"잠시 앉는다",fn:o=>flash("앉으니 레일의 진동이 등을 타고 올라온다. 졸음이 밀려온다.")}]});
+defObj({id:"bigwin", car:3, x:9.3, y:4.5, hw:1.2, hh:1.25, art:"window", name:"전면 창",
+  tag:"구조물 · 라운지칸", look:"밤 풍경이 끝없이 흘러간다. 별, 멀어지는 마을의 불빛, 강.",
+  actions:[{label:"창에 기댄다",fn:o=>flash("유리에 이마를 대면 차갑다. 저 멀리 역의 불빛이 깜박인다.")}]});
+defObj({id:"cond", car:3, x:6.9, y:8.5, hw:0.7, hh:1.25, art:"conductor", name:"승무원",
+  tag:"사람 · 라운지칸", look:"모자를 눌러쓴 승무원이 검표기를 들고 통로 곁에 서 있다.",
+  actions:[{label:"표를 보여준다",fn:o=>{ if(has("ticket")){ flash("승무원이 끄덕인다. '7호차 03번, 맞습니다. 종착역은 새벽입니다.' 승무원실 열쇠를 건넨다."); if(!has("key")) addInv("key","승무원실 열쇠"); } else flash("승무원: '표를 보여 주세요. 침대칸 어딘가에 두셨을 텐데요.'"); }}]});
+
+// 승무원실(w=9, 통로 x≈4.5): 계기판, 행선지 — 양옆 벽
+defObj({id:"panel", car:4, x:1.5, y:4.0, hw:1.1, hh:1.05, art:"panel", name:"계기판",
+  tag:"기계 · 승무원실", look:"속도계와 제동 레버. 야간 운행 모드 표시등이 꺼져 있다.",
+  actions:[{label:()=>flags.panelOn?"야간 모드 해제":"야간 운행 모드를 켠다",fn:o=>{ flags.panelOn=!flags.panelOn; flash(flags.panelOn?"표시등이 호박빛으로 들어온다. 객실 조명이 한 단계 어두워졌다 — 야간 운행.":"야간 모드 해제. 표시등이 꺼진다."); }}]});
+defObj({id:"dest", car:4, x:7.5, y:3.2, hw:1.0, hh:1.05, art:"dest", name:"행선지 표시기",
+  tag:"기계 · 승무원실", look:"다음 정차역이 표시되는 기계. 아직 비어 있다.",
+  actions:[{label:"다이얼을 돌려본다",fn:o=>{ if(!flags.dest){ flags.dest="바다끝역"; flash("드르륵 — '다음 정차: 바다끝역'. 이 열차는 바다로 가는 중이었다."); checkGoal(); } else flash("표시: '다음 정차 — 바다끝역'."); }}]});
+
+/* ---------- 칸 맵 생성 (벽/문/바닥) ---------- */
+// 각 칸 맵을 자동 생성: 테두리 벽, 앞/뒤 문(짧은 변 가운데), 내부 바닥.
+function makeMap(car, hasPrev, hasNext){
+  const {w,h}=car; const m=[];
+  for(let y=0;y<h;y++){ const row=[];
+    for(let x=0;x<w;x++){
+      const edge = (x===0||y===0||x===w-1||y===h-1);
+      row.push(edge?1:0);
+    } m.push(row);
+  }
+  // 문: y=0 (앞칸 prev), y=h-1 (뒷칸 next), 가운데 폭3(통과 쉽게)
+  const dx=(w>>1);
+  car.doorPrev = hasPrev ? {x:dx, y:0} : null;
+  car.doorNext = hasNext ? {x:dx, y:h-1} : null;
+  if(hasPrev){ for(let k=-1;k<=1;k++){ m[0][dx+k]=2; m[1][dx+k]=0; } m[0][dx]=2; }
+  if(hasNext){ for(let k=-1;k<=1;k++){ m[h-1][dx+k]=2; m[h-2][dx+k]=0; } m[h-1][dx]=2; }
+  car.map=m;
+  return m;
+}
+CARS.forEach((c,i)=>makeMap(c, i>0, i<CARS.length-1));
+
+/* ---------- 플레이어 상태 ---------- */
+let cur=0;                 // 현재 칸
+let px=CARS[0].w/2, py=2.0, dir=Math.PI/2; // dir: 화면 정면 방향 (라디안). PI/2 = +y(뒷칸쪽)
+const keys={};
+
+function curCar(){ return CARS[cur]; }
+function curMap(){ return CARS[cur].map; }
+
+/* ---------- 칸 이동(문 통과) ---------- */
+function enterCar(idx, fromNext){
+  cur=idx; const c=CARS[idx];
+  if(fromNext){ // 이전 칸의 next문으로 들어옴 → 새 칸의 prev문(y=0) 근처에 배치, 아래(+y) 바라봄
+    px=c.w/2; py=1.6; dir=Math.PI/2;
+  } else {      // next문(y=h-1)으로 들어옴 → 위(-y) 바라봄
+    px=c.w/2; py=c.h-1.6; dir=-Math.PI/2;
+  }
+  refreshHUD();
+  flash(`${c.name}으로 들어섰다. ${c.desc}`);
+}
+
+/* ---------- 충돌/이동 ---------- */
+// 벽(1)만 막는다. 문(2)은 통과 가능(문턱)으로 취급해야 칸 이동이 작동한다.
+function cell(x,y){
+  const m=curMap(); const c=curCar();
+  if(x<0||y<0||x>=c.w||y>=c.h) return 1;
+  return m[y|0][x|0]===1 ? 1 : 0;
+}
+// 객체 충돌(현재 칸 객체는 통과 불가, 작은 반경)
+function objBlock(x,y){
+  for(const o of OBJECTS){ if(o.car!==cur) continue;
+    if(Math.abs(x-o.x)<o.hw*0.6 && Math.abs(y-o.y)<o.hw*0.6) return true; }
+  return false;
+}
+function tryMove(nx,ny){
+  const m=0.20;
+  const sx=nx+Math.sign(nx-px)*m, sy=ny+Math.sign(ny-py)*m;
+  // 문 통과 검사
+  const c=curCar();
+  if(c.doorNext && (ny>c.h-1.6) && Math.abs(nx-(c.doorNext.x+0.5))<1.8){
+    if(cur<CARS.length-1){ if(c.id==="lounge" && !has("key")){ flash("승무원실 문은 잠겨 있다. 열쇠가 필요하다."); return; } enterCar(cur+1,true); return; }
+  }
+  if(c.doorPrev && (ny<1.6) && Math.abs(nx-(c.doorPrev.x+0.5))<1.8){
+    if(cur>0){ enterCar(cur-1,false); return; }
+  }
+  let blocked=false;
+  if(!cell(sx,py) && !objBlock(sx,py)) px=nx; else blocked=true;
+  if(!cell(px,sy) && !objBlock(px,sy)) py=ny; else blocked=true;
+  if(blocked){ const now=performance.now(); if(now-lastBump>650){ lastBump=now;
+    stMsg.textContent="— 벽."; } }
+}
+let lastBump=0;
+
+/* ======================================================================
+   렌더링: raycasting 벽 + 빌보드 스프라이트 객체 + 바닥/천장 텍스처
+   순수 ASCII 톤(모노스페이스, 호박빛 단색)으로 공간감을 만든다.
+   ====================================================================== */
+// 거리별 음영 램프 (가까울수록 진한 글자, 멀수록 옅은 점)
+const SHADE = "@%#*+=:-. ".split("");          // index 0=가장 진함 … 끝=공백
+// 바닥: 가까울수록(아래쪽) 무늬가 진하고 멀수록 옅어진다
+const FLOORTEX = {
+  berth:  "::..  ",   // 침대칸: 카펫 러너
+  tile:   "++..  ",   // 세면칸: 타일
+  carpet: "##::. ",   // 식당칸: 두꺼운 카펫
+  wood:   "==--. ",   // 라운지: 마룻바닥 결
+  steel:  "::..  ",   // 승무원실: 금속 격자
+};
+// 천장 무늬(둥근 차량 천장 리브)
+const CEILDOT = ".";
+// 벽 색조: 칸마다 채움 글자 한 세트(밝은 면/그늘진 면)
+const WALLFILL = {
+  berth:  {lit:":", dim:".", seam:"|", trim:"="},
+  tile:   {lit:".", dim:" ", seam:"|", trim:"-"},
+  carpet: {lit:"=", dim:":", seam:"|", trim:"#"},
+  wood:   {lit:"-", dim:".", seam:"|", trim:"="},
+  steel:  {lit:":", dim:".", seam:"|", trim:"#"},
+};
+
+let dimLevel = 1; // 야간 모드 시 조명 감소
+
+let frame=0;
+
+// 창밖 밤 풍경 한 글자 (벽의 창틀 안쪽에서 호출) — 위=하늘/별, 아래=흐르는 불빛
+function nightAt(col, t){
+  const scroll=(frame*0.7)|0;
+  if(t<0.55){                                  // 밤하늘
+    const k=((col*7+scroll)^( (t*40|0)*131))>>>0;
+    const r=k%97;
+    if(r<3) return "*"; if(r<6) return "."; if(r<8) return "·"; return " ";
+  } else if(t<0.62){
+    return "_";                                // 지평선
+  } else {                                      // 멀어지는 마을 불빛
+    const v=((col*5+scroll*2)%41);
+    if(v<2) return "i"; if(v<4) return "."; if(v<5) return "'";
+    return (((col+scroll)%5===0)?",":" ");
+  }
+}
+
+function render(){
+  const c=curCar();
+  const m=c.map;
+  // 차량 천장이 둥글게 보이도록 수평선을 화면 중앙보다 약간 위로
+  const horizon=Math.floor(H*0.52);
+  const zbuf=new Float32Array(W);
+  const grid=new Array(H);
+  for(let y=0;y<H;y++){ grid[y]=new Array(W).fill(" "); }
+  const wf=WALLFILL[c.floor]||WALLFILL.berth;
+  const ft=FLOORTEX[c.floor]||FLOORTEX.berth;
+  const WALLH=1.35;   // 벽 높이 배율 — 가까운 벽이 화면을 넉넉히 채우도록
+
+  for(let x=0;x<W;x++){
+    const cam=(2*x)/W-1;
+    const rdx=Math.cos(dir)+Math.cos(dir+Math.PI/2)*0.72*cam;
+    const rdy=Math.sin(dir)+Math.sin(dir+Math.PI/2)*0.72*cam;
+    let mx=px|0, my=py|0;
+    const ddx=Math.abs(1/(rdx||1e-9)), ddy=Math.abs(1/(rdy||1e-9));
+    let sx,sy,sdx,sdy,side=0;
+    if(rdx<0){sx=-1;sdx=(px-mx)*ddx;}else{sx=1;sdx=(mx+1-px)*ddx;}
+    if(rdy<0){sy=-1;sdy=(py-my)*ddy;}else{sy=1;sdy=(my+1-py)*ddy;}
+    let hit=0,guard=0,cellv=1,isDoor=false;
+    while(!hit&&guard++<80){
+      if(sdx<sdy){sdx+=ddx;mx+=sx;side=0;}else{sdy+=ddy;my+=sy;side=1;}
+      if(mx<0||my<0||mx>=c.w||my>=c.h){hit=1;cellv=1;}
+      else { cellv=m[my][mx]; if(cellv){hit=1; isDoor=(cellv===2);} }
+    }
+    const dist=Math.max(0.12, side===0? sdx-ddx : sdy-ddy);
+    zbuf[x]=dist;
+    const lh=Math.min(H*4,(H*WALLH/dist)|0);
+    const ds=Math.max(0,horizon-Math.floor(lh*0.62));
+    const de=Math.min(H-1,horizon+Math.floor(lh*0.38));
+    let wallX=side===0? py+dist*rdy : px+dist*rdx; wallX-=wallX|0;
+
+    // 창문: 측벽(side===0, x방향 벽)에 일정 간격으로. 라운지/식당/세면칸만.
+    const winCar=(c.id==="lounge"||c.id==="dining"||c.id==="wash");
+    const isWindow = winCar && !isDoor && (side===0) && (my>1 && my<c.h-2) && ((my%2)===0);
+    const seamCol = (((wallX*8)|0)===0);           // 패널 이음새
+    const distFar = dist>10;
+
+    for(let y=ds;y<=de;y++){
+      const wt=(de>ds)?(y-ds)/(de-ds):0;           // 0(천장쪽)~1(바닥쪽)
+      let ch;
+      if(isDoor){
+        // 문: 다음 칸으로 통하는 빛나는 직사각 통로
+        ch = (wt>0.12&&wt<0.92)
+             ? (seamCol?"|":(wt>0.45&&wt<0.55?"-":" "))
+             : "=";
+      } else if(isWindow && wt>0.16 && wt<0.74){
+        // 창틀 안쪽: 흐르는 밤
+        const innerT=(wt-0.16)/(0.74-0.16);
+        ch = distFar? "·" : nightAt(x, innerT);
+      } else if(isWindow && (wt<=0.16||wt>=0.74)){
+        ch = wf.trim;                               // 창틀
+      } else {
+        // 일반 벽 패널: 위/아래 몰딩 + 세로 이음새 + 채움
+        if(wt<0.10||wt>0.90) ch=wf.trim;            // 천장/걸레받이 몰딩
+        else if(seamCol)     ch=wf.seam;            // 세로 패널 이음새
+        else                 ch=(side===1?wf.dim:wf.lit); // 면 방향 음영
+        if(distFar) ch = (ch===" "||ch===wf.dim)?" ":"·";
+      }
+      grid[y][x]=ch;
+    }
+
+    // 천장: 원근으로 모이는 아치형 차량 천장. 수평선으로 수렴하는 세로 리브
+    // + 거리에 따른 수평 패널 라인 → 위가 빈 하늘처럼 보이지 않게 채운다.
+    for(let y=0;y<ds;y++){
+      // 이 천장 픽셀까지의 (가상) 깊이: 위로 갈수록 멀다(수평선에서 가까움)
+      const p=(horizon-y)/Math.max(1,horizon);       // 1(맨 위)~0(수평선)
+      const cd=0.5/Math.max(0.04,(1-p));             // 가짜 깊이
+      // 천장으로 향하는 카메라 X (세로 리브가 소실점으로 모이게)
+      const ceilX = px + rdx*cd*2.2;
+      const rib = (Math.abs((ceilX% 1.0))<0.10);     // 1칸 간격 리브
+      const band = ((horizon - y) % 4 === 0);        // 수평 패널 라인
+      if(p>0.92){ grid[y][x]= (x%2===0? "_":"."); } // 맨 꼭대기(천장 중앙 능선)
+      else if(rib) grid[y][x]= "|";
+      else if(band) grid[y][x]= (flags.panelOn? "." : ":");
+      else grid[y][x]= ".";
+    }
+    // 바닥: 가까울수록 무늬 진함 + 세로 결이 소실점으로 모임
+    for(let y=de+1;y<H;y++){
+      const fd=(y-horizon)/Math.max(1,(H-horizon));   // 0(수평선)~1(발밑)
+      const fdepth = 0.45/Math.max(0.05,fd);
+      const floorX = px + rdx*fdepth*2.2;
+      const seam = (Math.abs((floorX%1.0))<0.07);
+      if(seam){ grid[y][x]="|"; continue; }
+      const idx=Math.min(ft.length-1, Math.floor((1-fd)*ft.length));
+      grid[y][x]=ft[idx]||".";
+    }
+  }
+
+  // ---- 스프라이트(객체) 렌더 ----
+  let aimed=null, aimedDist=1e9;
+  const objs = OBJECTS.filter(o=>o.car===cur)
+    .map(o=>{ const dx=o.x+0.0-px, dy=o.y+0.0-py; return {o,dx,dy,d2:dx*dx+dy*dy}; })
+    .sort((a,b)=>b.d2-a.d2);
+  // 카메라 역행렬 항(reuse from ray): plane = perp*0.66
+  const planeX=Math.cos(dir+Math.PI/2)*0.66, planeY=Math.sin(dir+Math.PI/2)*0.66;
+  const dirX=Math.cos(dir), dirY=Math.sin(dir);
+  const invDet=1.0/(planeX*dirY-dirX*planeY);
+  for(const s of objs){
+    const {o,dx,dy}=s;
+    const tx=invDet*(dirY*dx-dirX*dy);
+    const ty=invDet*(-planeY*dx+planeX*dy); // depth
+    if(ty<=0.2) continue;
+    const horizon=Math.floor(H*0.52);
+    const sx=(W/2)*(1+tx/ty);
+    const lines=ART[o.art]||["?"];
+    const artH=lines.length, artW=Math.max(...lines.map(l=>l.length));
+    const sh=Math.min(H*3, Math.max(2,(H*1.05*o.hh/ty)|0));
+    const sw=Math.min(W*1.5, Math.max(2,(sh*(artW/artH)*0.58)|0));
+    // 객체 바닥선을 그 거리의 바닥 높이에 맞춘다
+    const floorY = horizon + Math.floor((H*1.35/ty)*0.38);
+    const top=Math.floor(floorY - sh);
+    const left=Math.floor(sx-sw/2);
+    for(let yy=0;yy<sh;yy++){ const gy=top+yy; if(gy<0||gy>=H) continue;
+      const ay=Math.floor(yy/sh*artH);
+      for(let xx=0;xx<sw;xx++){ const gx=left+xx; if(gx<0||gx>=W) continue;
+        if(ty>=zbuf[gx]) continue; // 벽 뒤
+        const ax=Math.floor(xx/sw*artW);
+        const line=lines[Math.min(artH-1,ay)]||"";
+        const ch=line[ax]||" ";
+        if(ch===" ") continue;
+        // 먼 거리 글자 페이드(한글/영문 글자는 보존)
+        let out=ch;
+        if(ty>9 && /[ -~]/.test(ch) && !/[A-Za-z0-9]/.test(ch)){ out = ty>12? "·" : ch; }
+        grid[gy][gx]=out;
+      }
+    }
+    // 조준: 화면 중앙 + 가까움 (조금 너그럽게)
+    const centerDx=Math.abs(sx-W/2);
+    if(ty<5.0 && centerDx<sw*0.7+3 && ty<aimedDist){ aimed=o; aimedDist=ty; }
+  }
+
+  // 출력
+  let outRows=new Array(H);
+  for(let y=0;y<H;y++) outRows[y]=grid[y].join("");
+  screen.textContent=outRows.join("\n");
+
+  // 조준/프롬프트 갱신
+  setAim(aimed);
+  frame++;
+}
+
+/* ---------- 조준점/프롬프트 ---------- */
+let aimedObj=null;
+function setAim(o){
+  aimedObj=o;
+  if(o){
+    ret.classList.add("live"); ret.textContent="◎";
+    let lbl=o.actions&&o.actions[0]? (typeof o.actions[0].label==="function"?o.actions[0].label(o):o.actions[0].label) : "살펴본다";
+    promptEl.textContent=`[E] ${o.name} — 살펴보기`;
+    promptEl.classList.add("on");
+  } else {
+    ret.classList.remove("live"); ret.textContent="·";
+    promptEl.classList.remove("on");
+  }
+}
+
+/* ---------- 상호작용 패널 ---------- */
+const insp=document.getElementById("insp");
+const inspT=document.getElementById("insp-t");
+const inspTag=document.getElementById("insp-tag");
+const inspArt=document.getElementById("insp-art");
+const inspD=document.getElementById("insp-d");
+const inspAct=document.getElementById("insp-act");
+let inspOpen=false;
+function openInspect(o){
+  if(!o) return;
+  inspOpen=true;
+  inspT.textContent=o.name;
+  inspTag.textContent=o.tag||"";
+  inspArt.textContent=(ART[o.art]||["?"]).join("\n");
+  inspD.textContent=o.look||"";
+  inspAct.innerHTML="";
+  (o.actions||[]).forEach(a=>{
+    const b=document.createElement("button");
+    b.textContent=(typeof a.label==="function")?a.label(o):a.label;
+    b.onclick=()=>{ a.fn(o); // 라벨 갱신 후 닫기
+      [...inspAct.children].forEach((bb,i)=>{ const la=o.actions[i]; bb.textContent=(typeof la.label==="function")?la.label(o):la.label; });
+    };
+    inspAct.appendChild(b);
+  });
+  insp.classList.add("on");
+}
+function closeInspect(){ inspOpen=false; insp.classList.remove("on"); }
+document.getElementById("insp-x").onclick=closeInspect;
+
+/* ---------- HUD ---------- */
+function refreshHUD(){
+  stCar.textContent=`${cur+1}/${CARS.length} ${curCar().name}`;
+  stInv.textContent= inventory.length? ("소지품: "+inventory.map(invLabel).join(" · ")) : "소지품 없음";
+}
+function invLabel(id){ return ({ticket:"🎫표",coin:"동전",key:"열쇠"})[id]||id; }
+let msgTimer=0;
+function flash(t){ stMsg.textContent=t; clearTimeout(msgTimer); msgTimer=setTimeout(()=>{stMsg.textContent="";},4200); }
+
+/* ---------- 목표 체크 ---------- */
+function checkGoal(){
+  if(flags.foundBerth && flags.dest && !flags.won){
+    flags.won=true;
+    setTimeout(()=>flash("✦ 당신은 좌석표를 찾았고, 이 열차가 '바다끝역'으로 간다는 것을 알아냈다. 침대로 돌아가 잠들어도 좋다."),900);
+  }
+}
+
+/* ---------- 약식 지도(M) ---------- */
+let mapOpen=false;
+function toggleMap(){ mapOpen=!mapOpen; flash(mapOpen? mapStr() : ""); if(!mapOpen) stMsg.textContent=""; }
+function mapStr(){
+  return "열차편성 ▸ " + CARS.map((c,i)=> (i===cur?`[${c.name}]`:c.name)).join(" ─ ");
+}
+
+/* ---------- 정면 정렬(F) ----------
+   사물을 살펴본 뒤 방향을 잃지 않도록, 통로(앞칸 문 방향)로 시선을 맞춘다.
+   다음 칸 문이 있으면 그쪽(+y), 없으면 이전 칸 문(-y)을 바라본다. */
+function faceCorridor(){
+  const c=curCar();
+  if(c.doorNext)      dir=Math.PI/2;     // +y (뒷칸/다음 칸 방향)
+  else if(c.doorPrev) dir=-Math.PI/2;    // -y (앞칸 방향)
+  flash("정면 — 통로를 향한다.");
+}
+
+/* ======================================================================
+   입력
+   ====================================================================== */
+const intro=document.getElementById("intro");
+let entered=false, started=false;
+function enter(){ if(entered) return; entered=true; intro.classList.add("hidden");
+  started=true; refreshHUD();
+  flash("승차했다. 통로를 따라 걷는다. 사물에 다가가 E를 누르면 살펴볼 수 있다."); }
+document.getElementById("go").onclick=enter;
+
+addEventListener("keydown", e=>{
+  const k=e.key.toLowerCase();
+  if(!entered){ enter(); return; }
+  if(inspOpen){ if(k==="escape"||k==="e"){ closeInspect(); e.preventDefault(); } return; }
+  if(["arrowup","arrowdown","arrowleft","arrowright"," "].includes(k)) e.preventDefault();
+  if(k==="e"){ if(aimedObj) openInspect(aimedObj); e.preventDefault(); return; }
+  if(k==="m"){ toggleMap(); e.preventDefault(); return; }
+  if(k==="f"){ faceCorridor(); e.preventDefault(); return; }
+  keys[k]=true;
+});
+addEventListener("keyup", e=>{ keys[e.key.toLowerCase()]=false; });
+
+// 모바일 패드
+document.querySelectorAll("#pad button").forEach(b=>{
+  const k=b.dataset.k;
+  const dn=ev=>{ ev.preventDefault(); if(!entered){enter();return;}
+    if(k==="e"){ if(inspOpen) closeInspect(); else if(aimedObj) openInspect(aimedObj); return; }
+    if(k==="f"){ faceCorridor(); return; }
+    keys[k]=true; };
+  const up=ev=>{ ev.preventDefault(); keys[k]=false; };
+  b.addEventListener("touchstart",dn,{passive:false});
+  b.addEventListener("touchend",up,{passive:false});
+  b.addEventListener("touchcancel",up,{passive:false});
+  b.addEventListener("mousedown",dn);
+  b.addEventListener("mouseup",up);
+  b.addEventListener("mouseleave",up);
+});
+// 화면 탭으로 입장/조준 상호작용(중앙 탭 = E)
+view.addEventListener("click", ()=>{ if(!entered){enter();return;} if(aimedObj && !inspOpen) openInspect(aimedObj); });
+
+/* ======================================================================
+   루프
+   ====================================================================== */
+let lastT=performance.now(), acc=0;
+function loop(t){
+  const dt=Math.min(0.05,(t-lastT)/1000); lastT=t;
+  dimLevel = flags.panelOn? 1.35 : 1.0; // 야간 모드면 더 어둡게
+  if(started && !inspOpen){
+    const rs=2.3*dt, ms=2.7*dt;
+    if(keys["arrowleft"]||keys["q"]) dir-=rs;
+    if(keys["arrowright"]||keys["e2"]) dir+=rs;
+    const fx=Math.cos(dir), fy=Math.sin(dir);
+    if(keys["w"]||keys["arrowup"]) tryMove(px+fx*ms, py+fy*ms);
+    if(keys["s"]||keys["arrowdown"]) tryMove(px-fx*ms, py-fy*ms);
+    if(keys["a"]) tryMove(px+fy*ms, py-fx*ms);
+    if(keys["d"]) tryMove(px-fy*ms, py+fx*ms);
+  }
+  acc+=dt;
+  if(acc>1/24){ acc=0; if(started) render(); }
+  requestAnimationFrame(loop);
+}
+// 첫 페인트: 인트로 뒤에서도 한 번 그려둔다
+render();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ORRERY.EXE — lo-fi dither solar engine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<style>
+  :root{
+    /* limited warm 486 palette */
+    --c-void:#1a0e0c;        /* deep maroon-black */
+    --c-maroon:#2a1410;
+    --c-maroon2:#3a1c16;
+    --c-rust:#7a3322;
+    --c-rust2:#a64327;
+    --c-salmon:#d8714a;
+    --c-peach:#f0a574;
+    --c-cream:#f6d9b0;
+    --c-teal:#1f5a55;
+    --c-teal2:#2f8c7e;
+    --c-green:#5fae7a;
+    --c-ink:#0e0807;
+    --c-line:#4a241b;
+    --c-amber:#e8a14a;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:
+      repeating-linear-gradient(45deg,#160b09 0 2px,#1a0e0c 2px 4px);
+    color:var(--c-peach);
+    font-family:'VT323',monospace;
+    font-size:18px;
+    -webkit-font-smoothing:none;
+    image-rendering:pixelated;
+    overflow:hidden;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:14px;
+  }
+  .pixel{font-family:'Press Start 2P',monospace}
+
+  /* ===== window chrome ===== */
+  .app{
+    width:100%;
+    max-width:1180px;
+    height:100%;
+    max-height:760px;
+    background:var(--c-maroon);
+    border:2px solid var(--c-rust);
+    box-shadow:
+      6px 6px 0 #0c0604,
+      0 0 0 2px var(--c-void) inset;
+    display:flex;
+    flex-direction:column;
+    position:relative;
+  }
+  /* title bar */
+  .titlebar{
+    display:flex;align-items:center;gap:8px;
+    background:linear-gradient(var(--c-rust),var(--c-rust2));
+    border-bottom:2px solid var(--c-void);
+    padding:5px 8px;
+    color:var(--c-cream);
+  }
+  .dots{display:flex;gap:5px}
+  .dot{width:11px;height:11px;border:2px solid var(--c-void);background:var(--c-salmon)}
+  .dot:nth-child(2){background:var(--c-amber)}
+  .dot:nth-child(3){background:var(--c-green)}
+  .titlebar .pixel{font-size:9px;letter-spacing:1px}
+  .ttag{margin-left:auto;font-size:8px;background:var(--c-void);padding:3px 6px;border:1px solid var(--c-salmon);color:var(--c-peach)}
+
+  /* menu bar */
+  .menubar{
+    display:flex;gap:0;
+    background:var(--c-maroon2);
+    border-bottom:2px solid var(--c-void);
+    font-size:16px;
+  }
+  .menubar span{padding:3px 12px;border-right:1px solid var(--c-line);color:var(--c-peach);cursor:default}
+  .menubar span:hover{background:var(--c-rust);color:var(--c-cream)}
+  .menubar .mright{margin-left:auto;border-right:none;border-left:1px solid var(--c-line);color:var(--c-amber)}
+
+  /* main body: scene + console */
+  .body{flex:1;display:flex;min-height:0;background:var(--c-void)}
+  .stage{
+    flex:1;position:relative;min-width:0;
+    border-right:2px solid var(--c-void);
+    overflow:hidden;background:#120807;
+  }
+  #scene{display:block;width:100%;height:100%;image-rendering:pixelated}
+  /* CRT scanlines + vignette over the scene only */
+  .crt{
+    position:absolute;inset:0;pointer-events:none;
+    background:
+      repeating-linear-gradient(0deg,rgba(0,0,0,0.28) 0 1px,rgba(0,0,0,0) 1px 3px);
+    mix-blend-mode:multiply;
+  }
+  .crt::after{
+    content:"";position:absolute;inset:0;
+    background:radial-gradient(120% 100% at 50% 45%,rgba(0,0,0,0) 55%,rgba(10,4,3,0.7) 100%);
+  }
+  .stagetag{
+    position:absolute;left:8px;bottom:7px;font-size:8px;
+    background:rgba(20,10,8,0.8);border:1px solid var(--c-rust);
+    padding:3px 6px;color:var(--c-peach);
+    font-family:'Press Start 2P';
+  }
+  .blink{animation:bl 1s steps(2) infinite}
+  @keyframes bl{50%{opacity:0.15}}
+
+  /* ===== console ===== */
+  .console{
+    width:300px;flex:none;
+    background:var(--c-maroon);
+    display:flex;flex-direction:column;
+    overflow:auto;
+  }
+  .panel{border-bottom:2px solid var(--c-void);padding:9px 11px}
+  .ptitle{
+    font-family:'Press Start 2P';font-size:8px;color:var(--c-amber);
+    display:flex;justify-content:space-between;align-items:center;
+    margin-bottom:9px;border-bottom:1px dashed var(--c-line);padding-bottom:6px;
+  }
+  .ptitle .pchip{background:var(--c-rust);color:var(--c-cream);padding:2px 4px;font-size:7px}
+
+  .row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:6px 0;font-size:17px}
+  .row label{color:var(--c-peach)}
+  .row .val{color:var(--c-cream);font-family:'Press Start 2P';font-size:8px;min-width:54px;text-align:right}
+
+  input[type=range]{
+    -webkit-appearance:none;appearance:none;width:135px;height:10px;
+    background:
+      repeating-linear-gradient(90deg,var(--c-void) 0 3px,var(--c-maroon2) 3px 6px);
+    border:1px solid var(--c-rust);outline:none;cursor:pointer;
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;width:12px;height:18px;background:var(--c-salmon);
+    border:2px solid var(--c-void);cursor:pointer;box-shadow:0 0 0 1px var(--c-peach)}
+  input[type=range]::-moz-range-thumb{
+    width:12px;height:18px;background:var(--c-salmon);border:2px solid var(--c-void);cursor:pointer}
+
+  .seg{display:flex;gap:0;margin-top:4px}
+  .seg button{
+    flex:1;font-family:'VT323';font-size:15px;background:var(--c-maroon2);
+    color:var(--c-peach);border:1px solid var(--c-void);padding:3px 0;cursor:pointer;
+  }
+  .seg button.on{background:var(--c-rust);color:var(--c-cream)}
+  .seg button:hover{background:var(--c-rust2);color:var(--c-cream)}
+
+  /* palette swatches */
+  .swatches{display:flex;flex-wrap:wrap;gap:3px;margin-top:4px}
+  .sw{width:22px;height:18px;border:1px solid var(--c-void)}
+
+  /* focus list of planets */
+  .planetlist{display:flex;flex-direction:column;gap:2px;margin-top:4px}
+  .pbtn{
+    display:flex;align-items:center;gap:7px;font-size:16px;
+    background:var(--c-maroon2);border:1px solid var(--c-void);
+    color:var(--c-peach);padding:3px 6px;cursor:pointer;text-align:left;width:100%;
+  }
+  .pbtn:hover{background:var(--c-rust)}
+  .pbtn.on{background:var(--c-rust);color:var(--c-cream);border-color:var(--c-salmon)}
+  .pbtn .pd{width:11px;height:11px;border:1px solid var(--c-void);flex:none}
+
+  /* readout bars */
+  .bar{height:9px;background:var(--c-void);border:1px solid var(--c-line);margin-top:3px;position:relative;overflow:hidden}
+  .bar i{position:absolute;left:0;top:0;bottom:0;
+    background:repeating-linear-gradient(90deg,var(--c-salmon) 0 2px,var(--c-peach) 2px 4px)}
+
+  .stat{display:flex;justify-content:space-between;font-size:16px;margin:4px 0}
+  .stat b{font-family:'Press Start 2P';font-size:8px;color:var(--c-cream)}
+
+  /* status bar */
+  .statusbar{
+    display:flex;align-items:center;gap:10px;
+    background:var(--c-maroon2);border-top:2px solid var(--c-void);
+    padding:4px 9px;font-size:15px;color:var(--c-peach);
+  }
+  .statusbar .pixel{font-size:7px}
+  .sled{width:9px;height:9px;background:var(--c-green);border:1px solid var(--c-void)}
+  .statusbar .sright{margin-left:auto;color:var(--c-amber)}
+
+  /* responsive 390 */
+  @media (max-width:760px){
+    body{padding:6px;font-size:16px}
+    .app{max-height:none;height:100%}
+    .body{flex-direction:column}
+    .stage{border-right:none;border-bottom:2px solid var(--c-void);min-height:46vh}
+    .console{width:100%;flex:1;min-height:0}
+    .menubar{font-size:14px;overflow-x:auto}
+    .menubar span{padding:3px 9px;white-space:nowrap}
+    .menubar .hidesm{display:none}
+    input[type=range]{width:46vw}
+  }
+</style>
+</head>
+<body>
+  <div class="app">
+    <!-- title bar -->
+    <div class="titlebar">
+      <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+      <span class="pixel">ORRERY.EXE</span>
+      <span class="ttag pixel">v4.86 / DITHER ENGINE</span>
+    </div>
+
+    <!-- menu bar -->
+    <div class="menubar">
+      <span>FILE</span><span>VIEW</span><span class="hidesm">EPHEMERIS</span>
+      <span class="hidesm">PALETTE</span><span class="hidesm">RENDER</span><span>HELP</span>
+      <span class="mright pixel" id="clock">--:--:--</span>
+    </div>
+
+    <!-- body -->
+    <div class="body">
+      <!-- scene -->
+      <div class="stage">
+        <canvas id="scene"></canvas>
+        <div class="crt"></div>
+        <div class="stagetag">ORDERED&nbsp;DITHER&nbsp;8x8&nbsp;<span class="blink">█</span></div>
+      </div>
+
+      <!-- console -->
+      <aside class="console">
+
+        <div class="panel">
+          <div class="ptitle">CONTROLS <span class="pchip">SYS</span></div>
+          <div class="row">
+            <label>ORBIT SPEED</label><span class="val" id="vspeed">1.00x</span>
+          </div>
+          <input id="speed" type="range" min="0" max="400" value="100" style="width:100%">
+          <div class="row" style="margin-top:10px">
+            <label>SCALE</label><span class="val" id="vscale">1.00x</span>
+          </div>
+          <input id="scale" type="range" min="55" max="150" value="100" style="width:100%">
+          <div class="row" style="margin-top:10px">
+            <label>DIR</label>
+            <div class="seg" style="width:135px">
+              <button data-dir="1" class="on">CW</button>
+              <button data-dir="-1">CCW</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="ptitle">FOCUS <span class="pchip" id="focuschip">SOL</span></div>
+          <div class="planetlist" id="planetlist"></div>
+        </div>
+
+        <div class="panel">
+          <div class="ptitle">EPHEMERIS <span class="pchip">LIVE</span></div>
+          <div class="stat"><span>BODY</span><b id="e_body">SOL</b></div>
+          <div class="stat"><span>DISTANCE</span><b id="e_dist">0.00 AU</b></div>
+          <div class="stat"><span>PERIOD</span><b id="e_per">--</b></div>
+          <div class="stat"><span>ANGLE</span><b id="e_ang">0&deg;</b></div>
+          <div style="font-size:13px;color:var(--c-salmon);margin-top:6px">ORBITAL PHASE</div>
+          <div class="bar"><i id="e_phase" style="width:0%"></i></div>
+        </div>
+
+        <div class="panel">
+          <div class="ptitle">PALETTE <span class="pchip">8-BIT</span></div>
+          <div class="seg" style="margin-bottom:6px">
+            <button data-pal="0" class="on">RUST</button>
+            <button data-pal="1">EMBER</button>
+            <button data-pal="2">TIDE</button>
+          </div>
+          <div class="swatches" id="swatches"></div>
+        </div>
+
+        <div class="panel" style="border-bottom:none">
+          <div class="ptitle">RENDER <span class="pchip">GFX</span></div>
+          <div class="stat"><span>MODE</span><b>ORDERED</b></div>
+          <div class="stat"><span>MATRIX</span><b>BAYER 8x8</b></div>
+          <div class="stat"><span>COLORS</span><b id="r_colors">8</b></div>
+          <div class="stat"><span>FPS</span><b id="r_fps">--</b></div>
+          <div class="row" style="margin-top:6px">
+            <label>SCANLINE</label>
+            <div class="seg" style="width:135px">
+              <button id="scanon" class="on">ON</button>
+              <button id="scanoff">OFF</button>
+            </div>
+          </div>
+        </div>
+
+      </aside>
+    </div>
+
+    <!-- status bar -->
+    <div class="statusbar">
+      <span class="sled" id="sled"></span>
+      <span class="pixel">RUNNING</span>
+      <span>· 8-COLOR QUANTIZE · WARM</span>
+      <span class="sright pixel">ORRERY.EXE</span>
+    </div>
+  </div>
+
+<script>
+(function(){
+"use strict";
+
+// ---------- limited warm palettes (RGB triplets), index 0=darkest ----------
+const PALS = {
+  0:{ // RUST
+    name:"RUST",
+    sky:[[26,14,12],[42,20,16],[122,51,34],[166,67,39],[216,113,74],[240,165,116],[246,217,176]],
+    planet:[31,90,85],planet2:[95,174,122],ring:[232,161,74]
+  },
+  1:{ // EMBER  (hotter)
+    name:"EMBER",
+    sky:[[20,8,8],[58,18,14],[140,40,28],[196,70,36],[232,120,60],[244,176,92],[250,222,170]],
+    planet:[40,30,70],planet2:[150,90,200],ring:[244,176,92]
+  },
+  2:{ // TIDE  (cooler teal-forward)
+    name:"TIDE",
+    sky:[[12,18,20],[20,46,46],[31,90,85],[47,140,126],[95,174,122],[216,196,140],[246,231,196]],
+    planet:[166,67,39],planet2:[240,165,116],ring:[216,113,74]
+  }
+};
+
+// Bayer 8x8 ordered-dither threshold matrix (0..63 -> normalized 0..1)
+const BAYER8 = [
+  [ 0,32, 8,40, 2,34,10,42],
+  [48,16,56,24,50,18,58,26],
+  [12,44, 4,36,14,46, 6,38],
+  [60,28,52,20,62,30,54,22],
+  [ 3,35,11,43, 1,33, 9,41],
+  [51,19,59,27,49,17,57,25],
+  [15,47, 7,39,13,45, 5,37],
+  [63,31,55,23,61,29,53,21]
+];
+const BN = 64;
+
+// ---------- canvas setup ----------
+const cv = document.getElementById('scene');
+const ctx = cv.getContext('2d',{alpha:false});
+// low internal resolution => chunky pixels => true lo-fi
+let PW=0, PH=0;            // pixel-buffer dimensions
+let img=null, buf=null;
+const PIXEL = 4;          // on-screen size of one rendered "pixel" (approx)
+
+function resize(){
+  const r = cv.getBoundingClientRect();
+  cv.width  = Math.max(2, Math.round(r.width));
+  cv.height = Math.max(2, Math.round(r.height));
+  PW = Math.max(80, Math.round(cv.width / PIXEL));
+  PH = Math.max(60, Math.round(cv.height / PIXEL));
+  img = ctx.createImageData(PW,PH);
+  buf = img.data;
+  // crisp upscaling
+  ctx.imageSmoothingEnabled = false;
+}
+
+// ---------- bodies ----------
+// dist = orbit radius (fraction of min(PW,PH)/2), size = body radius px, period years, hue idx
+const BODIES = [
+  {key:"SOL",     label:"SOL",     dist:0.00, size:0.105, per:0,   tilt:0,   spin:0.20, col:"sun",  ph:0},
+  {key:"MERCURY", label:"MERCURY", dist:0.22, size:0.020, per:0.24,tilt:0.18,spin:0.7,  col:"rock", ph:0.4},
+  {key:"VENUS",   label:"VENUS",   dist:0.33, size:0.034, per:0.62,tilt:0.18,spin:0.5,  col:"warm", ph:2.3},
+  {key:"TERRA",   label:"TERRA",   dist:0.46, size:0.040, per:1.00,tilt:0.18,spin:1.0,  col:"blue", ph:4.1,moon:true},
+  {key:"MARS",    label:"MARS",    dist:0.60, size:0.030, per:1.88,tilt:0.18,spin:0.9,  col:"red",  ph:5.7,ph2:0},
+  {key:"JOVIS",   label:"JOVIS",   dist:0.78, size:0.072, per:11.8,tilt:0.18,spin:1.4,  col:"gas",  ph:1.2,ring:false},
+  {key:"SATURN",  label:"SATURN",  dist:0.97, size:0.058, per:29.4,tilt:0.18,spin:1.2,  col:"sat",  ph:3.4,ring:true}
+];
+
+// ---------- state ----------
+let state = {
+  speed:1.0, scale:1.0, dir:1, pal:0, scan:true,
+  focus:"SOL", t:0
+};
+
+// ---------- helpers ----------
+function lerp(a,b,t){return a+(b-a)*t;}
+function clamp(v,a,b){return v<a?a:(v>b?b:v);}
+
+// ordered-dither between two palette colors given intensity 0..1 at pixel x,y
+function ditherPick(intensity, x, y, c0, c1){
+  const thr = (BAYER8[y&7][x&7]+0.5)/BN;
+  return (intensity > thr) ? c1 : c0;
+}
+
+// map continuous 0..1 brightness onto the 7-step warm sky ramp with dithering
+function skyColor(v, x, y, sky){
+  v = clamp(v,0,1);
+  const seg = v*(sky.length-1);
+  const i = Math.floor(seg);
+  const f = seg - i;
+  if(i>=sky.length-1) return sky[sky.length-1];
+  return ditherPick(f, x, y, sky[i], sky[i+1]);
+}
+
+function setPx(x,y,c){
+  if(x<0||y<0||x>=PW||y>=PH) return;
+  const o=(y*PW+x)*4;
+  buf[o]=c[0];buf[o+1]=c[1];buf[o+2]=c[2];buf[o+3]=255;
+}
+
+// dithered filled disc with simple shading (light from upper-left)
+function disc(cx,cy,r,baseDark,baseLight,opts){
+  opts=opts||{};
+  const r2=r*r;
+  const lx=-0.55, ly=-0.55; // light dir
+  for(let y=Math.floor(cy-r);y<=Math.ceil(cy+r);y++){
+    for(let x=Math.floor(cx-r);x<=Math.ceil(cx+r);x++){
+      const dx=x-cx, dy=y-cy;
+      const d2=dx*dx+dy*dy;
+      if(d2>r2) continue;
+      // shading: dot of surface normal-ish with light
+      const nz=Math.sqrt(Math.max(0,r2-d2))/r;
+      const nx=dx/r, ny=dy/r;
+      let lum = nx*lx+ny*ly+nz*0.9;       // -1..~1.4
+      lum = clamp((lum+0.6)/1.5,0,1);
+      // banding for gas/sun
+      if(opts.bands){
+        const band = 0.5+0.5*Math.sin((y-cy)/r*opts.bands + (opts.bandPhase||0));
+        lum = clamp(lum*0.7 + band*0.4,0,1);
+      }
+      if(opts.noise){
+        lum = clamp(lum + (((x*7+y*13)&3)-1.5)*0.04,0,1);
+      }
+      const c = ditherPick(lum, x, y, baseDark, baseLight);
+      setPx(x,y,c);
+    }
+  }
+  // rim
+  if(opts.rim){
+    const steps=Math.max(40,Math.floor(r*5));
+    for(let i=0;i<steps;i++){
+      const a=i/steps*Math.PI*2;
+      const x=Math.round(cx+Math.cos(a)*r);
+      const y=Math.round(cy+Math.sin(a)*r);
+      const thr=(BAYER8[y&7][x&7]+0.5)/BN;
+      if(thr<0.55) setPx(x,y,opts.rim);
+    }
+  }
+}
+
+// the star: radial bright core -> warm edge, dithered, with corona halo
+function sun(cx,cy,r,sky,t){
+  const halo=r*1.85;
+  const h2=halo*halo, r2=r*r;
+  for(let y=Math.floor(cy-halo);y<=Math.ceil(cy+halo);y++){
+    for(let x=Math.floor(cx-halo);x<=Math.ceil(cx+halo);x++){
+      const dx=x-cx, dy=y-cy;
+      const d2=dx*dx+dy*dy;
+      if(d2>h2) continue;
+      const d=Math.sqrt(d2);
+      if(d<=r){
+        // body: bright cream core, fades to salmon/peach rim. radial luminance.
+        let v = clamp(1.15 - (d/r)*0.85, 0, 1);
+        // surface texture: faint dithered granulation + slow flicker bands
+        v += Math.sin((x*0.18)+(y*0.12)+t*0.8)*0.05;
+        v += (((x*7+y*11)&3)-1.5)*0.025;
+        v = clamp(v,0,1);
+        // map onto the hot end of the ramp (indices 3..6)
+        const seg=3+v*3; const i=Math.floor(seg); const f=seg-i;
+        const c = (i>=sky.length-1)?sky[sky.length-1]:ditherPick(f,x,y,sky[i],sky[i+1]);
+        setPx(x,y,c);
+      } else {
+        // corona: dithered glow fading out, density falls with distance
+        const g = clamp(1-(d-r)/(halo-r),0,1);
+        const thr=(BAYER8[y&7][x&7]+0.5)/BN;
+        if(g*g > thr){
+          const ci = (g>0.55)?5:(g>0.3?4:3);
+          setPx(x,y,sky[ci]);
+        }
+      }
+    }
+  }
+}
+
+// dithered ring (ellipse outline, thick, with gap) for orbits
+function orbitRing(cx,cy,rx,ry,col,density){
+  const steps=Math.max(120,Math.floor((rx+ry)*1.4));
+  for(let i=0;i<steps;i++){
+    const a=i/steps*Math.PI*2;
+    const x=Math.round(cx+Math.cos(a)*rx);
+    const y=Math.round(cy+Math.sin(a)*ry);
+    const thr=(BAYER8[y&7][x&7]+0.5)/BN;
+    if(thr<density) setPx(x,y,col);
+  }
+}
+
+// saturn-style dithered ring system (ellipse band)
+function planetRing(cx,cy,r,col,col2){
+  const rxO=r*2.2, ryO=r*0.78, rxI=r*1.35, ryI=r*0.48;
+  for(let y=Math.floor(cy-ryO);y<=Math.ceil(cy+ryO);y++){
+    for(let x=Math.floor(cx-rxO);x<=Math.ceil(cx+rxO);x++){
+      const dx=(x-cx), dy=(y-cy);
+      const o=(dx*dx)/(rxO*rxO)+(dy*dy)/(ryO*ryO);
+      const inn=(dx*dx)/(rxI*rxI)+(dy*dy)/(ryI*ryI);
+      if(o<=1 && inn>=1){
+        // hide ring behind planet front? keep simple: skip pixels inside planet disc lower half handled by draw order
+        const v=clamp(1-o,0,1);
+        const c=ditherPick(v*0.9+0.1, x,y, col, col2);
+        setPx(x,y,c);
+      }
+    }
+  }
+}
+
+const colMap = {
+  sun:  d=>[d.sky[2],d.sky[6]],
+  rock: d=>[[60,40,34],[180,150,120]],
+  warm: d=>[d.sky[2],d.sky[5]],
+  blue: d=>[[24,60,90],[120,190,210]],
+  red:  d=>[[100,40,28],[224,120,70]],
+  gas:  d=>[d.sky[1],d.sky[4]],
+  sat:  d=>[[120,90,50],[230,200,140]]
+};
+
+// ---------- main render ----------
+let lastFps=performance.now(), frames=0, fps=0;
+
+function render(){
+  const P = PALS[state.pal];
+  const sky = P.sky;
+  const cx = PW*0.5, cy = PH*0.5;
+  const SQUASH = 0.52;
+  const Rbase = Math.min(PW,PH)*0.45*state.scale;
+
+  // --- background: dark deep-space with a tight warm glow around the sun ---
+  const aspect = PW/PH;
+  for(let y=0;y<PH;y++){
+    for(let x=0;x<PW;x++){
+      const dx=(x-cx)/PW, dy=(y-cy)/PW; // use PW for both -> circular glow
+      const d=Math.sqrt(dx*dx+dy*dy);
+      // tight falloff so background stays dark and the sun reads as a light source
+      let v = clamp(0.86 - d*2.6,0,1);
+      v = v*v;                       // gamma -> punchier core, darker field
+      v = v*0.95 + (1-y/PH)*0.05;    // faint top lift
+      // faint nebula banding only in the lit region
+      v += Math.sin(x*0.05 + y*0.028)*0.012*v;
+      const c = skyColor(v, x, y, sky);
+      setPx(x,y,c);
+    }
+  }
+
+  // --- starfield (ordered, sparse) ---
+  for(let i=0;i<70;i++){
+    const x=(i*97+13)%PW, y=(i*53+7)%PH;
+    const dx=(x-cx), dy=(y-cy);
+    if(dx*dx+dy*dy < (Rbase*0.25)*(Rbase*0.25)) continue;
+    if(((x+y+i)&3)===0) setPx(x,y,sky[6]);
+  }
+
+  // --- orbits (drawn behind planets) ---
+  for(let b=1;b<BODIES.length;b++){
+    const bd=BODIES[b];
+    const rr=bd.dist*Rbase;
+    const foc = (state.focus===bd.key);
+    orbitRing(cx,cy,rr,rr*SQUASH, foc?P.ring:sky[2], foc?0.62:0.30);
+  }
+
+  // --- compute body positions, sort by y (painter) ---
+  const placed=[];
+  for(let b=0;b<BODIES.length;b++){
+    const bd=BODIES[b];
+    if(bd.per===0){ placed.push({bd,x:cx,y:cy,ang:0,depth:0,r:Math.max(3,bd.size*Rbase)}); continue;}
+    const ang = bd.ph + state.dir*state.t*(2*Math.PI)/(bd.per*6.0);
+    const rr=bd.dist*Rbase;
+    const px=cx+Math.cos(ang)*rr;
+    const py=cy+Math.sin(ang)*rr*SQUASH;     // squashed for perspective
+    placed.push({bd,x:px,y:py,ang,depth:Math.sin(ang),r:Math.max(2.2,bd.size*Rbase)});
+  }
+  placed.sort((a,b)=>a.y-b.y);
+
+  for(const p of placed){
+    const bd=p.bd;
+    const cols = colMap[bd.col](P);
+    if(bd.key==="SOL"){
+      sun(p.x,p.y,p.r,sky,state.t);
+      continue;
+    }
+    if(bd.ring){
+      // back half of ring first
+      planetRing(p.x,p.y,p.r,P.ring,sky[5]);
+    }
+    const isGas = (bd.col==="gas"||bd.col==="sat");
+    disc(p.x,p.y,p.r, cols[0], cols[1], {bands:isGas?5:0,bandPhase:bd.ph,noise:!isGas,rim:cols[1]});
+    if(bd.moon && p.r>3){
+      const ma=state.dir*state.t*1.4+bd.ph;
+      disc(p.x+Math.cos(ma)*p.r*2.0, p.y+Math.sin(ma)*p.r*0.9, Math.max(1.6,p.r*0.3),[60,55,60],[200,200,210],{});
+    }
+    if(bd.ring){
+      // front half (over planet bottom) — redraw lower ellipse band partially
+      // (kept simple; visual band already conveys ring)
+    }
+    // focus reticle
+    if(state.focus===bd.key){
+      orbitRing(p.x,p.y,p.r+5,p.r+5,P.ring,0.7);
+    }
+  }
+
+  // --- scanlines into the buffer (every other row darkened) for authentic CRT ---
+  if(state.scan){
+    for(let y=0;y<PH;y+=2){
+      for(let x=0;x<PW;x++){
+        const o=(y*PW+x)*4;
+        buf[o]*=0.78;buf[o+1]*=0.78;buf[o+2]*=0.78;
+      }
+    }
+  }
+
+  ctx.putImageData(img,0,0);
+  // upscale the small buffer to full canvas crisply
+  ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(cv,0,0,PW,PH,0,0,cv.width,cv.height);
+
+  // fps
+  frames++;
+  const now=performance.now();
+  if(now-lastFps>=500){ fps=Math.round(frames*1000/(now-lastFps)); frames=0; lastFps=now;
+    document.getElementById('r_fps').textContent=fps; }
+}
+
+// ---------- animation loop ----------
+let prev=performance.now();
+function loop(now){
+  const dt=Math.min(0.05,(now-prev)/1000); prev=now;
+  state.t += dt*state.speed;
+  render();
+  updateEphemeris();
+  requestAnimationFrame(loop);
+}
+
+// ---------- ephemeris / readouts ----------
+function updateEphemeris(){
+  const bd=BODIES.find(b=>b.key===state.focus)||BODIES[0];
+  document.getElementById('e_body').textContent=bd.label;
+  if(bd.per===0){
+    document.getElementById('e_dist').textContent="0.00 AU";
+    document.getElementById('e_per').textContent="STAR";
+    document.getElementById('e_ang').textContent="—";
+    document.getElementById('e_phase').style.width="100%";
+  }else{
+    const ang=(bd.ph+state.dir*state.t*(2*Math.PI)/(bd.per*6.0));
+    const deg=((ang*180/Math.PI)%360+360)%360;
+    document.getElementById('e_dist').textContent=(bd.dist*9.6).toFixed(2)+" AU";
+    document.getElementById('e_per').textContent=(bd.per<1?(bd.per*365).toFixed(0)+" d":bd.per.toFixed(2)+" y");
+    document.getElementById('e_ang').textContent=deg.toFixed(0)+"°";
+    document.getElementById('e_phase').style.width=(deg/360*100).toFixed(0)+"%";
+  }
+}
+
+// ---------- build dynamic UI ----------
+function buildPlanetList(){
+  const wrap=document.getElementById('planetlist');
+  wrap.innerHTML="";
+  const P=PALS[state.pal];
+  BODIES.forEach(bd=>{
+    const b=document.createElement('button');
+    b.className='pbtn'+(state.focus===bd.key?' on':'');
+    const cols=(bd.key==="SOL")?[P.sky[5]]:colMap[bd.col](P);
+    const c=cols[cols.length-1];
+    b.innerHTML='<span class="pd" style="background:rgb('+c[0]+','+c[1]+','+c[2]+')"></span>'+bd.label;
+    b.onclick=()=>{state.focus=bd.key;document.getElementById('focuschip').textContent=bd.key.slice(0,3);buildPlanetList();};
+    wrap.appendChild(b);
+  });
+}
+function buildSwatches(){
+  const wrap=document.getElementById('swatches');
+  wrap.innerHTML="";
+  const P=PALS[state.pal];
+  const all=[...P.sky, P.planet, P.planet2, P.ring];
+  all.forEach(c=>{
+    const s=document.createElement('div');
+    s.className='sw';
+    s.style.background='rgb('+c[0]+','+c[1]+','+c[2]+')';
+    wrap.appendChild(s);
+  });
+  document.getElementById('r_colors').textContent=P.sky.length+3;
+}
+
+// ---------- wire controls ----------
+const $=id=>document.getElementById(id);
+$('speed').oninput=e=>{state.speed=e.target.value/100;$('vspeed').textContent=state.speed.toFixed(2)+'x';};
+$('scale').oninput=e=>{state.scale=e.target.value/100;$('vscale').textContent=state.scale.toFixed(2)+'x';};
+document.querySelectorAll('.seg button[data-dir]').forEach(b=>{
+  b.onclick=()=>{document.querySelectorAll('.seg button[data-dir]').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on');state.dir=parseInt(b.dataset.dir);};
+});
+document.querySelectorAll('.seg button[data-pal]').forEach(b=>{
+  b.onclick=()=>{document.querySelectorAll('.seg button[data-pal]').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on');state.pal=parseInt(b.dataset.pal);buildSwatches();buildPlanetList();};
+});
+$('scanon').onclick=()=>{state.scan=true;$('scanon').classList.add('on');$('scanoff').classList.remove('on');};
+$('scanoff').onclick=()=>{state.scan=false;$('scanoff').classList.add('on');$('scanon').classList.remove('on');};
+
+// clock
+function tickClock(){
+  const d=new Date();
+  const p=n=>String(n).padStart(2,'0');
+  $('clock').textContent=p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());
+}
+setInterval(tickClock,1000);tickClock();
+setInterval(()=>{const l=$('sled');l.style.opacity=l.style.opacity==='0.25'?'1':'0.25';},700);
+
+// ---------- boot ----------
+function boot(){
+  resize();
+  buildPlanetList();
+  buildSwatches();
+  $('vspeed').textContent='1.00x';
+  $('vscale').textContent='1.00x';
+  requestAnimationFrame(loop);
+}
+window.addEventListener('resize',()=>{resize();});
+// first paint immediately (dither screen is the first paint — no loading gate)
+boot();
+
+})();
+</script>
+</body>
+</html>

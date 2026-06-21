@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>crystal ball on a tarot spread</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0a0712;cursor:none}
+  #gl{position:fixed;inset:0;width:100vw;height:100vh;display:block}
+  #hint{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);
+    font:11px/1.5 "SF Mono",Menlo,monospace;letter-spacing:.2em;color:rgba(244,228,196,.6);
+    text-shadow:0 0 8px rgba(0,0,0,.9);pointer-events:none;transition:opacity 1.4s;text-transform:uppercase;
+    white-space:nowrap}
+  @media (max-width:520px){#hint{font-size:9px;letter-spacing:.12em}}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="hint">move to read the cards · hold to gaze deeper · right-drag to tilt the orb</div>
+<script>
+'use strict';
+/* ============================================================
+   "crystal ball on a tarot spread"
+   — a heavy glass sphere resting on a velvet tarot layout,
+     filmed by hand in candlelight.
+   scene  = canvas2d (the cloth + cards beneath)
+   optics = webgl shader (spherical refraction + glass craft)
+   ============================================================ */
+
+const DPR = Math.min(window.devicePixelRatio || 1, 1.75);
+let W = 0, H = 0;
+
+const glCanvas = document.getElementById('gl');
+const gl = glCanvas.getContext('webgl', { antialias:false, preserveDrawingBuffer:false });
+if (!gl) document.body.innerHTML = '<p style="color:#888;font:14px sans-serif;padding:2em">WebGL unavailable.</p>';
+
+/* ------------------------------------------------------------
+   SCENE — the velvet table seen from a low handheld angle:
+   a deep indigo cloth printed with zodiac glyphs, a celtic-cross
+   tarot spread of hand-painted cards, scattered crystals & a flame.
+   logical space 1600x1000, cover-scaled & tilted like a filmed table.
+   ------------------------------------------------------------ */
+const scene = document.createElement('canvas');
+const sx = scene.getContext('2d');
+const LW = 1600, LH = 1000;
+
+let rnd = 1337;
+function rseed(s){ rnd = s; }
+function rand(){ rnd = (rnd * 16807) % 2147483647; return rnd / 2147483647; }
+
+function rr(c, x, y, w, h, r) {
+  c.beginPath();
+  c.moveTo(x+r, y); c.arcTo(x+w, y, x+w, y+h, r); c.arcTo(x+w, y+h, x, y+h, r);
+  c.arcTo(x, y+h, x, y, r); c.arcTo(x, y, x+w, y, r); c.closePath();
+}
+function tw(c, text, x, y, size, color, weight, align, font) {
+  c.fillStyle = color;
+  c.font = (weight||400) + ' ' + size + 'px ' + (font || '"Cinzel","Trajan Pro",Georgia,serif');
+  c.textAlign = align || 'left';
+  c.fillText(text, x, y);
+  c.textAlign = 'left';
+}
+
+/* a five-pointed star (pentagram outline) */
+function star5(c, cx, cy, R, rot) {
+  rot = rot || -Math.PI/2;
+  c.beginPath();
+  for (let i = 0; i < 5; i++) {
+    const a = rot + i * (Math.PI * 4 / 5);   // skip every other tip -> pentagram
+    const px = cx + Math.cos(a) * R, py = cy + Math.sin(a) * R;
+    i ? c.lineTo(px, py) : c.moveTo(px, py);
+  }
+  c.closePath();
+}
+/* filled star, soft points (decorative) */
+function starFill(c, cx, cy, R, n, rot) {
+  c.beginPath();
+  for (let i = 0; i < n * 2; i++) {
+    const a = (rot||0) + i * Math.PI / n;
+    const rad = i % 2 ? R * 0.42 : R;
+    const px = cx + Math.cos(a) * rad, py = cy + Math.sin(a) * rad;
+    i ? c.lineTo(px, py) : c.moveTo(px, py);
+  }
+  c.closePath(); c.fill();
+}
+
+/* a moon glyph */
+function moon(c, cx, cy, R) {
+  c.beginPath(); c.arc(cx, cy, R, 0, 7); c.fill();
+  c.save(); c.globalCompositeOperation = 'destination-out';
+  c.beginPath(); c.arc(cx + R*0.55, cy - R*0.25, R*0.95, 0, 7); c.fill();
+  c.restore();
+}
+
+const ZODIAC = ['♈','♉','♊','♋','♌','♍','♎','♏','♐','♑','♒','♓'];
+const PLANET = ['☉','☽','☿','♀','♂','♃','♄','♅','♆','♇'];
+
+/* -------- a single hand-painted tarot card --------
+   each card: gilt border, deep parchment field, a simple iconographic
+   illustration, roman numeral + name. reversed flag tilts it. */
+function tarotCard(c, x, y, w, h, card, reversed) {
+  c.save();
+  c.translate(x + w/2, y + h/2);
+  c.rotate((card.rot || 0) + (reversed ? Math.PI : 0));
+  c.translate(-w/2, -h/2);
+
+  // drop shadow on cloth
+  c.save();
+  c.shadowColor = 'rgba(0,0,0,0.6)'; c.shadowBlur = 26; c.shadowOffsetX = 6; c.shadowOffsetY = 12;
+  rr(c, 0, 0, w, h, 10); c.fillStyle = '#1a1208'; c.fill();
+  c.restore();
+
+  // parchment field
+  rr(c, 0, 0, w, h, 10); c.save(); c.clip();
+  const pg = c.createLinearGradient(0, 0, w, h);
+  pg.addColorStop(0, '#efe2c2'); pg.addColorStop(0.5, '#e4d2a6'); pg.addColorStop(1, '#d2bb86');
+  c.fillStyle = pg; c.fillRect(0, 0, w, h);
+  // parchment mottling
+  rseed(card.seed);
+  for (let i = 0; i < 70; i++) {
+    c.fillStyle = 'rgba(120,90,40,' + (0.02 + rand() * 0.05) + ')';
+    const r = 4 + rand() * 22;
+    c.beginPath(); c.arc(rand() * w, rand() * h, r, 0, 7); c.fill();
+  }
+  // inner illustration panel
+  const m = w * 0.1, iw = w - m*2, ih = h * 0.6, iy = h * 0.13;
+  const ig = c.createLinearGradient(0, iy, 0, iy + ih);
+  ig.addColorStop(0, card.bg[0]); ig.addColorStop(1, card.bg[1]);
+  c.fillStyle = ig; c.fillRect(m, iy, iw, ih);
+  // illustration
+  c.save();
+  c.beginPath(); c.rect(m, iy, iw, ih); c.clip();
+  c.translate(m + iw/2, iy + ih/2);
+  card.draw(c, iw, ih, card);
+  c.restore();
+  c.restore();
+
+  // gilt double border
+  c.strokeStyle = '#8a6a2c'; c.lineWidth = 5; rr(c, 3, 3, w-6, h-6, 8); c.stroke();
+  c.strokeStyle = '#c9a14a'; c.lineWidth = 1.6; rr(c, 8, 8, w-16, h-16, 6); c.stroke();
+  // numeral + name plate
+  tw(c, card.num, w/2, iy - h*0.02, Math.round(h*0.05), '#5a3d12', 700, 'center');
+  tw(c, card.name, w/2, iy + ih + h*0.085, Math.round(h*0.052), '#3c2708', 700, 'center');
+  c.restore();
+}
+
+/* card illustration primitives — drawn centered at (0,0) in panel space */
+function ill_sun(c, iw, ih) {
+  const g = c.createRadialGradient(0, -ih*0.05, 2, 0, -ih*0.05, iw*0.5);
+  g.addColorStop(0, '#fff7d6'); g.addColorStop(0.5, '#f4c84b'); g.addColorStop(1, 'rgba(244,200,75,0)');
+  c.fillStyle = g; c.beginPath(); c.arc(0, -ih*0.05, iw*0.5, 0, 7); c.fill();
+  c.fillStyle = '#f2c244'; c.beginPath(); c.arc(0, -ih*0.05, iw*0.2, 0, 7); c.fill();
+  c.strokeStyle = '#e8b53a'; c.lineWidth = 3;
+  for (let i = 0; i < 12; i++){ const a = i/12*Math.PI*2; const r0=iw*0.24,r1=iw*0.40;
+    c.beginPath(); c.moveTo(Math.cos(a)*r0, -ih*0.05+Math.sin(a)*r0); c.lineTo(Math.cos(a)*r1, -ih*0.05+Math.sin(a)*r1); c.stroke(); }
+  // little figure below
+  c.fillStyle = '#7a4a1e'; c.beginPath(); c.arc(0, ih*0.32, iw*0.07, 0, 7); c.fill();
+}
+function ill_moon(c, iw, ih) {
+  c.fillStyle = '#cfd8ef'; moon(c, -iw*0.04, -ih*0.06, iw*0.26);
+  c.fillStyle = '#e9eefb';
+  for (let i=0;i<7;i++){ const a=rand()*7,d=iw*(0.22+rand()*0.22);
+    starFill(c, Math.cos(a)*d, -ih*0.1+Math.sin(a)*d*0.6, 3+rand()*4, 4, 0.4); }
+  // two towers
+  c.fillStyle = '#2c3a63'; c.fillRect(-iw*0.42, ih*0.05, iw*0.12, ih*0.42);
+  c.fillRect(iw*0.30, ih*0.05, iw*0.12, ih*0.42);
+}
+function ill_star(c, iw, ih) {
+  c.fillStyle = '#bcdcf2'; starFill(c, 0, -ih*0.12, iw*0.26, 7, -Math.PI/2);
+  c.fillStyle = '#e8f4ff';
+  for (let i=0;i<6;i++){ const a=rand()*7,d=iw*0.34; starFill(c, Math.cos(a)*d, -ih*0.05+Math.sin(a)*d*0.5, 4+rand()*4,5,0.2); }
+  c.strokeStyle = '#6fa9d8'; c.lineWidth=4; c.beginPath();
+  c.moveTo(-iw*0.3, ih*0.34); c.quadraticCurveTo(0, ih*0.22, iw*0.3, ih*0.36); c.stroke(); // water
+}
+function ill_wheel(c, iw, ih) {
+  c.strokeStyle = '#6a4a8a'; c.lineWidth = 5;
+  c.beginPath(); c.arc(0, 0, iw*0.34, 0, 7); c.stroke();
+  c.beginPath(); c.arc(0, 0, iw*0.18, 0, 7); c.stroke();
+  for (let i=0;i<8;i++){ const a=i/8*Math.PI*2;
+    c.beginPath(); c.moveTo(Math.cos(a)*iw*0.18, Math.sin(a)*iw*0.18); c.lineTo(Math.cos(a)*iw*0.34, Math.sin(a)*iw*0.34); c.stroke(); }
+  c.fillStyle = '#caa14a'; c.beginPath(); c.arc(0,0,iw*0.07,0,7); c.fill();
+}
+function ill_hand(c, iw, ih) {
+  // The Magician — figure + infinity + raised wand
+  c.fillStyle = '#caa14a';
+  c.font = '700 ' + Math.round(ih*0.5) + 'px serif'; c.textAlign='center'; c.textBaseline='middle';
+  c.fillText('∞', 0, -ih*0.28);
+  c.fillStyle = '#7a3a2a'; c.fillRect(-iw*0.04, -ih*0.05, iw*0.08, ih*0.4); // robe
+  c.beginPath(); c.arc(0, -ih*0.12, iw*0.09, 0, 7); c.fill();
+  c.strokeStyle = '#caa14a'; c.lineWidth=4; c.beginPath(); c.moveTo(iw*0.18, -ih*0.34); c.lineTo(iw*0.30, ih*0.0); c.stroke();
+}
+function ill_tower(c, iw, ih) {
+  c.fillStyle = '#4a3a52'; c.fillRect(-iw*0.14, -ih*0.34, iw*0.28, ih*0.68);
+  c.fillStyle = '#6a3030'; c.beginPath(); c.moveTo(-iw*0.14,-ih*0.34); c.lineTo(0,-ih*0.5); c.lineTo(iw*0.14,-ih*0.34); c.closePath(); c.fill();
+  // lightning
+  c.strokeStyle = '#f4d34a'; c.lineWidth = 5; c.beginPath();
+  c.moveTo(iw*0.34,-ih*0.46); c.lineTo(iw*0.06,-ih*0.16); c.lineTo(iw*0.18,-ih*0.06); c.lineTo(-iw*0.1,ih*0.3); c.stroke();
+  // sparks
+  c.fillStyle = '#f4c84b'; for (let i=0;i<6;i++){ starFill(c, (rand()-0.5)*iw*0.6, (rand()-0.3)*ih*0.5, 3+rand()*3,4,0.3); }
+}
+function ill_cup(c, iw, ih) {
+  c.fillStyle = '#caa14a';
+  c.beginPath(); c.moveTo(-iw*0.18,-ih*0.18); c.lineTo(iw*0.18,-ih*0.18);
+  c.quadraticCurveTo(iw*0.16, ih*0.12, 0, ih*0.16); c.quadraticCurveTo(-iw*0.16, ih*0.12, -iw*0.18,-ih*0.18); c.fill();
+  c.fillRect(-iw*0.04, ih*0.14, iw*0.08, ih*0.16);
+  c.fillRect(-iw*0.12, ih*0.3, iw*0.24, ih*0.05);
+  // water shimmer
+  c.fillStyle = '#9fc7e8'; c.beginPath(); c.ellipse(0,-ih*0.16,iw*0.16,ih*0.03,0,0,7); c.fill();
+}
+
+const CARDS = [
+  { num:'I',     name:'THE MAGICIAN', bg:['#2a1f4a','#150e2c'], draw:ill_hand,  seed:11, rot:-0.04 },
+  { num:'XVII',  name:'THE STAR',     bg:['#0e2a44','#06121f'], draw:ill_star,  seed:23, rot: 0.03 },
+  { num:'XIX',   name:'THE SUN',      bg:['#3a2208','#1c1004'], draw:ill_sun,   seed:31, rot:-0.02 },
+  { num:'XVIII', name:'THE MOON',     bg:['#15203e','#080d1e'], draw:ill_moon,  seed:43, rot: 0.05 },
+  { num:'X',     name:'WHEEL',        bg:['#2e1438','#160820'], draw:ill_wheel, seed:53, rot:-0.05 },
+  { num:'XVI',   name:'THE TOWER',    bg:['#241026','#0f0612'], draw:ill_tower, seed:61, rot: 0.04 },
+  { num:'ACE',   name:'OF CUPS',      bg:['#102e34','#061417'], draw:ill_cup,   seed:71, rot: 0.02 },
+];
+
+function drawScene() {
+  scene.width = W; scene.height = H;
+  const c = sx;
+
+  // ---- dark candlelit room ----
+  c.fillStyle = '#070410'; c.fillRect(0, 0, W, H);
+
+  // cover-scale logical 1600x1000, tilt like a low handheld shot of the table
+  const sc = Math.max(W / LW, H / LH) * 1.06;
+  c.save();
+  c.translate(W*0.5, H*0.5); c.rotate(0.02); c.scale(sc, sc); c.translate(-LW/2, -LH/2);
+
+  // ---- velvet cloth ----
+  const cg = c.createRadialGradient(LW*0.5, LH*0.42, LH*0.1, LW*0.5, LH*0.55, LH*1.05);
+  cg.addColorStop(0, '#2a1d52'); cg.addColorStop(0.4, '#1c1140'); cg.addColorStop(1, '#0a0620');
+  c.fillStyle = cg; c.fillRect(-200, -200, LW+400, LH+400);
+
+  // velvet weave noise
+  rseed(7);
+  for (let i = 0; i < 2600; i++) {
+    const vx = rand()*LW, vy = rand()*LH;
+    c.fillStyle = 'rgba(' + (rand()>0.5?'120,90,200':'40,20,80') + ',' + (rand()*0.05) + ')';
+    c.fillRect(vx, vy, 2.2, 2.2);
+  }
+
+  // gilt zodiac border ring printed on the cloth
+  c.save();
+  c.translate(LW/2, LH/2);
+  c.strokeStyle = 'rgba(196,162,74,0.35)'; c.lineWidth = 2;
+  c.beginPath(); c.arc(0,0, 470, 0, 7); c.stroke();
+  c.beginPath(); c.arc(0,0, 440, 0, 7); c.stroke();
+  c.font = '600 30px "Cinzel",serif'; c.textAlign='center'; c.textBaseline='middle';
+  c.fillStyle = 'rgba(210,178,96,0.45)';
+  for (let i=0;i<12;i++){ const a = i/12*Math.PI*2 - Math.PI/2;
+    const gx = Math.cos(a)*455, gy = Math.sin(a)*455;
+    c.save(); c.translate(gx, gy); c.rotate(a+Math.PI/2); c.fillText(ZODIAC[i], 0, 0); c.restore(); }
+  c.restore();
+
+  // big faint pentagram under the spread (the working circle)
+  c.save();
+  c.translate(LW/2, LH/2);
+  c.strokeStyle = 'rgba(150,120,210,0.22)'; c.lineWidth = 2.5;
+  c.beginPath(); c.arc(0,0,360,0,7); c.stroke();
+  star5(c, 0, 0, 350, -Math.PI/2); c.stroke();
+  // small sigils between points
+  c.font = '500 26px serif'; c.textAlign='center'; c.textBaseline='middle';
+  c.fillStyle = 'rgba(170,140,220,0.3)';
+  for (let i=0;i<8;i++){ const a=i/8*Math.PI*2; c.fillText(PLANET[i], Math.cos(a)*300, Math.sin(a)*300); }
+  c.restore();
+
+  // ---- the celtic-cross-ish spread of cards ----
+  const CW = 150, CH = 240, cx0 = LW*0.5, cy0 = LH*0.5;
+  // center cross: two cards
+  tarotCard(c, cx0 - CW/2,        cy0 - CH/2,        CW, CH, CARDS[0], false);
+  // crossing card (rotated 90)
+  c.save(); c.translate(cx0, cy0); c.rotate(Math.PI/2);
+  tarotCard(c, -CW/2, -CH/2, CW, CH, CARDS[6], false); c.restore();
+  // four around
+  tarotCard(c, cx0 - CW/2,        cy0 - CH*1.55,     CW, CH, CARDS[1], false); // above
+  tarotCard(c, cx0 - CW/2,        cy0 + CH*0.55,     CW, CH, CARDS[3], false); // below
+  tarotCard(c, cx0 - CW*2.2,      cy0 - CH/2,        CW, CH, CARDS[2], false); // left
+  tarotCard(c, cx0 + CW*1.2,      cy0 - CH/2,        CW, CH, CARDS[4], false); // right
+  // staff card off to far right
+  tarotCard(c, cx0 + CW*2.6,      cy0 - CH*0.2,      CW, CH, CARDS[5], true);
+
+  // ---- scattered crystals (little prisms) ----
+  rseed(99);
+  const gems = [[300,760,'#9be8d8'],[1260,300,'#e2b0f0'],[1180,780,'#f0d28a'],[360,260,'#a8c8f6'],[860,860,'#f6a8c0']];
+  for (const [gx,gy,gc] of gems) {
+    c.save(); c.translate(gx, gy); c.rotate(rand()*7);
+    const s = 16 + rand()*10;
+    c.fillStyle = gc; c.globalAlpha = 0.92;
+    c.beginPath(); c.moveTo(0,-s); c.lineTo(s*0.7,-s*0.2); c.lineTo(s*0.45,s); c.lineTo(-s*0.45,s); c.lineTo(-s*0.7,-s*0.2); c.closePath(); c.fill();
+    c.fillStyle = 'rgba(255,255,255,0.5)'; c.beginPath(); c.moveTo(0,-s); c.lineTo(s*0.7,-s*0.2); c.lineTo(0,0); c.closePath(); c.fill();
+    c.globalAlpha = 1; c.restore();
+  }
+
+  // ---- candle flame glow (warm pool, upper-left) ----
+  const fg = c.createRadialGradient(330, 200, 4, 330, 200, 360);
+  fg.addColorStop(0, 'rgba(255,210,120,0.55)'); fg.addColorStop(0.4, 'rgba(255,160,60,0.18)'); fg.addColorStop(1, 'rgba(255,140,40,0)');
+  c.fillStyle = fg; c.fillRect(-200, -200, LW+400, LH);
+  // flame
+  c.fillStyle = '#fff0c0'; c.beginPath(); c.ellipse(330, 196, 9, 22, 0, 0, 7); c.fill();
+  c.fillStyle = 'rgba(255,180,60,0.8)'; c.beginPath(); c.ellipse(330, 200, 14, 32, 0, 0, 7); c.fill();
+
+  // ---- overall warm vignette baked into the scene ----
+  const vg = c.createRadialGradient(LW*0.46, LH*0.46, LH*0.25, LW*0.5, LH*0.55, LH*0.95);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,0.55)');
+  c.fillStyle = vg; c.fillRect(-200,-200,LW+400,LH+400);
+
+  c.restore();
+}
+
+/* ------------------------------------------------------------
+   WEBGL — the optics of a solid glass sphere:
+   spherical (lensball) refraction with a flipped/compressed image,
+   total-internal rim, chromatic fringe, internal caustics, a sharp
+   specular catchlight, milky core, contact shadow, then handheld post.
+   ------------------------------------------------------------ */
+const VS = `
+attribute vec2 aP;
+void main(){ gl_Position = vec4(aP, 0.0, 1.0); }`;
+
+const FS = `
+precision highp float;
+uniform sampler2D uScene;
+uniform vec2  uRes, uBall, uShake, uTilt;
+uniform float uR, uTime, uGaze, uBlur, uExpo, uRot;
+
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+
+vec3 scn(vec2 uv){
+  return texture2D(uScene, clamp(uv / uRes, vec2(0.002), vec2(0.998))).rgb;
+}
+/* handheld camera: rotate + slight barrel + shake on the source coords */
+vec2 cam(vec2 v){
+  vec2 cen = uRes * 0.5;
+  vec2 p = v - cen;
+  float ca = cos(uRot), sa = sin(uRot);
+  p = vec2(ca*p.x - sa*p.y, sa*p.x + ca*p.y);
+  float k = dot(p, p) / dot(cen, cen);
+  p *= 1.0 + 0.04 * k;
+  return cen + p + uShake;
+}
+float gband(float x, float c, float w){ float d = (x - c) / w; return exp(-d * d); }
+
+void main(){
+  vec2 fc = gl_FragCoord.xy;
+  vec2 d  = fc - uBall;
+
+  /* tilt foreshortens the sphere's silhouette into an ellipse */
+  float tA = length(uTilt);
+  vec2 tD = tA > 0.001 ? uTilt / tA : vec2(1.0, 0.0);
+  vec2 pD = vec2(-tD.y, tD.x);
+  float squash = 1.0 - 0.40 * tA;
+  vec2 ds = tD * (dot(d, tD) / squash) + pD * dot(d, pD);
+  float r = length(ds);
+  vec2 dir = r > 0.5 ? ds / r : vec2(1.0, 0.0);
+  vec2 tdir = vec2(-dir.y, dir.x);
+  float x = r / uR;                       // 0 center .. 1 silhouette
+
+  float innerX = 0.86;                                         // glass wall begins
+  float w    = smoothstep(innerX - 0.05, innerX + 0.02, x);   // rim weight
+  float wOut = smoothstep(1.0, 1.06, x);                      // outside weight
+  float q = clamp(x / innerX, 0.0, 1.0);                      // 0..1 across the clear glass
+
+  /* ---- spherical (lensball) refraction ----
+     a solid sphere produces a real, INVERTED, demagnified image of the
+     scene behind it. we map an inside radius q to a source offset that
+     passes through the ball center (image flip) and compresses toward the
+     edge as sin(refraction angle) climbs. */
+  float flip = -1.0;                                          // inversion through the sphere
+  float bend = sin(q * 1.5707963);                            // 0..1, edge-heavy
+  float comp = mix(0.78, 0.96, uGaze);                        // how wide a slice of scene we pull in
+  float rsIn = flip * uR * comp * bend;                       // signed source radius (inverted)
+  /* tilt -> asymmetric stretch + prism deviation of the whole image */
+  float asym = 1.0 + 0.34 * tA * dot(dir, tD);
+  vec2 refr = dir * rsIn * asym + uTilt * uR * 0.5;
+
+  /* rim region samples the grazing edge of the scene (the back rim halo) */
+  vec2 rimSrc = dir * uR * 1.04;
+
+  /* anisotropic blur (source px): center fairly sharp, edge smears tangentially */
+  float q4 = q*q*q*q;
+  float radial = mix(mix(q4 * uR * 0.10, uR * 0.02, w), 0.0, wOut) + uBlur + 0.7;
+  float tang   = mix(mix(q*q*q * uR * 0.06, uR * 0.18, w), 0.0, wOut) + uBlur + 0.7;
+
+  vec2 srcBase = uBall + mix(mix(refr, rimSrc, w), d, wOut);
+  vec3 col = vec3(0.0);
+  #define TAP(rx, ty) col += scn(cam(srcBase + dir * ((rx) * radial) + tdir * ((ty) * tang)));
+  TAP( 0.00,  0.00) TAP( 0.62,  0.25) TAP(-0.58,  0.30) TAP( 0.21, -0.64)
+  TAP(-0.25, -0.61) TAP( 0.45,  0.68) TAP(-0.70, -0.15) TAP( 0.86, -0.18)
+  TAP(-0.41,  0.74) TAP( 0.05,  0.94) TAP(-0.88,  0.35) TAP( 0.33,  0.13)
+  TAP(-0.18,  0.20) TAP( 0.69, -0.55)
+  col /= 14.0;
+
+  float inG = (1.0 - wOut);          // inside the silhouette (incl. rim)
+  float inI = inG * (1.0 - w);       // clear refractive interior only
+
+  /* chromatic aberration — glass disperses, strongest toward the rim */
+  float caW = 0.55 * smoothstep(0.3, 1.0, x) * (1.0 + 1.3 * tA) * inG;
+  caW = min(caW, 0.85);
+  if (caW > 0.01) {
+    vec3 cR = scn(cam(uBall + refr * 0.965 * asym + uTilt * uR * 0.5));
+    vec3 cB = scn(cam(uBall + refr * 1.035 * asym + uTilt * uR * 0.5));
+    col.r = mix(col.r, cR.r, caW);
+    col.b = mix(col.b, cB.b, caW);
+  }
+
+  /* glass body tint: slightly cool, faint blue-green like real crystal,
+     plus a milky core that the gaze deepens */
+  col = mix(col, col * vec3(0.93, 0.97, 1.0) + vec3(0.02, 0.03, 0.05), 0.5 * inG);
+  float milk = (0.04 + 0.10 * x * x + 0.10 * uGaze) * inI;
+  col = mix(col, vec3(0.86, 0.90, 0.98), milk);
+  col += inI * 0.05 * (1.0 - x * x);                           // gentle core bloom
+
+  /* internal caustics — swirling light folds inside the crystal */
+  float th = atan(d.y, d.x);
+  float cau = 0.5 * sin(th * 11.0 + uTime * 0.6)
+            + 0.4 * sin(th * 23.0 - uTime * 0.3 + q * 8.0)
+            + 0.3 * sin(th * 5.0 + 1.2);
+  col += cau * 0.06 * q4 * inI;
+  /* warm caustic spill (the candle, focused through the ball) */
+  col += vec3(0.10, 0.06, 0.0) * inI * gband(x, 0.45, 0.25) * (0.6 + 0.4 * sin(uTime*0.7));
+
+  /* rim: thick glass wall — dark total-internal band + bright fresnel ring */
+  float rim = w * (1.0 - wOut);
+  col = mix(col, col * 0.30, rim);                            // dark glass wall
+  float bands = gband(x, 0.885, 0.020) * 0.85
+              + gband(x, 0.945, 0.014) * 0.55
+              + gband(x, 0.988, 0.010) * 0.80;
+  float arc = pow(max(cos(th - 2.45), 0.0), 6.0)              // window highlight upper-left
+            + 0.7 * pow(max(cos(th + 0.55), 0.0), 10.0)
+            + 0.5 * pow(max(cos(th - 4.30), 0.0), 14.0);
+  col += rim * bands * (0.14 + 0.70 * arc);
+  col *= mix(1.0, 0.45, rim * gband(x, 1.0, 0.012));          // dark outer lip
+  col += inI * 0.18 * gband(x, 0.855, 0.012);                 // bright inner ring (fresnel)
+
+  /* sharp specular catchlight (the candle/window reflected off the dome) */
+  vec2 hp = uBall + vec2(-0.34, 0.36) * uR + uTilt * uR * 0.45;
+  vec2 hd = fc - hp;
+  float spec = exp(-dot(hd, hd) / (uR * uR * 0.010));         // tight hot spot
+  float halo = exp(-dot(hd, hd) / (uR * uR * 0.10));          // soft glow around it
+  col += (spec * (0.9 + 0.2 * uGaze) + halo * 0.16) * inG * vec3(1.0, 0.97, 0.9);
+  /* a smaller secondary glint lower-right (the candle's twin) */
+  vec2 hp2 = uBall + vec2(0.30, -0.30) * uR;
+  vec2 hd2 = fc - hp2;
+  col += exp(-dot(hd2, hd2) / (uR * uR * 0.006)) * 0.5 * inG * vec3(1.0, 0.85, 0.6);
+
+  /* contact shadow pooled under the ball + projected caustic disc on cloth */
+  col *= 1.0 - (0.34 - 0.10 * uGaze) * gband(x, 1.045, 0.05) * wOut;
+  col += vec3(0.10, 0.07, 0.02) * gband(x, 1.14, 0.05) * wOut * (0.6 + 0.4*sin(uTime*0.5)); // bright caustic ring on cloth
+
+  /* ---- phone-camera post ---- */
+  col *= uExpo;
+  col *= vec3(1.04, 1.0, 0.95);                               // warm candlelight white balance
+  vec2 vc = (fc - uRes * 0.5) / (uRes * 0.5);
+  col *= 1.0 - 0.34 * pow(dot(vc, vc) * 0.55, 1.4);           // vignette
+  col *= 1.0 + 0.010 * sin(fc.y * 0.06 - uTime * 8.0);        // faint refresh banding
+  float gn = hash(fc + fract(uTime * 7.0) * 113.0);
+  col += (gn - 0.5) * 0.045;                                  // luma grain
+  col.r += (hash(fc.yx + 7.7 + fract(uTime * 5.0) * 51.0) - 0.5) * 0.02;
+  col.b += (hash(fc + 3.1 + fract(uTime * 3.0) * 77.0) - 0.5) * 0.016;
+  col = clamp(col, 0.0, 1.0);
+  col = pow(col, vec3(0.95));                                 // slight cam lift
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+const aP = gl.getAttribLocation(prog, 'aP');
+gl.enableVertexAttribArray(aP);
+gl.vertexAttribPointer(aP, 2, gl.FLOAT, false, 0, 0);
+
+const U = {};
+for (const n of ['uScene','uRes','uBall','uShake','uTilt','uR','uTime','uGaze','uBlur','uExpo','uRot'])
+  U[n] = gl.getUniformLocation(prog, n);
+
+function makeTex(unit) {
+  const t = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0 + unit);
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  return t;
+}
+const sceneTex = makeTex(0);
+gl.uniform1i(U.uScene, 0);
+
+function uploadScene() {
+  gl.activeTexture(gl.TEXTURE0);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, scene);
+}
+
+/* ------------------------------------------------------------ state */
+const mouse = { x: 0, y: 0 };          // CSS px, y-down
+const ball  = { x: 0, y: 0 };          // device px, y-up
+const tilt = { x: 0, y: 0 };
+const tiltManual = { x: 0, y: 0 };
+const tiltVel = { x: 0, y: 0 };
+let rightDrag = null;
+let gazeTarget = 0, gaze = 0;
+let needScene = true;
+
+function resize() {
+  W = Math.round(innerWidth * DPR); H = Math.round(innerHeight * DPR);
+  glCanvas.width = W; glCanvas.height = H;
+  gl.viewport(0, 0, W, H);
+  if (!mouse.x) { mouse.x = innerWidth * 0.5; mouse.y = innerHeight * 0.48; ball.x = W * 0.5; ball.y = H * 0.52; }
+  needScene = true;
+}
+addEventListener('resize', resize); resize();
+
+addEventListener('contextmenu', e => e.preventDefault());
+addEventListener('pointermove', e => {
+  mouse.x = e.clientX; mouse.y = e.clientY;
+  if (rightDrag) {
+    tiltManual.x = rightDrag.tx + (e.clientX - rightDrag.x) * 0.0035;
+    tiltManual.y = rightDrag.ty + (rightDrag.y - e.clientY) * 0.0035;
+    const m = Math.hypot(tiltManual.x, tiltManual.y);
+    if (m > 0.5) { tiltManual.x *= 0.5 / m; tiltManual.y *= 0.5 / m; }
+  }
+});
+addEventListener('pointerdown', e => {
+  if (e.button === 2) rightDrag = { x: e.clientX, y: e.clientY, tx: tiltManual.x, ty: tiltManual.y };
+  else gazeTarget = 1;
+});
+addEventListener('pointerup', e => {
+  if (e.button === 2) rightDrag = null;
+  else gazeTarget = 0;
+});
+// touch: single touch moves ball; long press = gaze
+addEventListener('touchmove', e => { if (e.touches[0]) { mouse.x = e.touches[0].clientX; mouse.y = e.touches[0].clientY; } }, { passive:true });
+setTimeout(() => { const h=document.getElementById('hint'); if(h) h.style.opacity = '0'; }, 5200);
+
+/* autofocus hunts: every few seconds the camera briefly loses focus */
+let huntT0 = 2000 + Math.random() * 3000;
+function focusHunt(now) {
+  const dt = now - huntT0;
+  if (dt > 900) { huntT0 = now + 2800 + Math.random() * 5000; return 0; }
+  if (dt < 0) return 0;
+  const ph = dt / 900;
+  return Math.sin(ph * Math.PI) * (3.5 + Math.random() * 0.6);
+}
+
+function frame(tms) {
+  const t = tms * 0.001;
+  if (needScene) { drawScene(); uploadScene(); needScene = false; }
+
+  // ball follows the mouse with physical lag + a little grip tremor
+  const tx = mouse.x * DPR + Math.sin(t * 8.7) * 1.3 * DPR + Math.sin(t * 13.1 + 2.0) * 0.7 * DPR;
+  const ty = (innerHeight - mouse.y) * DPR + Math.cos(t * 9.4 + 1.0) * 1.2 * DPR;
+  const pgx = ball.x, pgy = ball.y;
+  ball.x += (tx - ball.x) * 0.15;
+  ball.y += (ty - ball.y) * 0.15;
+  gaze += (gazeTarget - gaze) * 0.07;
+
+  // tilt: orb leans against its motion + manual right-drag
+  const vk = -0.009 / DPR;
+  tiltVel.x += ((ball.x - pgx) * vk - tiltVel.x) * 0.18;
+  tiltVel.y += ((ball.y - pgy) * vk - tiltVel.y) * 0.18;
+  if (!rightDrag) { tiltManual.x *= 0.95; tiltManual.y *= 0.95; }
+  let ttx = tiltManual.x + tiltVel.x, tty = tiltManual.y + tiltVel.y;
+  const tm = Math.hypot(ttx, tty);
+  if (tm > 0.5) { ttx *= 0.5 / tm; tty *= 0.5 / tm; }
+  tilt.x += (ttx - tilt.x) * 0.12;
+  tilt.y += (tty - tilt.y) * 0.12;
+
+  const R = Math.min(W, H) * (0.30 + gaze * 0.02);
+
+  // handheld shake / drift
+  const shx = (Math.sin(t * 1.3) * 2.6 + Math.sin(t * 0.7 + 1.7) * 3.6 + Math.sin(t * 3.1 + 0.5) * 1.1 + Math.sin(t * 7.3) * 0.4) * DPR;
+  const shy = (Math.cos(t * 1.1 + 0.4) * 3.0 + Math.sin(t * 0.5 + 2.6) * 4.0 + Math.cos(t * 2.7 + 1.2) * 1.2 + Math.cos(t * 8.1) * 0.4) * DPR;
+  const rot = 0.004 * Math.sin(t * 0.45) + 0.0018 * Math.sin(t * 1.7 + 1.0);
+
+  // focus breathing + hunts
+  const blur = Math.max(0.0, 0.9 + 0.7 * Math.sin(t * 0.8) + 0.5 * Math.sin(t * 2.3 + 0.7)) * DPR + focusHunt(tms) * DPR;
+
+  // exposure slowly re-metering + candle flicker
+  const flick = 0.02 * Math.sin(t * 11.0) + 0.015 * Math.sin(t * 23.0 + 1.0);
+  const expo = 1.0 + 0.04 * Math.sin(t * 0.4) + flick - gaze * 0.04;
+
+  gl.uniform2f(U.uRes, W, H);
+  gl.uniform2f(U.uBall, ball.x, ball.y);
+  gl.uniform2f(U.uShake, shx, shy);
+  gl.uniform2f(U.uTilt, tilt.x, tilt.y);
+  gl.uniform1f(U.uR, R);
+  gl.uniform1f(U.uTime, t);
+  gl.uniform1f(U.uGaze, gaze);
+  gl.uniform1f(U.uBlur, blur);
+  gl.uniform1f(U.uExpo, expo);
+  gl.uniform1f(U.uRot, rot);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

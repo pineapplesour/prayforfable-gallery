@@ -1,0 +1,930 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>심해 잠수정 · NAUTILUS-7 — 압력 한계선</title>
+<style>
+  :root{
+    --abyss-0:#02060c;
+    --abyss-1:#04101c;
+    --abyss-2:#072030;
+    --teal:#3fe4ff;
+    --teal-deep:#0e9fc4;
+    --amber:#ffb347;
+    --bio:#7df9ff;
+    --hot:#ff5d57;
+    --ink:#dff3ff;
+    --ink-dim:#7fa3b8;
+    --ink-faint:#3f6478;
+    --mono:'JetBrains Mono','SF Mono',ui-monospace,'Cascadia Code',Consolas,monospace;
+    --sans:'Pretendard','Helvetica Neue',-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    background:radial-gradient(120% 90% at 50% -10%, #0a2538 0%, #051320 38%, #02080f 72%, #01050a 100%);
+    color:var(--ink);
+    font-family:var(--sans);
+    overflow:hidden;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+    cursor:default;
+  }
+  #app{position:fixed;inset:0;}
+  canvas{display:block;}
+  #scene-canvas{position:fixed;inset:0;z-index:1;}
+
+  /* ===== grain + vignette overlays ===== */
+  .vignette{
+    position:fixed;inset:0;z-index:6;pointer-events:none;
+    background:
+      radial-gradient(130% 110% at 50% 42%, transparent 52%, rgba(1,4,9,.55) 82%, rgba(1,4,9,.92) 100%),
+      linear-gradient(180deg, rgba(2,8,16,.45) 0%, transparent 18%, transparent 80%, rgba(2,8,16,.6) 100%);
+    mix-blend-mode:multiply;
+  }
+  .grain{
+    position:fixed;inset:-50%;z-index:7;pointer-events:none;opacity:.05;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    animation:grain 1.1s steps(3) infinite;
+  }
+  @keyframes grain{
+    0%{transform:translate(0,0)}33%{transform:translate(-3%,2%)}66%{transform:translate(2%,-3%)}100%{transform:translate(0,0)}
+  }
+  .scanline{
+    position:fixed;inset:0;z-index:7;pointer-events:none;opacity:.16;
+    background:repeating-linear-gradient(180deg, rgba(63,228,255,.05) 0px, rgba(63,228,255,.05) 1px, transparent 2px, transparent 4px);
+    mix-blend-mode:screen;
+  }
+
+  /* ===== HUD layer ===== */
+  .hud{position:fixed;inset:0;z-index:5;pointer-events:none;}
+  .hud *{pointer-events:auto;}
+
+  /* corner frame ticks */
+  .frame-corner{position:fixed;width:46px;height:46px;border:1px solid rgba(63,228,255,.32);z-index:5;pointer-events:none;}
+  .fc-tl{top:24px;left:24px;border-right:none;border-bottom:none;}
+  .fc-tr{top:24px;right:24px;border-left:none;border-bottom:none;}
+  .fc-bl{bottom:24px;left:24px;border-right:none;border-top:none;}
+  .fc-br{bottom:24px;right:24px;border-left:none;border-top:none;}
+
+  /* top bar */
+  .topbar{
+    position:absolute;top:26px;left:0;right:0;
+    display:flex;justify-content:space-between;align-items:flex-start;
+    padding:0 46px;font-family:var(--mono);font-size:11px;letter-spacing:.28em;color:var(--ink-dim);
+    text-transform:uppercase;
+  }
+  .topbar .brand{display:flex;align-items:center;gap:12px;color:var(--ink);font-weight:600;letter-spacing:.34em;}
+  .brand .dot{width:7px;height:7px;border-radius:50%;background:var(--teal);box-shadow:0 0 12px var(--teal);animation:pulse 2.4s ease-in-out infinite;}
+  @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.7)}}
+  .topbar .right{text-align:right;line-height:1.9;}
+  .topbar .right b{color:var(--teal);font-weight:600;}
+
+  /* hero copy */
+  .hero{
+    position:absolute;left:48px;top:50%;transform:translateY(-54%);
+    max-width:560px;mix-blend-mode:normal;
+  }
+  .hero .kicker{
+    font-family:var(--mono);font-size:11.5px;letter-spacing:.42em;color:var(--teal);
+    text-transform:uppercase;margin-bottom:20px;display:flex;align-items:center;gap:14px;
+    opacity:0;transform:translateY(14px);
+  }
+  .hero .kicker .ln{width:46px;height:1px;background:linear-gradient(90deg,var(--teal),transparent);}
+  .hero h1{
+    font-size:clamp(54px, 8.2vw, 116px);
+    line-height:.92;font-weight:800;letter-spacing:-.02em;
+    color:var(--ink);
+    text-shadow:0 0 44px rgba(63,228,255,.22), 0 12px 60px rgba(0,0,0,.6);
+  }
+  .hero h1 .ln{display:block;overflow:hidden;}
+  .hero h1 .ln span{display:inline-block;transform:translateY(108%);}
+  .hero h1 .accent{
+    color:transparent;-webkit-text-stroke:1.4px rgba(125,249,255,.85);
+    text-stroke:1.4px rgba(125,249,255,.85);
+  }
+  .hero .lead{
+    margin-top:26px;font-size:14px;line-height:1.85;color:var(--ink-dim);max-width:400px;
+    opacity:0;transform:translateY(14px);
+  }
+  .hero .lead b{color:var(--ink);font-weight:600;}
+
+  /* big depth readout */
+  .depth-strip{
+    position:absolute;left:48px;bottom:54px;display:flex;align-items:flex-end;gap:34px;
+    opacity:0;transform:translateY(18px);
+  }
+  .depth-strip .metric .lab{font-family:var(--mono);font-size:9.5px;letter-spacing:.3em;color:var(--ink-faint);text-transform:uppercase;margin-bottom:7px;}
+  .depth-strip .metric .val{font-family:var(--mono);font-weight:600;font-size:30px;letter-spacing:.01em;color:var(--ink);line-height:1;}
+  .depth-strip .metric .val small{font-size:13px;color:var(--ink-dim);margin-left:4px;letter-spacing:.05em;}
+  .depth-strip .metric.warn .val{color:var(--amber);}
+  .depth-strip .metric.crit .val{color:var(--hot);text-shadow:0 0 18px rgba(255,93,87,.5);}
+  .depth-strip .sep{width:1px;height:46px;background:linear-gradient(180deg,transparent,rgba(63,228,255,.3),transparent);}
+
+  /* right console */
+  .console{
+    position:absolute;right:46px;top:50%;transform:translateY(-50%);
+    width:284px;
+    background:linear-gradient(155deg, rgba(8,28,42,.72), rgba(3,14,24,.78));
+    border:1px solid rgba(63,228,255,.16);
+    border-radius:14px;
+    padding:22px 22px 20px;
+    backdrop-filter:blur(14px) saturate(130%);
+    -webkit-backdrop-filter:blur(14px) saturate(130%);
+    box-shadow:0 30px 80px rgba(0,0,0,.55), inset 0 1px 0 rgba(125,249,255,.08);
+    opacity:0;transform:translate(24px,-50%);
+  }
+  .console::before{
+    content:"";position:absolute;top:0;left:18px;right:18px;height:1px;
+    background:linear-gradient(90deg,transparent,rgba(125,249,255,.5),transparent);
+  }
+  .console h3{font-family:var(--mono);font-size:10.5px;letter-spacing:.28em;color:var(--ink-dim);text-transform:uppercase;display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;}
+  .console h3 .live{color:var(--teal);display:flex;align-items:center;gap:6px;font-size:9px;}
+  .console h3 .live i{width:6px;height:6px;border-radius:50%;background:var(--teal);box-shadow:0 0 8px var(--teal);animation:pulse 1.6s infinite;}
+
+  .ctl-row{margin-bottom:15px;}
+  .ctl-row .ctl-lab{display:flex;justify-content:space-between;font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;color:var(--ink-dim);text-transform:uppercase;margin-bottom:8px;}
+  .ctl-row .ctl-lab b{color:var(--teal);font-weight:600;}
+  input[type=range]{
+    -webkit-appearance:none;appearance:none;width:100%;height:3px;border-radius:3px;
+    background:linear-gradient(90deg,var(--teal-deep),var(--teal) var(--p,40%), rgba(63,228,255,.12) var(--p,40%));
+    outline:none;cursor:pointer;
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;appearance:none;width:15px;height:15px;border-radius:50%;
+    background:#cdfaff;border:2px solid var(--teal);box-shadow:0 0 12px rgba(63,228,255,.7);cursor:grab;
+  }
+  input[type=range]::-moz-range-thumb{width:15px;height:15px;border-radius:50%;background:#cdfaff;border:2px solid var(--teal);box-shadow:0 0 12px rgba(63,228,255,.7);cursor:grab;border:2px solid var(--teal);}
+
+  .btn-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px;}
+  .cbtn{
+    font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+    background:rgba(63,228,255,.06);border:1px solid rgba(63,228,255,.2);color:var(--ink-dim);
+    padding:10px 6px;border-radius:8px;cursor:pointer;transition:.18s;display:flex;flex-direction:column;align-items:center;gap:3px;
+  }
+  .cbtn .ic{font-size:13px;line-height:1;}
+  .cbtn:hover{background:rgba(63,228,255,.14);color:var(--ink);border-color:rgba(63,228,255,.45);transform:translateY(-1px);}
+  .cbtn.on{background:rgba(63,228,255,.2);color:#eafdff;border-color:var(--teal);box-shadow:0 0 18px rgba(63,228,255,.3) inset;}
+  .cbtn.full{grid-column:span 2;}
+  .cbtn.danger{border-color:rgba(255,93,87,.4);color:#ffb4b0;}
+  .cbtn.danger:hover{background:rgba(255,93,87,.16);border-color:var(--hot);color:#fff;}
+
+  .console .sonar{
+    margin-top:16px;border-top:1px solid rgba(63,228,255,.1);padding-top:14px;
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;color:var(--ink-faint);line-height:1.7;
+  }
+  .console .sonar .row{display:flex;justify-content:space-between;}
+  .console .sonar .row span:last-child{color:var(--ink-dim);}
+  .console .sonar .row.hit span:last-child{color:var(--bio);}
+
+  /* bottom ribbon / hint */
+  .ribbon{
+    position:absolute;bottom:54px;right:46px;text-align:right;font-family:var(--mono);
+    font-size:10px;letter-spacing:.22em;color:var(--ink-faint);text-transform:uppercase;line-height:1.9;
+    opacity:0;transform:translateY(12px);
+  }
+  .ribbon kbd{
+    display:inline-block;border:1px solid rgba(63,228,255,.25);border-radius:4px;padding:1px 7px;
+    color:var(--ink-dim);background:rgba(63,228,255,.05);margin:0 1px;font-size:9px;
+  }
+  .ribbon .drag{color:var(--teal);}
+
+  /* center crosshair / depth ticks */
+  .depth-ladder{
+    position:absolute;left:50%;top:0;bottom:0;width:60px;transform:translateX(-50%);
+    z-index:5;pointer-events:none;opacity:0;
+    display:flex;flex-direction:column;justify-content:center;align-items:center;
+  }
+  .depth-ladder .tick{width:100%;display:flex;justify-content:center;align-items:center;gap:8px;height:42px;opacity:.5;}
+  .depth-ladder .tick .bar{width:14px;height:1px;background:var(--ink-faint);}
+  .depth-ladder .tick.major .bar{width:26px;background:var(--teal);opacity:.8;}
+  .depth-ladder .tick .num{font-family:var(--mono);font-size:8px;color:var(--ink-faint);letter-spacing:.1em;}
+
+  /* sonar ping ring (full screen flash) */
+  .ping-ring{position:fixed;left:50%;top:50%;z-index:4;pointer-events:none;border:1.5px solid rgba(125,249,255,.5);border-radius:50%;transform:translate(-50%,-50%);}
+
+  /* intro reveal sweep */
+  .sweep{
+    position:fixed;inset:0;z-index:8;pointer-events:none;
+    background:linear-gradient(90deg, transparent 0%, rgba(63,228,255,.12) 48%, rgba(125,249,255,.5) 50%, rgba(63,228,255,.12) 52%, transparent 100%);
+    transform:translateX(-100%);
+  }
+
+  /* responsive: 390 mobile */
+  @media (max-width:760px){
+    .frame-corner{width:30px;height:30px;}
+    .fc-tl,.fc-tr{top:16px;}
+    .fc-tl,.fc-bl{left:16px;}
+    .fc-tr,.fc-br{right:16px;}
+    .fc-bl,.fc-br{bottom:16px;}
+    .topbar{padding:0 22px;font-size:9px;letter-spacing:.18em;top:18px;}
+    .topbar .right{display:none;}
+    .hero{left:22px;right:22px;top:74px;bottom:auto;transform:none;max-width:none;}
+    .hero h1{font-size:clamp(42px,13vw,62px);line-height:.96;}
+    .hero .lead{display:none;}
+    .hero .kicker{margin-bottom:10px;font-size:9px;letter-spacing:.26em;}
+    .hero .kicker .ln{width:28px;}
+    .depth-strip{left:22px;right:22px;bottom:auto;top:248px;gap:16px;}
+    .depth-strip .metric .val{font-size:21px;}
+    .depth-strip .sep{height:34px;}
+    .depth-strip .metric.opt-hide{display:none;}
+    .console{
+      right:14px;left:14px;top:auto;bottom:14px;width:auto;transform:none;
+      padding:14px 16px 14px;border-radius:14px;
+    }
+    .console.collapsed{transform:translateY(calc(100% - 50px));}
+    .console .ctl-row.opt-hide,.console .sonar{display:none;}
+    .console h3{margin-bottom:12px;}
+    .ribbon{display:none;}
+    .depth-ladder{display:none;}
+    body{transform:none;}
+    .console .mob-toggle{display:flex;}
+  }
+  .console .mob-toggle{display:none;position:absolute;top:12px;right:14px;width:26px;height:26px;border:1px solid rgba(63,228,255,.3);border-radius:7px;background:rgba(63,228,255,.06);color:var(--teal);align-items:center;justify-content:center;font-family:var(--mono);font-size:13px;cursor:pointer;}
+
+  /* opacity helper */
+  .reveal-soon{}
+</style>
+</head>
+<body>
+  <div id="app">
+    <canvas id="scene-canvas"></canvas>
+
+    <!-- HUD -->
+    <div class="hud" aria-hidden="false">
+      <span class="frame-corner fc-tl"></span>
+      <span class="frame-corner fc-tr"></span>
+      <span class="frame-corner fc-bl"></span>
+      <span class="frame-corner fc-br"></span>
+
+      <div class="topbar">
+        <div class="brand"><span class="dot"></span> NAUTILUS&nbsp;·&nbsp;07</div>
+        <div class="right">
+          DEEP SUBMERGENCE VEHICLE&nbsp;&nbsp;/&nbsp;&nbsp;SECTOR <b>마리아나-Δ</b><br/>
+          HULL <b id="hudHull">98%</b> &nbsp; O₂ <b id="hudO2">412</b> &nbsp; PWR <b id="hudPwr">76%</b>
+        </div>
+      </div>
+
+      <div class="hero">
+        <div class="kicker" id="kicker"><span class="ln"></span> INTERACTIVE DEEP-SEA DESCENT / NO.07</div>
+        <h1>
+          <span class="ln"><span>압력의</span></span>
+          <span class="ln"><span class="accent">한계선</span></span>
+        </h1>
+        <p class="lead" id="lead">햇빛이 닿지 않는 곳, 수심 <b>3,840m</b>의 무광층. 잠수정 <b>NAUTILUS-7</b>이 어둠 속으로 내려간다. 외부 수압은 1cm²당 <b>384kg</b> — 선체가 비명을 지르는 영역. <b>실시간으로</b> 잠항하고, 탐조등을 켜고, 소나를 쏴라.</p>
+      </div>
+
+      <div class="depth-strip" id="depthStrip">
+        <div class="metric">
+          <div class="lab">현재 수심 / DEPTH</div>
+          <div class="val"><span id="depthVal">820</span><small>m</small></div>
+        </div>
+        <div class="sep"></div>
+        <div class="metric warn opt-hide" id="presMetric">
+          <div class="lab">외부 수압 / PRESSURE</div>
+          <div class="val"><span id="presVal">82</span><small>atm</small></div>
+        </div>
+        <div class="sep opt-hide"></div>
+        <div class="metric opt-hide" id="tempMetric">
+          <div class="lab">수온 / TEMP</div>
+          <div class="val"><span id="tempVal">4.2</span><small>°C</small></div>
+        </div>
+      </div>
+
+      <div class="depth-ladder" id="depthLadder"></div>
+
+      <!-- Console -->
+      <aside class="console" id="console">
+        <button class="mob-toggle" id="mobToggle" title="패널">⌄</button>
+        <h3>제어 콘솔 · CONTROL <span class="live"><i></i>LIVE</span></h3>
+
+        <div class="ctl-row">
+          <div class="ctl-lab"><span>잠항 심도 / DESCENT</span><b id="descLab">820 m</b></div>
+          <input type="range" id="descend" min="120" max="3840" value="820" />
+        </div>
+
+        <div class="ctl-row opt-hide">
+          <div class="ctl-lab"><span>선체 회전 / YAW</span><b id="yawLab">+0°</b></div>
+          <input type="range" id="yaw" min="-180" max="180" value="0" />
+        </div>
+
+        <div class="ctl-row opt-hide">
+          <div class="ctl-lab"><span>탐조등 세기 / BEAM</span><b id="beamLab">68%</b></div>
+          <input type="range" id="beam" min="0" max="100" value="68" />
+        </div>
+
+        <div class="btn-grid">
+          <button class="cbtn on" id="btnLight"><span class="ic">◎</span>탐조등</button>
+          <button class="cbtn" id="btnSpin"><span class="ic">⟳</span>오토회전</button>
+          <button class="cbtn full" id="btnSonar"><span class="ic">))) </span>소나 핑 발사</button>
+          <button class="cbtn danger full" id="btnDive"><span class="ic">▼</span>한계심도까지 잠항</button>
+        </div>
+
+        <div class="sonar">
+          <div class="row"><span>SONAR // 핑 반향</span><span id="sonarStat">대기 중</span></div>
+          <div class="row"><span>생체신호 / BIOMASS</span><span id="bioStat">— </span></div>
+          <div class="row hit"><span>최근 접촉 / CONTACT</span><span id="contactStat">없음</span></div>
+        </div>
+      </aside>
+
+      <div class="ribbon" id="ribbon">
+        <span class="drag">드래그</span> 시점 회전 &nbsp;·&nbsp; <kbd>스크롤</kbd> 줌<br/>
+        <kbd>1</kbd> 탐조등 &nbsp; <kbd>2</kbd> 소나 &nbsp; <kbd>↑↓</kbd> 잠항
+      </div>
+    </div>
+
+    <div class="scanline"></div>
+    <div class="vignette"></div>
+    <div class="grain"></div>
+    <div class="sweep" id="sweep"></div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.152.2/three.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+  <script>
+  (function(){
+    "use strict";
+    const TAU = Math.PI*2;
+    const lerp = (a,b,t)=>a+(b-a)*t;
+    const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+    const rand = (a,b)=>a+Math.random()*(b-a);
+
+    // ---------- THREE SETUP ----------
+    const canvas = document.getElementById('scene-canvas');
+    const renderer = new THREE.WebGLRenderer({canvas, antialias:true, alpha:false, powerPreference:'high-performance'});
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+    renderer.setClearColor(0x02080f, 1);
+    if('outputColorSpace' in renderer && THREE.SRGBColorSpace){ renderer.outputColorSpace = THREE.SRGBColorSpace; }
+    else if(THREE.sRGBEncoding){ renderer.outputEncoding = THREE.sRGBEncoding; }
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.18;
+
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x041726, 0.018);
+
+    const camera = new THREE.PerspectiveCamera(46, innerWidth/innerHeight, 0.1, 600);
+    camera.position.set(0, 1.4, 13);
+
+    // ---------- LIGHTS ----------
+    const ambient = new THREE.AmbientLight(0x12303f, 0.55);
+    scene.add(ambient);
+
+    // cold fill from above (faint surface light)
+    const surfaceLight = new THREE.DirectionalLight(0x4fb6d6, 0.5);
+    surfaceLight.position.set(2, 18, 6);
+    scene.add(surfaceLight);
+
+    const rimLight = new THREE.DirectionalLight(0x3aa6ff, 0.7);
+    rimLight.position.set(-9, 2, -7);
+    scene.add(rimLight);
+
+    // WARM key light dedicated to the gold hull (keeps it gold, not green)
+    const goldKey = new THREE.PointLight(0xffd98a, 2.6, 22, 1.6);
+    goldKey.position.set(5, 5, 7);
+    scene.add(goldKey);
+    const goldFill = new THREE.PointLight(0xffb867, 1.4, 18, 2);
+    goldFill.position.set(-4, -2, 5);
+    scene.add(goldFill);
+
+    // ---------- ENV MAP (procedural gradient) for metal reflections ----------
+    (function buildEnv(){
+      try{
+        const pmrem = new THREE.PMREMGenerator(renderer);
+        pmrem.compileEquirectangularShader();
+        const c = document.createElement('canvas'); c.width=512; c.height=256;
+        const g = c.getContext('2d');
+        const grd = g.createLinearGradient(0,0,0,256);
+        grd.addColorStop(0,'#0e4f70');   // brighter water above
+        grd.addColorStop(0.42,'#0a2c44');
+        grd.addColorStop(0.6,'#3a2a10');  // warm horizon kick for gold
+        grd.addColorStop(1,'#020608');    // dark abyss below
+        g.fillStyle=grd; g.fillRect(0,0,512,256);
+        // a couple warm hotspots for specular glints
+        const hs=g.createRadialGradient(360,70,0,360,70,90);
+        hs.addColorStop(0,'rgba(255,220,150,0.9)'); hs.addColorStop(1,'rgba(255,220,150,0)');
+        g.fillStyle=hs; g.fillRect(0,0,512,256);
+        const hs2=g.createRadialGradient(120,90,0,120,90,70);
+        hs2.addColorStop(0,'rgba(120,220,255,0.7)'); hs2.addColorStop(1,'rgba(120,220,255,0)');
+        g.fillStyle=hs2; g.fillRect(0,0,512,256);
+        const tex = new THREE.CanvasTexture(c);
+        tex.mapping = THREE.EquirectangularReflectionMapping;
+        const envRT = pmrem.fromEquirectangular(tex);
+        scene.environment = envRT.texture;
+        tex.dispose(); pmrem.dispose();
+      }catch(e){ /* env optional */ }
+    })();
+
+    // sub headlight (spotlight)
+    const headlight = new THREE.SpotLight(0xbfeeff, 4.2, 70, Math.PI/5.2, 0.55, 1.2);
+    headlight.position.set(0, 0.6, 3.2);
+    scene.add(headlight);
+    const headTarget = new THREE.Object3D();
+    headTarget.position.set(0,0,30);
+    scene.add(headTarget);
+    headlight.target = headTarget;
+
+    // warm interior glow point inside sub porthole
+    const portGlow = new THREE.PointLight(0xffcf8a, 1.6, 9, 2);
+    scene.add(portGlow);
+
+    // ---------- SUBMERSIBLE GROUP ----------
+    const sub = new THREE.Group();
+    scene.add(sub);
+
+    const hullMat = new THREE.MeshStandardMaterial({color:0xf2c14e, metalness:0.95, roughness:0.3, emissive:0x2a1c05, emissiveIntensity:0.35, envMapIntensity:1.2});
+    const hullDark = new THREE.MeshStandardMaterial({color:0x243643, metalness:0.85, roughness:0.45});
+    const trimMat = new THREE.MeshStandardMaterial({color:0x0c1c28, metalness:0.6, roughness:0.6});
+    const glassMat = new THREE.MeshPhysicalMaterial({color:0x7fd9ff, metalness:0.1, roughness:0.05, transmission:0.85, transparent:true, opacity:0.55, clearcoat:1, clearcoatRoughness:0.04, ior:1.4, thickness:1.2});
+    const glowMat = new THREE.MeshBasicMaterial({color:0xfff0c8});
+    const accentMat = new THREE.MeshStandardMaterial({color:0xff6a52, metalness:0.4, roughness:0.5, emissive:0x4a140e, emissiveIntensity:0.6});
+
+    // main pressure hull (capsule body)
+    const bodyGeo = new THREE.CapsuleGeometry(1.55, 2.4, 18, 36);
+    const body = new THREE.Mesh(bodyGeo, hullMat);
+    body.rotation.z = Math.PI/2;
+    sub.add(body);
+
+    // hull paneling rings
+    for(let i=0;i<5;i++){
+      const r = new THREE.Mesh(new THREE.TorusGeometry(1.57, 0.05, 10, 48), hullDark);
+      r.rotation.y = Math.PI/2;
+      r.position.x = -1.9 + i*0.95;
+      sub.add(r);
+    }
+
+    // front observation dome (glass)
+    const domeGeo = new THREE.SphereGeometry(1.18, 32, 24, 0, TAU, 0, Math.PI*0.62);
+    const dome = new THREE.Mesh(domeGeo, glassMat);
+    dome.rotation.z = -Math.PI/2;
+    dome.position.x = 2.55;
+    sub.add(dome);
+    // dome rim
+    const domeRim = new THREE.Mesh(new THREE.TorusGeometry(1.16, 0.09, 12, 40), hullMat);
+    domeRim.rotation.y = Math.PI/2;
+    domeRim.position.x = 2.5;
+    sub.add(domeRim);
+    // warm interior glow ball
+    const portInner = new THREE.Mesh(new THREE.SphereGeometry(0.55,18,18), glowMat);
+    portInner.position.set(2.75,0,0);
+    sub.add(portInner);
+
+    // headlamp housings (twin) at front
+    const lampGeo = new THREE.CylinderGeometry(0.34,0.42,0.5,22);
+    [[2.3,0.55,0.85],[2.3,0.55,-0.85]].forEach(p=>{
+      const lamp = new THREE.Mesh(lampGeo, hullDark);
+      lamp.rotation.z = Math.PI/2; lamp.rotation.x = 0;
+      lamp.position.set(p[0],p[1],p[2]);
+      sub.add(lamp);
+      const lens = new THREE.Mesh(new THREE.CircleGeometry(0.3,22), new THREE.MeshBasicMaterial({color:0xeafcff}));
+      lens.position.set(p[0]+0.27,p[1],p[2]); lens.rotation.y = Math.PI/2;
+      sub.add(lens);
+    });
+
+    // top sail / conning fin
+    const sail = new THREE.Mesh(new THREE.BoxGeometry(1.5,0.85,0.5), hullMat);
+    sail.position.set(-0.1,1.4,0);
+    sub.add(sail);
+    const sailFin = new THREE.Mesh(new THREE.BoxGeometry(0.2,0.65,0.18), accentMat);
+    sailFin.position.set(-0.1,2.0,0);
+    sub.add(sailFin);
+
+    // side dive planes
+    [[-0.4,0,1.55,1],[-0.4,0,-1.55,-1]].forEach(p=>{
+      const fin = new THREE.Mesh(new THREE.BoxGeometry(1.1,0.12,0.9), hullDark);
+      fin.position.set(p[0],p[1],p[2]);
+      fin.rotation.x = p[3]*0.18;
+      sub.add(fin);
+    });
+    // tail fins (X config)
+    for(let i=0;i<4;i++){
+      const f = new THREE.Mesh(new THREE.BoxGeometry(0.9,0.1,0.55), hullMat);
+      f.position.x = -2.35;
+      const a = i*Math.PI/2 + Math.PI/4;
+      f.position.y = Math.cos(a)*0.95; f.position.z = Math.sin(a)*0.95;
+      f.rotation.x = a;
+      sub.add(f);
+    }
+
+    // rear thruster shroud + spinning propeller
+    const shroud = new THREE.Mesh(new THREE.TorusGeometry(0.78,0.13,12,32), hullDark);
+    shroud.rotation.y = Math.PI/2; shroud.position.x = -2.95;
+    sub.add(shroud);
+    const propHub = new THREE.Group();
+    propHub.position.x = -2.9;
+    sub.add(propHub);
+    const hub = new THREE.Mesh(new THREE.ConeGeometry(0.22,0.5,16), trimMat);
+    hub.rotation.z = -Math.PI/2; hub.position.x = -0.1;
+    propHub.add(hub);
+    for(let i=0;i<5;i++){
+      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.06,0.62,0.26), trimMat);
+      blade.position.y = 0.32;
+      const wrap = new THREE.Group();
+      wrap.add(blade);
+      wrap.rotation.x = i*(TAU/5);
+      blade.rotation.x = 0.5;
+      propHub.add(wrap);
+    }
+
+    // robotic manipulator arm (front underside)
+    const arm = new THREE.Group();
+    arm.position.set(2.1,-1.0,0.5);
+    sub.add(arm);
+    const seg1 = new THREE.Mesh(new THREE.CylinderGeometry(0.12,0.14,1.1,12), hullMat);
+    seg1.rotation.z = -0.7; seg1.position.set(0.3,-0.3,0);
+    arm.add(seg1);
+    const joint = new THREE.Mesh(new THREE.SphereGeometry(0.18,14,14), accentMat);
+    joint.position.set(0.6,-0.65,0);
+    arm.add(joint);
+    const seg2 = new THREE.Mesh(new THREE.CylinderGeometry(0.09,0.11,0.9,12), hullMat);
+    seg2.rotation.z = -1.5; seg2.position.set(1.05,-0.78,0);
+    arm.add(seg2);
+    const claw = new THREE.Mesh(new THREE.ConeGeometry(0.12,0.3,10), hullDark);
+    claw.rotation.z = -1.6; claw.position.set(1.5,-0.82,0);
+    arm.add(claw);
+
+    // small blinking nav lights
+    const navLights = [];
+    [[2.6,1.0,0,0x55ff88],[-2.8,1.0,0,0xff5252],[0,-1.6,1.4,0x55ff88],[0,-1.6,-1.4,0xff5252]].forEach(p=>{
+      const n = new THREE.Mesh(new THREE.SphereGeometry(0.07,8,8), new THREE.MeshBasicMaterial({color:p[3]}));
+      n.position.set(p[0],p[1],p[2]);
+      sub.add(n);
+      navLights.push(n);
+    });
+
+    sub.scale.setScalar(1.15);
+    sub.position.y = 0.4;
+
+    // ---------- BIOLUMINESCENT PARTICLES ----------
+    function makeParticles(count, spread, sizeRange, color, speedRange){
+      const geo = new THREE.BufferGeometry();
+      const pos = new Float32Array(count*3);
+      const phase = new Float32Array(count);
+      const spd = new Float32Array(count);
+      const siz = new Float32Array(count);
+      for(let i=0;i<count;i++){
+        pos[i*3]   = rand(-spread.x, spread.x);
+        pos[i*3+1] = rand(-spread.y, spread.y);
+        pos[i*3+2] = rand(-spread.z, spread.z);
+        phase[i] = rand(0,TAU);
+        spd[i] = rand(speedRange[0],speedRange[1]);
+        siz[i] = rand(sizeRange[0],sizeRange[1]);
+      }
+      geo.setAttribute('position', new THREE.BufferAttribute(pos,3));
+      geo.setAttribute('aSize', new THREE.BufferAttribute(siz,1));
+      const tex = makeGlowTex(color);
+      const mat = new THREE.PointsMaterial({
+        size:1, map:tex, transparent:true, depthWrite:false,
+        blending:THREE.AdditiveBlending, sizeAttenuation:true, opacity:0.9, color:0xffffff
+      });
+      const pts = new THREE.Points(geo, mat);
+      pts.userData = {phase, spd, base:pos.slice(0), count, spread};
+      return pts;
+    }
+    function makeGlowTex(hex){
+      const c = document.createElement('canvas'); c.width=c.height=64;
+      const g = c.getContext('2d');
+      const col = new THREE.Color(hex);
+      const r=Math.floor(col.r*255),gg=Math.floor(col.g*255),b=Math.floor(col.b*255);
+      const grd = g.createRadialGradient(32,32,0,32,32,32);
+      grd.addColorStop(0,`rgba(${r},${gg},${b},1)`);
+      grd.addColorStop(.25,`rgba(${r},${gg},${b},.75)`);
+      grd.addColorStop(1,`rgba(${r},${gg},${b},0)`);
+      g.fillStyle=grd; g.fillRect(0,0,64,64);
+      const t = new THREE.CanvasTexture(c);
+      if('colorSpace' in t && THREE.SRGBColorSpace){ t.colorSpace = THREE.SRGBColorSpace; }
+      else if(THREE.sRGBEncoding){ t.encoding = THREE.sRGBEncoding; }
+      return t;
+    }
+
+    const marineSnow = makeParticles(1600, {x:40,y:30,z:60}, [0.05,0.18], 0xbfeaff, [0.4,1.1]);
+    marineSnow.material.size = 0.16; marineSnow.material.opacity=0.5;
+    scene.add(marineSnow);
+
+    const bioPlankton = makeParticles(420, {x:30,y:22,z:45}, [0.1,0.35], 0x7df9ff, [0.2,0.6]);
+    bioPlankton.material.size = 0.45;
+    scene.add(bioPlankton);
+
+    const sparkBio = makeParticles(140, {x:22,y:16,z:35}, [0.3,0.7], 0x9affc0, [0.1,0.4]);
+    sparkBio.material.size = 0.7; sparkBio.material.opacity=0.85;
+    scene.add(sparkBio);
+
+    // ---------- VOLUMETRIC GOD-RAYS (faint cones from surface) ----------
+    const rays = new THREE.Group();
+    for(let i=0;i<5;i++){
+      const rg = new THREE.ConeGeometry(rand(2,4), 46, 16, 1, true);
+      const rm = new THREE.MeshBasicMaterial({color:0x57b9da, transparent:true, opacity:0.05, blending:THREE.AdditiveBlending, side:THREE.DoubleSide, depthWrite:false});
+      const ray = new THREE.Mesh(rg, rm);
+      ray.position.set(rand(-22,22), 26, rand(-30,10));
+      ray.rotation.x = Math.PI;
+      ray.rotation.z = rand(-0.12,0.12);
+      ray.userData.baseOp = rand(0.03,0.07);
+      rays.add(ray);
+    }
+    scene.add(rays);
+
+    // ---------- SEAFLOOR (revealed at depth) ----------
+    const floorGeo = new THREE.PlaneGeometry(160,160,64,64);
+    const fp = floorGeo.attributes.position;
+    for(let i=0;i<fp.count;i++){
+      const x=fp.getX(i), y=fp.getY(i);
+      fp.setZ(i, Math.sin(x*0.18)*0.6 + Math.cos(y*0.21)*0.7 + rand(-0.3,0.3));
+    }
+    floorGeo.computeVertexNormals();
+    const floor = new THREE.Mesh(floorGeo, new THREE.MeshStandardMaterial({color:0x0a2230, metalness:0.1, roughness:0.95, transparent:true, opacity:0}));
+    floor.rotation.x = -Math.PI/2;
+    floor.position.y = -22;
+    scene.add(floor);
+    // hydrothermal vents on floor
+    const vents = new THREE.Group();
+    for(let i=0;i<6;i++){
+      const v = new THREE.Mesh(new THREE.ConeGeometry(rand(0.6,1.4), rand(2,5), 10), new THREE.MeshStandardMaterial({color:0x1a1414, roughness:1}));
+      v.position.set(rand(-50,50), rand(0.5,2), rand(-50,30));
+      vents.add(v);
+    }
+    vents.visible=false;
+    floor.add(vents);
+
+    // ---------- SONAR PING (expanding ring in 3D) ----------
+    const sonarRings = [];
+    function fireSonar(){
+      const geo = new THREE.RingGeometry(0.5,0.62,64);
+      const mat = new THREE.MeshBasicMaterial({color:0x7df9ff, transparent:true, opacity:0.9, side:THREE.DoubleSide, blending:THREE.AdditiveBlending, depthWrite:false});
+      const ring = new THREE.Mesh(geo, mat);
+      ring.position.copy(sub.position);
+      ring.rotation.x = -Math.PI/2;
+      ring.userData.life = 0;
+      scene.add(ring);
+      sonarRings.push(ring);
+      // screen ping ring
+      const el = document.createElement('div');
+      el.className='ping-ring';
+      el.style.width='40px'; el.style.height='40px';
+      document.body.appendChild(el);
+      gsap.fromTo(el,{width:40,height:40,opacity:.7},{width:innerWidth*1.4,height:innerWidth*1.4,opacity:0,duration:2.2,ease:'power2.out',onComplete:()=>el.remove()});
+      // contact roll
+      const creatures=['거대 흡혈오징어','심해 아귀 군집','관벌레 서식지','미확인 생체광원','젤리 부유체 X-7','대왕고래 음영','열수공 박테리아 매트'];
+      const c = creatures[Math.floor(Math.random()*creatures.length)];
+      const dist = Math.floor(rand(40,420));
+      document.getElementById('sonarStat').textContent = `반향 +${dist}m`;
+      document.getElementById('contactStat').textContent = c;
+      document.getElementById('bioStat').textContent = Math.floor(rand(120,980))+' u/m³';
+      document.querySelector('.sonar .row.hit').classList.add('hit');
+      flashBio();
+    }
+    function flashBio(){
+      // briefly intensify bioluminescence
+      gsap.fromTo(bioPlankton.material,{opacity:0.9},{opacity:1.6,duration:0.4,yoyo:true,repeat:1,ease:'power2.out'});
+      gsap.fromTo(sparkBio.material,{opacity:0.85},{opacity:1.8,duration:0.5,yoyo:true,repeat:1,ease:'power2.out'});
+    }
+
+    // ---------- STATE ----------
+    const state = {
+      depth: 820, targetDepth: 820,
+      yaw: 0, targetYaw: 0,
+      beam: 0.68, targetBeam: 0.68,
+      lightOn: true,
+      autoSpin: false,
+      camYaw: -0.15, camPitch: 0.04,
+      targetCamYaw: -0.15, targetCamPitch: 0.04,
+      camDist: 13, targetCamDist: 13,
+      propSpeed: 1
+    };
+    const MAXD = 3840, MIND = 120;
+
+    // ---------- CONTROLS WIRING ----------
+    const $ = id=>document.getElementById(id);
+    function setRangeFill(el){
+      const v=(el.value-el.min)/(el.max-el.min)*100;
+      el.style.setProperty('--p', v+'%');
+    }
+    const descEl=$('descend'), yawEl=$('yaw'), beamEl=$('beam');
+    [descEl,yawEl,beamEl].forEach(setRangeFill);
+
+    descEl.addEventListener('input',e=>{
+      state.targetDepth = +e.target.value; setRangeFill(e.target);
+      $('descLab').textContent = state.targetDepth+' m';
+    });
+    yawEl.addEventListener('input',e=>{
+      state.targetYaw = +e.target.value*Math.PI/180; setRangeFill(e.target);
+      $('yawLab').textContent = (e.target.value>=0?'+':'')+e.target.value+'°';
+    });
+    beamEl.addEventListener('input',e=>{
+      state.targetBeam = +e.target.value/100; setRangeFill(e.target);
+      $('beamLab').textContent = e.target.value+'%';
+    });
+
+    $('btnLight').addEventListener('click',e=>{
+      state.lightOn=!state.lightOn;
+      e.currentTarget.classList.toggle('on',state.lightOn);
+    });
+    $('btnSpin').addEventListener('click',e=>{
+      state.autoSpin=!state.autoSpin;
+      e.currentTarget.classList.toggle('on',state.autoSpin);
+    });
+    $('btnSonar').addEventListener('click',fireSonar);
+    $('btnDive').addEventListener('click',()=>{
+      state.targetDepth = MAXD;
+      descEl.value = MAXD; setRangeFill(descEl); $('descLab').textContent = MAXD+' m';
+      gsap.to(state,{propSpeed:3.6,duration:1.2,yoyo:true,repeat:1,ease:'power2.inOut'});
+    });
+
+    // mobile collapse toggle
+    const consoleEl=$('console'), mob=$('mobToggle');
+    if(mob){
+      mob.addEventListener('click',()=>{
+        consoleEl.classList.toggle('collapsed');
+        mob.textContent = consoleEl.classList.contains('collapsed')?'⌃':'⌄';
+      });
+    }
+
+    // keyboard
+    addEventListener('keydown',e=>{
+      if(e.key==='1'){ state.lightOn=!state.lightOn; $('btnLight').classList.toggle('on',state.lightOn); }
+      if(e.key==='2'){ fireSonar(); }
+      if(e.key==='ArrowDown'){ state.targetDepth=clamp(state.targetDepth+120,MIND,MAXD); syncDesc(); }
+      if(e.key==='ArrowUp'){ state.targetDepth=clamp(state.targetDepth-120,MIND,MAXD); syncDesc(); }
+    });
+    function syncDesc(){ descEl.value=Math.round(state.targetDepth); setRangeFill(descEl); $('descLab').textContent=Math.round(state.targetDepth)+' m'; }
+
+    // ---------- ORBIT DRAG ----------
+    let dragging=false, lastX=0, lastY=0;
+    function onDown(x,y){dragging=true;lastX=x;lastY=y;document.body.style.cursor='grabbing';}
+    function onMove(x,y){
+      if(!dragging)return;
+      state.targetCamYaw += (x-lastX)*0.005;
+      state.targetCamPitch = clamp(state.targetCamPitch + (y-lastY)*0.004, -0.5, 0.6);
+      lastX=x;lastY=y;
+    }
+    function onUp(){dragging=false;document.body.style.cursor='default';}
+    canvas.addEventListener('mousedown',e=>onDown(e.clientX,e.clientY));
+    addEventListener('mousemove',e=>onMove(e.clientX,e.clientY));
+    addEventListener('mouseup',onUp);
+    canvas.addEventListener('touchstart',e=>{if(e.touches[0])onDown(e.touches[0].clientX,e.touches[0].clientY);},{passive:true});
+    addEventListener('touchmove',e=>{if(e.touches[0])onMove(e.touches[0].clientX,e.touches[0].clientY);},{passive:true});
+    addEventListener('touchend',onUp);
+    canvas.addEventListener('wheel',e=>{
+      e.preventDefault();
+      state.targetCamDist = clamp(state.targetCamDist + e.deltaY*0.012, 7.5, 24);
+    },{passive:false});
+
+    // ---------- DEPTH LADDER BUILD ----------
+    const ladder=$('depthLadder');
+    for(let i=0;i<=12;i++){
+      const t=document.createElement('div');
+      t.className='tick'+(i%3===0?' major':'');
+      t.innerHTML = i%3===0 ? `<span class="num">${(i*320)}</span><span class="bar"></span><span class="num">m</span>` : `<span class="bar"></span>`;
+      ladder.appendChild(t);
+    }
+
+    // ---------- DEPTH -> ENVIRONMENT MAPPING ----------
+    function applyDepth(d){
+      const f = (d-MIND)/(MAXD-MIND); // 0..1 deeper
+      // background gets darker / colder with depth
+      const top = new THREE.Color().lerpColors(new THREE.Color(0x0a3550), new THREE.Color(0x010509), f);
+      scene.fog.color.copy(new THREE.Color().lerpColors(new THREE.Color(0x0a2c44), new THREE.Color(0x010608), f));
+      scene.fog.density = lerp(0.012, 0.05, f);
+      renderer.setClearColor(top.getHex(),1);
+      surfaceLight.intensity = lerp(1.1, 0.04, f);
+      ambient.intensity = lerp(1.1, 0.32, f);
+      rays.children.forEach(r=>{ r.material.opacity = r.userData.baseOp * (1-f*0.95); });
+      // floor reveal near bottom
+      const fl = clamp((d-2900)/(MAXD-2900),0,1);
+      floor.material.opacity = fl*0.95;
+      vents.visible = fl>0.15;
+      floor.position.y = lerp(-30,-13,fl);
+
+      // HUD numbers
+      $('depthVal').textContent = Math.round(d).toLocaleString();
+      const atm = (1+d/10).toFixed(0);
+      $('presVal').textContent = atm;
+      const temp = lerp(11.5, 1.8, f).toFixed(1);
+      $('tempVal').textContent = temp;
+      // pressure warn classes
+      const pm=$('presMetric');
+      pm.className='metric opt-hide'+(f>0.55?' warn':'')+(f>0.85?' crit':'');
+      $('hudHull').textContent = Math.round(lerp(99,71,f))+'%';
+      $('hudO2').textContent = Math.round(lerp(540,180,f*0.9));
+      $('hudPwr').textContent = Math.round(lerp(88,54,f))+'%';
+      // ladder offset
+      ladder.style.transform = `translateX(-50%) translateY(${ -f*120 + 60 }px)`;
+    }
+
+    // ---------- RESIZE ----------
+    function resize(){
+      renderer.setSize(innerWidth,innerHeight);
+      camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
+    }
+    addEventListener('resize',resize);
+
+    // ---------- ANIMATE LOOP ----------
+    const clock = new THREE.Clock();
+    let blink=0;
+    function tick(){
+      const dt = Math.min(clock.getDelta(),0.05);
+      const t = clock.elapsedTime;
+
+      // smooth state
+      state.depth = lerp(state.depth, state.targetDepth, 0.05);
+      state.yaw = lerp(state.yaw, state.targetYaw, 0.06);
+      state.beam = lerp(state.beam, state.targetBeam, 0.08);
+      state.camYaw = lerp(state.camYaw, state.targetCamYaw, 0.07);
+      state.camPitch = lerp(state.camPitch, state.targetCamPitch, 0.07);
+      state.camDist = lerp(state.camDist, state.targetCamDist, 0.07);
+
+      applyDepth(state.depth);
+
+      // sub motion: gentle bob + yaw + auto-spin
+      if(state.autoSpin) state.targetYaw += 0.004;
+      sub.rotation.y = state.yaw + Math.sin(t*0.4)*0.03;
+      sub.rotation.z = Math.sin(t*0.55)*0.025;
+      sub.position.y = 0.4 + Math.sin(t*0.7)*0.18;
+      // descent sink feel
+      sub.position.x = Math.sin(t*0.3)*0.15;
+
+      // propeller spin
+      propHub.rotation.x += dt*6*state.propSpeed;
+
+      // headlight
+      headlight.intensity = state.lightOn ? lerp(0.3, 5.5, state.beam) : 0.0;
+      headlight.angle = lerp(Math.PI/7, Math.PI/4.4, state.beam);
+      // headlight follows sub orientation
+      const dir = new THREE.Vector3(Math.cos(state.yaw),0,-Math.sin(state.yaw));
+      headlight.position.set(sub.position.x+dir.x*2.6, sub.position.y+0.5, sub.position.z+dir.z*2.6);
+      headTarget.position.set(sub.position.x+dir.x*40, sub.position.y-2, sub.position.z+dir.z*40);
+      portGlow.position.set(sub.position.x+Math.cos(state.yaw)*2.7, sub.position.y, sub.position.z-Math.sin(state.yaw)*2.7);
+      portInner.material.color.setHSL(0.09,0.8,0.6+Math.sin(t*2)*0.06);
+
+      // nav lights blink
+      blink+=dt;
+      const on = Math.sin(blink*4)>0;
+      navLights.forEach((n,i)=>{ n.material.opacity = (i%2? on:!on)?1:0.15; n.visible=true; });
+
+      // particles drift up (since sub descends, world rises)
+      [marineSnow,bioPlankton,sparkBio].forEach((sys,si)=>{
+        const a = sys.geometry.attributes.position.array;
+        const ud = sys.userData;
+        for(let i=0;i<ud.count;i++){
+          a[i*3+1] += ud.spd[i]*dt*(si===0?1.4:0.6);
+          a[i*3]   = ud.base[i*3] + Math.sin(t*0.5+ud.phase[i])*0.6;
+          if(a[i*3+1] > ud.spread.y){ a[i*3+1] = -ud.spread.y; }
+        }
+        sys.geometry.attributes.position.needsUpdate=true;
+      });
+      // bioluminescence pulse
+      bioPlankton.material.opacity = 0.6 + Math.sin(t*1.3)*0.2;
+
+      // sonar rings expand
+      for(let i=sonarRings.length-1;i>=0;i--){
+        const r=sonarRings[i];
+        r.userData.life += dt;
+        const s = 1 + r.userData.life*22;
+        r.scale.set(s,s,s);
+        r.material.opacity = clamp(0.9 - r.userData.life*0.5,0,1);
+        if(r.userData.life>2){ scene.remove(r); sonarRings.splice(i,1); }
+      }
+
+      // camera orbit around sub
+      const cd = state.camDist;
+      camera.position.x = sub.position.x + Math.sin(state.camYaw)*cd;
+      camera.position.z = sub.position.z + Math.cos(state.camYaw)*cd;
+      camera.position.y = sub.position.y + 1.4 + state.camPitch*cd;
+      camera.lookAt(sub.position.x, sub.position.y+0.2, sub.position.z);
+
+      renderer.render(scene,camera);
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+
+    // ---------- INTRO (non-blocking, <0.8s, content already painted) ----------
+    function intro(){
+      const tl = gsap.timeline({defaults:{ease:'power3.out'}});
+      // sweep
+      tl.fromTo('#sweep',{x:'-100%'},{x:'100%',duration:0.7,ease:'power2.inOut'},0);
+      tl.fromTo('#kicker',{y:14,opacity:0},{y:0,opacity:1,duration:0.5},0.05);
+      tl.to('.hero h1 .ln span',{y:0,duration:0.7,stagger:0.08,ease:'power4.out'},0.1);
+      tl.fromTo('#lead',{y:14,opacity:0},{y:0,opacity:1,duration:0.6},0.32);
+      tl.fromTo('#depthStrip',{y:18,opacity:0},{y:0,opacity:1,duration:0.6},0.36);
+      tl.fromTo('#console',{x:24,opacity:0},{x:0,opacity:1,duration:0.6},0.3);
+      tl.fromTo('#ribbon',{y:12,opacity:0},{y:0,opacity:1,duration:0.5},0.5);
+      tl.fromTo('#depthLadder',{opacity:0},{opacity:1,duration:0.8},0.4);
+      // camera glide in
+      gsap.fromTo(state,{targetCamDist:22, targetCamPitch:0.3},{targetCamDist:13,targetCamPitch:0.04,duration:2.0,ease:'power2.out'});
+    }
+    // start intro on next frame so first paint already shows scene+text
+    requestAnimationFrame(()=>requestAnimationFrame(intro));
+
+    // periodic ambient sonar idle update
+    setInterval(()=>{
+      if(Math.random()<0.4){
+        $('bioStat').textContent = Math.floor(rand(60,400))+' u/m³';
+      }
+    },3200);
+
+    // initial paint of HUD numbers immediately
+    applyDepth(state.depth);
+  })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>LOTUS-486.WKS // DITHER CALC</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<style>
+/* =========================================================
+   LOTUS-486.WKS  —  lo-fi 486 dither spreadsheet/calculator
+   Real Bayer ordered dithering (4x4 + 8x8) on a float
+   framebuffer, quantized to a curated warm 14-color palette.
+   No CSS blur tricks — every dithered pixel is per-pixel.
+   The dither chart is the FIRST PAINT. No loading gate.
+   ========================================================= */
+:root{
+  --ink:#160809;     /* deepest */
+  --maroon:#2a0f12;  /* bg deep */
+  --maroon2:#3a161b; /* panel */
+  --line:#52242a;    /* grid line */
+  --line2:#6e333b;   /* bright grid */
+  --rust:#a8472b;
+  --rust2:#c8623a;
+  --salmon:#e08a5a;
+  --peach:#f0b87a;
+  --cream:#f6d9a8;
+  --teal:#1f6e6a;
+  --teal2:#3faE7a;
+  --green:#3fae7a;
+  --amber:#f0b87a;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:
+    repeating-linear-gradient(0deg, rgba(0,0,0,0.22) 0 1px, rgba(0,0,0,0) 1px 3px),
+    radial-gradient(120% 120% at 50% 0%, #3a161b 0%, #2a0f12 48%, #160809 100%);
+  color:var(--cream);
+  font-family:'VT323',monospace;
+  font-size:18px;
+  -webkit-font-smoothing:none;
+  image-rendering:pixelated;
+  min-height:100%;
+  display:flex;
+  align-items:flex-start;
+  justify-content:center;
+  padding:18px 14px 40px;
+  overflow-x:hidden;
+}
+/* CRT vignette + scanline overlay */
+body::after{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:90;
+  background:
+    repeating-linear-gradient(0deg, rgba(0,0,0,0.16) 0 1px, rgba(0,0,0,0) 1px 2px),
+    radial-gradient(130% 110% at 50% 50%, rgba(0,0,0,0) 56%, rgba(0,0,0,0.55) 100%);
+  mix-blend-mode:multiply;
+}
+/* ===== WINDOW CHROME ===== */
+.win{
+  width:100%;max-width:1320px;
+  background:linear-gradient(180deg,#3a161b,#2a0f12);
+  border:2px solid var(--line2);
+  box-shadow:
+    0 0 0 2px var(--ink),
+    6px 6px 0 0 rgba(0,0,0,0.55),
+    inset 0 0 0 1px rgba(246,217,168,0.06);
+  position:relative;
+}
+.titlebar{
+  display:flex;align-items:center;gap:8px;
+  background:
+    repeating-linear-gradient(90deg, var(--rust) 0 2px, var(--rust2) 2px 4px);
+  color:var(--ink);
+  padding:6px 8px;
+  border-bottom:2px solid var(--ink);
+}
+.titlebar .dots{display:flex;gap:5px}
+.titlebar .dots i{width:12px;height:12px;display:block;background:var(--cream);border:2px solid var(--ink)}
+.titlebar .dots i:nth-child(2){background:var(--peach)}
+.titlebar .dots i:nth-child(3){background:var(--teal2)}
+.titlebar .ttl{
+  font-family:'Press Start 2P',monospace;font-size:9px;letter-spacing:1px;
+  color:var(--ink);text-shadow:1px 1px 0 rgba(246,217,168,0.35);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.titlebar .spacer{flex:1}
+.titlebar .clock{font-family:'Press Start 2P',monospace;font-size:8px;color:var(--ink)}
+/* ===== MENU BAR ===== */
+.menubar{
+  display:flex;gap:0;flex-wrap:wrap;
+  background:var(--maroon2);
+  border-bottom:2px solid var(--ink);
+  padding:0;
+}
+.menubar span{
+  font-size:17px;color:var(--peach);padding:3px 11px;
+  border-right:1px solid var(--line);cursor:default;
+}
+.menubar span b{color:var(--cream);text-decoration:underline}
+.menubar span:hover{background:var(--rust);color:var(--ink)}
+/* ===== FORMULA / CELL EDIT BAR ===== */
+.fbar{
+  display:flex;align-items:stretch;
+  background:var(--ink);border-bottom:2px solid var(--line2);
+}
+.fbar .addr{
+  font-family:'Press Start 2P',monospace;font-size:9px;
+  color:var(--peach);background:var(--maroon);
+  display:flex;align-items:center;justify-content:center;
+  min-width:54px;border-right:2px solid var(--line2);padding:0 6px;
+}
+.fbar .eq{
+  color:var(--teal2);display:flex;align-items:center;padding:0 8px;font-size:20px;
+}
+.fbar input{
+  flex:1;background:transparent;border:0;outline:0;
+  color:var(--cream);font-family:'VT323',monospace;font-size:20px;
+  padding:5px 4px;caret-color:var(--peach);
+}
+.fbar .ent{
+  font-size:15px;color:var(--ink);background:var(--teal2);
+  padding:0 12px;display:flex;align-items:center;cursor:pointer;
+  border-left:2px solid var(--ink);font-family:'Press Start 2P',monospace;font-size:9px;
+}
+.fbar .ent:active{background:var(--peach)}
+/* ===== BODY GRID: sheet + side panels ===== */
+.body{display:grid;grid-template-columns:1fr 320px;gap:0;}
+.sheetwrap{
+  border-right:2px solid var(--ink);
+  background:var(--maroon);
+  overflow:auto;
+  max-height:560px;
+}
+table.sheet{border-collapse:collapse;width:100%;table-layout:fixed;font-size:18px}
+table.sheet th,table.sheet td{
+  border:1px solid var(--line);
+  padding:0;height:26px;text-align:right;
+  white-space:nowrap;overflow:hidden;
+}
+table.sheet thead th{
+  background:linear-gradient(180deg,#52242a,#3a161b);
+  color:var(--peach);font-family:'Press Start 2P',monospace;font-size:8px;
+  text-align:center;height:22px;position:sticky;top:0;z-index:5;
+  border-color:var(--line2);
+}
+table.sheet th.rowh{
+  background:linear-gradient(90deg,#52242a,#3a161b);
+  color:var(--peach);font-family:'Press Start 2P',monospace;font-size:8px;
+  text-align:center;width:40px;position:sticky;left:0;z-index:4;
+}
+table.sheet thead th.corner{position:sticky;left:0;top:0;z-index:6;width:40px}
+td.cell{cursor:cell;color:var(--cream);padding:0 6px;position:relative}
+td.cell.txt{text-align:left;color:var(--salmon)}
+td.cell.num{color:var(--cream)}
+td.cell.formula{color:var(--teal2)}
+td.cell.head{color:var(--peach);text-align:left;font-weight:normal}
+td.cell.total{background:rgba(168,71,43,0.18);color:var(--peach)}
+td.cell.sel{
+  outline:2px solid var(--peach);outline-offset:-2px;
+  background:rgba(240,184,122,0.10);z-index:3;
+}
+td.cell input{
+  position:absolute;inset:0;width:100%;height:100%;
+  background:var(--ink);border:2px solid var(--teal2);outline:0;
+  color:var(--cream);font-family:'VT323',monospace;font-size:18px;
+  text-align:right;padding:0 5px;
+}
+/* ===== SIDE PANELS ===== */
+.side{background:var(--maroon2);display:flex;flex-direction:column;}
+.panel{border-bottom:2px solid var(--ink);padding:8px 10px}
+.panel h3{
+  font-family:'Press Start 2P',monospace;font-size:8px;color:var(--ink);
+  background:repeating-linear-gradient(90deg,var(--rust) 0 3px,var(--rust2) 3px 6px);
+  margin:-8px -10px 8px;padding:5px 8px;letter-spacing:1px;
+  border-bottom:2px solid var(--ink);
+}
+.row{display:flex;justify-content:space-between;align-items:center;font-size:17px;padding:2px 0;color:var(--salmon)}
+.row b{color:var(--cream)}
+.row b.tl{color:var(--teal2)}
+.row b.pk{color:var(--peach)}
+/* chart canvas */
+#chart{
+  display:block;width:100%;height:188px;
+  image-rendering:pixelated;
+  border:2px solid var(--line2);
+  background:var(--ink);
+}
+.chartcap{font-size:15px;color:var(--rust2);text-align:center;margin-top:5px;letter-spacing:1px}
+/* palette strip */
+.palstrip{display:flex;height:16px;border:2px solid var(--ink);margin-top:6px}
+.palstrip i{flex:1;display:block}
+/* calc keypad */
+.keys{display:grid;grid-template-columns:repeat(4,1fr);gap:5px;margin-top:4px}
+.keys button{
+  font-family:'VT323',monospace;font-size:19px;
+  background:linear-gradient(180deg,#52242a,#3a161b);
+  color:var(--cream);border:2px solid var(--line2);
+  padding:6px 0;cursor:pointer;
+  box-shadow:inset -2px -2px 0 rgba(0,0,0,0.4),inset 2px 2px 0 rgba(246,217,168,0.08);
+}
+.keys button:active{transform:translate(1px,1px);box-shadow:inset 2px 2px 0 rgba(0,0,0,0.5)}
+.keys button.op{color:var(--peach);background:linear-gradient(180deg,#6e333b,#52242a)}
+.keys button.eq{color:var(--ink);background:linear-gradient(180deg,var(--teal2),var(--teal));grid-column:span 1}
+.keys button.fn{color:var(--rust2)}
+.calcread{
+  font-family:'VT323',monospace;font-size:24px;color:var(--green);
+  background:var(--ink);border:2px solid var(--line2);
+  text-align:right;padding:3px 8px;letter-spacing:1px;
+  height:34px;display:flex;align-items:center;justify-content:flex-end;
+  text-shadow:0 0 6px rgba(63,174,122,0.55);overflow:hidden;
+}
+/* ===== STATUS BAR ===== */
+.statusbar{
+  display:flex;align-items:center;gap:0;flex-wrap:wrap;
+  background:var(--ink);border-top:2px solid var(--line2);
+  font-family:'Press Start 2P',monospace;font-size:8px;color:var(--peach);
+}
+.statusbar span{padding:5px 10px;border-right:1px solid var(--line)}
+.statusbar span.blink{color:var(--teal2);animation:bk 1.1s steps(1) infinite}
+.statusbar .grow{flex:1;border-right:0}
+.statusbar .mode{color:var(--ink);background:var(--peach);padding:5px 10px}
+@keyframes bk{50%{opacity:0.25}}
+/* ===== RESPONSIVE 390 ===== */
+@media (max-width:760px){
+  body{padding:8px 6px 30px;font-size:17px}
+  .body{grid-template-columns:1fr}
+  .sheetwrap{border-right:0;border-bottom:2px solid var(--ink);max-height:300px}
+  .side{flex-direction:column}
+  .titlebar .ttl{font-size:7px}
+  .menubar span{padding:3px 8px;font-size:15px}
+  table.sheet th.rowh,table.sheet thead th.corner{width:30px}
+  #chart{height:128px}
+  .keys button{font-size:17px;padding:5px 0}
+}
+</style>
+</head>
+<body>
+<div class="win" role="application" aria-label="Lotus 486 dither spreadsheet">
+  <!-- TITLE BAR -->
+  <div class="titlebar">
+    <span class="dots"><i></i><i></i><i></i></span>
+    <span class="ttl">LOTUS-486.WKS &nbsp;-&nbsp; DITHER CALC v4.86</span>
+    <span class="spacer"></span>
+    <span class="clock" id="clock">00:00</span>
+  </div>
+  <!-- MENU BAR -->
+  <div class="menubar">
+    <span><b>F</b>ile</span><span><b>E</b>dit</span><span><b>W</b>orksheet</span>
+    <span><b>R</b>ange</span><span><b>C</b>opy</span><span><b>M</b>ove</span>
+    <span><b>G</b>raph</span><span><b>D</b>ata</span><span><b>S</b>ystem</span><span><b>Q</b>uit</span>
+  </div>
+  <!-- FORMULA BAR -->
+  <div class="fbar">
+    <div class="addr" id="cellAddr">A1</div>
+    <div class="eq">=</div>
+    <input id="formula" type="text" autocomplete="off" spellcheck="false" aria-label="cell content" placeholder="enter value or =SUM(B2:B5)">
+    <div class="ent" id="enterBtn">ENTER</div>
+  </div>
+  <!-- BODY -->
+  <div class="body">
+    <div class="sheetwrap">
+      <table class="sheet" id="grid"></table>
+    </div>
+    <!-- SIDE PANELS -->
+    <div class="side">
+      <div class="panel">
+        <h3>QTR REVENUE // DITHER BAR</h3>
+        <canvas id="chart" width="288" height="188"></canvas>
+        <div class="chartcap" id="chartcap">REAL 8x8 BAYER &middot; 14-COL QUANT</div>
+        <div class="palstrip" id="palstrip"></div>
+      </div>
+      <div class="panel">
+        <h3>RANGE STATS</h3>
+        <div class="row"><span>SUM</span><b class="pk" id="sSum">0</b></div>
+        <div class="row"><span>AVG</span><b id="sAvg">0</b></div>
+        <div class="row"><span>MIN</span><b class="tl" id="sMin">0</b></div>
+        <div class="row"><span>MAX</span><b class="pk" id="sMax">0</b></div>
+        <div class="row"><span>COUNT</span><b id="sCnt">0</b></div>
+        <div class="row"><span>GRAND TOTAL</span><b class="pk" id="sGrand">0</b></div>
+      </div>
+      <div class="panel">
+        <h3>CALC.486</h3>
+        <div class="calcread" id="calcread">0</div>
+        <div class="keys" id="keys">
+          <button class="fn" data-k="C">C</button>
+          <button class="fn" data-k="±">+/-</button>
+          <button class="fn" data-k="%">%</button>
+          <button class="op" data-k="/">&divide;</button>
+          <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button><button class="op" data-k="*">&times;</button>
+          <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button><button class="op" data-k="-">&minus;</button>
+          <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button><button class="op" data-k="+">+</button>
+          <button data-k="0" style="grid-column:span 2">0</button><button data-k=".">.</button><button class="eq" data-k="=">=</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- STATUS BAR -->
+  <div class="statusbar">
+    <span class="mode" id="modeFlag">READY</span>
+    <span id="stCell">A1: empty</span>
+    <span>WKS 12K</span>
+    <span>NUM</span>
+    <span class="grow"></span>
+    <span class="blink">&#9608; CAPS-OFF</span>
+    <span>486DX-33</span>
+  </div>
+</div>
+
+<script>
+/* =========================================================
+   PART 1 — REAL BAYER ORDERED DITHER ENGINE
+   We render a procedural revenue-bar chart into a small
+   320x196 truecolor float buffer, then per-pixel add the
+   bayer threshold offset and snap to nearest palette color.
+   ========================================================= */
+const PALETTE=[
+  [22,8,9],[42,15,18],[58,22,26],[82,36,42],     // ink/maroon/line
+  [110,51,59],[168,71,43],[200,98,58],           // line2/rust/rust2
+  [224,138,90],[240,184,122],[246,217,168],      // salmon/peach/cream
+  [14,43,46],[31,110,106],[63,174,122],[150,210,150] // teals/green/lime
+];
+// fill side palette strip
+(function(){const s=document.getElementById('palstrip');
+  PALETTE.forEach(c=>{const i=document.createElement('i');i.style.background='rgb('+c[0]+','+c[1]+','+c[2]+')';s.appendChild(i);});})();
+
+const BAYER8=[
+  0,32,8,40,2,34,10,42, 48,16,56,24,50,18,58,26,
+  12,44,4,36,14,46,6,38, 60,28,52,20,62,30,54,22,
+  3,35,11,43,1,33,9,41, 51,19,59,27,49,17,57,25,
+  15,47,7,39,13,45,5,37, 63,31,55,23,61,29,53,21];
+const bthr=new Float32Array(64);
+for(let i=0;i<64;i++) bthr[i]=(BAYER8[i]+0.5)/64-0.5; // -0.5..0.5
+
+function nearest(r,g,b){let bi=0,bd=1e12;
+  for(let i=0;i<PALETTE.length;i++){const p=PALETTE[i];
+    const dr=r-p[0],dg=g-p[1],db=b-p[2];const d=dr*dr+dg*dg+db*db;
+    if(d<bd){bd=d;bi=i;}}
+  return PALETTE[bi];}
+
+const CW=288,CH=188;
+const chart=document.getElementById('chart');
+const cctx=chart.getContext('2d',{alpha:false});
+const cimg=cctx.createImageData(CW,CH);
+const cbuf=new Float32Array(CW*CH*3);
+
+const DSTR=44; // dither spread in color units
+let T=0;
+
+function lerp(a,b,t){return a+(b-a)*t;}
+function mixc(c1,c2,t){return [lerp(c1[0],c2[0],t),lerp(c1[1],c2[1],t),lerp(c1[2],c2[2],t)];}
+
+// gradient stops for plotting area background (warm sky -> deep)
+const BG=[[58,22,26],[42,15,18],[22,8,9]];
+function bgAt(t){t=Math.max(0,Math.min(0.999,t));const f=t*(BG.length-1);const i=Math.floor(f);return mixc(BG[i],BG[i+1],f-i);}
+// bar gradient bottom->top: rust -> salmon -> peach -> cream
+const BAR=[[168,71,43],[200,98,58],[224,138,90],[240,184,122],[246,217,168]];
+function barAt(t){t=Math.max(0,Math.min(0.999,t));const f=t*(BAR.length-1);const i=Math.floor(f);return mixc(BAR[i],BAR[i+1],f-i);}
+
+let barVals=[42,67,55,83,71,96]; // driven by sheet totals
+let barLabels=['Q1','Q2','Q3','Q4','PRJ','TOT'];
+
+function renderChart(){
+  // 1) draw truecolor scene into cbuf
+  const padL=10,padB=20,padT=12,padR=8;
+  const plotW=CW-padL-padR, plotH=CH-padT-padB;
+  const n=barVals.length;
+  const maxV=Math.max(1,...barVals)*1.08;
+  const gap=4;
+  const bw=(plotW-gap*(n-1))/n;
+  for(let y=0;y<CH;y++){
+    const row=y*CW*3;
+    for(let x=0;x<CW;x++){
+      let col;
+      // background gradient + faint grid
+      col=bgAt((y-padT)/plotH);
+      // horizontal gridlines every ~ plotH/5
+      const gy=(y-padT);
+      if(gy>=0 && gy<=plotH && ((gy)%Math.round(plotH/5)===0)) col=mixc(col,[110,51,59],0.5);
+      // baseline
+      if(y===CH-padB) col=[150,210,150];
+      const o=row+x*3;cbuf[o]=col[0];cbuf[o+1]=col[1];cbuf[o+2]=col[2];
+    }
+  }
+  // bars
+  for(let b=0;b<n;b++){
+    const bx0=Math.round(padL+b*(bw+gap));
+    const bx1=Math.round(bx0+bw);
+    const vh=Math.round(plotH*(barVals[b]/maxV));
+    const top=CH-padB-vh;
+    // subtle animated shimmer on the bar height edge
+    const shimmer=Math.sin(T*0.06+b)*1.0;
+    for(let y=top;y<CH-padB;y++){
+      const tnorm=(CH-padB-y)/Math.max(1,vh); // 0 bottom .. 1 top
+      let col=barAt(tnorm);
+      // vertical sheen
+      for(let x=bx0;x<bx1;x++){
+        const edge=(x===bx0||x===bx1-1);
+        let c=col;
+        if(edge) c=mixc(c,[22,8,9],0.4);
+        // top cap highlight
+        if(y<top+2) c=mixc(c,[246,217,168],0.5);
+        // animated glow band sweeping up
+        const band=Math.abs(((T*0.9)%CH)-y);
+        if(band<3) c=mixc(c,[252,224,170],0.25*(1-band/3));
+        const o=(y*CW+x)*3;cbuf[o]=c[0];cbuf[o+1]=c[1];cbuf[o+2]=c[2];
+      }
+    }
+    // teal value tick on top
+    const ty=top-2;
+    if(ty>=0){for(let x=bx0;x<bx1;x++){const o=(ty*CW+x)*3;const c=[63,174,122];cbuf[o]=c[0];cbuf[o+1]=c[1];cbuf[o+2]=c[2];}}
+  }
+  // 2) DITHER PASS: per-pixel bayer offset -> nearest palette
+  const d=cimg.data;
+  for(let y=0;y<CH;y++){
+    for(let x=0;x<CW;x++){
+      const o=(y*CW+x)*3;
+      const t=bthr[((y&7)<<3)|(x&7)]*DSTR;
+      const q=nearest(cbuf[o]+t,cbuf[o+1]+t,cbuf[o+2]+t);
+      const p=(y*CW+x)*4;
+      d[p]=q[0];d[p+1]=q[1];d[p+2]=q[2];d[p+3]=255;
+    }
+  }
+  cctx.putImageData(cimg,0,0);
+}
+
+/* =========================================================
+   PART 2 — THE SPREADSHEET ENGINE
+   Lotus 1-2-3 flavored grid. Real cell store, formula
+   parser supporting plus/minus/mul/div operators, cell
+   refs (A1), and SUM/AVG/MIN/MAX/COUNT ranges. Live recompute.
+   ========================================================= */
+const COLS=['A','B','C','D','E','F','G'];
+const ROWS=16;
+const store={};   // raw user input keyed "A1"
+const grid=document.getElementById('grid');
+
+// seed data: a small quarterly budget model
+const seed={
+  A1:'REGION', B1:'Q1', C1:'Q2', D1:'Q3', E1:'Q4', F1:'YEAR', G1:'GROW%',
+  A2:'NORTH',  B2:'42', C2:'58', D2:'47', E2:'61', F2:'=SUM(B2:E2)', G2:'=(E2-B2)/B2*100',
+  A3:'SOUTH',  B3:'31', C3:'40', D3:'52', E3:'48', F3:'=SUM(B3:E3)', G3:'=(E3-B3)/B3*100',
+  A4:'EAST',   B4:'55', C4:'62', D4:'58', E4:'74', F4:'=SUM(B4:E4)', G4:'=(E4-B4)/B4*100',
+  A5:'WEST',   B5:'38', C5:'49', D5:'61', E5:'70', F5:'=SUM(B5:E5)', G5:'=(E5-B5)/B5*100',
+  A6:'------', B6:'----', C6:'----', D6:'----', E6:'----', F6:'------', G6:'----',
+  A7:'TOTAL',  B7:'=SUM(B2:B5)', C7:'=SUM(C2:C5)', D7:'=SUM(D2:D5)', E7:'=SUM(E2:E5)', F7:'=SUM(F2:F5)', G7:'=AVG(G2:G5)',
+  A9:'AVG/REG',B9:'=AVG(B2:B5)',C9:'=AVG(C2:C5)',D9:'=AVG(D2:D5)',E9:'=AVG(E2:E5)',F9:'=AVG(F2:F5)',
+  A10:'MAX REG',F10:'=MAX(F2:F5)',
+  A11:'MIN REG',F11:'=MIN(F2:F5)',
+  A13:'TGT 250',F13:'=F7-250',
+};
+Object.assign(store,seed);
+
+let sel='B2';
+
+function colIdx(c){return COLS.indexOf(c);}
+function parseRef(ref){const m=/^([A-G])(\d+)$/.exec(ref);if(!m)return null;return {c:m[1],r:parseInt(m[2],10),key:ref};}
+
+// ---- formula evaluation with cycle guard ----
+function getRaw(key){return store[key]!==undefined?String(store[key]):'';}
+function evalCell(key,seen){
+  seen=seen||{};
+  if(seen[key]) return NaN; // cycle
+  const raw=getRaw(key).trim();
+  if(raw==='') return '';
+  if(raw[0]!=='='){
+    // plain value: number or text
+    if(raw!=='' && !isNaN(Number(raw))) return Number(raw);
+    return raw; // text
+  }
+  seen[key]=true;
+  const res=evalExpr(raw.slice(1),seen);
+  delete seen[key];
+  return res;
+}
+function rangeCells(a,b){
+  const A=parseRef(a),B=parseRef(b);if(!A||!B)return [];
+  const c0=Math.min(colIdx(A.c),colIdx(B.c)),c1=Math.max(colIdx(A.c),colIdx(B.c));
+  const r0=Math.min(A.r,B.r),r1=Math.max(A.r,B.r);
+  const out=[];for(let c=c0;c<=c1;c++)for(let r=r0;r<=r1;r++)out.push(COLS[c]+r);
+  return out;
+}
+function aggNums(cells,seen){const v=[];for(const k of cells){const x=evalCell(k,seen);if(typeof x==='number'&&!isNaN(x))v.push(x);}return v;}
+function evalExpr(expr,seen){
+  // replace function ranges first
+  expr=expr.replace(/(SUM|AVG|AVERAGE|MIN|MAX|COUNT)\s*\(\s*([A-G]\d+)\s*:\s*([A-G]\d+)\s*\)/gi,(m,fn,a,b)=>{
+    const nums=aggNums(rangeCells(a,b),seen);
+    fn=fn.toUpperCase();let r=0;
+    if(fn==='SUM') r=nums.reduce((s,x)=>s+x,0);
+    else if(fn==='AVG'||fn==='AVERAGE') r=nums.length?nums.reduce((s,x)=>s+x,0)/nums.length:0;
+    else if(fn==='MIN') r=nums.length?Math.min(...nums):0;
+    else if(fn==='MAX') r=nums.length?Math.max(...nums):0;
+    else if(fn==='COUNT') r=nums.length;
+    return '('+r+')';
+  });
+  // replace cell refs with their numeric value
+  expr=expr.replace(/\b([A-G]\d+)\b/g,(m,ref)=>{
+    const x=evalCell(ref,seen);
+    return (typeof x==='number'&&!isNaN(x))?'('+x+')':'(0)';
+  });
+  // now expr should be pure arithmetic; safe-eval via Function on a sanitized string
+  if(!/^[-+*/().\d\s]*$/.test(expr)) return NaN;
+  try{const r=Function('"use strict";return ('+(expr||'0')+')')();return (typeof r==='number'&&isFinite(r))?r:NaN;}
+  catch(e){return NaN;}
+}
+function fmt(v){
+  if(v==='') return '';
+  if(typeof v==='number'){
+    if(isNaN(v)) return 'ERR';
+    if(Number.isInteger(v)) return String(v);
+    return v.toFixed(1);
+  }
+  return v;
+}
+function isFormula(key){return getRaw(key).trim()[0]==='=';}
+function isHeadRow(r){return r===1;}
+
+// ---- build the grid DOM ----
+function buildGrid(){
+  let html='<thead><tr><th class="corner"></th>';
+  COLS.forEach(c=>html+='<th>'+c+'</th>');
+  html+='</tr></thead><tbody>';
+  for(let r=1;r<=ROWS;r++){
+    html+='<tr><th class="rowh">'+r+'</th>';
+    COLS.forEach(c=>{html+='<td class="cell" data-key="'+c+r+'"></td>';});
+    html+='</tr>';
+  }
+  html+='</tbody>';
+  grid.innerHTML=html;
+  grid.querySelectorAll('td.cell').forEach(td=>{
+    td.addEventListener('mousedown',e=>{selectCell(td.dataset.key);});
+    td.addEventListener('dblclick',e=>{editCell(td.dataset.key);});
+  });
+}
+function renderCells(){
+  grid.querySelectorAll('td.cell').forEach(td=>{
+    const key=td.dataset.key;
+    if(td.querySelector('input')) return; // currently editing
+    const v=evalCell(key);
+    td.textContent=fmt(v);
+    td.className='cell';
+    const ref=parseRef(key);
+    if(isHeadRow(ref.r)) td.classList.add('head');
+    else if(isFormula(key)) td.classList.add('formula');
+    else if(typeof v==='string'&&v!=='') td.classList.add('txt');
+    else if(typeof v==='number') td.classList.add('num');
+    if((ref.r===7) && typeof v==='number') td.classList.add('total');
+    if(key===sel) td.classList.add('sel');
+  });
+}
+
+function selectCell(key){
+  sel=key;
+  document.getElementById('cellAddr').textContent=key;
+  const raw=getRaw(key);
+  document.getElementById('formula').value=raw;
+  const v=evalCell(key);
+  document.getElementById('stCell').textContent=key+': '+(raw===''?'empty':(isFormula(key)?raw+'  ('+fmt(v)+')':fmt(v)));
+  setMode('READY');
+  renderCells();
+  recompute();
+}
+function commitFormula(){
+  const val=document.getElementById('formula').value;
+  if(val==='') delete store[sel]; else store[sel]=val;
+  renderCells();recompute();
+  selectCell(sel);
+}
+function editCell(key){
+  selectCell(key);
+  const td=grid.querySelector('td.cell[data-key="'+key+'"]');
+  if(!td||td.querySelector('input'))return;
+  setMode('EDIT');
+  const inp=document.createElement('input');
+  inp.value=getRaw(key);
+  td.textContent='';td.appendChild(inp);inp.focus();inp.select();
+  const finish=(commit)=>{
+    if(commit){const v=inp.value;if(v==='')delete store[key];else store[key]=v;}
+    if(inp.parentNode)inp.parentNode.removeChild(inp);
+    setMode('READY');renderCells();recompute();selectCell(key);
+  };
+  inp.addEventListener('blur',()=>finish(true));
+  inp.addEventListener('keydown',e=>{
+    if(e.key==='Enter'){e.preventDefault();finish(true);moveSel(1,0);}
+    else if(e.key==='Escape'){e.preventDefault();finish(false);}
+    else if(e.key==='Tab'){e.preventDefault();finish(true);moveSel(0,1);}
+  });
+}
+function moveSel(dr,dc){
+  const ref=parseRef(sel);let r=ref.r+dr,c=colIdx(ref.c)+dc;
+  r=Math.max(1,Math.min(ROWS,r));c=Math.max(0,Math.min(COLS.length-1,c));
+  selectCell(COLS[c]+r);
+}
+function setMode(m){
+  const f=document.getElementById('modeFlag');f.textContent=m;
+  f.style.background=(m==='EDIT')?'var(--teal2)':'var(--peach)';
+}
+
+// ---- live stats + chart drive ----
+function recompute(){
+  // range stats over B2:E5 (the data block)
+  const cells=rangeCells('B2','E5');
+  const nums=aggNums(cells,{});
+  const sum=nums.reduce((s,x)=>s+x,0);
+  const avg=nums.length?sum/nums.length:0;
+  document.getElementById('sSum').textContent=fmt(sum);
+  document.getElementById('sAvg').textContent=fmt(avg);
+  document.getElementById('sMin').textContent=fmt(nums.length?Math.min(...nums):0);
+  document.getElementById('sMax').textContent=fmt(nums.length?Math.max(...nums):0);
+  document.getElementById('sCnt').textContent=nums.length;
+  // grand total = F7 region year total
+  const grand=evalCell('F7',{});
+  document.getElementById('sGrand').textContent=fmt(typeof grand==='number'?grand:0);
+  // chart: per-quarter totals B7..E7 + projection + grand
+  const q1=num(evalCell('B7',{})),q2=num(evalCell('C7',{})),q3=num(evalCell('D7',{})),q4=num(evalCell('E7',{}));
+  const prj=Math.round(q4*1.12), tot=num(grand);
+  barVals=[q1,q2,q3,q4,prj,tot/4]; // scale grand down to keep bars readable
+  barLabels=['Q1','Q2','Q3','Q4','PRJ','TOT'];
+}
+function num(v){return (typeof v==='number'&&isFinite(v))?v:0;}
+
+/* =========================================================
+   PART 3 — THE 486 DESK CALCULATOR (independent of sheet)
+   ========================================================= */
+(function(){
+  const read=document.getElementById('calcread');
+  let cur='0',prev=null,op=null,fresh=true;
+  function show(){let s=cur;if(s.length>12)s=Number(cur).toPrecision(8).toString();read.textContent=s;}
+  function inp(d){if(fresh){cur=(d==='.')?'0.':d;fresh=false;}
+    else{if(d==='.'&&cur.includes('.'))return;cur=(cur==='0'&&d!=='.')?d:cur+d;}show();}
+  function apply(){const a=parseFloat(prev),b=parseFloat(cur);let r=b;
+    if(op==='+')r=a+b;else if(op==='-')r=a-b;else if(op==='*')r=a*b;else if(op==='/')r=b===0?NaN:a/b;
+    cur=isNaN(r)?'ERR':String(+r.toFixed(8));}
+  function setop(o){if(op&&!fresh){apply();}prev=cur;op=o;fresh=true;show();}
+  document.getElementById('keys').addEventListener('click',e=>{
+    const b=e.target.closest('button');if(!b)return;const k=b.dataset.k;
+    if(/[0-9.]/.test(k))inp(k);
+    else if(k==='C'){cur='0';prev=null;op=null;fresh=true;show();}
+    else if(k==='±'){cur=String(-parseFloat(cur));show();}
+    else if(k==='%'){cur=String(parseFloat(cur)/100);show();}
+    else if(k==='='){if(op){apply();op=null;prev=null;fresh=true;show();}}
+    else setop(k);
+  });
+})();
+
+/* =========================================================
+   PART 4 — BOOT, EVENTS, ANIMATION LOOP
+   ========================================================= */
+document.getElementById('formula').addEventListener('keydown',e=>{
+  if(e.key==='Enter'){e.preventDefault();commitFormula();moveSel(1,0);}
+});
+document.getElementById('enterBtn').addEventListener('click',commitFormula);
+
+// keyboard nav on selected cell (when not editing/typing in formula)
+document.addEventListener('keydown',e=>{
+  const active=document.activeElement;
+  if(active && (active.tagName==='INPUT')) return;
+  if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)){
+    e.preventDefault();
+    if(e.key==='ArrowUp')moveSel(-1,0);
+    else if(e.key==='ArrowDown')moveSel(1,0);
+    else if(e.key==='ArrowLeft')moveSel(0,-1);
+    else moveSel(0,1);
+  } else if(e.key==='Enter'){e.preventDefault();editCell(sel);}
+  else if(e.key.length===1 && /[\w\-+.=]/.test(e.key)){editCell(sel);}
+});
+
+function clock(){const d=new Date();const h=String(d.getHours()).padStart(2,'0');const m=String(d.getMinutes()).padStart(2,'0');document.getElementById('clock').textContent=h+':'+m;}
+
+// boot
+buildGrid();
+selectCell('B2');
+recompute();
+renderChart(); // FIRST PAINT = dither, no loading gate
+clock();setInterval(clock,15000);
+
+function loop(){T++;renderChart();requestAnimationFrame(loop);}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

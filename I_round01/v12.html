@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>라벤더밭 · 떠있는 노트 글래스</title>
+<style>
+  :root{
+    --glass-fill: rgba(20, 16, 30, 0.34);
+    --glass-fill-hi: rgba(38, 30, 54, 0.42);
+    --glass-stroke: rgba(255, 255, 255, 0.16);
+    --hl-top: rgba(255, 255, 255, 0.35);
+    --ink: rgba(244, 240, 255, 0.96);
+    --ink-soft: rgba(228, 222, 246, 0.72);
+    --ink-dim: rgba(214, 206, 238, 0.5);
+    --accent: #c9a9ff;
+    --accent-2: #f3c9e8;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;overflow:hidden;background:#241a33;
+    font-family:"Hiragino Kaku Gothic ProN","Apple SD Gothic Neo","Pretendard",-apple-system,
+      "Segoe UI",system-ui,sans-serif;}
+  /* ambient base */
+  #scene{position:fixed;inset:0;width:100%;height:100%;display:block;z-index:0;
+    cursor:default;touch-action:none;}
+  /* soft graded overlay on top of canvas for cohesion (does NOT block first paint of canvas) */
+  #grade{position:fixed;inset:0;z-index:1;pointer-events:none;
+    background:
+      radial-gradient(120% 90% at 22% 8%, rgba(212,180,255,0.16), transparent 55%),
+      radial-gradient(120% 120% at 88% 100%, rgba(56,30,86,0.55), transparent 60%),
+      linear-gradient(180deg, rgba(34,22,52,0.10), rgba(20,12,34,0.34));
+    mix-blend-mode:soft-light;}
+  #vignette{position:fixed;inset:0;z-index:1;pointer-events:none;
+    background:radial-gradient(130% 110% at 50% 42%, transparent 52%, rgba(12,7,24,0.55) 100%);}
+
+  /* floating glass layer */
+  #stage{position:fixed;inset:0;z-index:2;}
+  .panel{position:absolute;will-change:transform;
+    -webkit-backdrop-filter:blur(22px) saturate(1.35) brightness(1.04);
+    backdrop-filter:blur(22px) saturate(1.35) brightness(1.04);
+    background:
+      linear-gradient(155deg, var(--glass-fill-hi), var(--glass-fill) 62%);
+    border:1px solid var(--glass-stroke);
+    border-radius:26px;
+    box-shadow:
+      0 24px 60px rgba(8,4,20,0.46),
+      0 8px 22px rgba(8,4,20,0.30),
+      inset 0 1px 0 var(--hl-top),
+      inset 0 0 0 1px rgba(255,255,255,0.04),
+      inset 0 -26px 50px rgba(80,40,130,0.10);
+    color:var(--ink);
+    overflow:hidden;
+    cursor:grab;
+    transition:box-shadow .35s ease;}
+  .panel:active{cursor:grabbing;}
+  .panel.lift{
+    box-shadow:
+      0 40px 90px rgba(6,3,16,0.58),
+      0 14px 30px rgba(6,3,16,0.4),
+      inset 0 1px 0 var(--hl-top),
+      inset 0 0 0 1px rgba(255,255,255,0.06),
+      inset 0 -26px 54px rgba(110,55,170,0.14);}
+  /* diagonal sheen sweeping the glass */
+  .panel::before{content:"";position:absolute;inset:0;pointer-events:none;border-radius:inherit;
+    background:linear-gradient(125deg,
+      rgba(255,255,255,0.14) 0%,
+      rgba(255,255,255,0.04) 18%,
+      transparent 38%,
+      transparent 70%,
+      rgba(200,170,255,0.05) 100%);}
+  /* refraction-ish bright rim at top-left */
+  .panel::after{content:"";position:absolute;inset:0;pointer-events:none;border-radius:inherit;
+    box-shadow:inset 1px 1px 0 rgba(255,255,255,0.22), inset -1px -1px 0 rgba(120,80,180,0.12);}
+
+  /* ---- main note widget ---- */
+  #note{left:8%;top:16%;width:min(390px,82vw);}
+  .pad{padding:22px 24px 24px;position:relative;z-index:3;}
+  .eyebrow{font-size:11px;letter-spacing:.26em;text-transform:uppercase;color:var(--ink-dim);
+    font-weight:600;}
+  .title{margin:8px 0 2px;font-size:25px;font-weight:700;letter-spacing:.01em;line-height:1.15;}
+  .sub{font-size:13.5px;color:var(--ink-soft);line-height:1.55;margin-bottom:16px;}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;}
+  .chip{font-size:11.5px;letter-spacing:.04em;padding:6px 13px;border-radius:999px;
+    background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.14);
+    color:var(--ink-soft);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.18);}
+  .chip.on{color:#1b1230;background:linear-gradient(180deg,#e9d6ff,#c9a9ff);
+    border-color:rgba(255,255,255,0.5);font-weight:600;
+    box-shadow:0 2px 10px rgba(120,70,180,0.4), inset 0 1px 0 rgba(255,255,255,0.6);}
+  .field{position:relative;border-radius:16px;
+    background:rgba(10,6,22,0.32);border:1px solid rgba(255,255,255,0.12);
+    box-shadow:inset 0 2px 8px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.10);}
+  .field textarea{width:100%;min-height:108px;resize:none;border:0;outline:0;background:transparent;
+    color:var(--ink);font:14px/1.6 inherit;padding:14px 15px;letter-spacing:.01em;}
+  .field textarea::placeholder{color:rgba(214,206,238,0.42);}
+  .row{display:flex;align-items:center;gap:10px;margin-top:14px;}
+  .btn{flex:1;border:0;cursor:pointer;border-radius:14px;padding:13px 16px;font:600 14px inherit;
+    letter-spacing:.03em;color:#1b1230;
+    background:linear-gradient(180deg,#f4e9ff,#caa9ff);
+    box-shadow:0 6px 18px rgba(120,70,180,0.42), inset 0 1px 0 rgba(255,255,255,0.7);
+    transition:transform .12s ease, filter .2s ease;}
+  .btn:hover{filter:brightness(1.05);}
+  .btn:active{transform:translateY(1px) scale(.99);}
+  .btn.ghost{flex:0 0 auto;color:var(--ink);
+    background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.18);}
+  .saved{margin-top:12px;font-size:12px;color:var(--ink-dim);min-height:15px;letter-spacing:.02em;}
+  .saved b{color:var(--accent-2);font-weight:600;}
+
+  /* ---- small clock pill ---- */
+  #clock{right:9%;top:14%;width:min(218px,60vw);}
+  .cpad{padding:18px 20px;position:relative;z-index:3;}
+  .ctime{font-size:38px;font-weight:300;letter-spacing:.02em;line-height:1;
+    font-variant-numeric:tabular-nums;}
+  .ctime small{font-size:16px;color:var(--ink-soft);font-weight:400;margin-left:4px;}
+  .cdate{font-size:12.5px;color:var(--ink-soft);margin-top:7px;letter-spacing:.04em;}
+  .cloc{display:flex;align-items:center;gap:7px;margin-top:13px;font-size:12px;color:var(--ink-dim);}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);
+    box-shadow:0 0 0 3px rgba(201,169,255,0.22), 0 0 12px rgba(201,169,255,0.7);
+    animation:pulse 2.6s ease-in-out infinite;}
+  @keyframes pulse{0%,100%{opacity:.55;transform:scale(.9);}50%{opacity:1;transform:scale(1.15);}}
+
+  /* ---- weather / count strip ---- */
+  #strip{left:11%;bottom:14%;width:min(330px,80vw);}
+  .spad{padding:16px 18px;display:flex;align-items:center;gap:16px;position:relative;z-index:3;}
+  .glyph{font-size:30px;line-height:1;filter:drop-shadow(0 4px 10px rgba(0,0,0,.3));}
+  .sinfo{flex:1;}
+  .sinfo .k{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-dim);}
+  .sinfo .v{font-size:16px;color:var(--ink);margin-top:3px;font-weight:600;}
+  .bars{display:flex;gap:4px;align-items:flex-end;height:30px;}
+  .bars i{width:5px;border-radius:3px;background:linear-gradient(180deg,#e6d4ff,#9a78d8);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.5);
+    animation:eq 1.6s ease-in-out infinite;}
+  @keyframes eq{0%,100%{transform:scaleY(.35);}50%{transform:scaleY(1);}}
+
+  .credit{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:3;
+    font-size:11px;letter-spacing:.18em;color:rgba(244,240,255,0.5);
+    background:rgba(16,10,30,0.3);padding:6px 16px;border-radius:999px;
+    -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
+    border:1px solid rgba(255,255,255,0.1);pointer-events:none;white-space:nowrap;}
+
+  @media (max-width:520px){
+    #note{left:5%;top:9%;width:90vw;}
+    #clock{right:5%;top:auto;bottom:30%;width:54vw;}
+    #strip{left:5%;bottom:11%;width:90vw;}
+    .title{font-size:22px;}
+  }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<div id="grade"></div>
+<div id="vignette"></div>
+
+<div id="stage">
+  <!-- main note glass -->
+  <section class="panel" id="note" data-depth="1.0">
+    <div class="pad">
+      <div class="eyebrow">Lavender Field · Notes</div>
+      <h1 class="title">오후의 메모</h1>
+      <p class="sub">바람에 흔들리는 라벤더밭 위로 떠 있는<br>유리 노트. 떠다니는 빛과 꽃가루를 굴절시킨다.</p>
+      <div class="chips">
+        <span class="chip on">오늘</span>
+        <span class="chip">이번 주</span>
+        <span class="chip">고정됨</span>
+      </div>
+      <div class="field">
+        <textarea id="memo" placeholder="여기에 떠오르는 생각을 적어 보세요…"></textarea>
+      </div>
+      <div class="row">
+        <button class="btn" id="save">저장</button>
+        <button class="btn ghost" id="clear">지우기</button>
+      </div>
+      <div class="saved" id="status">자동 저장 대기 중</div>
+    </div>
+  </section>
+
+  <!-- clock glass -->
+  <aside class="panel" id="clock" data-depth="1.8">
+    <div class="cpad">
+      <div class="ctime" id="time">--:--<small id="sec">00</small></div>
+      <div class="cdate" id="date">—</div>
+      <div class="cloc"><span class="dot"></span><span>Provence · 라벤더 시간</span></div>
+    </div>
+  </aside>
+
+  <!-- weather strip -->
+  <aside class="panel" id="strip" data-depth="2.6">
+    <div class="spad">
+      <div class="glyph">🌤️</div>
+      <div class="sinfo">
+        <div class="k">Ambient</div>
+        <div class="v">맑음 · 23° · 산들바람</div>
+      </div>
+      <div class="bars" id="bars"></div>
+    </div>
+  </aside>
+</div>
+
+<div class="credit">라벤더밭 + 떠있는 리퀴드 글래스 · prayforfable I/v12</div>
+
+<script>
+'use strict';
+(()=>{
+  const TAU=Math.PI*2;
+  const canvas=document.getElementById('scene');
+  const ctx=canvas.getContext('2d',{alpha:false});
+  let W=0,H=0,dpr=1;
+
+  /* ---------- scene model: aerial lavender field ---------- */
+  // murky depth blobs (soft, drifting) — give the "탁한 물·부드러운 깊이흐림" feel
+  let blobs=[], rows=[], petals=[], pollen=[], ripples=[], lights=[];
+
+  const rand=(a,b)=>a+Math.random()*(b-a);
+
+  function buildScene(){
+    blobs=[]; rows=[]; petals=[]; pollen=[]; lights=[];
+    const area=W*H;
+    // deep soft blobs of color/shade beneath the field
+    const nb=Math.max(10,Math.round(area/95000));
+    for(let i=0;i<nb;i++){
+      blobs.push({
+        x:rand(0,W), y:rand(0,H),
+        r:rand(Math.min(W,H)*0.12, Math.min(W,H)*0.34),
+        hue:rand(255,288), sat:rand(28,52), li:rand(22,46),
+        a:rand(0.10,0.30),
+        vx:rand(-3,3), vy:rand(-2,2), ph:rand(0,TAU)
+      });
+    }
+    // lavender "rows" — diagonal bands of bushes seen from above
+    const nr=Math.max(7,Math.round(H/70));
+    for(let i=0;i<nr;i++){
+      rows.push({
+        y0:rand(-0.1,1.12)*H,
+        amp:rand(10,30), len:rand(0.011,0.02),
+        ph:rand(0,TAU), speed:rand(0.10,0.26),
+        hue:rand(258,282), li:rand(30,52),
+        bushGap:rand(26,46), bushR:rand(10,22),
+        drift:rand(-0.4,0.4)
+      });
+    }
+    // floating petals (closer, blur via size+alpha)
+    const npp=Math.max(26,Math.round(area/42000));
+    for(let i=0;i<npp;i++) petals.push(newPetal(true));
+    // fine pollen / light specks
+    const npo=Math.max(50,Math.round(area/16000));
+    for(let i=0;i<npo;i++){
+      pollen.push({x:rand(0,W),y:rand(0,H),r:rand(0.5,2.0),
+        a:rand(0.10,0.5),vx:rand(-6,6),vy:rand(2,12),ph:rand(0,TAU),sp:rand(0.6,1.8)});
+    }
+    // slow drifting soft light pools (caustic-ish)
+    const nl=Math.max(3,Math.round(area/260000));
+    for(let i=0;i<nl;i++){
+      lights.push({x:rand(0,W),y:rand(0,H),r:rand(Math.min(W,H)*0.16,Math.min(W,H)*0.4),
+        a:rand(0.05,0.13),vx:rand(-5,5),vy:rand(-4,4),ph:rand(0,TAU)});
+    }
+  }
+  function newPetal(spread){
+    const depth=rand(0.25,1); // 0..1 closeness
+    return{
+      x:rand(0,W), y:spread?rand(0,H):rand(-40,-10),
+      depth,
+      size:rand(4,10)*(0.5+depth),
+      a:rand(0.18,0.6)*(0.5+depth*0.6),
+      vy:rand(6,20)*(0.5+depth),
+      vx:rand(-10,10),
+      rot:rand(0,TAU), vr:rand(-1.2,1.2),
+      hue:rand(266,300), li:rand(60,82), sway:rand(0.4,1.2), ph:rand(0,TAU)
+    };
+  }
+
+  /* ---------- one full paint (also the FIRST paint, no loader) ---------- */
+  function paint(t){
+    // base graded sky-of-field
+    const g=ctx.createLinearGradient(0,0,W*0.4,H);
+    g.addColorStop(0,'#3a2a55');
+    g.addColorStop(0.45,'#4a3168');
+    g.addColorStop(1,'#241634');
+    ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+
+    // deep murky blobs (soft depth)
+    ctx.globalCompositeOperation='lighter';
+    for(const b of blobs){
+      const bx=b.x+Math.sin(t*0.00013*b.vx+b.ph)*40;
+      const by=b.y+Math.cos(t*0.00011*b.vy+b.ph)*32;
+      const rg=ctx.createRadialGradient(bx,by,0,bx,by,b.r);
+      rg.addColorStop(0,`hsla(${b.hue},${b.sat}%,${b.li}%,${b.a})`);
+      rg.addColorStop(1,`hsla(${b.hue},${b.sat}%,${b.li}%,0)`);
+      ctx.fillStyle=rg; ctx.beginPath(); ctx.arc(bx,by,b.r,0,TAU); ctx.fill();
+    }
+    ctx.globalCompositeOperation='source-over';
+
+    // slow light pools
+    ctx.globalCompositeOperation='screen';
+    for(const l of lights){
+      const lx=l.x+Math.sin(t*0.00009*l.vx+l.ph)*60;
+      const ly=l.y+Math.cos(t*0.00008*l.vy+l.ph)*48;
+      const rg=ctx.createRadialGradient(lx,ly,0,lx,ly,l.r);
+      rg.addColorStop(0,`hsla(285,60%,82%,${l.a})`);
+      rg.addColorStop(1,'hsla(285,60%,82%,0)');
+      ctx.fillStyle=rg; ctx.beginPath(); ctx.arc(lx,ly,l.r,0,TAU); ctx.fill();
+    }
+    ctx.globalCompositeOperation='source-over';
+
+    // lavender rows (aerial bushes) with slow wind sway
+    for(const r of rows){
+      const yb=r.y0 + Math.sin(t*0.0001*r.speed*60+r.ph)*6;
+      let x=-30;
+      let k=0;
+      while(x<W+30){
+        const wob=Math.sin(x*r.len + t*0.0006*r.speed*60 + r.ph)*r.amp
+                 + Math.sin(x*r.len*2.3 + t*0.0004*60)*r.amp*0.3;
+        const cy=yb+wob+r.drift*Math.sin(t*0.00007*60+k);
+        // bush blob
+        const br=r.bushR*(0.8+0.4*Math.sin(x*0.03+k));
+        const rg=ctx.createRadialGradient(x,cy,0,x,cy,br*1.6);
+        rg.addColorStop(0,`hsla(${r.hue},55%,${r.li+10}%,0.5)`);
+        rg.addColorStop(0.6,`hsla(${r.hue},48%,${r.li}%,0.34)`);
+        rg.addColorStop(1,`hsla(${r.hue-6},44%,${r.li-12}%,0)`);
+        ctx.fillStyle=rg;
+        ctx.beginPath(); ctx.ellipse(x,cy,br*1.3,br*0.85,0,0,TAU); ctx.fill();
+        // little tip highlight (flower top)
+        ctx.fillStyle=`hsla(${r.hue+8},70%,${Math.min(86,r.li+34)}%,0.5)`;
+        ctx.beginPath(); ctx.ellipse(x,cy-br*0.35,br*0.5,br*0.3,0,0,TAU); ctx.fill();
+        x+=r.bushGap; k++;
+      }
+    }
+
+    // depth blur veil — a translucent wash that mimics 부드러운 깊이흐림
+    const veil=ctx.createLinearGradient(0,0,0,H);
+    veil.addColorStop(0,'rgba(60,40,92,0.0)');
+    veil.addColorStop(1,'rgba(28,16,48,0.32)');
+    ctx.fillStyle=veil; ctx.fillRect(0,0,W,H);
+
+    // ripples (click)
+    for(let i=ripples.length-1;i>=0;i--){
+      const rp=ripples[i];
+      const age=(t-rp.t0)/1000;
+      if(age>rp.life){ripples.splice(i,1);continue;}
+      const p=age/rp.life;
+      const rad=rp.maxR*p;
+      ctx.strokeStyle=`hsla(290,70%,86%,${(1-p)*0.5})`;
+      ctx.lineWidth=2*(1-p)+0.5;
+      ctx.beginPath(); ctx.arc(rp.x,rp.y,rad,0,TAU); ctx.stroke();
+      ctx.beginPath(); ctx.arc(rp.x,rp.y,rad*0.6,0,TAU);
+      ctx.strokeStyle=`hsla(300,70%,90%,${(1-p)*0.3})`; ctx.stroke();
+    }
+
+    // pollen specks rising
+    ctx.globalCompositeOperation='lighter';
+    for(const p of pollen){
+      p.y-=p.vy*0.016*p.sp; p.x+=Math.sin(t*0.001+p.ph)*0.4 + p.vx*0.016;
+      if(p.y<-5){p.y=H+5;p.x=rand(0,W);}
+      if(p.x<-5)p.x=W+5; if(p.x>W+5)p.x=-5;
+      ctx.fillStyle=`hsla(295,80%,88%,${p.a})`;
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,TAU); ctx.fill();
+    }
+    ctx.globalCompositeOperation='source-over';
+
+    // floating petals (front, soft)
+    for(const p of petals){
+      p.y+=p.vy*0.016; p.x+=Math.sin(t*0.0006+p.ph)*p.sway + p.vx*0.016*0.3;
+      p.rot+=p.vr*0.016;
+      if(p.y>H+20){Object.assign(p,newPetal(false));}
+      if(p.x<-20)p.x=W+20; if(p.x>W+20)p.x=-20;
+      ctx.save();
+      ctx.translate(p.x,p.y); ctx.rotate(p.rot);
+      ctx.fillStyle=`hsla(${p.hue},65%,${p.li}%,${p.a})`;
+      // simple petal: two arcs
+      ctx.beginPath();
+      ctx.ellipse(0,0,p.size,p.size*0.5,0,0,TAU);
+      ctx.fill();
+      ctx.fillStyle=`hsla(${p.hue+10},75%,${Math.min(92,p.li+12)}%,${p.a*0.7})`;
+      ctx.beginPath();
+      ctx.ellipse(-p.size*0.2,0,p.size*0.5,p.size*0.28,0,0,TAU);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // gentle top light sweep (very slow ambient shimmer)
+    const sweepX=(Math.sin(t*0.00006)*0.5+0.5)*W;
+    const sw=ctx.createRadialGradient(sweepX,H*0.1,0,sweepX,H*0.1,W*0.6);
+    sw.addColorStop(0,'rgba(230,210,255,0.06)');
+    sw.addColorStop(1,'rgba(230,210,255,0)');
+    ctx.fillStyle=sw; ctx.fillRect(0,0,W,H);
+  }
+
+  /* ---------- resize ---------- */
+  function resize(){
+    W=window.innerWidth; H=window.innerHeight;
+    dpr=Math.min(window.devicePixelRatio||1,2);
+    canvas.width=Math.round(W*dpr); canvas.height=Math.round(H*dpr);
+    canvas.style.width=W+'px'; canvas.style.height=H+'px';
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    buildScene();
+    paint(performance.now()); // immediate first paint after layout
+    clampPanels();
+  }
+  window.addEventListener('resize',resize);
+
+  /* ---------- click ripples ---------- */
+  canvas.addEventListener('pointerdown',e=>{
+    ripples.push({x:e.clientX,y:e.clientY,t0:performance.now(),
+      maxR:rand(90,160),life:rand(1.4,2.2)});
+  });
+
+  /* ---------- main loop ---------- */
+  function frame(ts){ paint(ts); requestAnimationFrame(frame); }
+
+  // FIRST PAINT before rAF, so opening the file shows scene+glass instantly
+  resize();
+  requestAnimationFrame(frame);
+
+  /* =========================================================
+     Floating glass panels: parallax + drag
+     ========================================================= */
+  const stage=document.getElementById('stage');
+  const panels=[...document.querySelectorAll('.panel')];
+  // store base position (left/top from CSS) once
+  const state=panels.map(p=>{
+    const r=p.getBoundingClientRect();
+    return {el:p, baseX:r.left, baseY:r.top, dx:0, dy:0, depth:parseFloat(p.dataset.depth)||1};
+  });
+  // convert each panel to transform-positioned (keep left/top as base anchor)
+  function applyTransforms(px,py){
+    for(const s of state){
+      const par= (1/s.depth); // closer panels (smaller depth#) move more
+      const tx=s.dx + px*par*-18;
+      const ty=s.dy + py*par*-18;
+      s.el.style.transform=`translate3d(${tx}px,${ty}px,0)`;
+    }
+  }
+  let mx=0,my=0,tmx=0,tmy=0;
+  window.addEventListener('pointermove',e=>{
+    tmx=(e.clientX/W-0.5)*2; tmy=(e.clientY/H-0.5)*2;
+  });
+  (function ease(){
+    mx+=(tmx-mx)*0.06; my+=(tmy-my)*0.06;
+    applyTransforms(mx,my);
+    requestAnimationFrame(ease);
+  })();
+
+  // dragging
+  let drag=null;
+  for(const s of state){
+    s.el.addEventListener('pointerdown',e=>{
+      // ignore drags starting on interactive controls
+      if(e.target.closest('textarea,button,input,.chip')) return;
+      drag={s, sx:e.clientX, sy:e.clientY, ox:s.dx, oy:s.dy};
+      s.el.classList.add('lift');
+      s.el.setPointerCapture(e.pointerId);
+      // bring to front
+      s.el.style.zIndex=10;
+      panels.forEach(p=>{if(p!==s.el)p.style.zIndex='';});
+      e.stopPropagation();
+    });
+    s.el.addEventListener('pointermove',e=>{
+      if(!drag||drag.s!==s) return;
+      s.dx=drag.ox+(e.clientX-drag.sx);
+      s.dy=drag.oy+(e.clientY-drag.sy);
+    });
+    const end=e=>{ if(drag&&drag.s===s){ s.el.classList.remove('lift'); drag=null; } };
+    s.el.addEventListener('pointerup',end);
+    s.el.addEventListener('pointercancel',end);
+  }
+  function clampPanels(){
+    for(const s of state){
+      const r=s.el.getBoundingClientRect();
+      s.baseX=r.left-( /*current transform x already in r*/ 0); // base recomputed on resize via CSS
+    }
+  }
+
+  /* =========================================================
+     Widget logic: clock, notes (localStorage), eq bars, chips
+     ========================================================= */
+  // chips
+  document.querySelectorAll('.chip').forEach(c=>{
+    c.addEventListener('click',()=>{
+      document.querySelectorAll('.chip').forEach(x=>x.classList.remove('on'));
+      c.classList.add('on');
+    });
+  });
+
+  // clock
+  const elTime=document.getElementById('time');
+  const elSec=document.getElementById('sec');
+  const elDate=document.getElementById('date');
+  const days=['일','월','화','수','목','금','토'];
+  function tick(){
+    const d=new Date();
+    const hh=String(d.getHours()).padStart(2,'0');
+    const mm=String(d.getMinutes()).padStart(2,'0');
+    const ss=String(d.getSeconds()).padStart(2,'0');
+    elTime.firstChild.nodeValue=`${hh}:${mm}`;
+    elSec.textContent=ss;
+    elDate.textContent=`${d.getFullYear()}. ${String(d.getMonth()+1).padStart(2,'0')}. ${String(d.getDate()).padStart(2,'0')} (${days[d.getDay()]})`;
+  }
+  tick(); setInterval(tick,1000);
+
+  // eq bars
+  const barsEl=document.getElementById('bars');
+  const NB=7;
+  for(let i=0;i<NB;i++){
+    const b=document.createElement('i');
+    b.style.height='100%';
+    b.style.animationDelay=(i*0.14)+'s';
+    b.style.animationDuration=(1.1+Math.random()*0.9).toFixed(2)+'s';
+    barsEl.appendChild(b);
+  }
+
+  // notes
+  const memo=document.getElementById('memo');
+  const status=document.getElementById('status');
+  const KEY='prayforfable_v12_note';
+  try{ const saved=localStorage.getItem(KEY); if(saved){memo.value=saved; status.innerHTML='불러옴 · <b>저장된 메모</b>';} }catch(e){}
+  let saveT=null;
+  function autosave(){
+    clearTimeout(saveT);
+    saveT=setTimeout(()=>{
+      try{ localStorage.setItem(KEY,memo.value);
+        const n=new Date();
+        status.innerHTML=`자동 저장됨 · <b>${String(n.getHours()).padStart(2,'0')}:${String(n.getMinutes()).padStart(2,'0')}</b>`;
+      }catch(e){ status.textContent='저장 실패 (로컬 저장소 사용 불가)'; }
+    },500);
+  }
+  memo.addEventListener('input',autosave);
+  document.getElementById('save').addEventListener('click',()=>{
+    try{ localStorage.setItem(KEY,memo.value);
+      status.innerHTML='수동 저장됨 · <b>완료</b>';
+    }catch(e){ status.textContent='저장 실패'; }
+  });
+  document.getElementById('clear').addEventListener('click',()=>{
+    memo.value=''; try{localStorage.removeItem(KEY);}catch(e){}
+    status.textContent='메모 비움';
+    memo.focus();
+  });
+})();
+</script>
+</body>
+</html>

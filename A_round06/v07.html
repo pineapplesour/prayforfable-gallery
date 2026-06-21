@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>KINETIC — word as matter</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Archivo+Black&family=Space+Grotesk:wght@700&display=swap" rel="stylesheet">
+<style>
+  :root{ --bg:#07070b; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:var(--bg); }
+  body{
+    font-family:'Space Grotesk',system-ui,sans-serif;
+    color:#fff; cursor:crosshair;
+    -webkit-tap-highlight-color:transparent;
+    touch-action:none;
+  }
+  #stage{ position:fixed; inset:0; display:block; }
+  /* film grain + vignette overlay */
+  #grain{
+    position:fixed; inset:0; pointer-events:none; mix-blend-mode:overlay;
+    opacity:.06; z-index:5;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  #vig{
+    position:fixed; inset:0; pointer-events:none; z-index:4;
+    background:radial-gradient(ellipse at center, transparent 38%, rgba(0,0,0,.55) 100%);
+  }
+  /* HUD */
+  .hud{
+    position:fixed; z-index:8; pointer-events:none;
+    font-size:11px; letter-spacing:.28em; text-transform:uppercase;
+    color:rgba(255,255,255,.55); font-weight:700; user-select:none;
+  }
+  #tl{ top:22px; left:24px; }
+  #tr{ top:22px; right:24px; text-align:right; }
+  #bl{ bottom:22px; left:24px; max-width:46vw; line-height:1.9; color:rgba(255,255,255,.38); }
+  #br{ bottom:22px; right:24px; text-align:right; color:rgba(255,255,255,.5); }
+  .acc{ color:#ff3b6b; }
+  .acc2{ color:#5ad1ff; }
+  /* progress dots */
+  #dots{ position:fixed; z-index:8; left:50%; bottom:26px; transform:translateX(-50%);
+    display:flex; gap:9px; pointer-events:auto; }
+  .dot{ width:7px; height:7px; border-radius:50%; background:rgba(255,255,255,.22);
+    transition:all .4s cubic-bezier(.2,.8,.2,1); cursor:pointer; }
+  .dot.on{ background:#fff; transform:scale(1.5); box-shadow:0 0 14px rgba(255,255,255,.7); }
+  @media (max-width:480px){
+    #bl{ display:none; }
+    .hud{ font-size:9px; letter-spacing:.2em; }
+    #tl,#tr,#br{ top:16px; }
+    #br{ top:auto; bottom:64px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="vig"></div>
+<div id="grain"></div>
+
+<div class="hud" id="tl">KINETIC<span class="acc">/</span>TYPE</div>
+<div class="hud" id="tr">WORD AS<br>MATTER</div>
+<div class="hud" id="bl">움직여라 <span class="acc">— 마우스를 끌면 글자가 흩어진다.</span><br>클릭하면 <span class="acc2">폭발</span>. 스크롤/스와이프로 다음 단어.</div>
+<div class="hud" id="br" data-fps>—</div>
+<div id="dots"></div>
+
+<script>
+(() => {
+  'use strict';
+  const cv = document.getElementById('stage');
+  const ctx = cv.getContext('2d', { alpha:false });
+  const DPR = Math.min(window.devicePixelRatio || 1, 2);
+
+  let W=0, H=0, CX=0, CY=0;
+  // offscreen sampler
+  const off = document.createElement('canvas');
+  const octx = off.getContext('2d', { willReadFrequently:true });
+
+  // ---------- words ----------
+  const WORDS = [
+    { t:'MAD',     sub:'미쳤다',         hue:[345,12],  font:'Anton' },
+    { t:'KINETIC', sub:'운동하는 글자',  hue:[195,0],   font:'Archivo Black' },
+    { t:'EXPLODE', sub:'폭발',           hue:[28,355],  font:'Anton' },
+    { t:'욕망',     sub:'DESIRE',         hue:[320,275], font:'Archivo Black' },
+    { t:'FLOW',    sub:'흐름',           hue:[160,200], font:'Anton' },
+    { t:'살아있다', sub:'ALIVE',          hue:[55,15],   font:'Archivo Black' },
+  ];
+  let wi = 0;
+
+  // ---------- particles ----------
+  let P = [];               // particle pool
+  let targets = [];         // {x,y,r,g,b}
+  const MAX = 1; // computed at resize
+
+  function rsz(){
+    W = cv.width = Math.floor(innerWidth * DPR);
+    H = cv.height = Math.floor(innerHeight * DPR);
+    cv.style.width = innerWidth + 'px';
+    cv.style.height = innerHeight + 'px';
+    CX = W/2; CY = H/2;
+    off.width = W; off.height = H;
+    buildTargets(WORDS[wi], true);
+  }
+
+  // sample current word into target points
+  function buildTargets(word, keepPool){
+    octx.clearRect(0,0,W,H);
+    octx.fillStyle = '#fff';
+    octx.textAlign = 'center';
+    octx.textBaseline = 'middle';
+
+    const mobile = innerWidth < 560;
+    let fs = Math.min(W*0.78, H*0.46) / Math.max(word.t.length,3) * (mobile?2.0:1.7);
+    fs = Math.min(fs, H*0.42);
+    octx.font = `900 ${fs}px '${word.font}', sans-serif`;
+    // shrink to fit width
+    let m = octx.measureText(word.t);
+    const maxW = W*0.86;
+    if (m.width > maxW){ fs *= maxW/m.width; octx.font = `900 ${fs}px '${word.font}', sans-serif`; }
+    octx.fillText(word.t, CX, CY);
+
+    // sub-label as faint wide text below
+    const sf = Math.max(fs*0.12, 14*DPR);
+    octx.font = `700 ${sf}px 'Space Grotesk', sans-serif`;
+    octx.globalAlpha = 0.85;
+    // spaced letters
+    const spaced = word.sub.split('').join(' ');
+    octx.fillText(spaced, CX, CY + fs*0.62);
+    octx.globalAlpha = 1;
+
+    const img = octx.getImageData(0,0,W,H).data;
+    // adaptive step: keep particle count bounded ~ device
+    const budget = mobile ? 5200 : 9000;
+    let step = Math.max(3, Math.round(Math.sqrt((W*H)/(budget*6))) );
+
+    const pts = [];
+    for (let y=0; y<H; y+=step){
+      for (let x=0; x<W; x+=step){
+        const a = img[(y*W + x)*4 + 3];
+        if (a > 128){
+          pts.push(x, y);
+        }
+      }
+    }
+    targets = pts;
+    const count = pts.length/2;
+
+    // grow / map pool
+    while (P.length < count) P.push(newParticle());
+    activeCount = count;
+
+    // assign targets (shuffle a bit for organic assembly)
+    const [h0,h1] = word.hue;
+    for (let i=0;i<count;i++){
+      const p = P[i];
+      p.tx = pts[i*2];
+      p.ty = pts[i*2+1];
+      // color: gradient by vertical position with the word's hue pair + sparkle
+      const f = pts[i*2+1]/H;
+      const hue = h0 + (h1 - h0)*f + (Math.random()-0.5)*16;
+      const sat = 78 + Math.random()*20;
+      const lig = 52 + Math.random()*16;
+      const c = hsl2rgb(((hue%360)+360)%360, sat/100, lig/100);
+      p.tr=c[0]; p.tg=c[1]; p.tb=c[2];
+      p.dead = false;
+      if (!keepPool){
+        // launch from explosion when switching: leave positions, just retarget
+      } else {
+        // initial: scatter from edges
+        if (p.x===undefined){
+          const ang = Math.random()*Math.PI*2, rad = Math.max(W,H)*(0.5+Math.random()*0.6);
+          p.x = CX + Math.cos(ang)*rad; p.y = CY + Math.sin(ang)*rad;
+          p.r=p.tr; p.g=p.tg; p.b=p.tb;
+        }
+      }
+    }
+    // particles beyond active become idle drifters
+    for (let i=count;i<P.length;i++){ P[i].dead = true; }
+  }
+
+  let activeCount = 0;
+
+  function newParticle(){
+    return {
+      x:undefined,y:undefined, vx:0,vy:0,
+      tx:0,ty:0, r:255,g:255,b:255, tr:255,tg:255,tb:255,
+      sz: 0.7 + Math.random()*1.7,
+      ease: 0.06 + Math.random()*0.08,
+      dead:false, ph: Math.random()*Math.PI*2
+    };
+  }
+
+  // ---------- color helpers ----------
+  function hsl2rgb(h,s,l){
+    h/=360; let r,g,b;
+    if(s===0){ r=g=b=l; }
+    else{
+      const q = l<0.5 ? l*(1+s) : l+s-l*s;
+      const p = 2*l-q;
+      const hk=(t)=>{ if(t<0)t+=1; if(t>1)t-=1;
+        if(t<1/6)return p+(q-p)*6*t;
+        if(t<1/2)return q;
+        if(t<2/3)return p+(q-p)*(2/3-t)*6;
+        return p; };
+      r=hk(h+1/3); g=hk(h); b=hk(h-1/3);
+    }
+    return [r*255|0, g*255|0, b*255|0];
+  }
+
+  // ---------- interaction state ----------
+  const M = { x:-9999, y:-9999, px:-9999, py:-9999, down:false, vx:0, vy:0, active:false };
+  let lastSwitch = 0;
+  let timeAcc = 0;
+
+  function pointer(e, down){
+    const t = e.touches ? e.touches[0] : e;
+    if (!t) return;
+    M.px = M.x; M.py = M.y;
+    M.x = t.clientX * DPR; M.y = t.clientY * DPR;
+    M.vx = M.x - M.px; M.vy = M.y - M.py;
+    M.active = true;
+    if (down!==undefined) M.down = down;
+  }
+  addEventListener('mousemove', e=>pointer(e), {passive:true});
+  addEventListener('mousedown', e=>{ pointer(e,true); blast(M.x,M.y); }, {passive:true});
+  addEventListener('mouseup',   e=>{ M.down=false; }, {passive:true});
+  addEventListener('mouseleave',()=>{ M.active=false; M.x=M.y=-9999; });
+  addEventListener('touchstart',e=>{ pointer(e,true); blast(M.x,M.y); }, {passive:true});
+  addEventListener('touchmove', e=>pointer(e,true), {passive:true});
+  addEventListener('touchend',  ()=>{ M.down=false; M.active=false; M.x=M.y=-9999; });
+
+  // explosion impulse
+  function blast(bx,by){
+    const R = Math.max(W,H)*0.32;
+    for (let i=0;i<activeCount;i++){
+      const p=P[i];
+      const dx=p.x-bx, dy=p.y-by, d=Math.hypot(dx,dy)||1;
+      if (d<R){
+        const f = (1 - d/R) * (10 + Math.random()*16);
+        p.vx += dx/d*f; p.vy += dy/d*f;
+      }
+    }
+    flash = 0.9;
+  }
+  let flash = 0;
+
+  // ---------- scroll / swipe to switch ----------
+  let scrollLock=false, touchStartY=0;
+  function go(dir){
+    const now = performance.now();
+    if (now - lastSwitch < 380) return;
+    lastSwitch = now;
+    wi = (wi + (dir>0?1:WORDS.length-1)) % WORDS.length;
+    // give every particle an outward kick (morph dissolve)
+    for(let i=0;i<activeCount;i++){
+      const p=P[i];
+      const dx=p.x-CX, dy=p.y-CY, d=Math.hypot(dx,dy)||1;
+      const f = 6 + Math.random()*10;
+      p.vx += dx/d*f + (Math.random()-.5)*6;
+      p.vy += dy/d*f + (Math.random()-.5)*6;
+    }
+    flash = 0.6;
+    buildTargets(WORDS[wi], false);
+    syncDots();
+  }
+  addEventListener('wheel', e=>{
+    e.preventDefault();
+    if (scrollLock) return;
+    if (Math.abs(e.deltaY) < 6) return;
+    scrollLock=true;
+    go(e.deltaY>0?1:-1);
+    setTimeout(()=>scrollLock=false, 120);
+  }, {passive:false});
+  addEventListener('keydown', e=>{
+    if(e.key==='ArrowRight'||e.key==='ArrowDown'||e.key===' ') go(1);
+    if(e.key==='ArrowLeft'||e.key==='ArrowUp') go(-1);
+  });
+  // swipe
+  addEventListener('touchstart', e=>{ touchStartY = e.touches[0].clientY; }, {passive:true});
+  addEventListener('touchend', e=>{
+    const dy = (e.changedTouches[0].clientY - touchStartY);
+    if (Math.abs(dy) > 60) go(dy<0?1:-1);
+  }, {passive:true});
+
+  // dots UI
+  const dotsEl = document.getElementById('dots');
+  WORDS.forEach((_,i)=>{
+    const d=document.createElement('div'); d.className='dot'; d.dataset.i=i;
+    d.addEventListener('click',()=>{ if(i!==wi){ const dir = ((i-wi+WORDS.length)%WORDS.length)<=WORDS.length/2?1:-1; const steps=Math.abs(i-wi); for(let s=0;s<steps;s++) {} wi=i; for(let k=0;k<activeCount;k++){const p=P[k];const ddx=p.x-CX,ddy=p.y-CY,dd=Math.hypot(ddx,ddy)||1,f=8;p.vx+=ddx/dd*f;p.vy+=ddy/dd*f;} flash=.6; buildTargets(WORDS[wi],false); syncDots(); } });
+    dotsEl.appendChild(d);
+  });
+  function syncDots(){ [...dotsEl.children].forEach((d,i)=>d.classList.toggle('on', i===wi)); }
+  syncDots();
+
+  // ---------- flow field (cheap curl-ish noise via trig) ----------
+  function flow(x,y,t){
+    const s = 0.0016;
+    const a = Math.sin(x*s + t*0.0006) + Math.cos(y*s*1.3 - t*0.0005);
+    const b = Math.cos(x*s*1.1 - t*0.0004) + Math.sin(y*s - t*0.0007);
+    return [a, b];
+  }
+
+  // ---------- main loop ----------
+  let last = performance.now(), fps=60, fpsT=0, fpsC=0;
+  const fpsEl = document.querySelector('[data-fps]');
+
+  function frame(now){
+    const dt = Math.min(40, now-last); last=now; timeAcc += dt;
+    // fps
+    fpsC++; fpsT+=dt;
+    if (fpsT>500){ fps = Math.round(1000/(fpsT/fpsC)); fpsC=0; fpsT=0;
+      fpsEl.innerHTML = `${('0'+(wi+1)).slice(-2)} / ${('0'+WORDS.length).slice(-2)} · ${fps} FPS`; }
+
+    // trail fade (motion blur)
+    ctx.globalCompositeOperation='source-over';
+    ctx.fillStyle = 'rgba(7,7,11,0.20)';
+    ctx.fillRect(0,0,W,H);
+
+    // additive glow blending for particles
+    ctx.globalCompositeOperation='lighter';
+
+    const repelR = (innerWidth<560? 110:150) * DPR;
+    const repelR2 = repelR*repelR;
+    const mouseOn = M.active;
+
+    for (let i=0;i<activeCount;i++){
+      const p=P[i];
+      // attraction to target (spring)
+      const ax = (p.tx - p.x);
+      const ay = (p.ty - p.y);
+      p.vx += ax*p.ease;
+      p.vy += ay*p.ease;
+
+      // ambient flow shimmer (very subtle, only near rest)
+      const restDist = Math.abs(ax)+Math.abs(ay);
+      if (restDist < 60){
+        const f = flow(p.x, p.y, timeAcc);
+        p.vx += f[0]*0.10;
+        p.vy += f[1]*0.10;
+      }
+
+      // mouse repel field
+      if (mouseOn){
+        const dx=p.x-M.x, dy=p.y-M.y, d2=dx*dx+dy*dy;
+        if (d2 < repelR2 && d2>0.01){
+          const d=Math.sqrt(d2);
+          const force = (1 - d/repelR);
+          const ff = force*force*26;
+          p.vx += dx/d*ff;
+          p.vy += dy/d*ff;
+          // swirl with cursor velocity
+          p.vx += (-dy/d)*M.vx*0.012*force;
+          p.vy += ( dx/d)*M.vy*0.012*force;
+        }
+      }
+
+      // damping
+      p.vx *= 0.86; p.vy *= 0.86;
+      p.x += p.vx; p.y += p.vy;
+
+      // color lerp
+      p.r += (p.tr-p.r)*0.08;
+      p.g += (p.tg-p.g)*0.08;
+      p.b += (p.tb-p.b)*0.08;
+
+      // size pulse by speed
+      const spd = Math.abs(p.vx)+Math.abs(p.vy);
+      const s = p.sz*DPR*(1 + Math.min(spd*0.06, 2.2));
+      const alpha = Math.min(1, 0.55 + spd*0.02);
+
+      ctx.fillStyle = `rgba(${p.r|0},${p.g|0},${p.b|0},${alpha})`;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, s, 0, 6.2832);
+      ctx.fill();
+    }
+
+    // connective spark lines near cursor (cheap, sampled)
+    if (mouseOn){
+      ctx.globalCompositeOperation='lighter';
+      ctx.lineWidth = DPR*0.6;
+      let drawn=0;
+      for (let i=0;i<activeCount && drawn<60; i+=7){
+        const p=P[i];
+        const dx=p.x-M.x, dy=p.y-M.y, d2=dx*dx+dy*dy;
+        if (d2 < repelR2*0.8){
+          ctx.strokeStyle = `rgba(${p.r|0},${p.g|0},${p.b|0},${0.18})`;
+          ctx.beginPath(); ctx.moveTo(M.x,M.y); ctx.lineTo(p.x,p.y); ctx.stroke();
+          drawn++;
+        }
+      }
+    }
+
+    // flash overlay on blast / switch
+    if (flash>0.01){
+      ctx.globalCompositeOperation='lighter';
+      ctx.fillStyle = `rgba(255,255,255,${flash*0.08})`;
+      ctx.fillRect(0,0,W,H);
+      flash *= 0.86;
+    }
+
+    // decay mouse velocity
+    M.vx *= 0.8; M.vy *= 0.8;
+
+    requestAnimationFrame(frame);
+  }
+
+  // ---------- boot ----------
+  function boot(){
+    rsz();
+    requestAnimationFrame(frame);
+    // gentle auto-advance if idle (kept slow so it feels alive)
+    let idle=0;
+    setInterval(()=>{
+      if (M.active){ idle=0; return; }
+      idle++;
+      if (idle>=9){ idle=0; go(1); }   // ~ every 9s when untouched
+    }, 1000);
+  }
+
+  // wait for fonts so glyph sampling is correct
+  if (document.fonts && document.fonts.ready){
+    let booted=false;
+    const start=()=>{ if(booted)return; booted=true; boot(); };
+    document.fonts.ready.then(()=>{ start(); });
+    // fallback: don't block on font network
+    setTimeout(start, 900);
+  } else { boot(); }
+
+  addEventListener('resize', ()=>{ clearTimeout(rsz._t); rsz._t=setTimeout(rsz,150); });
+})();
+</script>
+</body>
+</html>

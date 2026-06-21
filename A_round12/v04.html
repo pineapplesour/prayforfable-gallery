@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>종이비행기 — Paper Sky</title>
+<style>
+  :root { --ink: rgba(20,28,44,.55); }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#0b1224; }
+  body {
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+    cursor: none;
+  }
+  #sky { display:block; position:fixed; inset:0; width:100vw; height:100vh; }
+  /* HUD */
+  #hud {
+    position:fixed; left:0; right:0; bottom:0; padding:14px 18px 16px;
+    display:flex; align-items:flex-end; justify-content:space-between; gap:16px;
+    pointer-events:none; z-index:5; mix-blend-mode:screen;
+  }
+  #title {
+    pointer-events:none;
+    color:#f4f7ff; line-height:1.05;
+    text-shadow:0 2px 18px rgba(0,0,0,.35);
+  }
+  #title b { display:block; font-weight:800; letter-spacing:.02em;
+    font-size:clamp(20px,4.2vw,40px);
+    background:linear-gradient(90deg,#fff,#cfe0ff 60%,#ffd9a8);
+    -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+  #title span { display:block; font-size:clamp(10px,1.6vw,13px); font-weight:500;
+    letter-spacing:.34em; text-transform:uppercase; opacity:.72; margin-top:6px; color:#bcd0ff; }
+  #meta { text-align:right; color:#dfe8ff; font-size:clamp(10px,1.5vw,12.5px);
+    letter-spacing:.06em; opacity:.85; }
+  #meta .row { display:flex; gap:8px; justify-content:flex-end; align-items:center; margin-top:3px; }
+  #meta b { font-weight:700; color:#fff; font-variant-numeric:tabular-nums; }
+  #meta .k { opacity:.55; }
+  .hint { position:fixed; top:16px; left:50%; transform:translateX(-50%);
+    color:#dce6ff; font-size:clamp(10px,1.5vw,12px); letter-spacing:.16em; text-transform:uppercase;
+    opacity:.0; transition:opacity 1.4s ease; pointer-events:none; z-index:6; text-align:center;
+    text-shadow:0 1px 12px rgba(0,0,0,.4); }
+  .hint.show { opacity:.62; }
+  @media (max-width:560px){
+    #hud{ padding:10px 12px 12px; }
+    #title span{ letter-spacing:.22em; }
+  }
+</style>
+</head>
+<body>
+<canvas id="sky"></canvas>
+<div class="hint" id="hint">움직여서 바람을 만드세요 · 클릭하면 비행기를 접어 날립니다 · 스크롤로 고도를 바꿉니다</div>
+<div id="hud">
+  <div id="title"><b>종이비행기 하늘</b><span>Origami Sky · a living flock</span></div>
+  <div id="meta">
+    <div class="row"><span class="k">flock</span><b id="mFlock">0</b></div>
+    <div class="row"><span class="k">altitude</span><b id="mAlt">dawn</b></div>
+    <div class="row"><span class="k">fps</span><b id="mFps">60</b></div>
+  </div>
+</div>
+<script>
+"use strict";
+(() => {
+  const cv = document.getElementById('sky');
+  const ctx = cv.getContext('2d', { alpha:false });
+  const TAU = Math.PI*2;
+  const rnd = (a,b)=> a + Math.random()*(b-a);
+  const clamp = (v,a,b)=> v<a?a:(v>b?b:v);
+  const lerp = (a,b,t)=> a+(b-a)*t;
+  const mix = (c1,c2,t)=>[lerp(c1[0],c2[0],t),lerp(c1[1],c2[1],t),lerp(c1[2],c2[2],t)];
+  const rgb = c=>`rgb(${c[0]|0},${c[1]|0},${c[2]|0})`;
+  const rgba=(c,a)=>`rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a})`;
+
+  let W=0,H=0,DPR=1, isMobile=false, DIAG=1;
+  function resize(){
+    DPR = Math.min(window.devicePixelRatio||1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    isMobile = Math.min(W,H) < 560;
+    DIAG = Math.hypot(W,H);
+    cv.width = Math.round(W*DPR); cv.height = Math.round(H*DPR);
+    cv.style.width = W+'px'; cv.style.height = H+'px';
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    buildSky(); buildClouds(); buildStars();
+  }
+  window.addEventListener('resize', resize, {passive:true});
+
+  /* ---------- ALTITUDE / TIME-OF-DAY ---------- */
+  // 0 dawn -> 1 noon -> 2 dusk -> 3 night ; scroll moves through it
+  const SKIES = [
+    { name:'dawn', top:[58,78,138], mid:[156,150,196], low:[255,196,150], sun:[255,225,180], sunY:0.74, haze:[255,205,170] },
+    { name:'noon', top:[58,128,222], mid:[126,182,238], low:[206,232,250], sun:[255,252,235], sunY:0.22, haze:[210,234,250] },
+    { name:'dusk', top:[36,42,92],  mid:[152,86,128],  low:[252,150,96],  sun:[255,168,108], sunY:0.80, haze:[255,150,110] },
+    { name:'night',top:[6,10,30],   mid:[16,24,58],    low:[40,52,104],   sun:[120,150,220], sunY:0.16, haze:[60,80,150] },
+  ];
+  let altF = 0.18;            // continuous altitude phase across SKIES
+  let altTarget = 0.18;
+  function skyAt(f){
+    const n = SKIES.length;
+    const x = ((f % n)+n)%n;
+    const i = Math.floor(x), j=(i+1)%n, t=x-i;
+    const A=SKIES[i],B=SKIES[j];
+    return {
+      top:mix(A.top,B.top,t), mid:mix(A.mid,B.mid,t), low:mix(A.low,B.low,t),
+      sun:mix(A.sun,B.sun,t), sunY:lerp(A.sunY,B.sunY,t), haze:mix(A.haze,B.haze,t),
+      night: Math.max(smoothNight(A.name), smoothNight(B.name)) * 0 + nightAmt(x,n),
+      name: t<0.5?A.name:B.name
+    };
+  }
+  function smoothNight(){return 0;}
+  function nightAmt(x,n){ // how "night" we are (for stars), peaks at index 3
+    const d = Math.min(Math.abs(x-3), Math.abs(x-3+n), Math.abs(x-3-n));
+    return clamp(1 - d/1.0, 0, 1);
+  }
+
+  let skyGrad=null, curSky=null;
+  function buildSky(){ curSky = skyAt(altF); rebuildGrad(); }
+  function rebuildGrad(){
+    const s = curSky;
+    const g = ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0.00, rgb(s.top));
+    g.addColorStop(0.46, rgb(s.mid));
+    g.addColorStop(1.00, rgb(s.low));
+    skyGrad = g;
+  }
+
+  /* ---------- STARS (night) ---------- */
+  let stars=[];
+  function buildStars(){
+    stars=[];
+    const n = Math.round((W*H)/9000);
+    for(let i=0;i<n;i++) stars.push({x:Math.random()*W,y:Math.random()*H*0.7,r:rnd(.4,1.6),tw:rnd(0,TAU),sp:rnd(.6,2.2)});
+  }
+
+  /* ---------- LAYERED CLOUDS (pre-rendered sprites) ---------- */
+  let clouds=[];
+  function makeCloudSprite(sc){
+    // render a soft white cloud once onto an offscreen canvas; tint at draw time via globalCompositeOperation
+    const baseR=(isMobile?34:54)*sc;
+    const puffs = Array.from({length: isMobile?4:6}, ()=>({dx:rnd(-1,1),dy:rnd(-.4,.4),r:rnd(.5,1.1)}));
+    let maxx=0,maxy=0;
+    puffs.forEach(p=>{ maxx=Math.max(maxx, Math.abs(p.dx)*baseR*1.4 + baseR*p.r); maxy=Math.max(maxy, Math.abs(p.dy)*baseR*0.8 + baseR*p.r); });
+    const cw=Math.ceil((maxx+6)*2), ch=Math.ceil((maxy+6)*2);
+    const oc=document.createElement('canvas'); oc.width=cw; oc.height=ch;
+    const o=oc.getContext('2d');
+    const ox=cw/2, oy=ch/2;
+    for(const pf of puffs){
+      const r=baseR*pf.r, x=ox+pf.dx*baseR*1.4, y=oy+pf.dy*baseR*0.8;
+      const g=o.createRadialGradient(x,y-r*0.2,r*0.1,x,y,r);
+      g.addColorStop(0,'rgba(255,255,255,0.9)');
+      g.addColorStop(0.7,'rgba(255,255,255,0.5)');
+      g.addColorStop(1,'rgba(255,255,255,0)');
+      o.fillStyle=g; o.beginPath(); o.arc(x,y,r,0,TAU); o.fill();
+    }
+    return {canvas:oc, w:cw, h:ch};
+  }
+  function buildClouds(){
+    clouds=[];
+    const layers=[{n:isMobile?5:8,depth:.18,sc:1.7,sp:.10,a:.20},
+                  {n:isMobile?5:9,depth:.40,sc:1.15,sp:.20,a:.26},
+                  {n:isMobile?6:11,depth:.72,sc:.7,sp:.42,a:.30}];
+    layers.forEach(L=>{
+      for(let i=0;i<L.n;i++){
+        const sc=L.sc*rnd(.7,1.35);
+        clouds.push({
+          x:Math.random()*W, y:rnd(H*0.04,H*0.86), depth:L.depth, sc:sc,
+          sp:L.sp*rnd(.7,1.3), a:L.a*rnd(.7,1.1),
+          sprite: makeCloudSprite(sc)
+        });
+      }
+    });
+    clouds.sort((a,b)=>a.depth-b.depth);
+  }
+
+  /* ---------- INPUT ---------- */
+  const mouse = {x:0,y:0,px:0,py:0,vx:0,vy:0,down:false,active:false,speed:0};
+  let lastMoveT = 0;
+  function setPos(x,y){ mouse.px=mouse.x; mouse.py=mouse.y; mouse.x=x; mouse.y=y; mouse.active=true; lastMoveT=performance.now(); }
+  cv.addEventListener('mousemove', e=>setPos(e.clientX,e.clientY), {passive:true});
+  cv.addEventListener('mousedown', e=>{ mouse.down=true; launchPlane(e.clientX,e.clientY); });
+  window.addEventListener('mouseup', ()=> mouse.down=false);
+  cv.addEventListener('mouseleave', ()=> mouse.active=false);
+  cv.addEventListener('touchstart', e=>{ const t=e.touches[0]; setPos(t.clientX,t.clientY); mouse.down=true; launchPlane(t.clientX,t.clientY); }, {passive:true});
+  cv.addEventListener('touchmove', e=>{ const t=e.touches[0]; setPos(t.clientX,t.clientY); }, {passive:true});
+  cv.addEventListener('touchend', ()=>{ mouse.down=false; mouse.active=false; }, {passive:true});
+  window.addEventListener('wheel', e=>{ altTarget += e.deltaY*0.0009; }, {passive:true});
+  // touch vertical drag also nudges altitude a touch
+  let tY=0;
+  cv.addEventListener('touchstart', e=>{ tY=e.touches[0].clientY; }, {passive:true});
+  cv.addEventListener('touchmove', e=>{ const y=e.touches[0].clientY; altTarget += (tY-y)*0.0006; tY=y; }, {passive:true});
+
+  /* ---------- FLOCK ---------- */
+  // species: 0 = paper plane (boid), 1 = kite (higher, slower, tailed)
+  const flock=[];
+  const PLANE_PAL = [
+    [255,255,255],[248,239,214],[214,232,255],[255,222,196],[226,214,255],[210,250,232]
+  ];
+  let CAP_PLANE, CAP_KITE;
+
+  function newPlane(x,y,fresh){
+    const p={
+      sp:0, x:x, y:y,
+      vx:rnd(-1,1), vy:rnd(-.4,.4),
+      ang:0, bank:0, size:rnd(11,20)*(isMobile?.82:1),
+      col: PLANE_PAL[(Math.random()*PLANE_PAL.length)|0],
+      flap: Math.random()*TAU, flapSp: rnd(2.2,3.6),
+      depth: rnd(.45,1.0),         // parallax / scale weight
+      wob: Math.random()*TAU,
+      trail: [],
+      fold: fresh?0:1,             // 0 flat sheet -> 1 folded plane (unfold anim)
+      life: fresh?0:1,
+      vapor: 0,
+    };
+    p.vx = Math.cos(rnd(0,TAU)); p.vy = Math.sin(rnd(0,TAU))*0.4;
+    return p;
+  }
+  function newKite(x,y){
+    return {
+      sp:1, x:x, y:y, vx:rnd(-.4,.4), vy:rnd(-.2,.2),
+      ang:-Math.PI/2, size:rnd(16,26)*(isMobile?.8:1),
+      col: PLANE_PAL[(Math.random()*PLANE_PAL.length)|0],
+      col2: PLANE_PAL[(Math.random()*PLANE_PAL.length)|0],
+      depth: rnd(.55,1.0), sway:Math.random()*TAU, swaySp:rnd(.6,1.2),
+      tail: Array.from({length:isMobile?9:14},()=>({x:x,y:y})),
+      anchorX:x, anchorY:y, drift:Math.random()*TAU, fold:1, life:1, trail:[], vapor:0
+    };
+  }
+
+  function seedFlock(){
+    flock.length=0;
+    CAP_PLANE = isMobile?42:Math.min(96, Math.round(W*H/16000));
+    CAP_KITE  = isMobile?5:Math.min(10, Math.round(W/220));
+    const np = Math.round(CAP_PLANE*0.72);
+    for(let i=0;i<np;i++){ const p=newPlane(rnd(0,W),rnd(H*0.12,H*0.92),false); flock.push(p); }
+    for(let i=0;i<CAP_KITE;i++){ flock.push(newKite(rnd(W*0.15,W*0.85), rnd(H*0.12,H*0.5))); }
+  }
+
+  function launchPlane(x,y){
+    // count planes
+    let pc=0; for(const f of flock) if(f.sp===0) pc++;
+    const p=newPlane(x,y,true);
+    // aim away from cursor with a flick based on cursor velocity
+    const a = Math.atan2(mouse.vy, mouse.vx) || rnd(0,TAU);
+    p.vx=Math.cos(a)*2.4; p.vy=Math.sin(a)*2.0 - 0.6;
+    p.size=rnd(14,22)*(isMobile?.85:1);
+    flock.push(p);
+    // pop ring
+    rings.push({x,y,r:4,max:rnd(46,70),a:.6,col:p.col});
+    if(pc>CAP_PLANE){ // retire an old far plane
+      for(let i=0;i<flock.length;i++){ if(flock[i].sp===0 && flock[i].fold>=1){ flock[i].life=-1; break; } }
+    }
+  }
+
+  /* spatial grid for neighbor queries */
+  let cell=70, grid=new Map();
+  function gkey(cx,cy){return cx*9973+cy;}
+  function buildGrid(){
+    grid.clear();
+    cell = isMobile?64:78;
+    for(const p of flock){
+      if(p.sp!==0) continue;
+      const cx=(p.x/cell)|0, cy=(p.y/cell)|0, k=gkey(cx,cy);
+      let a=grid.get(k); if(!a){a=[];grid.set(k,a);} a.push(p);
+    }
+  }
+  const neigh=[];
+  function neighbors(p){
+    neigh.length=0;
+    const cx=(p.x/cell)|0, cy=(p.y/cell)|0;
+    for(let dx=-1;dx<=1;dx++)for(let dy=-1;dy<=1;dy++){
+      const a=grid.get(gkey(cx+dx,cy+dy)); if(!a)continue;
+      for(const q of a){ if(q!==p) neigh.push(q); }
+    }
+    return neigh;
+  }
+
+  /* visual fx */
+  const rings=[];
+
+  /* ---------- WIND FIELD ---------- */
+  let wt=0;
+  function windAt(x,y){
+    // slow flowing base wind + altitude bias
+    const a = Math.sin(x*0.0016 + wt*0.5) + Math.cos(y*0.0021 - wt*0.4);
+    const b = Math.cos(x*0.0012 - wt*0.35) + Math.sin(y*0.0018 + wt*0.45);
+    const base = 0.06 + 0.02*Math.sin(wt*0.2);
+    return { x:(a)*base, y:(b)*base*0.55 - 0.012 };
+  }
+
+  /* ---------- UPDATE ---------- */
+  let lastGradF = -999;
+  function step(dt){
+    // smooth altitude
+    altF = lerp(altF, altTarget, 0.06);
+    curSky = skyAt(altF);
+    // only rebuild the sky gradient when altitude actually shifts (avoids per-frame alloc)
+    if(Math.abs(altF-lastGradF)>0.004){ rebuildGrad(); lastGradF=altF; }
+
+    // mouse velocity
+    mouse.vx = lerp(mouse.vx, mouse.x-mouse.px, .5);
+    mouse.vy = lerp(mouse.vy, mouse.y-mouse.py, .5);
+    mouse.px=mouse.x; mouse.py=mouse.y;
+    mouse.speed = Math.hypot(mouse.vx,mouse.vy);
+    if(performance.now()-lastMoveT>120){ mouse.vx*=.86; mouse.vy*=.86; }
+
+    wt += dt*0.6;
+    buildGrid();
+
+    const R_NEI=72, R_SEP=26;
+    const wind = mouse.down ? 1 : 0;
+
+    for(let i=flock.length-1;i>=0;i--){
+      const p=flock[i];
+      if(p.life<0){ // fade out then remove
+        p.fade=(p.fade||1)-dt*1.6;
+        if(p.fade<=0){ flock.splice(i,1); continue; }
+      }
+      if(p.fold<1) p.fold=Math.min(1,p.fold+dt*1.7);
+      if(p.life<1 && p.life>=0) p.life=Math.min(1,p.life+dt*1.4);
+
+      if(p.sp===0) updatePlane(p,dt,R_NEI,R_SEP);
+      else updateKite(p,dt);
+    }
+
+    // rings
+    for(let i=rings.length-1;i>=0;i--){ const r=rings[i]; r.r+=(r.max-r.r)*0.10; r.a-=dt*1.2; if(r.a<=0) rings.splice(i,1); }
+  }
+
+  function steerToward(p,tx,ty,k){
+    const dx=tx-p.x, dy=ty-p.y, d=Math.hypot(dx,dy)||1;
+    p.vx += (dx/d)*k; p.vy += (dy/d)*k;
+  }
+
+  function updatePlane(p,dt,R,RS){
+    let ax=0,ay=0;
+    // boids
+    let cx=0,cy=0,ax2=0,ay2=0,sx=0,sy=0,cnt=0,sc=0;
+    const ns=neighbors(p);
+    for(const q of ns){
+      const dx=q.x-p.x, dy=q.y-p.y, d2=dx*dx+dy*dy;
+      if(d2>R*R) continue;
+      const d=Math.sqrt(d2)||1;
+      cx+=q.x; cy+=q.y; ax2+=q.vx; ay2+=q.vy; cnt++;
+      if(d<RS){ sx-=dx/d; sy-=dy/d; sc++; }
+    }
+    if(cnt>0){
+      cx/=cnt; cy/=cnt; ax2/=cnt; ay2/=cnt;
+      ax += (cx-p.x)*0.0012;            // cohesion
+      ay += (cy-p.y)*0.0012;
+      ax += (ax2-p.vx)*0.045;           // alignment
+      ay += (ay2-p.vy)*0.045;
+    }
+    if(sc>0){ ax += sx*0.10; ay += sy*0.10; } // separation
+
+    // wind field
+    const wf=windAt(p.x,p.y);
+    ax+=wf.x; ay+=wf.y;
+
+    // gentle gravity + lift (paper wants to glide, not fall)
+    ay += 0.012;
+
+    // mouse interaction
+    if(mouse.active){
+      const dx=mouse.x-p.x, dy=mouse.y-p.y, d=Math.hypot(dx,dy)||1;
+      if(mouse.down){ // GUST: blow away from cursor
+        const rad=Math.max(140, DIAG*0.16);
+        if(d<rad){ const f=(1-d/rad)*0.9; ax-=dx/d*f; ay-=dy/d*f; p.vapor=Math.min(1,p.vapor+0.06); }
+      } else { // THERMAL: gentle attraction toward cursor (updraft), swirl
+        const rad=Math.max(220, DIAG*0.26);
+        if(d<rad){
+          const f=(1-d/rad)*0.045;
+          ax+=dx/d*f; ay+=dy/d*f;
+          // swirl perpendicular
+          ax+= -dy/d*f*0.7; ay+= dx/d*f*0.7;
+        }
+      }
+      // cursor speed adds turbulence kick
+      if(mouse.speed>6 && d<DIAG*0.3){ ax+=mouse.vx*0.002; ay+=mouse.vy*0.002; }
+    }
+
+    p.vapor*=0.94;
+
+    // integrate
+    p.vx+=ax; p.vy+=ay;
+    // speed limits scaled by depth
+    const maxv = (2.0+ p.depth*1.6);
+    const sp=Math.hypot(p.vx,p.vy);
+    if(sp>maxv){ p.vx=p.vx/sp*maxv; p.vy=p.vy/sp*maxv; }
+    // minimum cruise so they keep gliding
+    if(sp<0.9){ const s=0.9/(sp||1); p.vx*=s; p.vy*=s; }
+
+    p.x+=p.vx; p.y+=p.vy;
+
+    // wrap soft
+    const m=60;
+    if(p.x<-m)p.x=W+m; if(p.x>W+m)p.x=-m;
+    if(p.y<-m)p.y=H+m; if(p.y>H+m)p.y=-m;
+
+    // heading / banking
+    const tAng=Math.atan2(p.vy,p.vx);
+    let da=tAng-p.ang; while(da>Math.PI)da-=TAU; while(da<-Math.PI)da+=TAU;
+    p.ang+=da*0.18;
+    p.bank=lerp(p.bank, clamp(da*2.4,-1.0,1.0), 0.14);
+    p.flap+=dt*p.flapSp;
+    p.wob+=dt*1.3;
+
+    // trail
+    if(!p.trail) p.trail=[];
+    p.trail.push({x:p.x,y:p.y});
+    const tl = 9 + (p.vapor>0.2?6:0);
+    if(p.trail.length>tl) p.trail.shift();
+  }
+
+  function updateKite(k,dt){
+    // kites favor upper sky; tethered drift + sway, gentle follow of wind & cursor
+    const wf=windAt(k.x,k.y);
+    let ax=wf.x*1.4, ay=wf.y*1.2 - 0.02;
+    // float toward an oscillating anchor high in sky
+    k.drift+=dt*0.3;
+    const tx = k.anchorX + Math.sin(k.drift)*W*0.06 + Math.sin(k.drift*0.6)*40;
+    const ty = clamp(H*0.30 + Math.sin(k.drift*0.8)*H*0.12, H*0.08, H*0.6);
+    ax += (tx-k.x)*0.0016; ay += (ty-k.y)*0.0020;
+
+    if(mouse.active){
+      const dx=mouse.x-k.x, dy=mouse.y-k.y, d=Math.hypot(dx,dy)||1;
+      if(mouse.down){ const rad=DIAG*0.18; if(d<rad){ const f=(1-d/rad)*0.5; ax-=dx/d*f; ay-=dy/d*f; } }
+      else { const rad=DIAG*0.3; if(d<rad){ const f=(1-d/rad)*0.02; ax+=dx/d*f; ay+=dy/d*f; } }
+    }
+
+    k.vx+=ax; k.vy+=ay; k.vx*=0.96; k.vy*=0.96;
+    const sp=Math.hypot(k.vx,k.vy), mv=2.2;
+    if(sp>mv){ k.vx=k.vx/sp*mv; k.vy=k.vy/sp*mv; }
+    k.x+=k.vx; k.y+=k.vy;
+    k.sway+=dt*k.swaySp;
+    // nose generally points along velocity but pitched up
+    const tAng=Math.atan2(k.vy,k.vx);
+    let da=tAng-k.ang; while(da>Math.PI)da-=TAU; while(da<-Math.PI)da+=TAU;
+    k.ang+=da*0.06;
+
+    // tail follow (verlet-ish)
+    let px=k.x, py=k.y;
+    const seg = k.size*0.9;
+    for(let i=0;i<k.tail.length;i++){
+      const t=k.tail[i];
+      t.x += (px-t.x)*0.4;
+      t.y += (py-t.y)*0.4 + 0.5; // sag
+      // ripple
+      const ph = k.sway + i*0.5;
+      t.x += Math.sin(ph)*1.6;
+      // length constraint
+      const dx=t.x-px, dy=t.y-py, d=Math.hypot(dx,dy)||1;
+      if(d>seg){ t.x=px+dx/d*seg; t.y=py+dy/d*seg; }
+      px=t.x; py=t.y;
+    }
+  }
+
+  /* ---------- DRAW ---------- */
+  function drawBackground(){
+    ctx.fillStyle = skyGrad; ctx.fillRect(0,0,W,H);
+
+    const s=curSky;
+    // sun / moon glow
+    const sx=W*(0.5 + 0.16*Math.sin(altF*1.3));
+    const sy=H*s.sunY;
+    const isNight = nightAmt(((altF%4)+4)%4,4);
+    const sunR = (isMobile?180:300)*(1+isNight*0.0);
+    const gg=ctx.createRadialGradient(sx,sy,0,sx,sy,sunR);
+    gg.addColorStop(0, rgba(s.sun, 0.55));
+    gg.addColorStop(0.25, rgba(s.sun, 0.22));
+    gg.addColorStop(1, rgba(s.sun, 0));
+    ctx.fillStyle=gg; ctx.fillRect(0,0,W,H);
+    // crisp disc
+    ctx.beginPath(); ctx.arc(sx,sy,(isMobile?20:30),0,TAU);
+    ctx.fillStyle=rgba(s.sun, 0.85); ctx.fill();
+
+    // stars at night
+    if(isNight>0.02){
+      for(const st of stars){
+        const tw = 0.5+0.5*Math.sin(wt*st.sp+st.tw);
+        ctx.globalAlpha = isNight*tw*0.9;
+        ctx.fillStyle='#fff';
+        ctx.beginPath(); ctx.arc(st.x,st.y,st.r*(0.6+tw*0.6),0,TAU); ctx.fill();
+      }
+      ctx.globalAlpha=1;
+    }
+  }
+
+  function drawClouds(front){
+    // pre-rendered white sprites; cheap drawImage per cloud.
+    // front=false -> far clouds behind flock; front=true -> near wisps in front.
+    for(const c of clouds){
+      const isFront = c.depth>=0.55;
+      if(isFront!==front) continue;
+      if(!front){ // advance only once per frame (in the behind pass)
+        c.x += c.sp*c.depth*0.6 + windAt(c.x,c.y).x*8*c.depth;
+        if(c.x> W+c.sprite.w*0.6) c.x=-c.sprite.w*0.6;
+      } else {
+        c.x += c.sp*c.depth*0.6 + windAt(c.x,c.y).x*8*c.depth;
+        if(c.x> W+c.sprite.w*0.6) c.x=-c.sprite.w*0.6;
+      }
+      ctx.globalAlpha = c.a * (0.62+0.4*c.depth) * (front?0.7:1);
+      ctx.drawImage(c.sprite.canvas, c.x - c.sprite.w/2, c.y - c.sprite.h/2);
+    }
+    ctx.globalAlpha=1;
+  }
+
+  // soft ground shadow ribbon (drifting below the flock to imply a floor far away)
+  function shadowColor(){ const s=curSky; return mix(s.low,[0,0,0],0.5); }
+
+  function drawPlane(p){
+    const a = (p.fade!==undefined? Math.max(0,p.fade): 1) * p.life;
+    if(a<=0) return;
+    const s=p.size*(0.7+p.depth*0.55);
+    const fold=p.fold;
+    // shadow on imaginary lower plane (parallax offset down-right)
+    const shY = 18+ (1-p.depth)*30;
+    ctx.save();
+    ctx.globalAlpha = a*0.16*p.depth;
+    ctx.translate(p.x+10, p.y+shY);
+    ctx.rotate(p.ang);
+    ctx.scale(1,0.5);
+    ctx.fillStyle = rgb(shadowColor());
+    paperPath(ctx,s,0); ctx.fill();
+    ctx.restore();
+
+    // vapor trail ribbon — only for near planes or while emitting vapor (gust),
+    // so the baseline frame stays cheap but gusts produce dramatic streaks.
+    if(p.trail && p.trail.length>2 && (p.depth>0.72 || p.vapor>0.06)){
+      ctx.lineCap='round'; ctx.lineJoin='round';
+      const tl=p.trail.length;
+      // one base ribbon (single path) for the body
+      ctx.strokeStyle = rgba(p.col, a*0.10*(0.5+p.vapor));
+      ctx.lineWidth = (1+s*0.10)*(1+p.vapor*1.2);
+      ctx.beginPath();
+      ctx.moveTo(p.trail[0].x,p.trail[0].y);
+      for(let i=1;i<tl;i++) ctx.lineTo(p.trail[i].x,p.trail[i].y);
+      ctx.stroke();
+      // bright tapered head for the vapor punch
+      if(p.vapor>0.06){
+        ctx.strokeStyle = rgba([255,255,255], a*0.18*p.vapor);
+        ctx.lineWidth = (1+s*0.16)*(0.4+p.vapor);
+        const h=Math.max(1,tl-5);
+        ctx.beginPath(); ctx.moveTo(p.trail[h].x,p.trail[h].y);
+        for(let i=h+1;i<tl;i++) ctx.lineTo(p.trail[i].x,p.trail[i].y);
+        ctx.stroke();
+      }
+    }
+
+    // the plane itself — folded paper with crease + banking
+    ctx.save();
+    ctx.translate(p.x,p.y);
+    ctx.rotate(p.ang + Math.sin(p.wob)*0.04);
+    // banking -> squash across the roll axis
+    const bk = Math.cos(p.bank);
+    ctx.scale(1, lerp(0.5,1, (bk*0.5+0.5)) ); // when banking, wings foreshorten
+    ctx.globalAlpha=a;
+
+    // light direction from sun-ish: top wing brighter
+    const top = mix(p.col,[255,255,255],0.35);
+    const bot = mix(p.col,[40,55,95],0.30);
+    const cre = mix(p.col,[20,30,60],0.45);
+
+    const wing = s*1.0, len=s*1.6, w=s*0.95;
+    // body unfolds: at fold=0 it's a flat wide sheet, at 1 it's a narrow dart
+    const spread = lerp(1.7, 1.0, fold);
+
+    // left (lower) wing
+    ctx.beginPath();
+    ctx.moveTo(len,0);
+    ctx.lineTo(-len*0.55, w*spread);
+    ctx.lineTo(-len*0.30, w*0.10);
+    ctx.closePath();
+    ctx.fillStyle=rgb(bot); ctx.fill();
+
+    // right (upper) wing
+    ctx.beginPath();
+    ctx.moveTo(len,0);
+    ctx.lineTo(-len*0.55, -w*spread);
+    ctx.lineTo(-len*0.30, -w*0.10);
+    ctx.closePath();
+    ctx.fillStyle=rgb(top); ctx.fill();
+
+    // center keel / crease
+    ctx.beginPath();
+    ctx.moveTo(len,0);
+    ctx.lineTo(-len*0.30, w*0.10);
+    ctx.lineTo(-len*0.30,-w*0.10);
+    ctx.closePath();
+    ctx.fillStyle=rgb(cre); ctx.fill();
+
+    // crease highlight line
+    ctx.strokeStyle=rgba([255,255,255], a*0.5);
+    ctx.lineWidth=0.8;
+    ctx.beginPath(); ctx.moveTo(len,0); ctx.lineTo(-len*0.4,0); ctx.stroke();
+
+    // subtle edge
+    ctx.strokeStyle=rgba(cre, a*0.5); ctx.lineWidth=0.7;
+    ctx.beginPath();
+    ctx.moveTo(len,0); ctx.lineTo(-len*0.55,-w*spread);
+    ctx.moveTo(len,0); ctx.lineTo(-len*0.55, w*spread);
+    ctx.stroke();
+
+    ctx.restore();
+  }
+  function paperPath(c,s){
+    const len=s*1.6,w=s*0.95;
+    c.beginPath();
+    c.moveTo(len,0); c.lineTo(-len*0.55,w*1.2); c.lineTo(-len*0.30,0); c.lineTo(-len*0.55,-w*1.2); c.closePath();
+  }
+
+  function drawKite(k){
+    const a = k.life;
+    // tail first (behind)
+    ctx.save();
+    ctx.lineCap='round';
+    if(k.tail.length>1){
+      for(let i=1;i<k.tail.length;i++){
+        const t0=k.tail[i-1],t1=k.tail[i],f=i/k.tail.length;
+        ctx.strokeStyle = i%2 ? rgba(k.col,a*(0.8-f*0.6)) : rgba(k.col2,a*(0.8-f*0.6));
+        ctx.lineWidth = Math.max(1, k.size*0.16*(1-f));
+        ctx.beginPath(); ctx.moveTo(t0.x,t0.y); ctx.lineTo(t1.x,t1.y); ctx.stroke();
+        // bow knots
+        if(i%3===0){ ctx.fillStyle=rgba(k.col2,a*(0.7-f*0.5)); ctx.beginPath(); ctx.arc(t1.x,t1.y,k.size*0.12*(1-f),0,TAU); ctx.fill(); }
+      }
+    }
+    ctx.restore();
+
+    // diamond body
+    ctx.save();
+    ctx.translate(k.x,k.y);
+    ctx.rotate(k.ang+Math.PI/2 + Math.sin(k.sway)*0.05);
+    const s=k.size*(0.8+k.depth*0.5);
+    ctx.globalAlpha=a;
+    // shading: split diamond into 4 facets
+    const c1=mix(k.col,[255,255,255],0.25), c2=mix(k.col,[30,40,80],0.25);
+    const c3=mix(k.col2,[255,255,255],0.25), c4=mix(k.col2,[30,40,80],0.25);
+    const top=-s*1.5, bot=s*1.5, lft=-s*1.0, rgt=s*1.0;
+    const tri=(ax,ay,bx,by,cx,cy,col)=>{ctx.beginPath();ctx.moveTo(ax,ay);ctx.lineTo(bx,by);ctx.lineTo(cx,cy);ctx.closePath();ctx.fillStyle=rgb(col);ctx.fill();};
+    tri(0,top, lft,0, 0,0, c1);
+    tri(0,top, rgt,0, 0,0, c3);
+    tri(0,bot, lft,0, 0,0, c2);
+    tri(0,bot, rgt,0, 0,0, c4);
+    // spars
+    ctx.strokeStyle=rgba([255,255,255],a*0.55); ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(0,top); ctx.lineTo(0,bot); ctx.moveTo(lft,0); ctx.lineTo(rgt,0); ctx.stroke();
+    ctx.strokeStyle=rgba(c2,a*0.7); ctx.lineWidth=1.2;
+    ctx.beginPath(); ctx.moveTo(0,top);ctx.lineTo(rgt,0);ctx.lineTo(0,bot);ctx.lineTo(lft,0);ctx.closePath(); ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawRings(){
+    for(const r of rings){
+      ctx.strokeStyle=rgba(r.col, r.a*0.5);
+      ctx.lineWidth=2;
+      ctx.beginPath(); ctx.arc(r.x,r.y,r.r,0,TAU); ctx.stroke();
+    }
+  }
+
+  function drawCursor(){
+    if(!mouse.active) return;
+    const s=curSky;
+    const r = mouse.down? 80 : 30;
+    const col = mouse.down? [255,180,140] : s.sun;
+    const g=ctx.createRadialGradient(mouse.x,mouse.y,0,mouse.x,mouse.y,r);
+    g.addColorStop(0, rgba(col, mouse.down?0.5:0.35));
+    g.addColorStop(1, rgba(col,0));
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(mouse.x,mouse.y,r,0,TAU); ctx.fill();
+    // small swirl ring for thermal
+    ctx.strokeStyle=rgba(col,0.5); ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.arc(mouse.x,mouse.y, mouse.down?14:9 ,0,TAU); ctx.stroke();
+    if(mouse.down){ // gust arrows hint
+      ctx.strokeStyle=rgba([255,200,160],0.4);
+      for(let i=0;i<6;i++){ const a=i/6*TAU + wt; ctx.beginPath(); ctx.moveTo(mouse.x+Math.cos(a)*18,mouse.y+Math.sin(a)*18); ctx.lineTo(mouse.x+Math.cos(a)*30,mouse.y+Math.sin(a)*30); ctx.stroke(); }
+    }
+  }
+
+  // atmosphere vignette + grain-ish softness
+  let vignette=null;
+  function buildVignette(){
+    vignette=ctx.createRadialGradient(W*0.5,H*0.42,Math.min(W,H)*0.2, W*0.5,H*0.5,Math.max(W,H)*0.75);
+    vignette.addColorStop(0,'rgba(0,0,0,0)');
+    vignette.addColorStop(1,'rgba(0,0,0,0.32)');
+  }
+
+  function draw(){
+    drawBackground();
+    drawClouds(false); // far clouds behind flock
+
+    // sort flock for painter's depth (far=small depth drawn first)
+    flock.sort((a,b)=> a.depth-b.depth);
+    for(const p of flock){
+      if(p.sp===1) drawKite(p); else drawPlane(p);
+    }
+    drawRings();
+    drawClouds(true); // near wisps drift in front of the flock
+    if(!vignette) buildVignette();
+    ctx.fillStyle=vignette; ctx.fillRect(0,0,W,H);
+    drawCursor();
+  }
+
+  /* ---------- LOOP ---------- */
+  let last=performance.now(), fAcc=0, fCnt=0, fpsShown=60;
+  const mFlock=document.getElementById('mFlock'), mAlt=document.getElementById('mAlt'), mFps=document.getElementById('mFps');
+  let metaT=0;
+  function frame(now){
+    let dt=(now-last)/1000; last=now;
+    if(dt>0.05) dt=0.05;
+    step(dt);
+    draw();
+
+    // fps + meta
+    fAcc+=dt; fCnt++;
+    if(fAcc>=0.4){ fpsShown=Math.round(fCnt/fAcc); fAcc=0; fCnt=0;
+      mFps.textContent=fpsShown;
+      let pc=0; for(const f of flock) if(f.sp===0)pc++;
+      mFlock.textContent=pc;
+      mAlt.textContent=curSky.name;
+    }
+    requestAnimationFrame(frame);
+  }
+
+  /* ---------- BOOT ---------- */
+  resize();
+  seedFlock();
+  // place cursor mid for first-paint cohesion
+  mouse.x=W*0.5; mouse.y=H*0.45; mouse.px=mouse.x; mouse.py=mouse.y;
+  // warm-up a few frames so first paint is already a living scene
+  for(let i=0;i<70;i++){ step(0.033); }
+  requestAnimationFrame(frame);
+
+  // hint show then fade
+  const hint=document.getElementById('hint');
+  setTimeout(()=>hint.classList.add('show'), 400);
+  setTimeout(()=>hint.classList.remove('show'), 6500);
+  // re-seed cloud/star counts on resize already handled; reseed flock if drastically resized
+  let rw=W;
+  window.addEventListener('resize', ()=>{ if(Math.abs(window.innerWidth-rw)>300){ rw=window.innerWidth; seedFlock(); buildVignette(); } else buildVignette(); }, {passive:true});
+})();
+</script>
+</body>
+</html>

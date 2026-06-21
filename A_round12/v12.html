@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Mirrorbloom · 거울 만화경</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%;
+    background: #04040a;
+    overflow: hidden;
+    font-family: "Helvetica Neue", "Segoe UI", system-ui, -apple-system, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    cursor: crosshair;
+    touch-action: none;
+  }
+  #stage { position: fixed; inset: 0; display: block; }
+  /* subtle vignette + grain overlays drawn in CSS so first paint already feels composed */
+  #vignette {
+    position: fixed; inset: 0; pointer-events: none; z-index: 4;
+    background:
+      radial-gradient(120% 120% at 50% 50%, transparent 52%, rgba(2,2,8,0.55) 88%, rgba(0,0,4,0.92) 100%);
+    mix-blend-mode: multiply;
+  }
+  .hud {
+    position: fixed; z-index: 6; pointer-events: none;
+    color: rgba(235,238,255,0.82);
+    text-shadow: 0 1px 14px rgba(0,0,0,0.8);
+    font-weight: 300; letter-spacing: 0.04em;
+    user-select: none;
+  }
+  #title {
+    left: 26px; top: 22px;
+    font-size: 13px; line-height: 1.45;
+  }
+  #title b { font-weight: 600; letter-spacing: 0.18em; font-size: 15px; display:block; }
+  #title span { opacity: 0.55; font-size: 11px; }
+  #hint {
+    right: 26px; bottom: 20px; text-align: right;
+    font-size: 11px; line-height: 1.7; opacity: 0.62;
+  }
+  #hint kbd {
+    font-family: inherit; font-weight: 600; opacity: 1;
+    border: 1px solid rgba(255,255,255,0.22);
+    border-radius: 5px; padding: 1px 6px; margin: 0 1px;
+    background: rgba(255,255,255,0.05);
+  }
+  #readout {
+    left: 26px; bottom: 20px;
+    font-size: 11px; opacity: 0.5; line-height: 1.7;
+    font-variant-numeric: tabular-nums;
+  }
+  #readout em { font-style: normal; color: #9fe9ff; opacity: 0.95; }
+  @media (max-width: 560px) {
+    #title { left: 16px; top: 14px; }
+    #hint  { right: 14px; bottom: 14px; font-size: 10px; }
+    #readout { left: 16px; bottom: 14px; font-size: 10px; }
+  }
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <div id="vignette"></div>
+  <div id="title" class="hud"><b>MIRRORBLOOM</b><span>거울 만화경 · 도형 모자이크</span></div>
+  <div id="hint" class="hud">
+    <div>마우스 <kbd>이동</kbd> 회전·왜곡</div>
+    <div>스크롤 <kbd>↕</kbd> 대칭 차수</div>
+    <div><kbd>클릭</kbd> 색 폭발 · <kbd>스페이스</kbd> 정지/재생 · <kbd>P</kbd> 팔레트</div>
+  </div>
+  <div id="readout" class="hud"></div>
+
+<script>
+"use strict";
+(() => {
+  // ----------------------------------------------------------------------------
+  // Mirrorbloom — a living mirror-kaleidoscope shape mosaic.
+  //
+  // Pipeline:
+  //   1) Draw a generative "garden" of shapes into a single pie wedge (one slice
+  //      of the symmetry). Shapes drift, bloom, and recycle.
+  //   2) Reflect that wedge radially N times (kaleidoscope), alternating mirror
+  //      so neighbouring slices are mirror images -> seamless mosaic.
+  //   3) Composite with additive glow + feedback trails for depth.
+  //
+  // Interaction: mouse = rotation + lens distortion, scroll = symmetry order,
+  // click = color bursts, space = pause, P = palette cycle.
+  // ----------------------------------------------------------------------------
+
+  const stage = document.getElementById('stage');
+  const ctx = stage.getContext('2d', { alpha: false });
+  const readout = document.getElementById('readout');
+
+  // off-screen buffers
+  const wedge = document.createElement('canvas');   // single slice rendered here
+  const wctx = wedge.getContext('2d');
+  const trail = document.createElement('canvas');   // feedback / persistence layer
+  const tctx = trail.getContext('2d');
+
+  let W = 0, H = 0, DPR = 1, CX = 0, CY = 0, R = 0;
+
+  // ---- curated palettes (harmonised, hand-tuned) -----------------------------
+  const PALETTES = [
+    { name: 'Aurora',   bg: [6,8,18],    cols: [[120,255,214],[64,196,255],[150,120,255],[255,120,214],[255,222,140]] },
+    { name: 'Ember',    bg: [16,6,10],   cols: [[255,94,84],[255,159,67],[255,214,107],[255,107,160],[120,60,140]] },
+    { name: 'Lagoon',   bg: [4,12,16],   cols: [[60,236,255],[80,255,180],[40,150,255],[200,255,240],[120,90,255]] },
+    { name: 'Orchid',   bg: [12,6,16],   cols: [[255,120,220],[180,120,255],[120,200,255],[255,180,240],[110,255,210]] },
+    { name: 'Marigold', bg: [14,10,4],   cols: [[255,196,60],[255,120,80],[255,84,140],[130,220,160],[90,180,255]] },
+    { name: 'Glacier',  bg: [6,9,14],    cols: [[200,236,255],[120,190,255],[150,255,235],[110,140,255],[235,245,255]] },
+  ];
+  let palIdx = 0;
+  let pal = PALETTES[palIdx];
+
+  // ---- state -----------------------------------------------------------------
+  const state = {
+    slices: 8,            // symmetry order (target)
+    slicesF: 8,           // smoothed
+    rot: 0,               // global rotation
+    rotVel: 0.0016,       // base spin
+    spin: 0,              // mouse-driven spin offset
+    spinTarget: 0,
+    lens: 0,              // radial lens distortion 0..1
+    lensTarget: 0,
+    paused: false,
+    t: 0,
+    beat: 0,              // procedural rhythm pulse 0..1
+    mx: 0.5, my: 0.5,     // normalised mouse
+    breath: 0,
+  };
+
+  // ---- shape garden ----------------------------------------------------------
+  // Each "petal" lives in wedge-local polar coords (radius along slice, angle within slice).
+  const KINDS = ['poly','ring','petal','shard','star'];
+  function rnd(a, b) { return a + Math.random() * (b - a); }
+  function pick(arr) { return arr[(Math.random() * arr.length) | 0]; }
+
+  class Petal {
+    constructor() { this.reset(true); }
+    reset(initial) {
+      this.r0 = rnd(0.22, 1.02);                 // radial position (0 centre .. 1 rim); keep clear of apex
+      this.a0 = rnd(-0.5, 0.5);                   // angular position within slice (-0.5..0.5)
+      this.kind = pick(KINDS);
+      this.size = rnd(0.018, 0.085) * (1.15 - this.r0 * 0.4);
+      this.sides = (Math.random() * 5 | 0) + 3;
+      this.ci = (Math.random() * pal.cols.length) | 0;
+      this.spin = rnd(-1, 1) * 0.9;
+      this.phase = rnd(0, Math.PI * 2);
+      this.bloom = initial ? rnd(0, 1) : 0;       // grow-in factor 0..1
+      this.life = rnd(7, 16);                      // seconds
+      this.age = initial ? rnd(0, this.life) : 0;
+      this.drift = rnd(-0.02, 0.02);
+      this.wob = rnd(0.4, 1.6);
+      this.glow = rnd(0.5, 1.0);
+    }
+    step(dt) {
+      this.age += dt;
+      this.r0 += this.drift * dt;
+      this.bloom = Math.min(1, this.bloom + dt * 0.9);
+      if (this.age > this.life || this.r0 < -0.05 || this.r0 > 1.05) this.reset(false);
+    }
+  }
+
+  let petals = [];
+  function buildGarden() {
+    const n = Math.round(46 + R * 0.05);  // density scales gently with size, capped
+    const cap = 90;
+    petals = [];
+    for (let i = 0; i < Math.min(n, cap); i++) petals.push(new Petal());
+  }
+
+  // bursts: transient color explosions from clicks
+  const bursts = [];
+  function addBurst(nx, ny) {
+    // convert screen point -> wedge polar (approx, using radius only for nice effect)
+    const dx = nx - 0.5, dy = ny - 0.5;
+    const rr = Math.min(1, Math.hypot(dx, dy) * 2.0);
+    bursts.push({ r0: rr, a0: rnd(-0.4,0.4), age: 0, life: 1.6, ci: (Math.random()*pal.cols.length)|0, max: rnd(0.16,0.32) });
+    state.beat = 1; // kick the pulse
+  }
+
+  // ---- drawing a single shape into wedge space -------------------------------
+  function lerpCol(c, k) {
+    // brighten/darken helper -> returns rgba string
+    return c;
+  }
+
+  function drawShape(g, kind, x, y, s, rot, sides, rgb, alpha, glowK) {
+    const [r,gg,b] = rgb;
+    g.save();
+    g.translate(x, y);
+    g.rotate(rot);
+    g.globalAlpha = alpha;
+    g.shadowColor = `rgba(${r},${gg},${b},${0.9})`;
+    g.shadowBlur = s * 4.0 * glowK;
+    if (kind === 'ring') {
+      g.lineWidth = Math.max(1, s * 0.22);
+      g.strokeStyle = `rgb(${r},${gg},${b})`;
+      g.beginPath(); g.arc(0,0,s,0,Math.PI*2); g.stroke();
+      g.globalAlpha = alpha * 0.4;
+      g.beginPath(); g.arc(0,0,s*0.58,0,Math.PI*2); g.stroke();
+    } else if (kind === 'petal') {
+      g.fillStyle = `rgb(${r},${gg},${b})`;
+      g.beginPath();
+      for (let i = 0; i <= 24; i++) {
+        const th = (i/24) * Math.PI*2;
+        const rr = s * (0.55 + 0.45*Math.cos(th*2)) * (0.8 + 0.2*Math.sin(th*3));
+        const px = Math.cos(th)*rr, py = Math.sin(th)*rr*0.62;
+        i ? g.lineTo(px,py) : g.moveTo(px,py);
+      }
+      g.closePath(); g.fill();
+    } else if (kind === 'star') {
+      g.fillStyle = `rgb(${r},${gg},${b})`;
+      g.beginPath();
+      const sp = sides + 2;
+      for (let i = 0; i < sp*2; i++) {
+        const th = (i/(sp*2))*Math.PI*2;
+        const rr = (i%2===0)? s : s*0.42;
+        const px = Math.cos(th)*rr, py = Math.sin(th)*rr;
+        i ? g.lineTo(px,py) : g.moveTo(px,py);
+      }
+      g.closePath(); g.fill();
+    } else if (kind === 'shard') {
+      g.fillStyle = `rgb(${r},${gg},${b})`;
+      g.beginPath();
+      g.moveTo(0,-s); g.lineTo(s*0.5, s*0.4); g.lineTo(0, s*0.15); g.lineTo(-s*0.5, s*0.4);
+      g.closePath(); g.fill();
+    } else { // poly
+      g.fillStyle = `rgb(${r},${gg},${b})`;
+      g.beginPath();
+      for (let i = 0; i < sides; i++) {
+        const th = (i/sides)*Math.PI*2 - Math.PI/2;
+        const px = Math.cos(th)*s, py = Math.sin(th)*s;
+        i ? g.lineTo(px,py) : g.moveTo(px,py);
+      }
+      g.closePath(); g.fill();
+      // inner accent
+      g.globalAlpha = alpha * 0.5;
+      g.fillStyle = `rgb(${Math.min(255,r+60)},${Math.min(255,gg+60)},${Math.min(255,b+60)})`;
+      g.beginPath();
+      for (let i = 0; i < sides; i++) {
+        const th = (i/sides)*Math.PI*2 - Math.PI/2;
+        g.lineTo(Math.cos(th)*s*0.45, Math.sin(th)*s*0.45);
+      }
+      g.closePath(); g.fill();
+    }
+    g.restore();
+  }
+
+  // ---- render the wedge slice ------------------------------------------------
+  // Wedge canvas is a square; we draw shapes in a fan that spans the slice angle,
+  // emanating from the slice apex at (0, midY). The radial axis is +x.
+  function renderWedge() {
+    const ww = wedge.width, wh = wedge.height;
+    wctx.clearRect(0, 0, ww, wh);
+    wctx.globalCompositeOperation = 'lighter';
+
+    const sliceAng = (Math.PI * 2) / state.slicesF;
+    const apexX = 0;
+    const apexY = wh * 0.5;
+    const radial = ww * 0.98;
+
+    const beat = 0.22 * state.beat + 0.78;
+    const breath = 1 + 0.05 * Math.sin(state.breath);
+
+    for (const p of petals) {
+      // radial position with gentle lens distortion driven by mouse depth
+      let r0 = p.r0;
+      const lens = state.lens;
+      r0 = r0 + lens * 0.18 * Math.sin(r0 * Math.PI); // bulge centre
+      const rad = r0 * radial;
+      const ang = p.a0 * sliceAng * 0.92
+                + Math.sin(state.t * p.wob + p.phase) * sliceAng * 0.06;
+      const x = apexX + Math.cos(ang) * rad;
+      const y = apexY + Math.sin(ang) * rad;
+
+      const grow = p.bloom * (1 - 0.5 * Math.max(0, (p.age / p.life) - 0.7) / 0.3);
+      const pulse = 1 + 0.18 * Math.sin(state.t * 2.2 + p.phase) ;
+      const s = p.size * radial * grow * pulse * beat * breath;
+      const rgb = pal.cols[p.ci % pal.cols.length];
+      const rot = p.phase + state.t * p.spin;
+      // dim shapes that sit close to the apex so the mirror centre never blows out
+      const apexFade = Math.min(1, Math.max(0.12, (r0 - 0.06) / 0.30));
+      const alpha = 0.30 * grow * apexFade * (0.7 + 0.3*Math.sin(state.t*1.5 + p.phase));
+      if (s > 0.4 && alpha > 0.02) drawShape(wctx, p.kind, x, y, s, rot, p.sides, rgb, alpha, p.glow);
+    }
+
+    // bursts
+    for (let i = bursts.length - 1; i >= 0; i--) {
+      const bu = bursts[i];
+      bu.age += 0.016;
+      const k = bu.age / bu.life;
+      if (k >= 1) { bursts.splice(i,1); continue; }
+      const ring = bu.max * radial * (0.2 + k*1.0);
+      const ang = bu.a0 * sliceAng;
+      const x = apexX + Math.cos(ang) * bu.r0 * radial;
+      const y = apexY + Math.sin(ang) * bu.r0 * radial;
+      const rgb = pal.cols[bu.ci];
+      const a = (1-k) * 0.8;
+      wctx.save();
+      wctx.globalAlpha = a;
+      wctx.shadowColor = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},1)`;
+      wctx.shadowBlur = 40 * (1-k);
+      wctx.lineWidth = Math.max(1, 8*(1-k));
+      wctx.strokeStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+      wctx.beginPath(); wctx.arc(x, y, ring, -sliceAng*0.5, sliceAng*0.5); wctx.stroke();
+      // sparks
+      for (let j=0;j<5;j++){
+        const ta = ang + (j/4-0.5)*sliceAng*0.8;
+        const tr = bu.r0*radial + ring*0.7;
+        wctx.globalAlpha = a*0.7;
+        wctx.beginPath();
+        wctx.arc(apexX+Math.cos(ta)*tr, apexY+Math.sin(ta)*tr, 3*(1-k)+1, 0, Math.PI*2);
+        wctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+        wctx.fill();
+      }
+      wctx.restore();
+    }
+    wctx.globalCompositeOperation = 'source-over';
+  }
+
+  // ---- composite kaleidoscope onto main canvas -------------------------------
+  function compose() {
+    const slices = Math.round(state.slicesF);
+    const sliceAng = (Math.PI * 2) / slices;
+
+    // 1) fade the trail buffer (feedback / persistence) instead of hard clear
+    tctx.globalCompositeOperation = 'source-over';
+    tctx.fillStyle = `rgba(${pal.bg[0]},${pal.bg[1]},${pal.bg[2]},0.20)`;
+    tctx.fillRect(0, 0, W, H);
+
+    // 2) stamp mirrored wedges
+    tctx.globalCompositeOperation = 'lighter';
+    const ww = wedge.width;
+    const baseRot = state.rot + state.spin;
+    for (let i = 0; i < slices; i++) {
+      tctx.save();
+      tctx.translate(CX, CY);
+      tctx.rotate(baseRot + i * sliceAng);
+      if (i % 2 === 1) tctx.scale(1, -1); // mirror alternating slices -> kaleidoscope
+      // draw wedge so its apex sits at centre, radial axis along +x
+      const scale = R / ww * 1.02;
+      tctx.scale(scale, scale);
+      // clip to the slice triangle for clean seams
+      tctx.beginPath();
+      tctx.moveTo(0, 0);
+      tctx.lineTo(ww * Math.cos(sliceAng*0.5), ww * Math.sin(sliceAng*0.5));
+      tctx.arc(0, 0, ww, sliceAng*0.5, -sliceAng*0.5, true);
+      tctx.closePath();
+      tctx.clip();
+      tctx.drawImage(wedge, 0, -wedge.height/2);
+      tctx.restore();
+    }
+
+    // 3) blit trail buffer to screen, add a soft core glow
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.drawImage(trail, 0, 0);
+
+    // central jewel
+    const jg = ctx.createRadialGradient(CX, CY, 0, CX, CY, R * 0.5);
+    const c0 = pal.cols[(Math.floor(state.t*0.3)) % pal.cols.length];
+    const beat = 0.4*state.beat + 0.6;
+    jg.addColorStop(0, `rgba(${c0[0]},${c0[1]},${c0[2]},${0.14*beat})`);
+    jg.addColorStop(0.45, `rgba(${c0[0]},${c0[1]},${c0[2]},0.03)`);
+    jg.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = jg;
+    ctx.beginPath(); ctx.arc(CX, CY, R*0.5, 0, Math.PI*2); ctx.fill();
+
+    // crisp dark core dot to anchor the mirror centre as a jewel, not a white void
+    const cg = ctx.createRadialGradient(CX, CY, 0, CX, CY, R*0.045);
+    cg.addColorStop(0, `rgba(${pal.bg[0]},${pal.bg[1]},${pal.bg[2]},0.5)`);
+    cg.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = cg;
+    ctx.beginPath(); ctx.arc(CX, CY, R*0.06, 0, Math.PI*2); ctx.fill();
+  }
+
+  // ---- main loop -------------------------------------------------------------
+  let last = performance.now();
+  function frame(now) {
+    const dtRaw = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    const dt = state.paused ? 0 : dtRaw;
+    state.t += dt;
+    state.breath += dt * 0.7;
+
+    // smooth interactions
+    state.slicesF += (state.slices - state.slicesF) * 0.08;
+    state.spin += (state.spinTarget - state.spin) * 0.06;
+    state.lens += (state.lensTarget - state.lens) * 0.07;
+    state.rot += (state.rotVel + (state.mx - 0.5) * 0.01) * dt * 60;
+    state.beat *= 0.94; // decay pulse
+
+    if (dt > 0) {
+      for (const p of petals) p.step(dt);
+      // subtle automatic breathing of symmetry handled via slicesF lerp
+    }
+
+    renderWedge();
+    compose();
+
+    const fpsNow = Math.round(1 / (dtRaw || 1));
+    if ((now|0) % 8 === 0) {
+      readout.innerHTML = `대칭 <em>${Math.round(state.slicesF)}</em> · 도형 <em>${petals.length}</em> · 팔레트 <em>${pal.name}</em> · <em>${fpsNow}</em>fps`;
+    }
+    requestAnimationFrame(frame);
+  }
+
+  // ---- sizing ----------------------------------------------------------------
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2); // resolution cap for perf
+    W = window.innerWidth;
+    H = window.innerHeight;
+    stage.style.width = W + 'px';
+    stage.style.height = H + 'px';
+    stage.width = Math.floor(W * DPR);
+    stage.height = Math.floor(H * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    trail.width = stage.width; trail.height = stage.height;
+    tctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    CX = W / 2; CY = H / 2;
+    R = Math.hypot(W, H) * 0.6;  // cover the corners
+
+    // wedge buffer: square, sized to slice radius, DPR-capped
+    const wsize = Math.min(900, Math.floor(R * DPR));
+    wedge.width = wsize; wedge.height = wsize;
+
+    // paint an initial backdrop so very first frame is composed, not black
+    tctx.setTransform(DPR,0,0,DPR,0,0);
+    tctx.globalCompositeOperation = 'source-over';
+    tctx.fillStyle = `rgb(${pal.bg[0]},${pal.bg[1]},${pal.bg[2]})`;
+    tctx.fillRect(0,0,W,H);
+    ctx.fillStyle = `rgb(${pal.bg[0]},${pal.bg[1]},${pal.bg[2]})`;
+    ctx.fillRect(0,0,W,H);
+
+    buildGarden();
+  }
+
+  // ---- interaction -----------------------------------------------------------
+  function onMove(nx, ny) {
+    state.mx = nx; state.my = ny;
+    state.spinTarget = (nx - 0.5) * 0.9;          // horizontal -> twist
+    state.lensTarget = (0.5 - ny) * 2;            // vertical -> lens bulge in/out
+  }
+  window.addEventListener('mousemove', e => onMove(e.clientX / W, e.clientY / H));
+  window.addEventListener('touchmove', e => {
+    if (e.touches[0]) onMove(e.touches[0].clientX / W, e.touches[0].clientY / H);
+  }, { passive: true });
+
+  window.addEventListener('mousedown', e => addBurst(e.clientX / W, e.clientY / H));
+  window.addEventListener('touchstart', e => {
+    if (e.touches[0]) addBurst(e.touches[0].clientX / W, e.touches[0].clientY / H);
+  }, { passive: true });
+
+  window.addEventListener('wheel', e => {
+    const dir = e.deltaY > 0 ? -1 : 1;
+    state.slices = Math.max(3, Math.min(18, state.slices + dir));
+  }, { passive: true });
+
+  window.addEventListener('keydown', e => {
+    if (e.code === 'Space') { e.preventDefault(); state.paused = !state.paused; }
+    else if (e.key === 'p' || e.key === 'P') {
+      palIdx = (palIdx + 1) % PALETTES.length; pal = PALETTES[palIdx];
+      // recolor existing petals into new palette
+      for (const p of petals) p.ci = (Math.random()*pal.cols.length)|0;
+    }
+    else if (e.key === 'ArrowUp')   state.slices = Math.min(18, state.slices + 1);
+    else if (e.key === 'ArrowDown') state.slices = Math.max(3,  state.slices - 1);
+  });
+
+  window.addEventListener('resize', resize);
+
+  // ---- boot ------------------------------------------------------------------
+  resize();
+  // auto palette drift for ambient life if user never touches P
+  setInterval(() => {
+    // gentle automatic beat to keep it alive
+    if (!state.paused && Math.random() < 0.5) state.beat = Math.max(state.beat, 0.5);
+  }, 2600);
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

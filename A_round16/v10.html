@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>ORRERY — 황동 천구의</title>
+<style>
+  :root{ --ink:#e9dcc3; --dim:#9b8a6a; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#05060a;
+    font-family:"Georgia","Times New Roman",serif; color:var(--ink);
+    -webkit-user-select:none; user-select:none; -webkit-tap-highlight-color:transparent; }
+  #stage{ position:fixed; inset:0; display:block; cursor:grab; }
+  #stage.drag{ cursor:grabbing; }
+  .hud{ position:fixed; pointer-events:none; z-index:5;
+    text-shadow:0 1px 3px rgba(0,0,0,.9); letter-spacing:.06em; }
+  #title{ left:26px; top:22px; }
+  #title h1{ font-size:21px; font-weight:400; letter-spacing:.34em;
+    color:#f3e7cc; }
+  #title h1 b{ color:#e8b95b; font-weight:400; }
+  #title p{ font-size:11px; color:var(--dim); margin-top:5px; letter-spacing:.22em; }
+  #clock{ right:26px; top:22px; text-align:right; }
+  #clock .big{ font-size:26px; color:#f3e7cc; font-variant-numeric:tabular-nums;
+    letter-spacing:.05em; }
+  #clock .sub{ font-size:11px; color:var(--dim); margin-top:3px; letter-spacing:.18em; }
+  #legend{ left:26px; bottom:20px; font-size:11px; color:var(--dim);
+    line-height:1.85; letter-spacing:.14em; max-width:62vw; }
+  #legend kbd{ display:inline-block; min-width:14px; text-align:center;
+    padding:1px 6px; margin:0 2px; border:1px solid #5a4d34; border-radius:4px;
+    color:#d8c69c; background:rgba(40,32,18,.5); font-family:inherit; font-size:10px; }
+  #info{ right:26px; bottom:20px; text-align:right; pointer-events:none;
+    opacity:0; transition:opacity .35s; max-width:46vw; }
+  #info.on{ opacity:1; }
+  #info .nm{ font-size:18px; color:#f3e7cc; letter-spacing:.2em; }
+  #info .dt{ font-size:11px; color:var(--dim); margin-top:4px; line-height:1.7;
+    letter-spacing:.1em; }
+  #info .dt span{ color:#cdb887; }
+  .controls{ position:fixed; right:24px; top:50%; transform:translateY(-50%);
+    z-index:6; display:flex; flex-direction:column; gap:9px; }
+  .controls button{ width:42px; height:42px; border-radius:50%;
+    border:1px solid #5a4d34; background:rgba(28,22,12,.55);
+    color:#d8c69c; font-size:17px; font-family:inherit; cursor:pointer;
+    backdrop-filter:blur(3px); transition:.18s; line-height:1; }
+  .controls button:hover{ background:rgba(70,55,28,.7); color:#f3e7cc;
+    border-color:#8a7444; transform:scale(1.07); }
+  .controls button:active{ transform:scale(.94); }
+  @media (max-width:560px){
+    #title h1{ font-size:16px; letter-spacing:.24em; }
+    #clock .big{ font-size:20px; }
+    #legend{ font-size:10px; letter-spacing:.08em; line-height:1.7; max-width:70vw; }
+    .controls{ right:14px; gap:7px; }
+    .controls button{ width:38px; height:38px; }
+    #title{ left:16px; top:16px; } #clock{ right:16px; top:16px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div class="hud" id="title">
+  <h1>황동 <b>천구의</b></h1>
+  <p>ORRERY · CLOCKWORK OF THE SPHERES</p>
+</div>
+<div class="hud" id="clock">
+  <div class="big" id="cday">0000년 000일</div>
+  <div class="sub" id="cspd">시간 ×1.0</div>
+</div>
+<div class="hud" id="legend">
+  <kbd>드래그</kbd> 시점 기울이기 · <kbd>휠</kbd> 확대 · <kbd>클릭</kbd> 혜성
+  · <kbd>SPACE</kbd> 정지/재생 · <kbd>←→</kbd> 시간배속 · <kbd>O</kbd> 궤도선 · <kbd>L</kbd> 라벨
+</div>
+<div class="hud" id="info">
+  <div class="nm" id="inm">—</div>
+  <div class="dt" id="idt"></div>
+</div>
+
+<div class="controls">
+  <button id="bPlay" title="정지/재생">II</button>
+  <button id="bSlow" title="느리게">«</button>
+  <button id="bFast" title="빠르게">»</button>
+  <button id="bReset" title="시점 초기화">⟲</button>
+</div>
+
+<script>
+(()=>{
+"use strict";
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', { alpha:false });
+let W=0,H=0,DPR=1, CX=0, CY=0;
+const TAU = Math.PI*2;
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  cv.style.width  = W+'px';
+  cv.style.height = H+'px';
+  cv.width  = Math.round(W*DPR);
+  cv.height = Math.round(H*DPR);
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  CX = W*0.5; CY = H*0.52;
+}
+window.addEventListener('resize', resize); resize();
+
+// ---------- view / camera ----------
+const view = {
+  scale: 1, targetScale: 1,
+  tilt: 0.46, targetTilt: 0.46,   // x-axis tilt -> ellipse squash (0=top, ~1=edge)
+  yaw: -0.28, targetYaw: -0.28,   // rotation of whole plane
+  shX:0, shY:0, tShX:0, tShY:0
+};
+function baseScale(){ return Math.min(W,H) / 760; }
+
+// ---------- planet data (stylized) ----------
+// a = orbital radius (base units), period in days (scaled), size in px @ unit scale
+const SUN = { r: 34, name:'태양' };
+const PLANETS = [
+  { name:'수성', kr:'수성', a: 78,  per: 88,    sz: 3.4,  col:'#b9a486', col2:'#7d6c52', moons:[], ring:false,
+    fact:'가장 작고 빠른 전령. 88일에 한 바퀴.' },
+  { name:'금성', kr:'금성', a: 112, per: 224,   sz: 6.0,  col:'#e7c987', col2:'#b08a3e', moons:[], ring:false,
+    fact:'두꺼운 황금빛 대기. 역방향 자전.' },
+  { name:'지구', kr:'지구', a: 152, per: 365,   sz: 6.4,  col:'#6fb6d6', col2:'#2d6e92', moons:[{a:13,per:27,sz:1.8,col:'#cfc6b4'}], ring:false,
+    fact:'창백한 푸른 점. 달 하나를 거느림.' },
+  { name:'화성', kr:'화성', a: 196, per: 687,   sz: 4.8,  col:'#d07a4a', col2:'#8a4424', moons:[{a:9,per:14,sz:1.1,col:'#9a8a78'}], ring:false,
+    fact:'붉은 사막의 세계. 위성 둘.' },
+  { name:'목성', kr:'목성', a: 286, per: 4333,  sz: 17.5, col:'#d9b48a', col2:'#9c7142', moons:[{a:24,per:18,sz:1.6,col:'#e8e0cf'},{a:32,per:30,sz:1.9,col:'#cdb78f'},{a:42,per:50,sz:2.1,col:'#bda177'}], ring:false,
+    fact:'거대 가스 행성. 대적점과 위성 군단.' },
+  { name:'토성', kr:'토성', a: 372, per: 10759, sz: 14.5, col:'#e0cd9a', col2:'#b39a5c', moons:[{a:30,per:32,sz:1.7,col:'#ded6c2'}], ring:true,
+    fact:'얼음 고리의 보석. 천구의의 백미.' },
+  { name:'천왕성', kr:'천왕성', a: 446, per: 30688, sz: 9.5, col:'#9fdbd8', col2:'#4f9a98', moons:[], ring:'thin',
+    fact:'옆으로 누워 구르는 청록의 거인.' },
+  { name:'해왕성', kr:'해왕성', a: 510, per: 60182, sz: 9.2, col:'#5a78d6', col2:'#2c3f8c', moons:[{a:18,per:42,sz:1.4,col:'#c8cfe6'}], ring:false,
+    fact:'가장 먼 짙푸른 바람의 세계.' }
+];
+
+// gear ring radii (between orbits) for the mechanism look
+const GEARS = [];
+(function buildGears(){
+  const radii = [56, 95, 132, 174, 240, 330, 410, 478];
+  const teeth = [40, 54, 64, 80, 96, 120, 140, 160];
+  for(let i=0;i<radii.length;i++){
+    GEARS.push({ r:radii[i], teeth:teeth[i], dir: i%2?1:-1,
+      spd: (0.05 + 0.02*((i*7)%3)) * (i%2?1:-1) });
+  }
+})();
+
+// ---------- stars background ----------
+let STARS=[];
+function buildStars(){
+  STARS=[];
+  const n = Math.round((W*H)/5200);
+  for(let i=0;i<n;i++){
+    STARS.push({ x:Math.random(), y:Math.random(),
+      s: Math.random()*1.3+0.2, tw: Math.random()*TAU,
+      tws: 0.5+Math.random()*2.2,
+      h: Math.random()<0.12 ? (Math.random()<0.5?32:210) : -1 });
+  }
+}
+buildStars();
+window.addEventListener('resize', buildStars);
+
+// nebula static layer (drawn once to offscreen)
+let neb=null;
+function buildNebula(){
+  neb = document.createElement('canvas');
+  neb.width=Math.round(W*0.5); neb.height=Math.round(H*0.5);
+  const c=neb.getContext('2d');
+  const cols=['#1a2440','#2a1c34','#0f2a30','#241830'];
+  for(let i=0;i<7;i++){
+    const x=Math.random()*neb.width, y=Math.random()*neb.height;
+    const r=Math.max(neb.width,neb.height)*(0.18+Math.random()*0.3);
+    const g=c.createRadialGradient(x,y,0,x,y,r);
+    const col=cols[i%cols.length];
+    g.addColorStop(0, col);
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    c.globalAlpha=0.5; c.fillStyle=g;
+    c.beginPath(); c.arc(x,y,r,0,TAU); c.fill();
+  }
+}
+buildNebula();
+window.addEventListener('resize', buildNebula);
+
+// ---------- comets (interaction) ----------
+const comets=[];
+function spawnComet(px,py){
+  // place a comet that streaks across the system
+  const ang = Math.random()*TAU;
+  const sp = 0.9 + Math.random()*0.6;
+  comets.push({
+    x:px, y:py,
+    vx: Math.cos(ang)*sp, vy: Math.sin(ang)*sp,
+    life: 1, trail:[], col: Math.random()<0.5?'#9fe8ff':'#ffd79a'
+  });
+  if(comets.length>14) comets.shift();
+}
+
+// sparkle bursts on click
+const sparks=[];
+function burst(x,y){
+  for(let i=0;i<18;i++){
+    const a=Math.random()*TAU, s=Math.random()*2.6+0.6;
+    sparks.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:1,
+      col: Math.random()<0.5?'#ffe6a8':'#bfe9ff'});
+  }
+}
+
+// ---------- time ----------
+let simDays = 0;            // accumulated simulated days
+let speed = 1;             // multiplier
+let playing = true;
+const SPEEDS=[0,0.25,0.5,1,2,4,8,20,60];
+let speedIx=3;
+function setSpeed(ix){ speedIx=Math.max(0,Math.min(SPEEDS.length-1,ix));
+  speed=SPEEDS[speedIx]; playing = speed>0;
+  updClock(); }
+
+// ---------- projection ----------
+// plane point (planar x,y around sun) -> screen, with yaw + tilt squash
+function proj(ax, ay){
+  const cy=Math.cos(view.yaw), sy=Math.sin(view.yaw);
+  let rx = ax*cy - ay*sy;
+  let ry = ax*sy + ay*cy;
+  const squash = Math.cos(view.tilt); // 1 = flat top-view, ->0 edge-on
+  ry *= squash;
+  return { x: CX + view.shX + rx, y: CY + view.shY + ry,
+           depth: Math.sin(view.tilt) * (ay*cy + ax*sy*0) , ry: ry };
+}
+// depth approx for draw order: use rotated y before squash (the "into screen" axis)
+function depthOf(ax,ay){
+  const cy=Math.cos(view.yaw), sy=Math.sin(view.yaw);
+  let ry = ax*sy + ay*cy;
+  return ry; // larger => nearer bottom/front
+}
+
+// ---------- planet positions ----------
+function planetAngle(p){ return (simDays / p.per) * TAU + p._ph; }
+PLANETS.forEach((p,i)=>{ p._ph = i*0.9; });
+
+// hover state
+let mx=-1, my=-1, hovered=null;
+let labelsOn=true, orbitsOn=true;
+
+// ================= DRAW =================
+function drawStars(t){
+  // nebula
+  if(neb){ ctx.globalAlpha=0.55; ctx.drawImage(neb,0,0,W,H); ctx.globalAlpha=1; }
+  for(const s of STARS){
+    const tw = 0.55 + 0.45*Math.sin(t*s.tws + s.tw);
+    const x=s.x*W, y=s.y*H;
+    if(s.h>0){
+      ctx.fillStyle = `hsla(${s.h},80%,75%,${tw})`;
+    } else {
+      ctx.fillStyle = `rgba(255,250,235,${tw*0.9})`;
+    }
+    ctx.beginPath(); ctx.arc(x,y,s.s,0,TAU); ctx.fill();
+    if(s.s>1.0){ // tiny cross sparkle for big stars
+      ctx.globalAlpha=tw*0.5;
+      ctx.fillRect(x-s.s*2.5,y-0.4,s.s*5,0.8);
+      ctx.fillRect(x-0.4,y-s.s*2.5,0.8,s.s*5);
+      ctx.globalAlpha=1;
+    }
+  }
+}
+
+function drawGears(t, S){
+  ctx.save();
+  ctx.translate(CX+view.shX, CY+view.shY);
+  const squash=Math.cos(view.tilt);
+  for(let gi=0; gi<GEARS.length; gi++){
+    const g=GEARS[gi];
+    const R = g.r*S;
+    const rot = t*g.spd*0.4 + view.yaw;
+    ctx.save();
+    // brass faint disc ring
+    ctx.scale(1, squash);
+    ctx.beginPath();
+    ctx.arc(0,0,R,0,TAU);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle='rgba(150,118,60,0.12)';
+    ctx.stroke();
+    // teeth
+    const tn=g.teeth;
+    const tl = Math.max(2.2, 3.4*S*0.7);
+    ctx.strokeStyle = `rgba(196,158,84,${0.10+0.05*Math.sin(t+gi)})`;
+    ctx.lineWidth = Math.max(0.7, 1.0*S);
+    ctx.beginPath();
+    for(let i=0;i<tn;i++){
+      const a = rot + (i/tn)*TAU;
+      const c=Math.cos(a), s=Math.sin(a);
+      ctx.moveTo(c*R, s*R);
+      ctx.lineTo(c*(R+tl), s*(R+tl));
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+function drawOrbits(S){
+  if(!orbitsOn) return;
+  const squash=Math.cos(view.tilt);
+  ctx.save();
+  ctx.translate(CX+view.shX, CY+view.shY);
+  ctx.rotate(0);
+  for(const p of PLANETS){
+    const R=p.a*S;
+    ctx.save();
+    ctx.rotate(view.yaw);
+    ctx.scale(1,squash);
+    const grad=ctx.createRadialGradient(0,0,R*0.6,0,0,R);
+    ctx.beginPath();
+    ctx.arc(0,0,R,0,TAU);
+    ctx.lineWidth = (p===hovered?1.6:0.9);
+    ctx.strokeStyle = p===hovered? 'rgba(232,185,91,0.85)' : 'rgba(180,150,95,0.22)';
+    ctx.stroke();
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+function drawSun(t, S){
+  const x=CX+view.shX, y=CY+view.shY;
+  const r=SUN.r*S;
+  // corona
+  const cg=ctx.createRadialGradient(x,y,r*0.3,x,y,r*7);
+  cg.addColorStop(0,'rgba(255,224,150,0.55)');
+  cg.addColorStop(0.18,'rgba(255,180,80,0.30)');
+  cg.addColorStop(0.5,'rgba(220,120,40,0.10)');
+  cg.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=cg;
+  ctx.beginPath(); ctx.arc(x,y,r*7,0,TAU); ctx.fill();
+  // rays
+  ctx.save();
+  ctx.translate(x,y);
+  ctx.globalCompositeOperation='lighter';
+  const rays=28;
+  for(let i=0;i<rays;i++){
+    const a=t*0.12 + (i/rays)*TAU;
+    const len = r*(1.7 + 0.5*Math.sin(t*1.3+i*1.7));
+    ctx.strokeStyle=`rgba(255,200,110,${0.06+0.04*Math.sin(t*2+i)})`;
+    ctx.lineWidth=1.4;
+    ctx.beginPath(); ctx.moveTo(Math.cos(a)*r*1.05,Math.sin(a)*r*1.05);
+    ctx.lineTo(Math.cos(a)*len,Math.sin(a)*len); ctx.stroke();
+  }
+  ctx.restore();
+  // body
+  const bg=ctx.createRadialGradient(x-r*0.3,y-r*0.3,r*0.1,x,y,r);
+  bg.addColorStop(0,'#fff4d0');
+  bg.addColorStop(0.45,'#ffd766');
+  bg.addColorStop(0.8,'#f59a32');
+  bg.addColorStop(1,'#c96a1e');
+  ctx.fillStyle=bg;
+  ctx.beginPath(); ctx.arc(x,y,r,0,TAU); ctx.fill();
+  // shimmer flecks
+  ctx.globalCompositeOperation='lighter';
+  for(let i=0;i<6;i++){
+    const a=t*0.5+i*1.3, rr=r*(0.3+0.5*((i*0.13)%1));
+    ctx.fillStyle='rgba(255,255,230,0.25)';
+    ctx.beginPath();
+    ctx.arc(x+Math.cos(a)*rr, y+Math.sin(a*1.2)*rr, r*0.09,0,TAU); ctx.fill();
+  }
+  ctx.globalCompositeOperation='source-over';
+}
+
+// draw a single planet body w/ shading toward sun
+function drawBody(sx, sy, sz, col, col2, ring, ringTilt){
+  // shadow side: light comes from sun (center). vector from planet to center
+  const dx = (CX+view.shX) - sx, dy = (CY+view.shY) - sy;
+  const len = Math.hypot(dx,dy)||1;
+  const lx = dx/len, ly=dy/len;
+  // back ring (behind planet)
+  if(ring){
+    drawRing(sx,sy,sz,ring,false);
+  }
+  // body
+  const g=ctx.createRadialGradient(sx+lx*sz*0.5, sy+ly*sz*0.5, sz*0.1, sx, sy, sz*1.05);
+  g.addColorStop(0, col);
+  g.addColorStop(0.6, col);
+  g.addColorStop(1, col2);
+  ctx.fillStyle=g;
+  ctx.beginPath(); ctx.arc(sx,sy,sz,0,TAU); ctx.fill();
+  // terminator shadow
+  const sg=ctx.createRadialGradient(sx-lx*sz*0.6, sy-ly*sz*0.6, sz*0.2, sx-lx*sz*0.4, sy-ly*sz*0.4, sz*1.5);
+  sg.addColorStop(0,'rgba(0,0,0,0)');
+  sg.addColorStop(0.7,'rgba(0,0,0,0.25)');
+  sg.addColorStop(1,'rgba(0,0,0,0.62)');
+  ctx.fillStyle=sg;
+  ctx.beginPath(); ctx.arc(sx,sy,sz,0,TAU); ctx.fill();
+  // rim light
+  ctx.lineWidth=Math.max(0.6,sz*0.08);
+  ctx.strokeStyle='rgba(255,240,210,0.18)';
+  ctx.beginPath(); ctx.arc(sx,sy,sz*0.99,0,TAU); ctx.stroke();
+  // front ring
+  if(ring){
+    drawRing(sx,sy,sz,ring,true);
+  }
+}
+function drawRing(sx,sy,sz,kind,front){
+  const squash=Math.max(0.18, Math.cos(view.tilt));
+  ctx.save();
+  ctx.translate(sx,sy);
+  ctx.rotate(-0.35);
+  ctx.scale(1, squash);
+  const ri = sz*1.5, ro = (kind==='thin')? sz*2.0 : sz*2.5;
+  const g=ctx.createRadialGradient(0,0,ri,0,0,ro);
+  if(kind==='thin'){
+    g.addColorStop(0,'rgba(160,220,215,0)');
+    g.addColorStop(0.5,'rgba(160,220,215,0.35)');
+    g.addColorStop(1,'rgba(160,220,215,0)');
+  } else {
+    g.addColorStop(0,'rgba(230,210,160,0)');
+    g.addColorStop(0.35,'rgba(235,218,170,0.65)');
+    g.addColorStop(0.55,'rgba(200,180,130,0.25)');
+    g.addColorStop(0.7,'rgba(240,225,180,0.6)');
+    g.addColorStop(1,'rgba(230,210,160,0)');
+  }
+  ctx.fillStyle=g;
+  ctx.beginPath();
+  ctx.arc(0,0,ro,0,TAU);
+  ctx.arc(0,0,ri,0,TAU,true);
+  ctx.fill('evenodd');
+  // clip front/back halves roughly: draw a mask occluding the back half behind planet
+  ctx.restore();
+}
+
+// collect planet screen positions, sort by depth, draw
+let screenPts=[]; // for hover
+function drawSystem(t, S){
+  screenPts=[];
+  const items=[];
+  for(const p of PLANETS){
+    const ang=planetAngle(p);
+    const ax=Math.cos(ang)*p.a, ay=Math.sin(ang)*p.a;
+    const pr=proj(ax,ay);
+    const dep=depthOf(ax,ay);
+    const sz=p.sz*S* (1 + Math.max(0,dep)/2200); // slight near-bigger
+    items.push({p, sx:pr.x, sy:pr.y, sz, dep, ax,ay, ang});
+    screenPts.push({p, x:pr.x, y:pr.y, r:Math.max(8,sz+6)});
+  }
+  items.sort((a,b)=>a.dep-b.dep);
+  for(const it of items){
+    const p=it.p;
+    // trail (short arc) drawn behind
+    if(orbitsOn){ drawTrail(p, it.ang, S); }
+    drawBody(it.sx, it.sy, it.sz, p.col, p.col2, p.ring, view.tilt);
+    // moons
+    for(const m of p.moons){
+      const ma = (simDays/m.per)*TAU + (p._ph*3);
+      const mx2 = it.ax + Math.cos(ma)*m.a;
+      const my2 = it.ay + Math.sin(ma)*m.a;
+      const mp=proj(mx2,my2);
+      drawBody(mp.x, mp.y, Math.max(1,m.sz*S), m.col, '#5a5040', false);
+    }
+    // hover glow + label
+    const isHov = (p===hovered);
+    if(isHov){
+      ctx.save();
+      ctx.globalCompositeOperation='lighter';
+      const gg=ctx.createRadialGradient(it.sx,it.sy,it.sz,it.sx,it.sy,it.sz*4);
+      gg.addColorStop(0,'rgba(255,225,150,0.4)');
+      gg.addColorStop(1,'rgba(255,225,150,0)');
+      ctx.fillStyle=gg;
+      ctx.beginPath(); ctx.arc(it.sx,it.sy,it.sz*4,0,TAU); ctx.fill();
+      ctx.restore();
+    }
+    if(labelsOn && it.sz>1.5){
+      ctx.font = `${isHov?13:11}px Georgia, serif`;
+      ctx.fillStyle = isHov? 'rgba(243,231,204,0.95)' : 'rgba(205,184,135,0.6)';
+      ctx.textAlign='center';
+      ctx.fillText(p.kr, it.sx, it.sy - it.sz - 7);
+    }
+  }
+}
+function drawTrail(p, ang, S){
+  const squash=Math.cos(view.tilt);
+  ctx.save();
+  ctx.translate(CX+view.shX, CY+view.shY);
+  ctx.rotate(view.yaw);
+  ctx.scale(1,squash);
+  const R=p.a*S;
+  const span=0.5; // radians of trailing arc
+  const steps=14;
+  ctx.lineWidth = (p===hovered?2.4:1.6);
+  for(let i=0;i<steps;i++){
+    const f0=i/steps, f1=(i+1)/steps;
+    const a0=ang - span*f0, a1=ang - span*f1;
+    const al = (1-f0)*(p===hovered?0.55:0.32);
+    ctx.strokeStyle=`rgba(232,185,91,${al})`;
+    ctx.beginPath();
+    ctx.arc(0,0,R,a1,a0);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawComets(){
+  for(let i=comets.length-1;i>=0;i--){
+    const c=comets[i];
+    c.x+=c.vx; c.y+=c.vy; c.life-=0.004;
+    c.trail.push({x:c.x,y:c.y});
+    if(c.trail.length>26) c.trail.shift();
+    // gravity toward sun
+    const dx=(CX+view.shX)-c.x, dy=(CY+view.shY)-c.y;
+    const d=Math.hypot(dx,dy)||1;
+    const g=160/(d*d)*40;
+    c.vx+=dx/d*g; c.vy+=dy/d*g;
+    // draw trail
+    ctx.globalCompositeOperation='lighter';
+    for(let j=0;j<c.trail.length;j++){
+      const tp=c.trail[j];
+      const f=j/c.trail.length;
+      ctx.fillStyle=c.col.replace(')',`,${f*0.6*c.life})`).replace('rgb','rgba');
+      ctx.globalAlpha=f*0.6*c.life;
+      ctx.fillStyle=c.col;
+      ctx.beginPath(); ctx.arc(tp.x,tp.y, f*2.6,0,TAU); ctx.fill();
+    }
+    ctx.globalAlpha=1;
+    // head
+    const hg=ctx.createRadialGradient(c.x,c.y,0,c.x,c.y,7);
+    hg.addColorStop(0,'#ffffff'); hg.addColorStop(0.5,c.col); hg.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=hg;
+    ctx.beginPath(); ctx.arc(c.x,c.y,7,0,TAU); ctx.fill();
+    ctx.globalCompositeOperation='source-over';
+    if(c.life<=0 || c.x<-80||c.x>W+80||c.y<-80||c.y>H+80) comets.splice(i,1);
+  }
+}
+function drawSparks(){
+  ctx.globalCompositeOperation='lighter';
+  for(let i=sparks.length-1;i>=0;i--){
+    const s=sparks[i];
+    s.x+=s.vx; s.y+=s.vy; s.vx*=0.94; s.vy*=0.94; s.life-=0.03;
+    ctx.globalAlpha=Math.max(0,s.life);
+    ctx.fillStyle=s.col;
+    ctx.beginPath(); ctx.arc(s.x,s.y, s.life*2.4+0.4,0,TAU); ctx.fill();
+    if(s.life<=0) sparks.splice(i,1);
+  }
+  ctx.globalAlpha=1; ctx.globalCompositeOperation='source-over';
+}
+
+// outer ring frame (the brass armillary band)
+function drawFrame(t,S){
+  const x=CX+view.shX, y=CY+view.shY;
+  const squash=Math.cos(view.tilt);
+  const R = 560*S;
+  ctx.save();
+  ctx.translate(x,y);
+  // two crossing brass meridian bands (armillary)
+  for(let k=0;k<2;k++){
+    ctx.save();
+    ctx.rotate(view.yaw + k*Math.PI/2);
+    ctx.scale(1, k===0?squash:1);
+    if(k===1) ctx.scale(squash,1);
+    ctx.beginPath();
+    ctx.arc(0,0,R,0,TAU);
+    ctx.lineWidth=Math.max(1.5,3*S);
+    const lg=ctx.createLinearGradient(-R,0,R,0);
+    lg.addColorStop(0,'rgba(120,92,44,0.0)');
+    lg.addColorStop(0.5,'rgba(214,176,96,0.5)');
+    lg.addColorStop(1,'rgba(120,92,44,0.0)');
+    ctx.strokeStyle=lg;
+    ctx.stroke();
+    // tick marks
+    ctx.lineWidth=Math.max(0.6,1.1*S);
+    for(let i=0;i<72;i++){
+      const a=(i/72)*TAU;
+      const big=i%6===0;
+      const r1=R-(big?9*S:4.5*S), r2=R;
+      ctx.strokeStyle=`rgba(214,176,96,${big?0.5:0.25})`;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(a)*r1,Math.sin(a)*r1);
+      ctx.lineTo(Math.cos(a)*r2,Math.sin(a)*r2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+// vignette
+function drawVignette(){
+  const g=ctx.createRadialGradient(CX,CY,Math.min(W,H)*0.3,CX,CY,Math.max(W,H)*0.75);
+  g.addColorStop(0,'rgba(0,0,0,0)');
+  g.addColorStop(1,'rgba(0,0,0,0.6)');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+}
+
+// ---------- clock UI ----------
+const elDay=document.getElementById('cday');
+const elSpd=document.getElementById('cspd');
+function updClock(){
+  const yr = Math.floor(simDays/365);
+  const dd = Math.floor(simDays%365);
+  elDay.textContent = String(yr).padStart(4,'0')+'년 '+String(dd).padStart(3,'0')+'일';
+  elSpd.textContent = playing? ('시간 ×'+speed.toFixed(speed<1?2:1)) : '— 정지 —';
+}
+
+// ---------- main loop ----------
+let last=performance.now();
+function frame(now){
+  const dt=Math.min(0.05,(now-last)/1000); last=now;
+  const t=now/1000;
+
+  // ease camera
+  view.scale += (view.targetScale-view.scale)*0.12;
+  view.tilt  += (view.targetTilt -view.tilt )*0.10;
+  view.yaw   += (view.targetYaw  -view.yaw  )*0.10;
+  view.shX   += (view.tShX-view.shX)*0.12;
+  view.shY   += (view.tShY-view.shY)*0.12;
+
+  if(playing){ simDays += dt*speed*22; updClockThrottle(); }
+
+  const S = baseScale()*view.scale;
+
+  // bg
+  ctx.fillStyle='#05060a'; ctx.fillRect(0,0,W,H);
+  drawStars(t);
+  drawFrame(t,S);
+  drawGears(t,S);
+  drawOrbits(S);
+  drawSun(t,S);
+  drawSystem(t,S);
+  drawComets();
+  drawSparks();
+  drawVignette();
+
+  requestAnimationFrame(frame);
+}
+let _clkAcc=0;
+function updClockThrottle(){ _clkAcc++; if(_clkAcc%4===0) updClock(); }
+
+// ---------- interaction ----------
+let dragging=false, lpx=0, lpy=0, downX=0, downY=0, moved=false;
+function pt(e){ const r=cv.getBoundingClientRect();
+  const tp=e.touches?e.touches[0]:e;
+  return {x:tp.clientX-r.left, y:tp.clientY-r.top}; }
+
+function onDown(e){
+  const p=pt(e); dragging=true; lpx=p.x; lpy=p.y; downX=p.x; downY=p.y; moved=false;
+  cv.classList.add('drag');
+}
+function onMove(e){
+  const p=pt(e); mx=p.x; my=p.y;
+  if(dragging){
+    const dx=p.x-lpx, dy=p.y-lpy; lpx=p.x; lpy=p.y;
+    if(Math.abs(p.x-downX)+Math.abs(p.y-downY)>5) moved=true;
+    view.targetYaw += dx*0.005;
+    view.targetTilt = Math.max(0.06, Math.min(1.32, view.targetTilt + dy*0.005));
+  } else {
+    updateHover(p.x,p.y);
+  }
+}
+function onUp(e){
+  cv.classList.remove('drag');
+  if(dragging && !moved){
+    // tap/click => spawn comet + spark at point
+    const p = e.changedTouches? pt({touches:e.changedTouches}) : {x:lpx,y:lpy};
+    spawnComet(p.x,p.y); burst(p.x,p.y);
+  }
+  dragging=false;
+}
+cv.addEventListener('mousedown',onDown);
+window.addEventListener('mousemove',onMove);
+window.addEventListener('mouseup',onUp);
+cv.addEventListener('touchstart',e=>{onDown(e);},{passive:true});
+cv.addEventListener('touchmove',e=>{onMove(e); e.preventDefault();},{passive:false});
+cv.addEventListener('touchend',e=>{onUp(e);},{passive:true});
+
+cv.addEventListener('wheel',e=>{
+  e.preventDefault();
+  const f = e.deltaY<0? 1.12 : 0.89;
+  view.targetScale = Math.max(0.32, Math.min(3.4, view.targetScale*f));
+},{passive:false});
+
+const elInfo=document.getElementById('info');
+const elInm=document.getElementById('inm');
+const elIdt=document.getElementById('idt');
+function updateHover(x,y){
+  let best=null,bd=1e9;
+  for(const sp of screenPts){
+    const d=Math.hypot(sp.x-x, sp.y-y);
+    if(d<sp.r && d<bd){ bd=d; best=sp.p; }
+  }
+  if(best!==hovered){
+    hovered=best;
+    if(best){
+      elInm.textContent=best.kr;
+      const ang=planetAngle(best);
+      elIdt.innerHTML =
+        `공전주기 <span>${best.per.toLocaleString()}일</span> · 궤도반경 <span>${best.a}</span><br>`+
+        `위성 <span>${best.moons.length}</span>${best.ring?' · <span>고리 보유</span>':''}<br>`+
+        `${best.fact}`;
+      elInfo.classList.add('on');
+      cv.style.cursor='pointer';
+    } else {
+      elInfo.classList.remove('on');
+      cv.style.cursor = dragging?'grabbing':'grab';
+    }
+  }
+}
+
+// keyboard
+window.addEventListener('keydown',e=>{
+  if(e.code==='Space'){ e.preventDefault();
+    if(playing){ playing=false; } else { playing=true; if(speed===0){speedIx=3;speed=1;} }
+    updClock(); }
+  else if(e.key==='ArrowRight'){ setSpeed(speedIx+1); }
+  else if(e.key==='ArrowLeft'){ setSpeed(speedIx-1); }
+  else if(e.key==='o'||e.key==='O'){ orbitsOn=!orbitsOn; }
+  else if(e.key==='l'||e.key==='L'){ labelsOn=!labelsOn; }
+});
+
+// buttons
+document.getElementById('bPlay').addEventListener('click',()=>{
+  playing=!playing; if(playing&&speed===0){speedIx=3;speed=1;} updClock(); });
+document.getElementById('bSlow').addEventListener('click',()=>setSpeed(speedIx-1));
+document.getElementById('bFast').addEventListener('click',()=>setSpeed(speedIx+1));
+document.getElementById('bReset').addEventListener('click',()=>{
+  view.targetScale=1; view.targetTilt=0.46; view.targetYaw=-0.28;
+  view.tShX=0; view.tShY=0; });
+
+updClock();
+requestAnimationFrame(frame);
+
+// expose for self-verification
+window.__orrery = {
+  state(){ return { simDays, scale:view.scale, tScale:view.targetScale,
+    tilt:view.tilt, tTilt:view.targetTilt, yaw:view.yaw, tYaw:view.targetYaw,
+    playing, speed, comets:comets.length, planets:PLANETS.length,
+    orbitsOn, labelsOn, hovered: hovered?hovered.kr:null }; },
+  hoverAt(x,y){ updateHover(x,y); return hovered?hovered.kr:null; },
+  click(x,y){ spawnComet(x,y); burst(x,y); return comets.length; },
+  zoom(f){ view.targetScale=Math.max(0.32,Math.min(3.4,view.targetScale*f)); },
+  drag(dx,dy){ view.targetYaw+=dx*0.005; view.targetTilt=Math.max(0.06,Math.min(1.32,view.targetTilt+dy*0.005)); },
+  toggleOrbits(){ orbitsOn=!orbitsOn; return orbitsOn; },
+  firstPaintText(){ return (document.getElementById('cday').textContent||'').trim(); }
+};
+})();
+</script>
+</body>
+</html>

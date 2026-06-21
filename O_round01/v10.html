@@ -1,0 +1,1083 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>GLYPHCRAFT — 아스키 복셀 샌드박스</title>
+<style>
+  :root{
+    --bg:#0a0d12; --panel:#11161d; --ink:#cfe3d6; --dim:#6f8a78;
+    --gold:#e4c277; --acc:#7fd1a6; --warn:#e07a6a; --line:#1d2730;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
+    font-family:"DejaVu Sans Mono","Consolas","Courier New",monospace;
+    overflow:hidden; user-select:none; -webkit-user-select:none;}
+  #wrap{position:fixed;inset:0;display:flex;flex-direction:column;}
+  /* ---- world canvas ---- */
+  #world{flex:1;display:block;background:#05070a;image-rendering:pixelary;}
+  /* ---- HUD ---- */
+  #hud{position:absolute;inset:0;pointer-events:none;}
+  .stat{position:absolute;top:8px;font-size:13px;letter-spacing:.5px;
+    text-shadow:0 1px 2px #000;}
+  #stTL{left:10px;color:var(--dim);}
+  #stTR{right:10px;text-align:right;color:var(--dim);}
+  .bar{display:inline-block;color:var(--acc);}
+  .bar.hunger{color:var(--gold);}
+  /* hotbar */
+  #hotbar{position:absolute;left:50%;transform:translateX(-50%);bottom:8px;
+    display:flex;gap:4px;pointer-events:auto;}
+  .slot{width:46px;height:46px;background:var(--panel);border:2px solid var(--line);
+    border-radius:6px;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;position:relative;cursor:pointer;}
+  .slot.sel{border-color:var(--gold);box-shadow:0 0 0 1px var(--gold) inset;}
+  .slot .gly{font-size:20px;line-height:1;}
+  .slot .ct{position:absolute;right:3px;bottom:1px;font-size:11px;color:var(--ink);
+    text-shadow:0 1px 2px #000;}
+  .slot .key{position:absolute;left:3px;top:1px;font-size:9px;color:var(--dim);}
+  /* crosshair */
+  #cross{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+    color:var(--gold);font-size:18px;opacity:.85;}
+  /* panels */
+  .panel{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+    background:var(--panel);border:2px solid var(--line);border-radius:10px;
+    padding:16px 18px;max-width:92vw;max-height:88vh;overflow:auto;pointer-events:auto;
+    box-shadow:0 10px 40px rgba(0,0,0,.6);display:none;z-index:20;}
+  .panel h2{margin:0 0 8px;color:var(--gold);font-size:16px;letter-spacing:1px;}
+  .panel h3{margin:12px 0 6px;color:var(--acc);font-size:13px;}
+  .panel p,.panel li{font-size:12px;line-height:1.5;color:var(--ink);}
+  .panel .dim{color:var(--dim);}
+  .recipe{display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--line);
+    border-radius:6px;margin:5px 0;cursor:pointer;background:#0c1117;}
+  .recipe:hover{border-color:var(--gold);}
+  .recipe.no{opacity:.4;cursor:not-allowed;}
+  .recipe .out{font-size:18px;width:26px;text-align:center;}
+  .recipe .desc{flex:1;font-size:12px;}
+  .recipe .cost{font-size:11px;color:var(--dim);}
+  .btn{display:inline-block;margin-top:10px;padding:7px 14px;background:#0c1117;
+    border:1px solid var(--gold);color:var(--gold);border-radius:6px;cursor:pointer;
+    font-family:inherit;font-size:12px;}
+  .btn:hover{background:var(--gold);color:#0a0d12;}
+  #credit{position:absolute;left:10px;bottom:62px;font-size:10px;color:var(--dim);
+    line-height:1.4;max-width:60vw;text-shadow:0 1px 2px #000;}
+  /* touch controls */
+  #touch{position:absolute;inset:0;pointer-events:none;display:none;}
+  .tbtn{position:absolute;pointer-events:auto;width:54px;height:54px;border-radius:50%;
+    background:rgba(20,28,36,.7);border:2px solid var(--line);color:var(--ink);
+    font-size:20px;display:flex;align-items:center;justify-content:center;}
+  .tbtn:active{background:rgba(228,194,119,.3);}
+  #tpad{position:absolute;left:14px;bottom:74px;width:150px;height:150px;}
+  #tact{position:absolute;right:14px;bottom:74px;width:150px;height:150px;}
+  /* intro */
+  #intro{position:absolute;inset:0;background:#05070a;z-index:50;display:flex;
+    flex-direction:column;align-items:center;justify-content:center;pointer-events:auto;
+    text-align:center;padding:20px;}
+  #intro pre{color:var(--acc);font-size:11px;line-height:1.1;margin:0 0 6px;}
+  #intro .ttl{color:var(--gold);font-size:13px;letter-spacing:3px;margin:4px 0 14px;}
+  #intro .sub{color:var(--dim);font-size:12px;line-height:1.7;max-width:520px;}
+  #intro .cr{color:#4a5d52;font-size:10px;margin-top:18px;}
+  #toast{position:absolute;left:50%;bottom:130px;transform:translateX(-50%);
+    background:rgba(12,17,23,.92);border:1px solid var(--line);border-radius:6px;
+    padding:6px 12px;font-size:12px;color:var(--acc);opacity:0;transition:opacity .25s;
+    pointer-events:none;max-width:80vw;text-align:center;}
+  kbd{background:#0c1117;border:1px solid var(--line);border-radius:4px;padding:1px 5px;
+    font-size:11px;color:var(--gold);}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="world"></canvas>
+  <div id="hud">
+    <div class="stat" id="stTL"></div>
+    <div class="stat" id="stTR"></div>
+    <div id="cross">+</div>
+    <div id="credit">GLYPHCRAFT — Minecraft에서 영감받음 © Mojang/Microsoft.<br>오리지널 구현 · 텍스처/몹/차원/레시피 전부 자작.</div>
+    <div id="hotbar"></div>
+    <div id="toast"></div>
+  </div>
+
+  <div id="touch">
+    <div id="tpad">
+      <div class="tbtn" style="left:48px;top:0">▲</div>
+      <div class="tbtn" style="left:0;top:48px">◀</div>
+      <div class="tbtn" style="left:96px;top:48px">▶</div>
+      <div class="tbtn" style="left:48px;top:96px">▼</div>
+    </div>
+    <div id="tact">
+      <div class="tbtn" data-act="up"   style="left:48px;top:0">⤒</div>
+      <div class="tbtn" data-act="mine" style="left:0;top:48px">⛏</div>
+      <div class="tbtn" data-act="place"style="left:96px;top:48px">▦</div>
+      <div class="tbtn" data-act="dn"   style="left:48px;top:96px">⤓</div>
+    </div>
+  </div>
+
+  <!-- panels -->
+  <div class="panel" id="craftPanel">
+    <h2>⚒ 제작대 (CRAFT)</h2>
+    <div id="recipeList"></div>
+    <span class="dim" style="font-size:11px">C 또는 닫기로 종료. 인벤토리 자원으로 제작.</span><br>
+    <span class="btn" onclick="UI.closeAll()">닫기</span>
+  </div>
+
+  <div class="panel" id="helpPanel">
+    <h2>GLYPHCRAFT — 도움말</h2>
+    <h3>조작 (1440 키보드/마우스)</h3>
+    <p><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 이동 · <kbd>Q</kbd>/<kbd>E</kbd> 회전 · <kbd>Space</kbd>/<kbd>Shift</kbd> 위/아래 층 ·
+    좌클릭 <b>채굴</b> · 우클릭 <b>설치</b> · 휠/<kbd>1~8</kbd> 핫바 · <kbd>C</kbd> 제작 · <kbd>H</kbd> 도움말</p>
+    <h3>조작 (390 터치)</h3>
+    <p>왼쪽 패드 이동 · 오른쪽 ⛏채굴 ▦설치 ⤒⤓ 층이동 · 하단 핫바 탭으로 선택</p>
+    <h3>핵심 루프</h3>
+    <p>① 흙/풀/돌/나무를 <b>채굴</b> → ② 자원 모음 → ③ <kbd>C</kbd>로 <b>제작</b>(곡괭이·횃불·기계) → ④ 더 깊이 파서 광맥 발굴 → ⑤ 밤엔 몹 등장(빛 근처 안전).</p>
+    <h3>너의 변주 — 글리프 회로(자동화)</h3>
+    <p><b>코어(◉)</b>에서 신호가 나와 <b>도관(═)</b>을 타고 흐른다. 신호가 <b>채굴팔(⊗)</b>에 닿으면 아래 블록을 자동 채굴, <b>배출구(▣)</b>는 블록을 자동 설치. 코어를 놓고 도관으로 이어 자동 채광 라인을 만들어 보라.</p>
+    <span class="btn" onclick="UI.closeAll()">닫기</span>
+  </div>
+</div>
+
+<div id="intro">
+  <pre id="introArt"></pre>
+  <div class="ttl">G L Y P H C R A F T</div>
+  <div class="sub">
+    아스키 아트로 그려진 절차생성 복셀 세계.<br>
+    <b style="color:var(--acc)">채굴 · 설치 · 제작 · 탐험 · 생존</b>, 그리고 오리지널 <b style="color:var(--gold)">글리프 회로</b> 자동화.<br><br>
+    <span class="dim">데스크톱: WASD 이동, 좌클릭 채굴, 우클릭 설치, C 제작.<br>
+    모바일: 화면 컨트롤. 자세한 건 게임 내 H(도움말).</span>
+  </div>
+  <span class="btn" id="startBtn" style="font-size:14px;padding:10px 24px;margin-top:20px">▶ 세계 생성 / START</span>
+  <div class="cr">Minecraft에서 영감 — © Mojang/Microsoft. 본 작품은 코드·아트·콘텐츠 전부 오리지널 구현.</div>
+</div>
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   GLYPHCRAFT — ASCII voxel sandbox (single-file, no backend)
+   Isometric tile renderer over a 3D voxel chunk.
+   Original content: blocks/mobs/recipes/automation all bespoke.
+   ============================================================ */
+
+/* ---------- Block registry (original) ---------- */
+// id:0 = air. Each block: glyph, top/side colors, hardness, solid, light
+const B = {};
+function defBlock(id,o){ B[id]=Object.assign({id:id},o); }
+defBlock(0,{name:'air',  gly:' ', col:'#000', solid:false, hard:0, drop:null});
+defBlock(1,{name:'풀',   gly:'"', col:'#5fa56b', side:'#6b4a2e', solid:true, hard:1, drop:1});
+defBlock(2,{name:'흙',   gly:'·', col:'#7a5333', side:'#5e3f27', solid:true, hard:1, drop:2});
+defBlock(3,{name:'돌',   gly:'▒', col:'#8a8f96', side:'#6b7077', solid:true, hard:3, drop:3, needs:'pick'});
+defBlock(4,{name:'통나무',gly:'╪', col:'#9a6b3a', side:'#6f4a26', solid:true, hard:2, drop:4});
+defBlock(5,{name:'잎',   gly:'❉', col:'#3f8a52', side:'#2f6b3f', solid:true, hard:1, drop:5, transl:true});
+defBlock(6,{name:'모래', gly:':', col:'#d8c987', side:'#b6a865', solid:true, hard:1, drop:6});
+defBlock(7,{name:'물',   gly:'≈', col:'#3a6fa8', side:'#2c5688', solid:false, hard:0, drop:null, fluid:true, transl:true});
+// ores
+defBlock(8, {name:'석탄광',gly:'◆', col:'#3a3d42', side:'#2b2e33', solid:true, hard:3, drop:20, needs:'pick'});
+defBlock(9, {name:'구리광',gly:'◈', col:'#c87a4a', side:'#9a5d38', solid:true, hard:4, drop:21, needs:'pick'});
+defBlock(10,{name:'발광정',gly:'✦', col:'#e4c277', side:'#b89a55', solid:true, hard:4, drop:22, needs:'pick', light:6});
+defBlock(11,{name:'심층암',gly:'▓', col:'#4a4f57', side:'#383d44', solid:true, hard:6, drop:11, needs:'pick'});
+// crafted / placeable
+defBlock(12,{name:'널빤지',gly:'#', col:'#b5874c', side:'#8a6537', solid:true, hard:2, drop:12});
+defBlock(13,{name:'벽돌', gly:'▤', col:'#9a5a44', side:'#7a4636', solid:true, hard:4, drop:13, needs:'pick'});
+defBlock(14,{name:'유리', gly:'□', col:'#9fd4e0', side:'#7fb4c0', solid:true, hard:1, drop:null, transl:true});
+defBlock(15,{name:'횃불', gly:'†', col:'#ffcf6e', side:'#c89a40', solid:false, hard:0, drop:15, light:8});
+defBlock(16,{name:'제작대',gly:'⊞', col:'#caa05a', side:'#8a6537', solid:true, hard:2, drop:16});
+// automation (original "glyph circuit")
+defBlock(30,{name:'회로코어',gly:'◉', col:'#7fd1a6', side:'#3f7a5d', solid:true, hard:3, drop:30, light:4, machine:'core'});
+defBlock(31,{name:'도관',  gly:'═', col:'#5fb0c8', side:'#3a7a8c', solid:true, hard:2, drop:31, machine:'wire'});
+defBlock(32,{name:'채굴팔',gly:'⊗', col:'#e4c277', side:'#a07a3a', solid:true, hard:3, drop:32, machine:'driller'});
+defBlock(33,{name:'배출구',gly:'▣', col:'#c89a6a', side:'#8a6537', solid:true, hard:3, drop:33, machine:'placer'});
+
+/* item ids that are not directly-placeable blocks (tools/resources) */
+const ITEM = {
+  20:{name:'석탄', gly:'◆', col:'#3a3d42'},
+  21:{name:'구리괴',gly:'◈', col:'#c87a4a'},
+  22:{name:'발광가루',gly:'✦', col:'#e4c277'},
+  40:{name:'나무곡괭이',gly:'⛏', col:'#b5874c', tool:'pick', tier:1},
+  41:{name:'돌곡괭이', gly:'⛏', col:'#9aa0a8', tool:'pick', tier:2},
+  42:{name:'구리곡괭이',gly:'⛏', col:'#c87a4a', tool:'pick', tier:3},
+  43:{name:'막대기', gly:'╎', col:'#8a6537'},
+};
+function meta(id){ return B[id] || ITEM[id]; }
+function glyOf(id){ const m=meta(id); return m? (m.gly||'?') : '?'; }
+function nameOf(id){ const m=meta(id); return m? m.name : '?'; }
+function colOf(id){ const m=meta(id); return m? (m.col||'#888') : '#888'; }
+
+/* ---------- World (procedural) ---------- */
+const SX=64, SY=64, SZ=40;           // world dims (x,y horizontal, z vertical)
+const SEA=14;
+let world=null;                       // Int16Array flat [x + y*SX + z*SX*SY]
+const idx=(x,y,z)=> x + y*SX + z*SX*SY;
+function inb(x,y,z){ return x>=0&&x<SX&&y>=0&&y<SY&&z>=0&&z<SZ; }
+function get(x,y,z){ return inb(x,y,z)? world[idx(x,y,z)] : 0; }
+function setB(x,y,z,v){ if(inb(x,y,z)) world[idx(x,y,z)]=v; }
+
+// deterministic value-noise
+function mulberry(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+let RNG = mulberry(0);
+let hashCache;
+function vnoise(x,y,seed){
+  // smooth 2D value noise
+  function h(ix,iy){ let n=Math.sin(ix*127.1+iy*311.7+seed*7.3)*43758.5453; return n-Math.floor(n); }
+  const x0=Math.floor(x),y0=Math.floor(y), fx=x-x0,fy=y-y0;
+  const a=h(x0,y0),b=h(x0+1,y0),c=h(x0,y0+1),d=h(x0+1,y0+1);
+  const sx=fx*fx*(3-2*fx), sy=fy*fy*(3-2*fy);
+  return (a*(1-sx)+b*sx)*(1-sy)+(c*(1-sx)+d*sx)*sy;
+}
+function fbm(x,y,seed){
+  let v=0,amp=1,freq=1,tot=0;
+  for(let o=0;o<4;o++){ v+=amp*vnoise(x*freq,y*freq,seed+o*13); tot+=amp; amp*=0.5; freq*=2; }
+  return v/tot;
+}
+let WORLD_SEED = Math.floor(Math.random()*99999);
+
+function genWorld(seed){
+  WORLD_SEED=seed; RNG=mulberry(seed);
+  world=new Int16Array(SX*SY*SZ);
+  const heightMap=new Int8Array(SX*SY);
+  const biomeMap=new Int8Array(SX*SY); // 0 plains 1 forest 2 desert 3 hills
+  for(let y=0;y<SY;y++)for(let x=0;x<SX;x++){
+    const e = fbm(x/22, y/22, seed);
+    const m = fbm(x/30+100, y/30+50, seed); // moisture
+    let h = Math.floor(SEA + (e-0.45)*26);
+    if(h<3)h=3; if(h>SZ-6)h=SZ-6;
+    heightMap[x+y*SX]=h;
+    let biome=0;
+    if(m<0.38) biome=2;            // desert
+    else if(e>0.62) biome=3;       // hills/mountain
+    else if(m>0.62) biome=1;       // forest
+    biomeMap[x+y*SX]=biome;
+  }
+  // fill columns
+  for(let y=0;y<SY;y++)for(let x=0;x<SX;x++){
+    const h=heightMap[x+y*SX], biome=biomeMap[x+y*SX];
+    for(let z=0;z<=h;z++){
+      let b=3; // stone default
+      if(z<=2) b=11;                              // deepslate floor
+      else if(z===h){
+        if(biome===2) b=6;                        // desert sand top
+        else if(z<=SEA) b=6;                      // beach sand
+        else b=1;                                 // grass
+      } else if(z>=h-3){
+        b = (biome===2)?6:2;                      // dirt/sand subsoil
+      }
+      // ore placement in stone
+      if(b===3){
+        const oz=z;
+        const on=vnoise(x*1.7,y*1.7,seed+oz*5);
+        if(oz<8 && on>0.86) b=10;                 // glowstone deep
+        else if(on>0.90) b=9;                     // copper
+        else if(on>0.80) b=8;                     // coal
+        if(oz<=4 && vnoise(x*2.1,y*2.1,seed+oz)>0.7) b=11; // more deepslate near bottom
+      }
+      setB(x,y,z,b);
+    }
+    // water fill
+    for(let z=h+1;z<=SEA;z++) setB(x,y,z,7);
+  }
+  // caves (3D-ish): carve worm tunnels
+  for(let y=0;y<SY;y++)for(let x=0;x<SX;x++)for(let z=3;z<SEA+4;z++){
+    const c=fbm(x/9+5,y/9+9,seed+z*0.9);
+    const c2=vnoise(x/6,z/6,seed+y*0.3);
+    if(c>0.66 && c2>0.55 && get(x,y,z)===3) setB(x,y,z,0);
+  }
+  // trees in forest/plains
+  for(let y=2;y<SY-2;y++)for(let x=2;x<SX-2;x++){
+    const h=heightMap[x+y*SX], biome=biomeMap[x+y*SX];
+    if((biome===1||biome===0) && get(x,y,h)===1){
+      const r=vnoise(x*3.3,y*3.3,seed+777);
+      const thr = biome===1?0.80:0.93;
+      if(r>thr){
+        const th=3+((r*10|0)%2);
+        for(let t=1;t<=th;t++) setB(x,y,h+t,4);
+        // leaves
+        for(let dz=th-1;dz<=th+1;dz++)for(let dy=-2;dy<=2;dy++)for(let dx=-2;dx<=2;dx++){
+          if(Math.abs(dx)+Math.abs(dy)+Math.abs(dz-th)<=3){
+            const lx=x+dx,ly=y+dy,lz=h+dz;
+            if(inb(lx,ly,lz)&&get(lx,ly,lz)===0) setB(lx,ly,lz,5);
+          }
+        }
+      }
+    }
+  }
+  // cactus in desert
+  for(let y=2;y<SY-2;y++)for(let x=2;x<SX-2;x++){
+    const h=heightMap[x+y*SX], biome=biomeMap[x+y*SX];
+    if(biome===2 && get(x,y,h)===6){
+      if(vnoise(x*4.1,y*4.1,seed+55)>0.93){ setB(x,y,h+1,5); setB(x,y,h+2,5); }
+    }
+  }
+  return {heightMap, biomeMap};
+}
+
+/* ---------- Player / inventory ---------- */
+const P = {
+  x:32, y:32, z:0, dir:0,            // dir 0..3 (iso rotation)
+  hp:20, maxhp:20, food:20, maxfood:20,
+  reach:5,
+};
+// inventory: hotbar slots 0..7
+const INV = new Array(8).fill(null).map(()=>({id:0,ct:0}));
+let selSlot=0;
+function addItem(id,n){
+  if(!id) return;
+  for(const s of INV){ if(s.id===id){ s.ct+=n; return true; } }
+  for(const s of INV){ if(s.ct<=0||s.id===0){ s.id=id; s.ct=n; return true; } }
+  return false;
+}
+function countItem(id){ let c=0; for(const s of INV) if(s.id===id) c+=s.ct; return c; }
+function takeItem(id,n){
+  let need=n;
+  for(const s of INV){ if(s.id===id){ const t=Math.min(s.ct,need); s.ct-=t; need-=t; if(s.ct<=0)s.id=0; if(need<=0)return true; } }
+  return need<=0;
+}
+function bestPickTier(){
+  let t=0;
+  for(const s of INV){ if(s.ct>0){ const m=ITEM[s.id]; if(m&&m.tool==='pick') t=Math.max(t,m.tier); } }
+  return t; // 0 none,1 wood,2 stone,3 copper
+}
+
+/* ---------- Time / lighting ---------- */
+let timeOfDay=0.30;        // 0..1, 0.25=morning,0.5 noon,0.75 dusk
+const DAY_LEN=120000;      // ms for a full cycle (gentle)
+function dayFactor(){ // 0 night .. 1 day
+  // sun up between .2 and .8
+  const t=timeOfDay;
+  let l = Math.sin((t-0.0)*Math.PI*2 - Math.PI/2)*0.5+0.5;
+  return Math.max(0.12, Math.min(1, l*1.15));
+}
+function isNight(){ return dayFactor()<0.35; }
+
+/* ---------- Mobs (original) ---------- */
+// 'Murk' — night shade (hostile); 'Hopper bug' — passive
+const mobs=[];
+function spawnMob(kind,x,y,z){ mobs.push({kind,x,y,z,hp:kind==='murk'?6:3,t:Math.random()*100,cd:0}); }
+function topZAt(x,y){ for(let z=SZ-1;z>=0;z--){ const b=get(x,y,z); if(b&&meta(b)&&meta(b).solid) return z; } return 0; }
+function lightAt(x,y,z){
+  // base from sky + nearby light sources
+  let base = dayFactor();
+  // if covered above, darker
+  let cover=0; for(let zz=z+1; zz<SZ; zz++){ const b=get(x,y,zz); if(b&&meta(b)&&meta(b).solid&&!meta(b).transl){cover=1;break;} }
+  if(cover) base*=0.25;
+  let lit=base;
+  for(const src of lightSources){
+    const d=Math.abs(src.x-x)+Math.abs(src.y-y)+Math.abs(src.z-z);
+    if(d<src.r) lit=Math.max(lit, (1 - d/src.r));
+  }
+  return Math.max(0.08, Math.min(1, lit));
+}
+let lightSources=[];
+function rebuildLights(){
+  lightSources=[];
+  for(let z=0;z<SZ;z++)for(let y=0;y<SY;y++)for(let x=0;x<SX;x++){
+    const b=get(x,y,z); const m=meta(b);
+    if(m&&m.light){ lightSources.push({x,y,z,r:m.light}); }
+  }
+}
+
+/* ---------- Automation (glyph circuits) ---------- */
+let autoTick=0;
+function stepAutomation(){
+  // find cores, propagate signal along wires (flood), drive machines adjacent to powered wire/core
+  const powered=new Set(); // "x,y,z"
+  const cores=[];
+  for(let z=0;z<SZ;z++)for(let y=0;y<SY;y++)for(let x=0;x<SX;x++){
+    if(get(x,y,z)===30) cores.push([x,y,z]);
+  }
+  const Q=[];
+  for(const c of cores){ powered.add(c.join(',')); Q.push(c); }
+  const nb=[[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+  while(Q.length){
+    const [x,y,z]=Q.pop();
+    for(const [dx,dy,dz] of nb){
+      const nx=x+dx,ny=y+dy,nz=z+dz; const k=nx+','+ny+','+nz;
+      if(powered.has(k)) continue;
+      const b=get(nx,ny,nz);
+      if(b===31){ powered.add(k); Q.push([nx,ny,nz]); }     // wire conducts
+    }
+  }
+  // drive machines: any driller/placer adjacent to a powered cell
+  let didMine=0, didPlace=0;
+  for(let z=0;z<SZ;z++)for(let y=0;y<SY;y++)for(let x=0;x<SX;x++){
+    const b=get(x,y,z);
+    if(b!==32 && b!==33) continue;
+    let pw=false;
+    for(const [dx,dy,dz] of nb){ if(powered.has((x+dx)+','+(y+dy)+','+(z+dz))){pw=true;break;} }
+    // core directly adjacent also powers
+    if(!pw) for(const [dx,dy,dz] of nb){ if(get(x+dx,y+dy,z+dz)===30){pw=true;break;} }
+    if(!pw) continue;
+    if(b===32){ // driller mines block directly below
+      const tz=z-1, tb=get(x,y,tz);
+      const tm=meta(tb);
+      if(tb && tm && tm.solid && tm.drop!=null && !tm.machine && (autoTick%3===0)){
+        setB(x,y,tz,0); addItem(tm.drop,1); didMine++;
+      }
+    } else if(b===33){ // placer places stone above if has stone
+      const tz=z+1;
+      if(get(x,y,tz)===0 && countItem(3)>0 && (autoTick%4===0)){
+        takeItem(3,1); setB(x,y,tz,3); didPlace++;
+      }
+    }
+  }
+  if(didMine||didPlace) rebuildLights();
+  return powered;
+}
+let poweredSet=new Set();
+
+/* ---------- Crafting recipes (original) ---------- */
+const RECIPES = [
+  {out:43, n:4, name:'막대기 ×4',   cost:[[12,1]], desc:'널빤지→막대기'},
+  {out:12, n:4, name:'널빤지 ×4',   cost:[[4,1]],  desc:'통나무→널빤지'},
+  {out:16, n:1, name:'제작대',       cost:[[12,4]], desc:'작업의 시작'},
+  {out:40, n:1, name:'나무곡괭이',   cost:[[12,3],[43,2]], desc:'돌 채굴 가능'},
+  {out:41, n:1, name:'돌곡괭이',     cost:[[3,3],[43,2]],  desc:'광석 채굴'},
+  {out:42, n:1, name:'구리곡괭이',   cost:[[21,3],[43,2]], desc:'단단한 블록·빠름'},
+  {out:15, n:4, name:'횃불 ×4',      cost:[[20,1],[43,1]], desc:'빛=밤 안전'},
+  {out:13, n:4, name:'벽돌 ×4',      cost:[[6,4]],  desc:'모래→벽돌(가마 생략, 단순화)'},
+  {out:14, n:2, name:'유리 ×2',      cost:[[6,2]],  desc:'모래→유리'},
+  {out:21, n:1, name:'구리괴 ×1',    cost:[[21,0]], desc:'채광으로 획득', hide:true},
+  // automation
+  {out:30, n:1, name:'회로코어 ◉',   cost:[[21,2],[22,1]], desc:'자동화 전원'},
+  {out:31, n:6, name:'도관 ═ ×6',    cost:[[21,1],[20,1]], desc:'신호 전달'},
+  {out:32, n:1, name:'채굴팔 ⊗',     cost:[[21,2],[3,2]],  desc:'아래 자동 채굴'},
+  {out:33, n:1, name:'배출구 ▣',     cost:[[12,4],[21,1]], desc:'위로 자동 설치(돌)'},
+];
+
+/* ============================================================
+   Rendering — isometric ASCII tiles
+   ============================================================ */
+const cv=document.getElementById('world');
+const ctx=cv.getContext('2d');
+let W=0,Hh=0, DPR=1;
+let TILE=20;            // base font cell
+function resize(){
+  DPR=Math.min(2, window.devicePixelRatio||1);
+  W=window.innerWidth; Hh=window.innerHeight;
+  cv.width=W*DPR; cv.height=Hh*DPR; cv.style.width=W+'px'; cv.style.height=Hh+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  TILE = (W<560)? 16 : (W<1000? 18 : 22);
+  ctx.font = TILE+'px "DejaVu Sans Mono","Consolas",monospace';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+}
+window.addEventListener('resize', resize);
+
+// iso transform: rotate (x,y) by dir, then project
+function rot(x,y){
+  switch(P.dir&3){
+    case 0: return [x,y];
+    case 1: return [y, SX-1-x];
+    case 2: return [SX-1-x, SY-1-y];
+    case 3: return [SY-1-y, x];
+  }
+}
+function unrot(rx,ry){
+  switch(P.dir&3){
+    case 0: return [rx,ry];
+    case 1: return [SX-1-ry, rx];
+    case 2: return [SX-1-rx, SY-1-ry];
+    case 3: return [ry, SY-1-rx];
+  }
+}
+
+// camera focuses player; we render a window of tiles around player
+const ISO_W=0.5, ISO_H=0.28;   // tile half-extents in cell units
+function project(rx,ry,z){
+  // screen position (in px) relative to center
+  const sx = (rx-ry)*TILE*ISO_W;
+  const sy = (rx+ry)*TILE*ISO_H - z*TILE*0.46;
+  return [sx,sy];
+}
+
+function shade(hex, f){
+  // multiply hex color by factor f (0..1)
+  const c=parseInt(hex.slice(1),16);
+  let r=(c>>16)&255,g=(c>>8)&255,b=c&255;
+  r=Math.min(255,r*f|0); g=Math.min(255,g*f|0); b=Math.min(255,b*f|0);
+  return 'rgb('+r+','+g+','+b+')';
+}
+
+let frame=0, dragSelZ=0;
+function render(){
+  frame++;
+  // sky gradient by time
+  const df=dayFactor();
+  const skyTop = shade('#4a7fb0', df), skyBot=shade('#a9c9e0', df*0.9+0.1);
+  const g=ctx.createLinearGradient(0,0,0,Hh);
+  if(isNight()){ g.addColorStop(0,'#070b16'); g.addColorStop(1,'#10182a'); }
+  else { g.addColorStop(0, skyTop); g.addColorStop(1, skyBot); }
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,Hh);
+  // stars at night
+  if(isNight()){
+    ctx.fillStyle='rgba(255,255,255,'+(0.5*(1-df*2))+')';
+    for(let i=0;i<60;i++){ const sx=(i*97.13%W), sy=(i*53.7%(Hh*0.5)); ctx.fillRect(sx,sy,1.5,1.5); }
+  }
+
+  // center offset: keep player near center-lower
+  const [prx,pry]=rot(P.x,P.y);
+  const [pcx,pcy]=project(prx,pry,P.z);
+  const camX = W/2 - pcx;
+  const camY = Hh*0.55 - pcy;
+
+  // visible vertical layers from low to high (so higher overdraws)
+  // render range around player
+  const R = (W<560)? 12 : 17;
+  ctx.font = TILE+'px "DejaVu Sans Mono","Consolas",monospace';
+
+  // gather draw cells sorted by depth (rx+ry then z)
+  // We iterate z low->high, and within z, draw back-to-front.
+  for(let z=0; z<SZ; z++){
+    // only draw layers up to player z + a little (so we see player level and above context)
+    if(z > P.z+6) break;
+    // iterate in rotated space so depth order is correct
+    for(let s=-R; s<=R; s++){      // s = rx+ry diagonal-ish; we loop both
+      for(let d=-R; d<=R; d++){
+        const rx = prx + Math.round((s+d)/2);
+        const ry = pry + Math.round((s-d)/2);
+        if(rx<0||rx>=SX||ry<0||ry>=SY) continue;
+        const dist=Math.abs(rx-prx)+Math.abs(ry-pry);
+        if(dist>R) continue;
+        const [wx,wy]=unrot(rx,ry);
+        const b=get(wx,wy,z);
+        if(b===0) continue;
+        const m=meta(b); if(!m) continue;
+        // occlusion: skip if a solid non-transl block is directly in front+above (cheap top-face check)
+        // draw only if the cell above is air/transl OR this is top of column being viewed
+        const above=get(wx,wy,z+1);
+        const am=meta(above);
+        const hiddenTop = (am && am.solid && !am.transl && z<P.z+6);
+        // we still draw sides if exposed; simplest: draw if top exposed or it's near player z
+        const exposed = !(am&&am.solid&&!am.transl);
+        if(!exposed && z<P.z-1) continue;
+
+        const [sxp,syp]=project(rx,ry,z);
+        const px=camX+sxp, py=camY+syp;
+        if(px<-TILE||px>W+TILE||py<-TILE||py>Hh+TILE) continue;
+
+        const lt=lightAt(wx,wy,z);
+        // draw a small filled diamond as the block top for solidity, then glyph
+        const halfW=TILE*ISO_W*1.02, halfH=TILE*ISO_H*1.05;
+        if(m.solid){
+          // top face
+          ctx.beginPath();
+          ctx.moveTo(px, py-halfH);
+          ctx.lineTo(px+halfW, py);
+          ctx.lineTo(px, py+halfH);
+          ctx.lineTo(px-halfW, py);
+          ctx.closePath();
+          ctx.fillStyle=shade(m.col, 0.55*lt+0.18);
+          ctx.fill();
+          // left+right side (fake depth)
+          const sideH=TILE*0.40;
+          ctx.beginPath();
+          ctx.moveTo(px-halfW,py); ctx.lineTo(px,py+halfH);
+          ctx.lineTo(px,py+halfH+sideH); ctx.lineTo(px-halfW,py+sideH); ctx.closePath();
+          ctx.fillStyle=shade(m.side||m.col, 0.32*lt+0.06); ctx.fill();
+          ctx.beginPath();
+          ctx.moveTo(px+halfW,py); ctx.lineTo(px,py+halfH);
+          ctx.lineTo(px,py+halfH+sideH); ctx.lineTo(px+halfW,py+sideH); ctx.closePath();
+          ctx.fillStyle=shade(m.side||m.col, 0.24*lt+0.05); ctx.fill();
+        } else if(m.fluid){
+          ctx.beginPath();
+          ctx.moveTo(px, py-halfH); ctx.lineTo(px+halfW, py);
+          ctx.lineTo(px, py+halfH); ctx.lineTo(px-halfW, py); ctx.closePath();
+          ctx.fillStyle=shade(m.col,0.5*lt+0.2); ctx.globalAlpha=0.75; ctx.fill(); ctx.globalAlpha=1;
+        }
+        // glyph
+        ctx.fillStyle=shade('#0c0f13',1);
+        if(m.gly && m.gly!==' '){
+          ctx.fillStyle = shade(m.col, 0.85*lt+0.25);
+          // outline for readability
+          ctx.lineWidth=2; ctx.strokeStyle='rgba(0,0,0,0.45)';
+          ctx.strokeText(m.gly, px, py-1);
+          ctx.fillText(m.gly, px, py-1);
+        }
+        // powered wire glow
+        if((b===31||b===30) && poweredSet.has(wx+','+wy+','+z)){
+          ctx.fillStyle='rgba(127,209,166,0.55)';
+          ctx.fillText('•', px, py-1);
+        }
+      }
+    }
+    // draw player at own layer
+    if(z===P.z){
+      drawPlayer(camX,camY);
+      drawMobsAtLayer(camX,camY,z);
+    } else {
+      drawMobsAtLayer(camX,camY,z);
+    }
+  }
+
+  // highlight target block
+  drawTargetHL(camX,camY);
+
+  // night vignette
+  if(isNight()){
+    const v=ctx.createRadialGradient(W/2,Hh*0.5,Hh*0.2, W/2,Hh*0.5,Hh*0.8);
+    v.addColorStop(0,'rgba(0,0,0,0)'); v.addColorStop(1,'rgba(0,0,10,0.55)');
+    ctx.fillStyle=v; ctx.fillRect(0,0,W,Hh);
+  }
+}
+
+function drawPlayer(camX,camY){
+  const [prx,pry]=rot(P.x,P.y);
+  const [sxp,syp]=project(prx,pry,P.z);
+  const px=camX+sxp, py=camY+syp - TILE*0.5;
+  ctx.font=(TILE*1.1|0)+'px "DejaVu Sans Mono",monospace';
+  ctx.lineWidth=3; ctx.strokeStyle='rgba(0,0,0,0.6)';
+  ctx.strokeText('☗', px, py);
+  ctx.fillStyle='#f4f0e2'; ctx.fillText('☗', px, py);
+  ctx.font=TILE+'px "DejaVu Sans Mono",monospace';
+}
+function drawMobsAtLayer(camX,camY,z){
+  for(const mb of mobs){
+    if(Math.round(mb.z)!==z) continue;
+    const [rx,ry]=rot(Math.round(mb.x),Math.round(mb.y));
+    const [sxp,syp]=project(rx,ry,mb.z);
+    const px=camX+sxp, py=camY+syp - TILE*0.45;
+    ctx.lineWidth=3; ctx.strokeStyle='rgba(0,0,0,0.6)';
+    const g = mb.kind==='murk'?'ψ':'ʘ';
+    ctx.strokeText(g, px, py);
+    ctx.fillStyle = mb.kind==='murk'?'#b56ad0':'#e0c06a';
+    ctx.fillText(g, px, py);
+  }
+}
+let target=null; // {x,y,z} block we'd mine; placePos for placing
+function drawTargetHL(camX,camY){
+  if(!target) return;
+  const t=target.block;
+  const [rx,ry]=rot(t.x,t.y);
+  const [sxp,syp]=project(rx,ry,t.z);
+  const px=camX+sxp, py=camY+syp;
+  const halfW=TILE*ISO_W*1.05, halfH=TILE*ISO_H*1.08;
+  ctx.beginPath();
+  ctx.moveTo(px, py-halfH); ctx.lineTo(px+halfW, py);
+  ctx.lineTo(px, py+halfH); ctx.lineTo(px-halfW, py); ctx.closePath();
+  ctx.lineWidth=2; ctx.strokeStyle='rgba(228,194,119,0.9)'; ctx.stroke();
+}
+
+/* ---------- Targeting: pick block in front of player ---------- */
+function mineable(b){ const m=meta(b); return b!==0 && m && (m.solid||m.machine) && (m.drop!=null||m.machine); }
+function computeTarget(){
+  // Pick nearest MINEABLE block. Priority: forward ray (eye then up/down), then floor under feet.
+  const [prx,pry]=rot(P.x,P.y);
+  // forward ray
+  for(let step=1;step<=P.reach;step++){
+    const [wx,wy]=unrot(prx,pry+step);
+    for(const dz of [0,1,-1,2,-2]){
+      const z=P.z+dz;
+      if(!inb(wx,wy,z))continue;
+      if(mineable(get(wx,wy,z))) return finalizeTarget({x:wx,y:wy,z});
+    }
+    // stop the ray if a solid wall blocks line of sight at eye level
+    const eb=get(wx,wy,P.z);
+    if(eb!==0 && meta(eb)&&meta(eb).solid){ break; }
+  }
+  // floor under feet (dig straight down)
+  if(mineable(get(P.x,P.y,P.z-1))) return finalizeTarget({x:P.x,y:P.y,z:P.z-1});
+  // adjacent (4-neighbour) mineable at feet level as last resort
+  for(const [dx,dy] of [[0,1],[1,0],[0,-1],[-1,0]]){
+    for(const dz of [0,-1]){
+      const wx=P.x+dx,wy=P.y+dy,z=P.z+dz;
+      if(mineable(get(wx,wy,z))) return finalizeTarget({x:wx,y:wy,z});
+    }
+  }
+  target=null;
+  return null;
+}
+function finalizeTarget(block){
+  // placement cell: prefer cell adjacent toward player that is empty
+  const [prx,pry]=rot(P.x,P.y);
+  const [brx,bry]=rot(block.x,block.y);
+  // place on top if mining floor, else in front (toward player) / above
+  let cands=[
+    {x:block.x,y:block.y,z:block.z+1},
+  ];
+  // toward player in world space
+  const dx=Math.sign(P.x-block.x), dy=Math.sign(P.y-block.y);
+  if(dx||dy) cands.unshift({x:block.x+dx,y:block.y+dy,z:block.z});
+  let place=null;
+  for(const c of cands){ if(inb(c.x,c.y,c.z)&&get(c.x,c.y,c.z)===0){ place=c; break; } }
+  target={block, place};
+  return target;
+}
+
+/* ---------- Actions ---------- */
+let toastTimer=null;
+function toast(msg,col){
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.style.color=col||'#7fd1a6'; t.style.opacity=1;
+  clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.style.opacity=0,1400);
+}
+let mineProg=null; // {x,y,z,t,need}
+function doMine(){
+  computeTarget();
+  if(!target||!target.block){ return; }
+  const t=target.block; const b=get(t.x,t.y,t.z); const m=meta(b);
+  if(!mineable(b)){ return; }
+  // tool gating
+  if(m.needs==='pick' && bestPickTier()<1){ toast('곡괭이가 필요하다 ('+m.name+')','#e07a6a'); return; }
+  // hardness as progress
+  const need = Math.max(1, m.hard - (bestPickTier()>=2?1:0));
+  if(!mineProg || mineProg.x!==t.x||mineProg.y!==t.y||mineProg.z!==t.z){
+    mineProg={x:t.x,y:t.y,z:t.z,t:0,need};
+  }
+  mineProg.t++;
+  if(mineProg.t>=mineProg.need){
+    const dropId = m.drop!=null? m.drop : b;
+    if(dropId!=null && dropId!==0){ addItem(dropId,1); }
+    setB(t.x,t.y,t.z,0);
+    mineProg=null; rebuildLights();
+    toast('+1 '+nameOf(dropId), '#7fd1a6');
+  }
+}
+function doPlace(){
+  computeTarget();
+  const slot=INV[selSlot];
+  if(!slot||slot.ct<=0){ toast('빈 슬롯','#e07a6a'); return; }
+  const id=slot.id;
+  // only placeable if it's a block (B has it) and solid/placeable
+  if(!B[id]){ toast(nameOf(id)+'은(는) 설치 불가','#e07a6a'); return; }
+  let pos = target&&target.place ? target.place : null;
+  if(!pos){
+    // place in front at player level if empty
+    const [prx,pry]=rot(P.x,P.y); const [wx,wy]=unrot(prx,pry+1);
+    if(inb(wx,wy,P.z)&&get(wx,wy,P.z)===0) pos={x:wx,y:wy,z:P.z};
+  }
+  if(!pos){ toast('놓을 자리가 없다','#e07a6a'); return; }
+  if(pos.x===P.x&&pos.y===P.y&&(pos.z===P.z)){ toast('자기 위치엔 못 놓음','#e07a6a'); return; }
+  setB(pos.x,pos.y,pos.z,id);
+  slot.ct--; if(slot.ct<=0)slot.id=0;
+  rebuildLights();
+  // opening crafting if placed a crafting table & interacting handled elsewhere
+}
+function tryInteract(){
+  // if facing a crafting table, open craft
+  computeTarget();
+  if(target&&target.block && get(target.block.x,target.block.y,target.block.z)===16){ UI.openCraft(); return true; }
+  return false;
+}
+
+/* ---------- Movement & physics-lite ---------- */
+const keys={};
+function canStand(x,y,z){
+  if(!inb(x,y,z))return false;
+  const here=get(x,y,z), below=get(x,y,z-1);
+  const hereM=meta(here), belowM=meta(below);
+  const blocked = hereM&&hereM.solid;
+  return !blocked;
+}
+function tryMove(dx,dy){
+  // dx,dy in rotated screen space -> world space
+  const [wdx,wdy]=screenToWorldDelta(dx,dy);
+  let nx=P.x+wdx, ny=P.y+wdy, nz=P.z;
+  if(!inb(nx,ny,nz)) return;
+  // step up 1 if blocked but step is climbable
+  if(meta(get(nx,ny,nz))&&meta(get(nx,ny,nz)).solid){
+    if(inb(nx,ny,nz+1)&&!(meta(get(nx,ny,nz+1))&&meta(get(nx,ny,nz+1)).solid)){
+      nz+=1;
+    } else return;
+  }
+  // gravity: drop until ground
+  while(nz>0 && !(meta(get(nx,ny,nz-1))&&meta(get(nx,ny,nz-1)).solid)){ nz--; }
+  P.x=nx;P.y=ny;P.z=nz;
+}
+function screenToWorldDelta(dx,dy){
+  // forward(up arrow / W) = +ry in rotated space
+  // build rotated delta then unrotate
+  let rdx=dx, rdy=dy;
+  const [ax,ay]=unrot(rdx+1000, rdy+1000); // unrot is affine-ish for our discrete maps? no.
+  // simpler: define forward vectors per dir
+  // base (dir0): forward = (0,+1), right=(+1,0)
+  let fwd,right;
+  switch(P.dir&3){
+    case 0: fwd=[0,1]; right=[1,0]; break;
+    case 1: fwd=[-1,0]; right=[0,1]; break;
+    case 2: fwd=[0,-1]; right=[-1,0]; break;
+    case 3: fwd=[1,0]; right=[0,-1]; break;
+  }
+  // dx= right component (A/D), dy = forward (W/S)  (W => -screen => forward)
+  return [ fwd[0]*dy + right[0]*dx, fwd[1]*dy + right[1]*dx ];
+}
+function vertical(dz){
+  let nz=P.z+dz;
+  if(!inb(P.x,P.y,nz))return;
+  if(dz>0){ if(meta(get(P.x,P.y,nz))&&meta(get(P.x,P.y,nz)).solid)return; P.z=nz; }
+  else { P.z=nz; while(P.z>0 && !(meta(get(P.x,P.y,P.z-1))&&meta(get(P.x,P.y,P.z-1)).solid)) P.z--; }
+}
+
+/* ---------- Mob AI & survival tick ---------- */
+let survTimer=0, mobTimer=0, spawnTimer=0;
+function gameTick(dt){
+  timeOfDay=(timeOfDay + dt/DAY_LEN)%1;
+  // survival
+  survTimer+=dt;
+  if(survTimer>4000){
+    survTimer=0;
+    P.food=Math.max(0,P.food-1);
+    if(P.food<=0) P.hp=Math.max(0,P.hp-1);
+    else if(P.hp<P.maxhp && P.food>16) P.hp=Math.min(P.maxhp,P.hp+1);
+    if(P.hp<=0) respawn();
+  }
+  // mob spawn at night
+  spawnTimer+=dt;
+  if(spawnTimer>3500){
+    spawnTimer=0;
+    if(isNight() && mobs.length<8){
+      // spawn near player on surface in dark
+      for(let tries=0;tries<6;tries++){
+        const ox=P.x+(Math.random()*16-8|0), oy=P.y+(Math.random()*16-8|0);
+        if(!inb(ox,oy,0))continue;
+        const sz=topZAt(ox,oy)+1;
+        if(inb(ox,oy,sz)&&lightAt(ox,oy,sz)<0.3){ spawnMob('murk',ox,oy,sz); break; }
+      }
+    }
+    if(mobs.filter(m=>m.kind==='hop').length<3 && Math.random()<0.5){
+      const ox=P.x+(Math.random()*20-10|0), oy=P.y+(Math.random()*20-10|0);
+      if(inb(ox,oy,0)){ const sz=topZAt(ox,oy)+1; if(inb(ox,oy,sz))spawnMob('hop',ox,oy,sz); }
+    }
+  }
+  // mob movement
+  mobTimer+=dt;
+  if(mobTimer>420){
+    mobTimer=0;
+    for(let i=mobs.length-1;i>=0;i--){
+      const mb=mobs[i];
+      // murk burns/despawns in daylight
+      if(mb.kind==='murk' && !isNight() && lightAt(Math.round(mb.x),Math.round(mb.y),Math.round(mb.z))>0.5){
+        mobs.splice(i,1); continue;
+      }
+      if(mb.kind==='murk'){
+        // chase
+        const dx=Math.sign(P.x-mb.x), dy=Math.sign(P.y-mb.y);
+        const nx=Math.round(mb.x)+dx, ny=Math.round(mb.y)+dy;
+        if(inb(nx,ny,0)){ const sz=topZAt(nx,ny)+1; if(Math.abs(sz-mb.z)<=1){ mb.x=nx;mb.y=ny;mb.z=sz; } }
+        // attack
+        if(Math.abs(P.x-mb.x)+Math.abs(P.y-mb.y)<=1 && Math.abs(P.z-mb.z)<=1){
+          if(mb.cd<=0){ P.hp=Math.max(0,P.hp-2); mb.cd=3; toast('습격당함! -2 HP','#e07a6a'); if(P.hp<=0)respawn(); }
+        }
+        if(mb.cd>0)mb.cd--;
+      } else {
+        // wander
+        const nx=Math.round(mb.x)+(Math.random()*3-1|0), ny=Math.round(mb.y)+(Math.random()*3-1|0);
+        if(inb(nx,ny,0)){ const sz=topZAt(nx,ny)+1; mb.x=nx;mb.y=ny;mb.z=sz; }
+      }
+    }
+  }
+  // automation
+  autoTick++;
+  if(autoTick%2===0){ poweredSet=stepAutomation(); }
+}
+function respawn(){
+  toast('쓰러졌다… 부활','#e07a6a');
+  P.hp=P.maxhp; P.food=P.maxfood;
+  // place at spawn surface
+  P.x=32;P.y=32; P.z=topZAt(32,32)+1; if(P.z>=SZ)P.z=SZ-1;
+  while(P.z>0 && !(meta(get(P.x,P.y,P.z-1))&&meta(get(P.x,P.y,P.z-1)).solid)) P.z--;
+}
+
+/* ---------- Mob hit by mining click ---------- */
+function tryHitMob(){
+  // if a murk is in front, damage it instead of mining
+  const [prx,pry]=rot(P.x,P.y);
+  for(let step=1;step<=2;step++){
+    const [wx,wy]=unrot(prx,pry+step);
+    for(const mb of mobs){
+      if(Math.round(mb.x)===wx&&Math.round(mb.y)===wy&&Math.abs(Math.round(mb.z)-P.z)<=1){
+        mb.hp-=3; if(mb.hp<=0){ mobs.splice(mobs.indexOf(mb),1); toast('처치!','#7fd1a6'); if(mb.kind==='hop')addItem(2,1);}
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/* ============================================================
+   UI
+   ============================================================ */
+const UI = {
+  openCraft(){ this.closeAll(); this.renderRecipes(); document.getElementById('craftPanel').style.display='block'; paused=true; },
+  openHelp(){ this.closeAll(); document.getElementById('helpPanel').style.display='block'; paused=true; },
+  closeAll(){ document.querySelectorAll('.panel').forEach(p=>p.style.display='none'); paused=false; },
+  renderRecipes(){
+    const list=document.getElementById('recipeList'); list.innerHTML='';
+    for(const r of RECIPES){
+      if(r.hide) continue;
+      const can = r.cost.every(([id,n])=> n===0 || countItem(id)>=n);
+      const el=document.createElement('div');
+      el.className='recipe'+(can?'':' no');
+      const costStr = r.cost.filter(c=>c[1]>0).map(([id,n])=> glyOf(id)+nameOf(id)+'×'+n).join(' + ');
+      el.innerHTML='<div class="out" style="color:'+colOf(r.out)+'">'+glyOf(r.out)+'</div>'+
+        '<div class="desc"><b>'+r.name+'</b><br><span class="cost">'+costStr+'</span></div>';
+      el.onclick=()=>{ if(!can){toast('재료 부족','#e07a6a');return;} this.craft(r); };
+      list.appendChild(el);
+    }
+  },
+  craft(r){
+    if(!r.cost.every(([id,n])=> n===0||countItem(id)>=n)){ toast('재료 부족','#e07a6a'); return; }
+    for(const [id,n] of r.cost){ if(n>0) takeItem(id,n); }
+    addItem(r.out, r.n);
+    toast('제작: '+nameOf(r.out)+' ×'+r.n,'#e4c277');
+    this.renderRecipes(); drawHotbar();
+  }
+};
+function drawHotbar(){
+  const hb=document.getElementById('hotbar'); hb.innerHTML='';
+  for(let i=0;i<8;i++){
+    const s=INV[i];
+    const d=document.createElement('div');
+    d.className='slot'+(i===selSlot?' sel':'');
+    if(s&&s.ct>0){
+      d.innerHTML='<span class="key">'+(i+1)+'</span><span class="gly" style="color:'+colOf(s.id)+'">'+glyOf(s.id)+'</span><span class="ct">'+s.ct+'</span>';
+    } else {
+      d.innerHTML='<span class="key">'+(i+1)+'</span>';
+    }
+    d.onclick=()=>{ selSlot=i; drawHotbar(); };
+    hb.appendChild(d);
+  }
+}
+function drawHUD(){
+  const hp=Math.round(P.hp), fd=Math.round(P.food);
+  const heart='♥'.repeat(Math.ceil(hp/2))+'·'.repeat(Math.floor((P.maxhp-hp)/2));
+  const meat='◗'.repeat(Math.ceil(fd/2))+'·'.repeat(Math.floor((P.maxfood-fd)/2));
+  document.getElementById('stTL').innerHTML='<span class="bar">'+heart+'</span> HP &nbsp; <span class="bar hunger">'+meat+'</span> 허기';
+  const tnames=['새벽','아침','정오','오후','황혼','밤','심야','여명'];
+  const ti=Math.floor(timeOfDay*8)%8;
+  const dn = isNight()?'🌙 밤':'☀ 낮';
+  document.getElementById('stTR').innerHTML = dn+' · '+tnames[ti]+' &nbsp;|&nbsp; ('+P.x+','+P.y+' z'+P.z+') &nbsp;|&nbsp; <span class="dim">H 도움말</span>';
+}
+
+/* ============================================================
+   Input
+   ============================================================ */
+let paused=false;
+window.addEventListener('keydown',e=>{
+  const k=e.key.toLowerCase();
+  if(k==='h'){ if(document.getElementById('helpPanel').style.display==='block')UI.closeAll(); else UI.openHelp(); e.preventDefault(); return;}
+  if(k==='c'){ if(document.getElementById('craftPanel').style.display==='block')UI.closeAll(); else UI.openCraft(); e.preventDefault(); return;}
+  if(k==='escape'){ UI.closeAll(); return; }
+  if(paused) return;
+  if(k>='1'&&k<='8'){ selSlot=parseInt(k)-1; drawHotbar(); return; }
+  if(k==='q'){ P.dir=(P.dir+3)&3; return; }
+  if(k==='e'){ if(tryInteract())return; P.dir=(P.dir+1)&3; return; }
+  if(k==='w'||k==='arrowup'){ tryMove(0,1); e.preventDefault(); }
+  else if(k==='s'||k==='arrowdown'){ tryMove(0,-1); e.preventDefault(); }
+  else if(k==='a'||k==='arrowleft'){ tryMove(-1,0); e.preventDefault(); }
+  else if(k==='d'||k==='arrowright'){ tryMove(1,0); e.preventDefault(); }
+  else if(k===' '){ vertical(1); e.preventDefault(); }
+  else if(k==='shift'){ vertical(-1); }
+  keys[k]=true;
+});
+window.addEventListener('keyup',e=>{ keys[e.key.toLowerCase()]=false; });
+
+// mouse
+cv.addEventListener('contextmenu',e=>e.preventDefault());
+cv.addEventListener('mousedown',e=>{
+  if(paused)return;
+  if(e.button===0){ // left = mine / hit
+    if(tryHitMob())return;
+    if(tryInteract())return;
+    doMine();
+  } else if(e.button===2){ doPlace(); }
+});
+// hold-to-mine
+let mineHold=false;
+cv.addEventListener('mousedown',e=>{ if(e.button===0)mineHold=true; });
+window.addEventListener('mouseup',e=>{ mineHold=false; mineProg=null; });
+cv.addEventListener('mousemove',e=>{
+  // update facing target slightly by horizontal mouse position? keep simple: no
+});
+cv.addEventListener('wheel',e=>{
+  if(paused)return;
+  selSlot=(selSlot + (e.deltaY>0?1:7))%8; drawHotbar(); e.preventDefault();
+},{passive:false});
+
+// touch controls
+function setupTouch(){
+  const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints>0 || window.innerWidth<560;
+  if(!isTouch) return;
+  document.getElementById('touch').style.display='block';
+  const pad=document.getElementById('tpad');
+  pad.querySelectorAll('.tbtn').forEach((b,i)=>{
+    const dirs=[[0,1],[-1,0],[1,0],[0,-1]]; // up,left,right,down (matches layout order)
+    // layout: ▲(top)=up, ◀=left, ▶=right, ▼=down
+    const map={'▲':[0,1],'◀':[-1,0],'▶':[1,0],'▼':[0,-1]};
+    const v=map[b.textContent.trim()]||[0,0];
+    const handler=ev=>{ ev.preventDefault(); if(!paused)tryMove(v[0],v[1]); };
+    b.addEventListener('touchstart',handler,{passive:false});
+    b.addEventListener('click',handler);
+  });
+  document.querySelectorAll('#tact .tbtn').forEach(b=>{
+    const act=b.dataset.act;
+    const handler=ev=>{ ev.preventDefault(); if(paused)return;
+      if(act==='mine'){ if(!tryHitMob()&&!tryInteract())doMine(); }
+      else if(act==='place')doPlace();
+      else if(act==='up')vertical(1);
+      else if(act==='dn')vertical(-1);
+    };
+    b.addEventListener('touchstart',handler,{passive:false});
+    b.addEventListener('click',handler);
+  });
+  // double-tap world to rotate
+  let lastTap=0;
+  cv.addEventListener('touchstart',e=>{
+    const now=Date.now();
+    if(now-lastTap<300){ P.dir=(P.dir+1)&3; }
+    lastTap=now;
+  },{passive:true});
+}
+
+/* ============================================================
+   Boot
+   ============================================================ */
+function startGame(){
+  document.getElementById('intro').style.display='none';
+  resize();
+  genWorld(WORLD_SEED);
+  // spawn player on surface center
+  P.x=32;P.y=32; P.z=topZAt(32,32)+1; if(P.z>=SZ)P.z=SZ-1;
+  while(P.z>0 && !(meta(get(P.x,P.y,P.z-1))&&meta(get(P.x,P.y,P.z-1)).solid)) P.z--;
+  // starter kit
+  addItem(40,1);  // wood pickaxe
+  addItem(15,4);  // torches
+  addItem(16,1);  // crafting table
+  rebuildLights();
+  poweredSet=stepAutomation();
+  drawHotbar();
+  setupTouch();
+  loopRunning=true;
+}
+let loopRunning=false, lastT=performance.now();
+function loop(now){
+  const dt=Math.min(80, now-lastT); lastT=now;
+  if(loopRunning && !paused){
+    gameTick(dt);
+    if(mineHold){ doMine(); }
+  }
+  if(loopRunning){
+    computeTarget();
+    render();
+    drawHUD();
+  }
+  requestAnimationFrame(loop);
+}
+
+// intro ascii art
+document.getElementById('introArt').textContent =
+"   ▒▒▒▒  ╪  ❉❉❉   ◆ ◈ ✦\n"+
+"  ▒░░░▒ ╪╪╪ ❉❉❉❉❉   ◉═⊗\n"+
+"  ▒░◆░▒  █   \"\"\"\"\"   ═══▣\n"+
+"  ▒▒▒▒▒ ▓▓▓ ▒▒▒▒▒▒▒▒▒▒▒";
+
+document.getElementById('startBtn').addEventListener('click',startGame);
+// allow Enter to start
+window.addEventListener('keydown',function once(e){
+  if(e.key==='Enter' && document.getElementById('intro').style.display!=='none'){ startGame(); }
+});
+
+resize();
+requestAnimationFrame(loop);
+
+// expose for self-test
+window.__GC={B,ITEM,genWorld,get,setB,P,INV,addItem,countItem,RECIPES,UI,doMine,doPlace,startGame,
+  state:()=>({hp:P.hp,food:P.food,pos:[P.x,P.y,P.z],sel:selSlot,night:isNight()}),
+  meta,glyOf};
+</script>
+</body>
+</html>

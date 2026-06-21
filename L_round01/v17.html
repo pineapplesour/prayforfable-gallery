@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>심야 카지노 — 내부</title>
+<style>
+  :root{
+    --paper:#efe8d6; --ink:#2b2620; --dim:#6f6450; --felt:#234034; --gold:#b9942f;
+  }
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--paper);}
+  body{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;color:var(--ink);}
+
+  /* ---- 3D 뷰 ---- */
+  #stage{position:fixed;inset:0;background:#100d0a;}
+  #view{
+    position:absolute;left:0;right:0;top:0;
+    height:calc(100% - 92px);
+    margin:0;white-space:pre;overflow:hidden;user-select:none;
+    color:#d8cca8;background:#100d0a;
+    font-variant-ligatures:none;letter-spacing:0;
+    display:flex;align-items:center;justify-content:center;
+  }
+  #view pre{margin:0;line-height:1.0;}
+
+  /* ---- 하단 패널 ---- */
+  #hud{
+    position:fixed;left:0;right:0;bottom:0;height:92px;
+    background:var(--ink);color:var(--paper);
+    display:grid;grid-template-rows:auto 1fr;gap:0;
+    border-top:2px solid var(--gold);z-index:5;
+  }
+  #status{
+    padding:7px 14px;font-size:12.5px;line-height:1.45;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    border-bottom:1px solid #4a4233;min-height:18px;
+  }
+  #status b{color:var(--gold);}
+  #barrow{
+    display:flex;align-items:center;gap:14px;padding:0 14px;overflow:hidden;
+    font-size:12px;
+  }
+  #barrow .tag{color:var(--dim);}
+  #chips{color:var(--gold);font-weight:700;}
+  #here{color:#cdbf9a;}
+  #bag{flex:1;color:#b7ad93;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
+  /* ---- 인트로 / 엔딩 ---- */
+  #intro,#ending{
+    position:fixed;inset:0;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;text-align:center;
+    background:rgba(239,232,214,.97);z-index:20;
+    font-family:"Noto Serif KR",serif;color:var(--ink);
+    transition:opacity 1s ease;padding:24px;
+  }
+  #intro h1{font-size:42px;font-weight:600;letter-spacing:14px;margin:0 0 6px;text-indent:14px;}
+  #intro .sub{font-size:13px;letter-spacing:6px;color:var(--gold);font-family:ui-monospace,Menlo,monospace;margin-bottom:22px;}
+  #intro p,#ending p{font-size:14.5px;line-height:2;max-width:480px;margin:5px 0;}
+  #intro .keys{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;color:var(--dim);margin-top:24px;line-height:2;}
+  #intro .enter{margin-top:18px;font-family:ui-monospace,Menlo,monospace;font-size:13px;color:var(--ink);
+    border:1px solid var(--ink);padding:8px 20px;border-radius:2px;animation:pulse 1.8s infinite;}
+  @keyframes pulse{0%,100%{opacity:.55}50%{opacity:1}}
+  #ending{opacity:0;pointer-events:none;background:rgba(20,16,12,.97);color:var(--paper);}
+  #ending h2{font-size:26px;font-weight:600;letter-spacing:6px;color:var(--gold);}
+  .hidden{opacity:0 !important;pointer-events:none !important;}
+
+  /* ---- 인터랙션 카드 ---- */
+  #card{
+    position:fixed;z-index:15;left:50%;top:50%;transform:translate(-50%,-50%) scale(.96);
+    width:min(86vw,420px);background:var(--paper);color:var(--ink);
+    border:2px solid var(--ink);border-radius:3px;box-shadow:0 18px 60px rgba(0,0,0,.55);
+    padding:18px 20px;opacity:0;pointer-events:none;transition:opacity .18s,transform .18s;
+  }
+  #card.show{opacity:1;pointer-events:auto;transform:translate(-50%,-50%) scale(1);}
+  #card h3{margin:0 0 4px;font-size:17px;letter-spacing:1px;}
+  #card .glyph{font-family:ui-monospace,monospace;color:var(--gold);font-size:12px;margin:0 0 10px;white-space:pre;line-height:1.15;}
+  #card p{margin:0 0 12px;font-size:13.5px;line-height:1.6;}
+  #card .acts{display:flex;flex-wrap:wrap;gap:8px;}
+  #card button{
+    font-family:ui-monospace,monospace;font-size:12.5px;cursor:pointer;
+    background:var(--ink);color:var(--paper);border:0;padding:8px 14px;border-radius:2px;
+  }
+  #card button.alt{background:transparent;color:var(--ink);border:1px solid var(--ink);}
+  #card button:active{transform:translateY(1px);}
+  #card .close{position:absolute;top:8px;right:10px;background:none;color:var(--dim);border:0;font-size:18px;padding:2px 6px;}
+
+  /* ---- 터치 패드 ---- */
+  #pad{position:fixed;z-index:8;left:0;right:0;bottom:100px;display:none;
+    grid-template-columns:repeat(3,1fr);gap:8px;padding:0 14px;pointer-events:none;}
+  #pad button{pointer-events:auto;font-family:ui-monospace,monospace;font-size:18px;
+    background:rgba(43,38,32,.82);color:var(--paper);border:1px solid var(--gold);
+    border-radius:6px;height:44px;}
+  #pad button:active{background:var(--gold);color:var(--ink);}
+  #pad .wide{grid-column:span 3;height:38px;font-size:13px;letter-spacing:2px;}
+  body.touch #pad{display:grid;}
+
+  /* 작은 화면(390) 조정 */
+  @media (max-width:560px){
+    #intro h1{font-size:30px;letter-spacing:8px;}
+    #intro p{font-size:13px;}
+    #hud{height:108px;}
+    #view{height:calc(100% - 108px);}
+    #pad{bottom:116px;}
+  }
+</style>
+</head>
+<body>
+
+<div id="stage"><div id="view"><pre id="screen"></pre></div></div>
+
+<div id="hud">
+  <div id="status">불러오는 중…</div>
+  <div id="barrow">
+    <span><span class="tag">칩</span> <span id="chips">0</span></span>
+    <span><span class="tag">방</span> <span id="here">—</span></span>
+    <span id="bag"><span class="tag">소지</span> 없음</span>
+  </div>
+</div>
+
+<div id="card">
+  <button class="close" data-close>×</button>
+  <h3 id="cardTitle"></h3>
+  <div class="glyph" id="cardGlyph"></div>
+  <p id="cardBody"></p>
+  <div class="acts" id="cardActs"></div>
+</div>
+
+<div id="pad">
+  <button data-k="turnL">↶</button>
+  <button data-k="fwd">▲</button>
+  <button data-k="turnR">↷</button>
+  <button data-k="strafeL">◀</button>
+  <button data-k="back">▼</button>
+  <button data-k="strafeR">▶</button>
+  <button class="wide" data-k="use">살펴보기 / 상호작용 (E)</button>
+</div>
+
+<div id="intro">
+  <h1>심야 카지노</h1>
+  <div class="sub">T H E&nbsp;&nbsp;L A T E&nbsp;&nbsp;H O U S E</div>
+  <p>문이 닫힌 지 오래된 카지노. 네온은 죽었지만 기계는 아직 숨 쉰다.<br>
+  당신은 빈 손으로 들어선다 — 단 한 가지를 되찾기 위해.</p>
+  <p>금고 안에 잠긴 <b>마지막 패</b>를 찾아 이 집을 떠나라.</p>
+  <p class="keys">W A S D · ←→ 회전 · E 상호작용 · M 지도 · 모바일은 화면 버튼</p>
+  <div class="enter">아무 키나 눌러 입장 · 화면 터치</div>
+</div>
+
+<div id="ending">
+  <h2 id="endTitle">정산</h2>
+  <p id="endBody"></p>
+  <p id="endHint" style="font-size:12px;color:var(--gold);margin-top:18px;">아무 키나 눌러 다시</p>
+</div>
+
+<script>
+(() => {
+"use strict";
+
+/* =====================================================================
+   심야 카지노 — 3D 아스키 룸 탐험
+   레퍼런스(2_내부.html)의 1인칭 레이캐스트 아스키 공간 감각을 계승하되,
+   하나의 미로 대신 "방 단위"로 나누고 각 방에 3D처럼 보이는 사물
+   (슬롯·룰렛·카드테이블·바·금고·환전소)을 배치, 상호작용을 더한다.
+   ===================================================================== */
+
+/* ---------------- 그리드 룸 정의 ----------------
+   각 방은 작은 타일 그리드. 1=벽, 0=바닥, D=문(인접 방으로).
+   사물은 좌표로 그리드에 박아 넣되, 충돌은 막고 상호작용 가능.
+   문(door)은 방 사이 텔레포트로 연결.
+*/
+
+// 사물 종류별 3D 스프라이트(가까울수록 큰 빌보드처럼 렌더). 여러 줄 ASCII.
+const SPRITES = {
+  slot: [
+    "  ____  ",
+    " |o o |",
+    " |[$]| ",
+    " |_=_| ",
+    "  |||  ",
+  ],
+  roulette: [
+    "  .-=-.  ",
+    " /  *  \\ ",
+    "| 0 . 7 |",
+    " \\ ._. / ",
+    "  '---'  ",
+  ],
+  cards: [
+    "  _______ ",
+    " /A K Q J\\",
+    "|  felt   |",
+    " \\__|__|_/ ",
+  ],
+  bar: [
+    " []==[]==[]",
+    " | |  | | |",
+    " bottles  ",
+    " =BAR===== ",
+  ],
+  cashier: [
+    "  ______  ",
+    " |$ $ $ | ",
+    " | CAGE | ",
+    " |__||__| ",
+  ],
+  vault: [
+    "  ______  ",
+    " | (O)  | ",
+    " | VAULT| ",
+    " |______| ",
+  ],
+  chip: [
+    " (=) ",
+    " (o) ",
+  ],
+  plant: [
+    " \\|/ ",
+    " /|\\ ",
+    "  |  ",
+  ],
+  light: [
+    " \\ . / ",
+    " -(*)- ",
+    " / . \\ ",
+  ],
+  dealer: [
+    "  (o.o) ",
+    " <| | |>",
+    "  / \\  ",
+  ],
+};
+
+// 사물 인스턴스: {type, key, label, glyph(sprite key), tile:[x,y], color, action}
+// 방 정의
+function R(name, theme, grid, things, doors){return {name,theme,grid,things,doors};}
+
+// 공통 빈 방 만들기 헬퍼 (둘레 벽)
+function room(w,h){
+  const g=[];
+  for(let y=0;y<h;y++){const r=[];for(let x=0;x<w;x++){r.push((x===0||y===0||x===w-1||y===h-1)?1:0);}g.push(r);}
+  return g;
+}
+
+// ----- 방들 -----
+const ROOMS = {};
+
+// 0) 로비 — 중앙 시작
+{
+  const g=room(11,9);
+  // 입구 분위기 기둥
+  g[2][3]=1; g[2][7]=1; g[6][3]=1; g[6][7]=1;
+  ROOMS.lobby = R("로비","#1c2a26",g,[
+    {type:"light",label:"샹들리에 잔해",glyph:"light",tile:[5,1],
+      desc:"천장에서 늘어진 샹들리에. 전구 대부분이 깨졌지만, 하나가 약하게 깜빡인다.",
+      acts:[["살펴보기","깨진 크리스탈 사이에 누군가의 이니셜이 긁혀 있다 — 'F'."]]},
+    {type:"plant",label:"마른 화분",glyph:"plant",tile:[2,4],
+      desc:"한때 푸르렀을 야자수. 흙은 갈라졌고 잎은 종이처럼 바스러진다.",
+      acts:[["뒤져보기",(S)=>{ if(!S.flags.lobbyChip){S.flags.lobbyChip=true; addItem(S,"chip1","칩 ×1"); S.chips+=1; return "화분 흙 속에서 칩 한 개가 굴러 나온다. (칩 +1)";} return "더 이상 나오는 건 없다.";}]]},
+    {type:"slot",label:"입구 슬롯머신",glyph:"slot",tile:[8,5],
+      desc:"'WELCOME' 글자가 멈춘 채 깜빡이는 낡은 슬롯. 레버가 묵직하다.",
+      acts:[["레버 당기기",(S)=>spin(S)]]},
+  ],[
+    {tile:[5,0],to:"slots",entry:[5,7],dir:Math.PI/2*3},   // 위 → 슬롯홀
+    {tile:[10,4],to:"tables",entry:[1,4],dir:0},           // 오른 → 테이블홀
+    {tile:[0,4],to:"bar",entry:[9,4],dir:Math.PI},         // 왼 → 바
+    {tile:[5,8],to:"cage",entry:[5,1],dir:Math.PI/2},      // 아래 → 환전/금고
+  ]);
+}
+
+// 1) 슬롯 홀
+{
+  const g=room(13,9);
+  ROOMS.slots = R("슬롯 홀","#241a26",g,[
+    {type:"slot",label:"슬롯 #7",glyph:"slot",tile:[3,2],
+      desc:"릴에 체리·체리·종 그림. 누가 봐도 곧 터질 것 같은 자세를 하고 있다.",
+      acts:[["레버 당기기",(S)=>spin(S,3)]]},
+    {type:"slot",label:"슬롯 #13",glyph:"slot",tile:[6,2],
+      desc:"불길한 번호. 화면에 'TILT' 경고가 남아 있다.",
+      acts:[["레버 당기기",(S)=>spin(S,1)]]},
+    {type:"slot",label:"슬롯 #21",glyph:"slot",tile:[9,2],
+      desc:"블랙잭 테마 슬롯. 21을 좋아하는 누군가가 만들었다.",
+      acts:[["레버 당기기",(S)=>spin(S,2)]]},
+    {type:"chip",label:"바닥의 칩 더미",glyph:"chip",tile:[6,6],
+      desc:"누군가 황급히 떠나며 흘린 칩들이 바닥에 흩어져 있다.",
+      acts:[["주워 담기",(S)=>{ if(!S.flags.slotPile){S.flags.slotPile=true; const n=4; S.chips+=n; addItem(S,"chip4","칩 ×4"); return "흩어진 칩 "+n+"개를 그러모았다. (칩 +"+n+")";} return "바닥은 이제 깨끗하다.";}]]},
+    {type:"light",label:"형광 표지판",glyph:"light",tile:[11,4],
+      desc:"'JACKPOT →' 화살표가 환전소 방향을 가리킨다. 단서일까, 미끼일까.",
+      acts:[["살펴보기","뒷면에 작게: '금고는 세 가지를 묻는다 — 자물쇠, 패, 빚.'"]]},
+  ],[
+    {tile:[6,8],to:"lobby",entry:[5,1],dir:Math.PI/2},
+  ]);
+}
+
+// 2) 테이블 홀 (룰렛 + 카드 + 딜러)
+{
+  const g=room(13,9);
+  g[4][6]=1; // 중앙 기둥
+  ROOMS.tables = R("게임 테이블","#1a2630",g,[
+    {type:"roulette",label:"룰렛 휠",glyph:"roulette",tile:[4,2],
+      desc:"멈춘 휠 위에 은빛 공이 0 칸에 박혀 있다. 돌릴 수 있을 것 같다.",
+      acts:[["휠 돌리기",(S)=>roulette(S)]]},
+    {type:"cards",label:"블랙잭 테이블",glyph:"cards",tile:[8,2],
+      desc:"펠트 위에 카드 한 장이 엎어져 있다. 게임은 오래전에 끝났다.",
+      acts:[["카드 뒤집기",(S)=>{ if(!S.flags.card){S.flags.card=true; addItem(S,"acehearts","하트 에이스 카드"); return "엎어진 카드는 ♥A — 하트 에이스다. 챙겨 둔다.";} return "테이블에는 더 이상 카드가 없다.";}]]},
+    {type:"dealer",label:"멈춘 딜러",glyph:"dealer",tile:[8,5],
+      desc:"마네킹인지 사람이었는지 모를 딜러가 미소 띤 채 굳어 있다.",
+      acts:[["말 걸기",(S)=>{ const lines=["딜러: '집은 절대 지지 않아… 그래서 나도 못 떠났지.'","딜러: '금고? 자물쇠 하나, 패 하나, 그리고 빚 하나.'","딜러: '환전소 케이지 뒤를 잘 봐. 거기 답이 굴러다녀.'"]; return lines[(S.flags.dealerN=(S.flags.dealerN||0)+1)%lines.length];}]]},
+    {type:"chip",label:"의자 밑 칩",glyph:"chip",tile:[3,6],
+      desc:"넘어진 의자 다리 사이에 칩 몇 개가 끼어 있다.",
+      acts:[["빼내기",(S)=>{ if(!S.flags.tableChip){S.flags.tableChip=true; S.chips+=3; addItem(S,"chip3","칩 ×3"); return "의자 밑에서 칩 3개. (칩 +3)";} return "이제 비었다.";}]]},
+  ],[
+    {tile:[0,4],to:"lobby",entry:[9,4],dir:Math.PI},
+  ]);
+}
+
+// 3) 바 라운지
+{
+  const g=room(12,8);
+  ROOMS.bar = R("바 라운지","#2a1e16",g,[
+    {type:"bar",label:"긴 바 카운터",glyph:"bar",tile:[5,1],
+      desc:"먼지 쌓인 술병들이 줄지어 있다. 한 병만 마개가 열려 있다.",
+      acts:[["병 살펴보기",(S)=>{ if(!S.flags.note){S.flags.note=true; addItem(S,"matchbook","성냥갑(메모)"); return "열린 병 옆 성냥갑 안쪽에 숫자가 적혀 있다: '7-0-?-…' — 금고 단서다. 챙긴다.";} return "다른 병들은 봉인된 채다.";}],
+            ["한 잔 따르기","향이 독하다. 마실 용기는 나지 않는다. 그러나 잠시, 네온이 살아있던 밤이 떠오른다."]]},
+    {type:"plant",label:"코너 야자수",glyph:"plant",tile:[10,5],
+      desc:"이상하게 잎이 아직 푸르다. 누가 물을 줬을까?",
+      acts:[["잎을 헤쳐보기",(S)=>{ if(!S.flags.barChip){S.flags.barChip=true; S.chips+=2; addItem(S,"chip2","칩 ×2"); return "잎 사이에 숨겨둔 칩 2개. (칩 +2)";} return "이제 잎뿐이다.";}]]},
+    {type:"light",label:"네온 'OPEN'",glyph:"light",tile:[2,1],
+      desc:"꺼진 네온 사인. 손을 대니 미세하게 따뜻하다.",
+      acts:[["두드려 보기",(S)=>{ S.flags.neon=(S.flags.neon||0)+1; if(S.flags.neon>=3){return "딱— 'OP N' 만큼 점등됐다. 글자가 빠진 자리에 '7' 모양 그을음이 남아 있다.";} return "지직— 잠깐 빛났다가 꺼진다. ("+S.flags.neon+"/3)";}]]},
+  ],[
+    {tile:[11,4],to:"lobby",entry:[1,4],dir:0},
+  ]);
+}
+
+// 4) 환전소 & 금고 방
+{
+  const g=room(11,10);
+  g[5][5]=1; // 케이지 칸막이 느낌
+  ROOMS.cage = R("환전소 · 금고","#101417",g,[
+    {type:"cashier",label:"환전 케이지",glyph:"cashier",tile:[3,2],
+      desc:"철창 너머 빈 금전함. 작은 동전 트레이가 보인다.",
+      acts:[["트레이 더듬기",(S)=>{ if(!S.flags.cageChip){S.flags.cageChip=true; S.chips+=5; addItem(S,"chip5","칩 ×5"); return "케이지 뒤 트레이에서 칩 5개를 긁어모았다. (칩 +5)";} return "트레이는 비었다.";}],
+            ["장부 보기","마지막 기입: '플레이어 F — 빚 30칩. 미상환.' 당신의 이름인가?"]]},
+    {type:"chip",label:"굴러다니는 칩",glyph:"chip",tile:[7,3],
+      desc:"바닥 타일 틈에 칩 하나가 세워진 채 끼어 있다.",
+      acts:[["집기",(S)=>{ if(!S.flags.cageChip2){S.flags.cageChip2=true; S.chips+=2; addItem(S,"chip2b","칩 ×2"); return "칩 2개. (칩 +2)";} return "틈은 비었다.";}]]},
+    {type:"vault",label:"마지막 금고",glyph:"vault",tile:[7,7],
+      desc:"묵직한 다이얼 금고. 표면에 새겨져 있다: '자물쇠 · 패 · 빚 — 셋이 모이면 열린다.'",
+      acts:[["금고에 도전",(S)=>tryVault(S)]]},
+  ],[
+    {tile:[5,0],to:"lobby",entry:[5,7],dir:Math.PI/2*3},
+  ]);
+}
+
+/* ---------------- 게임 상태 ---------------- */
+const S = {
+  cur:"lobby",
+  px:5.5, py:6.0, dir:-Math.PI/2,  // 로비 아래쪽에서 위 보며 시작
+  chips:0,
+  items:{},        // key -> label
+  flags:{},
+  won:false,
+};
+S.px=5.5; S.py=6.0; S.dir=-Math.PI/2;
+
+function addItem(s,key,label){ s.items[key]=label; refreshHUD(); }
+function hasItem(s,key){ return !!s.items[key]; }
+
+/* ---------------- 미니게임 결과 ---------------- */
+function spin(s,bonus){
+  bonus = bonus||0;
+  const r = Math.random();
+  let win;
+  if(r<0.12) win = 7+bonus;          // 잭팟
+  else if(r<0.45) win = 1+(bonus>0?1:0);
+  else win = -1;
+  s.chips = Math.max(0, s.chips + win);
+  refreshHUD();
+  if(win>=7) return "릴이 멈춘다 — ★ JACKPOT ★ 칩 "+win+"개가 쏟아진다!";
+  if(win>0) return "체리 두 개. 소소하게 칩 +"+win+".";
+  return "꽝. 릴이 비웃듯 멈춘다. (칩 -1)";
+}
+function roulette(s){
+  const n = Math.floor(Math.random()*37); // 0..36
+  let msg = "공이 "+n+(n===0?" (제로!)":"")+" 칸에 떨어진다. ";
+  if(n===0){ s.chips=Math.max(0,s.chips-2); msg+="하우스가 가져간다. (칩 -2)"; }
+  else if(n%2===0){ s.chips+=2; msg+="짝수 — 칩 +2."; }
+  else { s.chips+=1; msg+="홀수 — 칩 +1."; }
+  refreshHUD();
+  return msg;
+}
+
+/* ---------------- 금고(엔딩 조건) ----------------
+   세 가지: 자물쇠(성냥갑 단서=암호), 패(하트 에이스), 빚(칩 30 이상).
+*/
+function tryVault(s){
+  const haveCode = hasItem(s,"matchbook");
+  const haveCard = hasItem(s,"acehearts");
+  const enough   = s.chips>=30;
+  if(haveCode && haveCard && enough){
+    s.won=true;
+    return "__WIN__";
+  }
+  const need=[];
+  if(!haveCode) need.push("자물쇠 — 바 라운지의 성냥갑 단서가 없다");
+  if(!haveCard) need.push("패 — 게임 테이블의 하트 에이스가 필요하다");
+  if(!enough)   need.push("빚 — 칩 30개 이상이어야 한다 (현재 "+s.chips+")");
+  return "금고는 꿈쩍 않는다.\n부족한 것: " + need.join(" · ");
+}
+
+/* =====================================================================
+   렌더러 — 1인칭 레이캐스트(레퍼런스 계승) + 사물 빌보드 합성
+   ===================================================================== */
+const screen = document.getElementById("screen");
+const viewEl = document.getElementById("view");
+let W=110, H=44, CW=7.0, CH=14;
+
+function fit(){
+  // 글자 폭 측정
+  const probe=document.createElement("span");
+  probe.style.cssText="position:absolute;visibility:hidden;white-space:pre;font-family:ui-monospace,Menlo,monospace;";
+  // 화면 높이에 맞춰 폰트 크기 산출
+  const availH = innerHeight - 92 - (innerWidth<=560?16:0);
+  const availW = innerWidth;
+  // 목표: 가로 90~140칸, 세로 36~52줄
+  let fs = Math.max(8, Math.min(18, Math.floor(availH/40)));
+  probe.style.fontSize=fs+"px"; probe.style.lineHeight=fs+"px";
+  probe.textContent="M".repeat(100);
+  document.body.appendChild(probe);
+  CW = probe.getBoundingClientRect().width/100 || fs*0.6;
+  probe.remove();
+  CH = fs;
+  W = Math.max(70, Math.min(160, Math.floor(availW/CW)-1));
+  H = Math.max(30, Math.min(60, Math.floor(availH/CH)));
+  if(W%2) W--; // 짝수 폭
+  screen.style.fontSize=fs+"px";
+  screen.style.lineHeight=fs+"px";
+}
+fit();
+addEventListener("resize",()=>{fit();});
+
+const FLOOR=" .,'`:".split("");
+function wallChar(d, side){
+  // 거리/면에 따른 음영 (벽돌·텍스처 느낌)
+  if(d>9) return " ";
+  if(d>6.5) return side? "." : ":";
+  if(d>4.5) return side? ":" : ";";
+  if(d>2.8) return side? "=" : "#";
+  if(d>1.6) return side? "%" : "@";
+  return side? "#" : "M";
+}
+
+// 현재 방의 그리드/사물 가져오기
+function curRoom(){ return ROOMS[S.cur]; }
+function gridAt(rm,x,y){
+  if(y<0||x<0||y>=rm.grid.length||x>=rm.grid[0].length) return 1;
+  return rm.grid[y][x];
+}
+// 사물 타일(충돌용)
+function thingAt(rm,x,y){
+  for(const t of rm.things){ if(t.tile[0]===x && t.tile[1]===y) return t; }
+  return null;
+}
+function doorAt(rm,x,y){
+  for(const d of rm.doors){ if(d.tile[0]===x && d.tile[1]===y) return d; }
+  return null;
+}
+function blocked(rm,x,y){
+  const gx=x|0, gy=y|0;
+  if(gridAt(rm,gx,gy)) return true;
+  if(thingAt(rm,gx,gy)) return true; // 사물은 통과 불가(상호작용은 인접에서)
+  return false;
+}
+
+function render(){
+  const rm=curRoom();
+  const zbuf=new Array(W).fill(1e9);
+  const cols=new Array(W);
+  const horizon=Math.floor(H*0.46);
+
+  // --- 벽 레이캐스트 ---
+  for(let x=0;x<W;x++){
+    const cam=(2*x)/W-1;
+    const rdx=Math.cos(S.dir)+Math.cos(S.dir+Math.PI/2)*0.70*cam;
+    const rdy=Math.sin(S.dir)+Math.sin(S.dir+Math.PI/2)*0.70*cam;
+    let mx=S.px|0, my=S.py|0;
+    const ddx=Math.abs(1/(rdx||1e-9)), ddy=Math.abs(1/(rdy||1e-9));
+    let sx,sy,sdx,sdy,side=0;
+    if(rdx<0){sx=-1;sdx=(S.px-mx)*ddx;}else{sx=1;sdx=(mx+1-S.px)*ddx;}
+    if(rdy<0){sy=-1;sdy=(S.py-my)*ddy;}else{sy=1;sdy=(my+1-S.py)*ddy;}
+    let hit=0,guard=0,doorHit=null;
+    while(!hit && guard++<48){
+      if(sdx<sdy){sdx+=ddx;mx+=sx;side=0;}else{sdy+=ddy;my+=sy;side=1;}
+      const g=gridAt(rm,mx,my);
+      if(g){ // 벽 또는 문 칸
+        const dr=doorAt(rm,mx,my);
+        if(dr){ doorHit=dr; hit=1; }
+        else hit=1;
+      }
+    }
+    const dist=Math.max(0.06, side===0? sdx-ddx : sdy-ddy);
+    zbuf[x]=dist;
+    const lh=Math.min(H*4,(H/dist)|0);
+    const ds=Math.max(0,horizon-(lh>>1));
+    const de=Math.min(H-1,horizon+(lh>>1));
+    cols[x]={ds,de,dist,side,door:doorHit,lh};
+  }
+
+  // --- 사물을 빌보드로 투영 (거리순) ---
+  const sprites=[];
+  for(const t of rm.things){
+    const tx=t.tile[0]+0.5-S.px, ty=t.tile[1]+0.5-S.py;
+    // 카메라 공간 변환
+    const cosD=Math.cos(-S.dir), sinD=Math.sin(-S.dir);
+    // 회전: 화면 깊이 = forward, 가로 = right
+    const depth = tx*Math.cos(S.dir)+ty*Math.sin(S.dir);
+    const lateral = -tx*Math.sin(S.dir)+ty*Math.cos(S.dir);
+    if(depth<=0.25) continue;
+    const sx = Math.floor((W/2)*(1 + lateral/ (depth*0.70)));
+    const sp = SPRITES[t.glyph]||SPRITES.chip;
+    const baseScale = Math.min(H*1.2, (H*0.9)/depth);
+    const spH = Math.max(2, Math.floor(baseScale* (sp.length/6)));
+    const charW = (sp[0]||"").length;
+    const spW = Math.max(2, Math.floor(spH * (charW/ sp.length) * 1.0));
+    const cy = horizon + Math.floor((H/depth)*0.16); // 바닥에 살짝 붙임
+    sprites.push({t,sp,depth,sx,spW,spH,charW,cyBottom:cy});
+  }
+  sprites.sort((a,b)=>b.depth-a.depth);
+
+  // 사물 픽셀맵 작성 (열,행 -> 글자) with own zbuffer compare per column
+  const spLayer={}; // "x,y" -> char
+  const spColZ={};  // x -> depth (가장 가까운 사물)
+  for(const o of sprites){
+    const {sp,sx,spW,spH,depth,t}=o;
+    const left = sx - (spW>>1);
+    const top  = o.cyBottom - spH;
+    const rows=sp.length, colsS=o.charW||1;
+    for(let yy=0;yy<spH;yy++){
+      const srcY=Math.min(rows-1, Math.floor(yy/spH*rows));
+      const line=sp[srcY]||"";
+      const py=top+yy;
+      if(py<0||py>=H) continue;
+      for(let xx=0;xx<spW;xx++){
+        const colx=left+xx;
+        if(colx<0||colx>=W) continue;
+        if(depth>=zbuf[colx]-0.02) continue; // 벽 뒤면 안 그림
+        const srcX=Math.min(colsS-1, Math.floor(xx/spW*colsS));
+        const ch=line[srcX]||" ";
+        if(ch===" ") continue;
+        spLayer[colx+","+py]=ch;
+        if(spColZ[colx]===undefined||depth<spColZ[colx]) spColZ[colx]=depth;
+      }
+    }
+  }
+
+  // --- 합성 ---
+  const out=[];
+  for(let y=0;y<H;y++){
+    let row="";
+    for(let x=0;x<W;x++){
+      const sChar=spLayer[x+","+y];
+      if(sChar!==undefined){ row+=sChar; continue; }
+      const c=cols[x];
+      if(y<c.ds){ // 천장
+        // 살짝 점묘
+        row += (c.dist<5 && ((x+y)%11===0))? "·" : " ";
+        continue;
+      }
+      if(y>c.de){ // 바닥
+        const fd=(y-horizon)/(H-horizon||1);
+        const fi=Math.min(FLOOR.length-1, Math.floor((1-fd)*FLOOR.length));
+        row += FLOOR[Math.max(0,fi)]||" ";
+        continue;
+      }
+      // 벽 / 문
+      if(c.door){
+        // 문은 밝은 프레임으로 강조
+        const t=(y-c.ds)/Math.max(1,(c.de-c.ds));
+        if(t<0.12||t>0.88) row+="=";
+        else if(x===((c.ds!==undefined)?x:x)) row+= (c.dist<6? "|":"i");
+        else row+=" ";
+        // 가운데 화살표 느낌
+      } else {
+        row+=wallChar(c.dist+(c.side?0.7:0), c.side);
+      }
+    }
+    out.push(row);
+  }
+  screen.textContent=out.join("\n");
+
+  updateAim(rm);
+}
+
+/* ---------------- 조준/근접 사물 ---------------- */
+let aimTarget=null;
+function frontTile(rm){
+  const fx=Math.cos(S.dir), fy=Math.sin(S.dir);
+  // 정면 1~1.6칸 검사
+  for(const r of [0.7,1.1,1.5]){
+    const gx=(S.px+fx*r)|0, gy=(S.py+fy*r)|0;
+    const t=thingAt(rm,gx,gy); if(t) return t;
+    const d=doorAt(rm,gx,gy); if(d) return {door:d};
+  }
+  // 인접 4칸 중 가장 가까운 사물도 허용
+  let best=null,bd=9;
+  for(const t of rm.things){
+    const dd=Math.hypot(t.tile[0]+0.5-S.px, t.tile[1]+0.5-S.py);
+    if(dd<1.7 && dd<bd){bd=dd;best=t;}
+  }
+  return best;
+}
+function updateAim(rm){
+  const t=frontTile(rm);
+  aimTarget=t;
+  if(card.classList.contains("show")) return;
+  if(t && t.door){
+    setStatus("문 — <b>"+ROOMS[t.door.to].name+"</b> 으로. E 또는 ▲로 통과.");
+  } else if(t){
+    setStatus("앞에 <b>"+t.label+"</b>. E를 눌러 상호작용.");
+  } else {
+    ambientStatus();
+  }
+}
+
+/* ---------------- HUD ---------------- */
+const statusEl=document.getElementById("status");
+const chipsEl=document.getElementById("chips");
+const hereEl=document.getElementById("here");
+const bagEl=document.getElementById("bag");
+function setStatus(html){ statusEl.innerHTML=html; }
+let ambN=0;
+function ambientStatus(){
+  const rm=curRoom();
+  const lines=[
+    "<b>"+rm.name+"</b> — WASD 이동 · ←→ 회전 · E 상호작용",
+    "<b>"+rm.name+"</b> — 칩 "+S.chips+"개 · 문을 찾아 다른 방으로",
+    "<b>"+rm.name+"</b> — 금고를 열려면: 자물쇠 · 패 · 빚(칩30)",
+  ];
+  setStatus(lines[(ambN++)%lines.length]);
+}
+function refreshHUD(){
+  chipsEl.textContent=S.chips;
+  hereEl.textContent=curRoom().name;
+  const its=Object.values(S.items);
+  bagEl.innerHTML='<span class="tag">소지</span> '+(its.length? its.join(" · "):"없음");
+}
+
+/* ---------------- 상호작용 카드 ---------------- */
+const card=document.getElementById("card");
+const cardTitle=document.getElementById("cardTitle");
+const cardGlyph=document.getElementById("cardGlyph");
+const cardBody=document.getElementById("cardBody");
+const cardActs=document.getElementById("cardActs");
+function openCard(t){
+  if(!t) return;
+  if(t.door){ goDoor(t.door); return; }
+  cardTitle.textContent=t.label;
+  cardGlyph.textContent=(SPRITES[t.glyph]||[]).join("\n");
+  cardBody.textContent=t.desc;
+  cardActs.innerHTML="";
+  for(const [name,fn] of t.acts){
+    const b=document.createElement("button");
+    b.textContent=name;
+    b.onclick=()=>{
+      const res = (typeof fn==="function")? fn(S) : fn;
+      if(res==="__WIN__"){ closeCard(); showWin(); return; }
+      cardBody.textContent=res;
+      refreshHUD();
+    };
+    cardActs.appendChild(b);
+  }
+  const close=document.createElement("button");
+  close.textContent="닫기 (Esc)"; close.className="alt";
+  close.onclick=closeCard;
+  cardActs.appendChild(close);
+  card.classList.add("show");
+}
+function closeCard(){ card.classList.remove("show"); }
+card.querySelector("[data-close]").onclick=closeCard;
+
+/* ---------------- 문 이동 ---------------- */
+let transitioning=false;
+function goDoor(d){
+  if(transitioning) return;
+  transitioning=true;
+  viewEl.style.transition="opacity .25s"; viewEl.style.opacity="0.15";
+  setStatus("<b>"+ROOMS[d.to].name+"</b> 으로 들어선다…");
+  setTimeout(()=>{
+    S.cur=d.to;
+    S.px=d.entry[0]+0.5; S.py=d.entry[1]+0.5;
+    S.dir=d.dir;
+    refreshHUD();
+    render();
+    viewEl.style.opacity="1";
+    setTimeout(()=>{transitioning=false;},220);
+  },240);
+}
+
+/* ---------------- 입력 ---------------- */
+const keys={};
+const intro=document.getElementById("intro");
+let entered=false;
+function enter(){
+  if(entered) return;
+  if(S.won){ restart(); return; }
+  entered=true;
+  intro.classList.add("hidden");
+  refreshHUD();
+  ambientStatus();
+}
+addEventListener("keydown",e=>{
+  const k=e.key.toLowerCase();
+  if(!entered && !ending.classList.contains("show")){ enter(); if(["w","a","s","d"," ","arrowup"].includes(k)){/*also move*/} }
+  if(ending.classList.contains("show")){ restart(); return; }
+  if(k==="escape"){ closeCard(); return; }
+  if(k==="e"||k===" "){ e.preventDefault(); if(card.classList.contains("show")) {/*let buttons*/} else interact(); return; }
+  if(k==="m"){ toggleMap(); return; }
+  keys[k]=true;
+  if(["arrowup","arrowdown","arrowleft","arrowright"," "].includes(k)) e.preventDefault();
+});
+addEventListener("keyup",e=>{ keys[e.key.toLowerCase()]=false; });
+
+// 터치/클릭 진입
+addEventListener("pointerdown",()=>{ if(!entered) enter(); if(ending.classList.contains("show")) restart(); });
+
+function interact(){
+  const rm=curRoom();
+  const t=frontTile(rm);
+  if(t) openCard(t);
+  else setStatus("<b>"+rm.name+"</b> — 상호작용할 게 정면에 없다. 다가가서 정면을 맞춰라.");
+}
+
+// 터치 패드 매핑
+const padState={};
+document.getElementById("pad").addEventListener("pointerdown",e=>{
+  const k=e.target.getAttribute("data-k"); if(!k) return;
+  enter();
+  if(k==="use"){ interact(); return; }
+  padState[k]=true;
+  e.preventDefault();
+},{passive:false});
+function clearPad(){ for(const k in padState) padState[k]=false; }
+addEventListener("pointerup",clearPad);
+addEventListener("pointercancel",clearPad);
+document.getElementById("pad").addEventListener("pointerleave",clearPad);
+
+// 터치 디바이스 감지
+if(("ontouchstart" in window)|| navigator.maxTouchPoints>0 || innerWidth<=560){
+  document.body.classList.add("touch");
+}
+
+/* ---------------- 미니맵(M) ---------------- */
+let mapOn=false;
+function toggleMap(){ mapOn=!mapOn; if(!mapOn){render();} }
+function drawMap(){
+  const rm=curRoom();
+  const g=rm.grid;
+  const out=[" ── "+rm.name+" ── (M 닫기)",""];
+  for(let y=0;y<g.length;y++){
+    let row=" ";
+    for(let x=0;x<g[0].length;x++){
+      const px=S.px|0, py=S.py|0;
+      if(x===px&&y===py){ row+="웃"; continue; }
+      const t=thingAt(rm,x,y); if(t){ row+="◆"; continue; }
+      const d=doorAt(rm,x,y); if(d){ row+="□"; continue; }
+      row += g[y][x]? "█":"·";
+    }
+    out.push(row);
+  }
+  out.push("");
+  out.push(" 웃당신 ◆사물 □문 █벽");
+  out.push(" 연결: "+rm.doors.map(d=>ROOMS[d.to].name).join(" / "));
+  screen.textContent=out.join("\n");
+}
+
+/* ---------------- 이동 루프 ---------------- */
+function tryMove(nx,ny){
+  const rm=curRoom();
+  const m=0.20;
+  const cx=nx+Math.sign(nx-S.px)*m, cy=ny+Math.sign(ny-S.py)*m;
+  // 문 칸으로 진입 시도 → 통과
+  const dr=doorAt(rm, cx|0, cy|0) || doorAt(rm, nx|0, ny|0);
+  if(dr){ goDoor(dr); return; }
+  if(!blocked(rm, cx, S.py)) S.px=nx;
+  if(!blocked(rm, S.px, cy)) S.py=ny;
+}
+
+let lastT=performance.now(), acc=0, ambAcc=0;
+function loop(t){
+  const dt=Math.min(0.05,(t-lastT)/1000); lastT=t;
+  if(entered && !transitioning && !S.won && !card.classList.contains("show")){
+    const rs=2.3*dt, ms=2.7*dt;
+    if(keys["arrowleft"]||keys["q"]||padState.turnL) S.dir-=rs;
+    if(keys["arrowright"]||keys["e"]||padState.turnR) S.dir+=rs;
+    const fx=Math.cos(S.dir), fy=Math.sin(S.dir);
+    if(keys["w"]||keys["arrowup"]||padState.fwd) tryMove(S.px+fx*ms,S.py+fy*ms);
+    if(keys["s"]||keys["arrowdown"]||padState.back) tryMove(S.px-fx*ms,S.py-fy*ms);
+    if(keys["a"]||padState.strafeL) tryMove(S.px+fy*ms,S.py-fx*ms);
+    if(keys["d"]||padState.strafeR) tryMove(S.px-fy*ms,S.py+fx*ms);
+  }
+  acc+=dt; ambAcc+=dt;
+  if(acc>1/30){
+    acc=0;
+    if(mapOn) drawMap(); else render();
+  }
+  requestAnimationFrame(loop);
+}
+
+/* ---------------- 엔딩 / 리스타트 ---------------- */
+const ending=document.getElementById("ending");
+const endTitle=document.getElementById("endTitle");
+const endBody=document.getElementById("endBody");
+function showWin(){
+  S.won=true;
+  endTitle.textContent="정산 — 집을 나서다";
+  endBody.innerHTML=
+    "다이얼이 세 번 멈춘다. 철문이 한숨처럼 열린다.<br><br>"+
+    "안에는 봉인된 카드 한 장과 당신의 옛 이름이 적힌 칩 하나.<br>"+
+    "빚 "+S.chips+"칩을 케이지 위에 올려둔다 — 이제 집은 당신에게 빚지지 않는다.<br><br>"+
+    "네온이 마지막으로 깜빡인다. 'F'. 당신은 처음으로 이 문을 통해 <i>밖</i>으로 걸어 나간다.";
+  ending.classList.add("show");
+  ending.style.opacity="1"; ending.style.pointerEvents="auto";
+}
+function restart(){
+  // 상태 초기화
+  S.cur="lobby"; S.px=5.5; S.py=6.0; S.dir=-Math.PI/2;
+  S.chips=0; S.items={}; S.flags={}; S.won=false;
+  entered=true;
+  ending.classList.remove("show");
+  ending.style.opacity="0"; ending.style.pointerEvents="none";
+  refreshHUD(); render(); ambientStatus();
+}
+
+/* ---------------- 시작 ---------------- */
+refreshHUD();
+render();
+requestAnimationFrame(loop);
+
+// 디버그/검증용 전역
+window.__CASINO__={S,ROOMS,render,fit,
+  rooms:Object.keys(ROOMS).length,
+  go:(name)=>{S.cur=name;const r=ROOMS[name];S.px=(r.grid[0].length/2);S.py=(r.grid.length/2);render();refreshHUD();}
+};
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>성채 내부 — 3D 아스키 탐험</title>
+<style>
+  :root{
+    --paper:#e8e0cc; --ink:#241f18; --stone:#cfc6ad; --warm:#9a6a2f; --dim:#6f6450;
+  }
+  html,body{margin:0;height:100%;overflow:hidden;background:#1b1812;}
+  *{box-sizing:border-box;}
+  #wrap{position:fixed;inset:0;display:flex;flex-direction:column;background:#171410;}
+  #view{
+    flex:1 1 auto; margin:0; min-height:0;
+    font:13px/13px ui-monospace,"SF Mono",Menlo,Consolas,"DejaVu Sans Mono",monospace;
+    color:#d8cfb4; background:#0f0d09; white-space:pre; overflow:hidden;
+    letter-spacing:0; user-select:none; cursor:crosshair; padding:0;
+    text-align:left;
+  }
+  /* faint vignette / candle warmth over the ascii */
+  #view::selection{background:transparent;}
+  #hud{
+    flex:0 0 auto; background:linear-gradient(#221d16,#14110c);
+    color:#cfc6ad; border-top:1px solid #3a3024;
+    font:12px/1.5 ui-monospace,Menlo,monospace;
+    padding:6px 12px; display:flex; gap:14px; align-items:center;
+    white-space:nowrap; overflow:hidden;
+  }
+  #status{flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; color:#e8e0cc;}
+  #roomtag{flex:0 0 auto; color:#d6a45a; font-weight:600; letter-spacing:1px;}
+  #inv{flex:0 0 auto; color:#9a937e; max-width:38%; overflow:hidden; text-overflow:ellipsis;}
+
+  /* on-screen touch controls */
+  #pad{position:fixed; inset:0; z-index:6; pointer-events:none; display:none;}
+  .btn{
+    position:absolute; pointer-events:auto; width:60px; height:60px;
+    background:rgba(40,34,26,.55); border:1px solid rgba(214,164,90,.5);
+    color:#e8e0cc; border-radius:12px; font:18px/60px ui-monospace,monospace;
+    text-align:center; touch-action:none; user-select:none;
+    backdrop-filter:blur(2px);
+  }
+  .btn:active{background:rgba(214,164,90,.4);}
+  #b_up{left:80px; bottom:150px;} #b_dn{left:80px; bottom:84px;}
+  #b_l{left:14px; bottom:117px;} #b_r{left:146px; bottom:117px;}
+  #b_e{right:18px; bottom:96px; width:84px; height:84px; line-height:84px; font-size:14px; color:#d6a45a;}
+
+  #intro,#popup{
+    position:fixed; inset:0; z-index:10; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; text-align:center;
+    background:rgba(232,224,204,.97); color:#241f18;
+    font-family:"Noto Serif KR","Nanum Myeongjo",serif;
+    transition:opacity .9s ease; padding:28px;
+  }
+  /* subtle paper grain */
+  #intro::before{content:""; position:absolute; inset:0; pointer-events:none;
+    background:
+      radial-gradient(120% 120% at 50% 30%, transparent 55%, rgba(120,100,70,.10) 100%),
+      repeating-linear-gradient(0deg, rgba(120,100,70,.025) 0 2px, transparent 2px 4px);}
+  #intro h1{font-size:46px; font-weight:600; letter-spacing:20px; margin:0 0 6px; text-indent:20px;}
+  #intro .sub{font-size:13px; letter-spacing:6px; color:#7a6b4d; margin:0 0 26px;}
+  #intro p{font-size:15px; line-height:2; max-width:520px; margin:5px 0; color:#3a342a;}
+  #intro .keys{font-family:ui-monospace,Menlo,monospace; font-size:12.5px; color:#6f6450;
+    margin-top:26px; line-height:2; border-top:1px solid rgba(120,100,70,.3); padding-top:18px;}
+  #intro .go{margin-top:22px; font-size:13px; color:#9a6a2f; letter-spacing:3px;
+    animation:blink 1.8s ease-in-out infinite;}
+  @keyframes blink{0%,100%{opacity:.35}50%{opacity:1}}
+
+  #popup{background:rgba(20,17,12,.92); color:#e8e0cc; opacity:0; pointer-events:none;
+    font-family:ui-monospace,Menlo,monospace;}
+  #popup .card{max-width:560px; border:1px solid #4a3d2a; background:rgba(28,24,17,.96);
+    padding:26px 30px; border-radius:6px; box-shadow:0 12px 60px rgba(0,0,0,.6);}
+  #popup .pic{white-space:pre; font-size:12px; line-height:12px; color:#d6a45a; margin:0 0 14px;}
+  #popup h3{margin:0 0 10px; font-size:18px; letter-spacing:2px; color:#f0e6c8;
+    font-family:"Noto Serif KR",serif;}
+  #popup p{margin:6px 0; font-size:13.5px; line-height:1.8; color:#cfc6ad;}
+  #popup .hint{margin-top:14px; font-size:12px; color:#8a8068;}
+  .hidden{opacity:0 !important; pointer-events:none !important;}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <pre id="view"></pre>
+  <div id="hud">
+    <span id="roomtag">— 성문 앞 —</span>
+    <span id="status">아무 키나 눌러 입장하라.</span>
+    <span id="inv">소지품: 없음</span>
+  </div>
+</div>
+
+<!-- touch pad -->
+<div id="pad">
+  <div class="btn" id="b_up">▲</div>
+  <div class="btn" id="b_dn">▼</div>
+  <div class="btn" id="b_l">◀</div>
+  <div class="btn" id="b_r">▶</div>
+  <div class="btn" id="b_e">살핌<br>E</div>
+</div>
+
+<!-- 인트로 게이트 -->
+<div id="intro">
+  <h1>성 채</h1>
+  <div class="sub">I N T E R I O R</div>
+  <p>오래 비어 있던 돌의 집. 촛불이 아직 한두 개 흔들린다.<br>
+  방과 방은 문으로 이어지고, 각 방에는 두고 간 것들이 그대로 있다.</p>
+  <p>왕좌, 갑옷, 가마솥, 책장, 우리 속의 무엇 — 살펴보고, 줍고, 작동시켜라.</p>
+  <p>가장 깊은 곳, 보물고의 문은 잠겨 있다. 열쇠를 찾아라.</p>
+  <p class="keys">W A S D / 방향키 · 이동과 회전 &nbsp;|&nbsp; E · 눈앞의 것을 살핌·줍기·작동<br>
+  화면을 만지면(모바일) 방향 패드와 살핌 버튼이 나타난다</p>
+  <div class="go">— 아무 키나 눌러 성채로 들어가기 —</div>
+</div>
+
+<!-- 상호작용 팝업 -->
+<div id="popup"><div class="card">
+  <pre class="pic" id="pop-pic"></pre>
+  <h3 id="pop-title"></h3>
+  <p id="pop-body"></p>
+  <div class="hint" id="pop-hint">— 아무 키나 / 화면을 눌러 닫기 —</div>
+</div></div>
+
+<script>
+(() => {
+"use strict";
+
+/* =========================================================================
+   성채 내부 — 3D 아스키 탐험
+   레퍼런스(2_내부.html)의 raycast 3D 아스키 골격을 흡수하되,
+   단일 미로 대신 손으로 설계한 다중 룸 성채 + 배치된 3D 아스키 사물 +
+   살핌/줍기/작동 상호작용 + 인벤토리 퍼즐(열쇠→보물고)로 확장.
+   ========================================================================= */
+
+/* ---- 맵: 손으로 그린 성채 평면도 ----
+   문자 의미:
+     # 돌벽   . 바닥(통로/방)   = 닫힌 문(돌문, 못지나감-시각표시)   기타=방 영역
+   타일은 1=벽, 0=바닥. 별도로 룸 구역과 사물을 좌표로 배치한다.
+   격자 좌표: map[y][x], x→동, y→남.
+*/
+const RAW = [
+"#############################################",
+"#.........#...........#.........#...........#",
+"#..ENTRY..#..GREATHL..#..ARMORY.#..LIBRARY..#",
+"#.........#...........#.........#...........#",
+"#....@....#...........#.........#...........#",
+"#.........#...........#.........#...........#",
+"#####.#####....#...####.###.#####.....#.#####",
+"#.........#....#......#...#.....#.#.........#",
+"#.KITCHEN.#....#......#...#.....#.#.THRONE..#",
+"#.........+....#......+...+.....+.+.........#",
+"#.........#....#......#...#.....#.#.........#",
+"#####.#####....##.#####...#######.#.....#.###",
+"#.........#......#.................#........#",
+"#.........#......#....TREASURY.....=........#",
+"#.DUNGEON.#......#.................#.VAULTAP.#",
+"#.........#......#.................#........#",
+"#.........#......#.................#........#",
+"###########################################",
+];
+/* 위 ASCII 평면도는 사람이 읽기 위한 청사진. 실제 충돌격자는 아래에서 정규화. */
+
+// 격자 정규화: '#' 와 '='(잠긴 돌문, 현재 막힘) = 벽(1). 그 외 = 바닥(0).
+// '+' 는 열린 문 통로(바닥). 글자 라벨(ENTRY 등)도 바닥.
+let GW=0, GH=RAW.length;
+RAW.forEach(r=>GW=Math.max(GW,r.length));
+const rows = RAW.map(r=>r.padEnd(GW,'#'));
+let grid = rows.map(r=>[...r].map(c=> (c==='#'||c==='=') ? 1 : 0 ));
+// 잠긴 보물고 문 좌표(열리면 grid에서 0으로 바꿀 것)
+let VAULT_DOOR=null;
+for(let y=0;y<GH;y++)for(let x=0;x<GW;x++) if(rows[y][x]==='=') VAULT_DOOR={x,y};
+
+/* ---- 룸 라벨 영역(현재 위치한 방 이름 표시용) ---- */
+const ROOMS=[
+  {name:"입구 홀",     x0:1, y0:1, x1:9, y1:5},
+  {name:"대연회장",    x0:11,y0:1, x1:21,y1:5},
+  {name:"무기고",      x0:23,y0:1, x1:31,y1:5},
+  {name:"서고",        x0:33,y0:1, x1:43,y1:5},
+  {name:"주방",        x0:1, y0:7, x1:9, y1:11},
+  {name:"왕좌의 방",   x0:33,y0:7, x1:43,y1:11},
+  {name:"지하 감옥",   x0:1, y0:12,x1:9, y1:16},
+  {name:"보물고",      x0:17,y0:12,x1:33,y1:16},
+  {name:"비밀 금고",   x0:35,y0:12,x1:43,y1:16},
+  {name:"성채 복도",   x0:0, y0:0, x1:GW-1,y1:GH-1}, // fallback
+];
+function roomAt(x,y){
+  for(const r of ROOMS){ if(r.name==="성채 복도") continue;
+    if(x>=r.x0&&x<=r.x1&&y>=r.y0&&y<=r.y1) return r.name; }
+  return "성채 복도";
+}
+
+/* ===================== 3D 아스키 사물(빌보드 스프라이트) =====================
+   각 사물은 그리드 좌표(중심)와 다층 ASCII 아트를 가진다.
+   거리에 따라 크기 스케일되어 raycast 벽 위에 합성된다(빌보드).
+   id, name, art(여러 줄), color(틴트), action(살핌/줍기/작동),
+   take(주울 수 있나), takeMsg, examineMsg, operate(작동 결과 함수) 등.
+*/
+const ART = {
+  throne:[
+    "   .-^^^-.   ",
+    "  /  W W  \\  ",
+    "  |  |||  |  ",
+    "  |[=====]|  ",
+    "  | |   | |  ",
+    " /  |   |  \\ ",
+    "[___|___|___]",
+    "  ||     ||  ",
+  ],
+  armor:[
+    "    ___    ",
+    "   /. .\\   ",
+    "   \\_-_/   ",
+    "  /|[#]|\\  ",
+    " d |[#]| b ",
+    "   |[#]|   ",
+    "   /   \\   ",
+    "  _|   |_  ",
+  ],
+  cauldron:[
+    "  ~ ~ ~ ~  ",
+    " ( ( ~ ) ) ",
+    "  \\.....,/  ",
+    "  |OOOOO|  ",
+    "  |OOOOO|  ",
+    "   \\___/   ",
+    "  /=====\\  ",
+    " /_______\\ ",
+  ],
+  shelf:[
+    "+--------+",
+    "|I|I||I|I|",
+    "+--------+",
+    "|II|I|III|",
+    "+--------+",
+    "|I|III|II|",
+    "+--------+",
+    "|________|",
+  ],
+  cage:[
+    "+-+-+-+-+-+",
+    "| | | | | |",
+    "| |o_o| | |",
+    "| (  v  ) |",
+    "| /| Y |\\ |",
+    "| | | | | |",
+    "+-+-+-+-+-+",
+    "  |     |  ",
+  ],
+  brazier:[
+    "   (^)   ",
+    "  ( ^ )  ",
+    "  )^v^(  ",
+    "   \\#/   ",
+    "   |#|   ",
+    "  /| |\\  ",
+    " /_|_|_\\ ",
+    "  '---'  ",
+  ],
+  fountain:[
+    "  . : .  ",
+    " : .|. : ",
+    "  \\\\|//  ",
+    " (~~~~~) ",
+    "(~~~~~~~)",
+    " \\~~~~~/ ",
+    " [_____] ",
+    "/_______\\",
+  ],
+  chest:[
+    "          ",
+    "  ______  ",
+    " /......\\ ",
+    "/__======\\",
+    "|  .[O]. |",
+    "|________|",
+    "|__|__|__|",
+    "          ",
+  ],
+  anvil:[
+    "         ",
+    "  _====_ ",
+    " /======\\",
+    " \\=====/ ",
+    "   |##|  ",
+    "   |##|  ",
+    "  /####\\ ",
+    " /######\\",
+  ],
+  table:[
+    "            ",
+    " __________ ",
+    "/.~..o..~..\\",
+    "+----------+",
+    " ||      || ",
+    " ||      || ",
+    " ||      || ",
+    "            ",
+  ],
+  banner:[
+    "  +====+  ",
+    "  |/\\/\\|  ",
+    "  | <> |  ",
+    "  | () |  ",
+    "  | || |  ",
+    "  | || |  ",
+    "  \\ || /  ",
+    "   \\||/   ",
+  ],
+  lever:[
+    "    o    ",
+    "    |    ",
+    "    |    ",
+    "   _|    ",
+    "  | |    ",
+    "  | |    ",
+    " [===]   ",
+    " [===]   ",
+  ],
+  vaultdoor:[
+    "+========+",
+    "||  []  ||",
+    "|| (())  ||".slice(0,10),
+    "||  ||  ||",
+    "||  ()  ||",
+    "||  ||  ||",
+    "||      ||",
+    "+========+",
+  ],
+  grail:[
+    "  \\___/  ",
+    "  (* *)  ",
+    "   \\ /   ",
+    "    |    ",
+    "    |    ",
+    "   _|_   ",
+    "  (___)  ",
+    "         ",
+  ],
+};
+
+// 사물 인스턴스: {x,y,art,tint,...}
+let things=[
+  // 입구 홀
+  {id:"brazier1", x:5, y:2.4, art:"brazier", tint:1.0, name:"꺼져가는 화로",
+   exam:"녹슨 삼발이 위에서 마지막 잉걸불이 숨을 고른다. 성채는 오래 비어 있었다.", op:"불을 헤집자 따뜻한 빛이 잠깐 방을 넓힌다."},
+  {id:"banner1", x:7.5, y:4.2, art:"banner", tint:.8, name:"빛바랜 군기",
+   exam:"가문의 문장이 거의 사라졌다. 사자였을까, 짐승이었을까."},
+  // 대연회장
+  {id:"table1", x:16, y:2.6, art:"table", tint:.9, name:"긴 연회 탁자",
+   exam:"먼지 덮인 잔과 식은 촛농. 누군가 급히 떠난 자리.", op:"잔을 들어 올리자 마른 포도주 향이 바스라진다."},
+  {id:"fountain1", x:16, y:4.4, art:"fountain", tint:1.0, name:"실내 분수",
+   exam:"물이 마른 분수. 바닥에 동전 대신 낙엽이 고였다.", op:"수반을 두드리자 메마른 관 속에서 먼 물소리가 울린다."},
+  // 무기고
+  {id:"armor1", x:25.4, y:2.5, art:"armor", tint:1.0, name:"빈 갑주",
+   exam:"속이 빈 판금 갑옷이 보초처럼 서 있다. 투구 안은 어둠뿐.", op:"바이저를 들추자 작게 삐걱인다 — 안엔 아무도 없다."},
+  {id:"anvil1", x:29, y:4.2, art:"anvil", tint:.9, name:"대장간 모루",
+   exam:"식은 모루. 마지막으로 두드린 무기는 무엇이었을까.", op:"망치 자국을 따라 손을 대자 차가운 쇠가 울린다."},
+  {id:"oldkey", x:27.5, y:4.4, art:null, name:"녹슨 쇠고리에 걸린 열쇠",
+   exam:"무기 걸이 못에 큼직한 황동 열쇠가 걸려 있다. '보물고'라 새겨져 있다.",
+   take:true, takeId:"key", takeMsg:"보물고 열쇠를 손에 넣었다. 묵직하다."},
+  // 서고
+  {id:"shelf1", x:35.5, y:2.5, art:"shelf", tint:1.0, name:"천장까지 닿는 책장",
+   exam:"가죽 장정들이 침묵한다. 한 권이 비스듬히 튀어나와 있다.", op:"튀어나온 책을 밀어 넣자 책장 뒤에서 둔탁한 기계음이 났다."},
+  {id:"shelf2", x:41, y:4.2, art:"shelf", tint:.85, name:"흐트러진 서가",
+   exam:"누군가 급히 무언가를 찾았다. 책들이 바닥에 흩어졌다."},
+  {id:"scroll", x:38, y:3.4, art:null, name:"펼쳐진 두루마리",
+   exam:"양피지에 성채의 도면이 그려져 있다: 무기고에 열쇠, 보물고는 동쪽 깊은 곳.",
+   take:true, takeId:"map", takeMsg:"성채 도면을 챙겼다. 길이 한결 또렷해진다."},
+  // 주방
+  {id:"cauldron1", x:5, y:9, art:"cauldron", tint:1.0, name:"부글대는 가마솥",
+   exam:"불 꺼진 화구 위 가마솥에 정체 모를 검은 액체가 굳어 있다.", op:"국자로 저으니 오래된 수프 냄새가 방을 메운다 — 아직도 따뜻하다?!"},
+  // 왕좌의 방
+  {id:"throne1", x:38, y:9, art:"throne", tint:1.0, name:"빈 왕좌",
+   exam:"닳은 팔걸이. 앉은 이의 무게가 돌에 새겨져 있다.", op:"왕좌에 앉아 본다. 텅 빈 홀이 너를 신하처럼 마주본다."},
+  {id:"brazier2", x:35, y:10.2, art:"brazier", tint:.9, name:"옥좌 곁 화로",
+   exam:"옥좌를 비추던 불. 지금은 너의 그림자만 늘인다.", op:"불씨를 살리자 왕좌가 잠시 군주처럼 빛난다."},
+  // 지하 감옥
+  {id:"cage1", x:5, y:14, art:"cage", tint:1.0, name:"쇠창살 우리",
+   exam:"창살 너머 무언가가 웅크려 너를 본다. 사람일까, 짐승일까 — 눈만 빛난다.",
+   op:"창살을 두드리자 그것이 천천히 고개를 든다. 「…문은… 동쪽…」 쉰 목소리."},
+  // 보물고 앞 복도 — 레버
+  {id:"lever1", x:31, y:9, art:"lever", tint:1.0, name:"녹슨 도르래 레버",
+   exam:"천장 도르래에 이어진 큰 레버. 무언가를 끌어올리는 장치 같다.",
+   op:"레버를 당기자 머리 위에서 사슬이 감기는 소리 — 멀리서 돌문이 한 칸 들렸다.", flag:"lever"},
+  // 보물고 (잠긴 돌문 너머)
+  {id:"chest1", x:25, y:14, art:"chest", tint:1.0, name:"봉인된 보물 궤",
+   exam:"무거운 자물쇠가 채워진 궤. 보물고 열쇠가 필요하다.",
+   op:"(잠겨 있다)", needKey:true, takeId:"treasure", chestOpen:false},
+  // 비밀 금고 — 성배(엔딩 트리거)
+  {id:"grail1", x:39, y:14, art:"grail", tint:1.2, name:"빛나는 성배",
+   exam:"제단 위, 스스로 빛나는 잔. 성채의 심장. 손을 뻗으면…",
+   op:"성배를 두 손으로 든다.", isGrail:true},
+];
+
+/* ---- 빌보드 아트가 없는 작은 아이템(열쇠/두루마리)용 기본 그림 ---- */
+const SMALL_ART={
+  oldkey:["         ","  __     ","=[O ]====","  \"\"     ","         ","         ","         ","         "],
+  scroll:["  _____  "," /_____\\ "," |.~~~.| "," |~.~.~| "," |.~~~.| "," \\_____/ ","         ","         "],
+};
+
+/* ===================== 상태 ===================== */
+let px=5.0, py=4.0, dir=-Math.PI/2;   // 입구 홀 @ 근처에서 시작, 북쪽 바라봄
+const inv=new Set();
+const flags=new Set();
+let entered=false, popupOpen=false, ended=false;
+const keys={};
+
+/* ===================== 화면/측정 ===================== */
+const view=document.getElementById("view");
+const statusEl=document.getElementById("status");
+const roomtagEl=document.getElementById("roomtag");
+const invEl=document.getElementById("inv");
+let W=110,H=40,CW=7.8,CH=13;
+function fit(){
+  const probe=document.createElement("span");
+  probe.style.cssText="position:absolute;visibility:hidden;font:13px/13px ui-monospace,Menlo,monospace;white-space:pre";
+  probe.textContent="M".repeat(100); document.body.appendChild(probe);
+  CW=probe.getBoundingClientRect().width/100||7.8; probe.remove();
+  const vw=view.clientWidth||innerWidth, vh=view.clientHeight||(innerHeight-60);
+  W=Math.max(48, Math.min(240, Math.floor(vw/CW)));
+  H=Math.max(20, Math.min(120, Math.floor(vh/CH)));
+}
+
+/* ===================== 벽 텍스처(돌블록) ===================== */
+// 거리/명암에 따른 음영 램프 + 돌블록 패턴(이음매)
+const SHADE=" .:-=+*x#%@".split("");          // 어두움→밝음(가까움)
+function rampChar(d){
+  // d 작을수록(가까울수록) 진한 글자
+  const t=Math.max(0,Math.min(1,1-(d/13)));
+  return SHADE[Math.min(SHADE.length-1, Math.floor(t*(SHADE.length-1)+0.0001))];
+}
+function wallChar(ix,iy,wallX,wy,d,side){
+  if(d>16) return " ";
+  // 돌블록 이음매: 일정 간격마다 모르타르(어두운 선)
+  const bx=Math.floor(wallX*8);                 // 블록 가로 8칸
+  const by=Math.floor(wy*6);                    // 블록 세로 6칸(엇갈림)
+  const stagger=(by%2)?4:0;
+  const seam = ((bx+stagger)%8===0) || (Math.floor((wy*6))%6===0);
+  let base=rampChar(d+(side?1.6:0));
+  if(seam){
+    // 모르타르 라인은 한 단계 어둡게
+    const i=Math.max(0,SHADE.indexOf(base)-3);
+    base=SHADE[i];
+  } else {
+    // 블록 면에 약한 거친 텍스처
+    const n=(((ix*73856093)^(iy*19349663)^(bx*83492791)^(by*2654435761))>>>0)%97;
+    if(n<7){ const i=Math.max(0,SHADE.indexOf(base)-1); base=SHADE[i]; }
+  }
+  return base;
+}
+
+/* ===================== 사물 빌보드 아트 가져오기 ===================== */
+function thingArt(t){
+  if(t.art && ART[t.art]) return ART[t.art];
+  if(SMALL_ART[t.id]) return SMALL_ART[t.id];
+  if(t.takeId && SMALL_ART[t.takeId]) return SMALL_ART[t.takeId];
+  // 기본: 작은 표식
+  return ["   ","(?)"," | "];
+}
+
+/* ===================== 렌더 ===================== */
+let zbuf=new Float32Array(W);
+let frameBuf=[];   // 문자 그리드(행배열)
+
+let focusThing=null;   // 현재 조준 중(상호작용 가능) 사물
+
+function render(){
+  if(zbuf.length!==W) zbuf=new Float32Array(W);
+  const horizon=(H*0.5)|0;
+  // --- 1) 벽 raycast + 천장/바닥 ---
+  // 각 열의 벽 정보 저장
+  const cols=new Array(W);
+  for(let x=0;x<W;x++){
+    const cam=(2*x)/W-1;
+    const rdx=Math.cos(dir)+Math.cos(dir+Math.PI/2)*0.66*cam;
+    const rdy=Math.sin(dir)+Math.sin(dir+Math.PI/2)*0.66*cam;
+    let mx=px|0,my=py|0;
+    const ddx=Math.abs(1/(rdx||1e-9)), ddy=Math.abs(1/(rdy||1e-9));
+    let sx,sy,sdx,sdy,side=0;
+    if(rdx<0){sx=-1;sdx=(px-mx)*ddx;}else{sx=1;sdx=(mx+1-px)*ddx;}
+    if(rdy<0){sy=-1;sdy=(py-my)*ddy;}else{sy=1;sdy=(my+1-py)*ddy;}
+    let hit=0,guard=0;
+    while(!hit && guard++<128){
+      if(sdx<sdy){sdx+=ddx;mx+=sx;side=0;}else{sdy+=ddy;my+=sy;side=1;}
+      if(mx<0||my<0||mx>=GW||my>=GH||grid[my][mx]) hit=1;
+    }
+    const dist=Math.max(0.08, side===0? sdx-ddx : sdy-ddy);
+    zbuf[x]=dist;
+    const lh=Math.min(H*3,(H/dist)|0);
+    const ds=Math.max(0,horizon-(lh>>1));
+    const de=Math.min(H-1,horizon+(lh>>1));
+    let wallX = side===0? py+dist*rdy : px+dist*rdx; wallX-=wallX|0;
+    cols[x]={ds,de,mx,my,wallX,dist,lh,side};
+  }
+  // 행 버퍼 구성
+  const rows=new Array(H);
+  for(let y=0;y<H;y++){
+    const line=new Array(W);
+    for(let x=0;x<W;x++){
+      const c=cols[x];
+      if(y<c.ds){
+        // 천장: 어두운 아치, 멀수록 흐림
+        const cd=(c.ds-y);
+        line[x]= cd>3? " " : (cd>1? "." : "·");
+      } else if(y>c.de){
+        // 바닥: 거리 음영(가까운 바닥 진함)
+        const fd=(y-horizon)/Math.max(1,(H-horizon));
+        const ramp=" .,:;-".split("");
+        line[x]=ramp[Math.min(ramp.length-1, Math.floor(fd*ramp.length))] || " ";
+      } else {
+        const wy = c.lh>0? (y-(horizon-c.lh/2))/c.lh : 0;
+        line[x]=wallChar(c.mx,c.my,c.wallX,Math.abs(wy%1),c.dist+(c.side?1.6:0),c.side);
+      }
+    }
+    rows[y]=line;
+  }
+
+  // --- 2) 사물 빌보드 합성 (거리정렬, z버퍼 차폐) ---
+  focusThing=null;
+  let bestFocus=1e9;
+  const visT=[];
+  for(const t of things){
+    if(t.id==="chest1" && t.gone) continue;
+    const dx=t.x-px, dy=t.y-py;
+    const distT=Math.hypot(dx,dy);
+    if(distT<0.4 || distT>20) continue;
+    // 카메라 공간 변환
+    const invDet=1.0/( -Math.sin(dir)*0 + 0 + 1 ); // 표준 빌보드 식 사용
+    // 표준: transform = inv(camMatrix)*rel  (plane=(-sin*0.66?) 여기선 단순화)
+    const planeX=Math.cos(dir+Math.PI/2)*0.66, planeY=Math.sin(dir+Math.PI/2)*0.66;
+    const dirX=Math.cos(dir), dirY=Math.sin(dir);
+    const det=planeX*dirY-dirX*planeY;
+    if(Math.abs(det)<1e-6) continue;
+    const tX=(dirY*dx-dirX*dy)/det;          // 좌우(스크린 x)
+    const tY=(-planeY*dx+planeX*dy)/det;     // 깊이(앞쪽 양수)
+    if(tY<=0.2) continue;
+    visT.push({t,distT,tX,tY});
+  }
+  visT.sort((a,b)=>b.distT-a.distT); // 먼 것 먼저 그림
+  for(const v of visT){
+    const {t,distT,tX,tY}=v;
+    const art=thingArt(t);
+    const ah=art.length, aw=Math.max(...art.map(r=>r.length));
+    const screenX=Math.floor((W/2)*(1+tX/tY));
+    // 스프라이트 높이: 벽과 비슷한 스케일, 약간 작게(바닥에 선 느낌)
+    const spH=Math.min(H*2.2, Math.abs((H/tY))*0.9)|0;
+    const spW=Math.max(1, Math.floor(spH*(aw/ah)*(CW/CH)*1.05));
+    const horizon2=(H*0.5)|0;
+    // 바닥에 발 붙게: 사물 바닥을 바닥선 근처에
+    const groundY=horizon2 + Math.floor((H/tY)*0.5);  // 시야 바닥
+    const yEnd=Math.min(H-1, groundY);
+    const yStart=yEnd-spH+1;
+    const xStart=screenX-(spW>>1);
+    // 틴트(거리 음영)
+    const tintRamp=" .:-=+*#@".split("");
+    let painted=0, focusCenterDist=1e9;
+    for(let sy=0;sy<spH;sy++){
+      const y=yStart+sy; if(y<0||y>=H) continue;
+      const ay=Math.floor(sy*ah/spH);
+      const arow=art[ay]||"";
+      for(let sx=0;sx<spW;sx++){
+        const x=xStart+sx; if(x<0||x>=W) continue;
+        if(tY>=zbuf[x]) continue; // 벽 뒤 차폐
+        const ax=Math.floor(sx*aw/spW);
+        let ch=arow[ax]||" ";
+        if(ch===" "||ch==="") continue;
+        // 거리 음영: 멀면 흐리게
+        if(distT>11){ if(/[a-z0-9]/i.test(ch)) ch="."; else if(ch!==" ") ch=":"; }
+        else if(distT>7){ /* 그대로지만 약하게: 강한 글자만 유지 */ }
+        rows[y][x]=ch;
+        painted++;
+      }
+    }
+    // 조준 판정: 화면 중앙(crosshair)에 사물이 걸치고 충분히 가까우면 focus
+    if(painted>0 && distT<2.4){
+      const center=W>>1;
+      if(xStart-1<=center && center<=xStart+spW+1){
+        if(distT<bestFocus){ bestFocus=distT; focusThing=t; }
+      }
+    }
+  }
+
+  // --- 3) 크로스헤어 + 조준 표식 ---
+  const cx=W>>1, cy=H>>1;
+  if(rows[cy]){
+    if(rows[cy][cx-1]===" "||rows[cy][cx-1]==="."||rows[cy][cx-1]==="·") rows[cy][cx-1]="[";
+    // 중심 표식
+  }
+  // crosshair 그리기(가독성 위해 항상)
+  const mark = focusThing? "◇" : "·";
+  if(rows[cy]) rows[cy][cx]=mark;
+  if(rows[cy-1]) rows[cy-1][cx]= focusThing? "v":" ";
+
+  // 행 → 문자열
+  let out="";
+  for(let y=0;y<H;y++){ out+=rows[y].join("")+"\n"; }
+  view.textContent=out;
+
+  // --- 4) HUD ---
+  roomtagEl.textContent="— "+roomAt(px,py)+" —";
+  invEl.textContent="소지품: "+(inv.size? [...inv].map(k=>INV_LABEL[k]||k).join(", "):"없음");
+  if(!popupOpen && entered && !ended){
+    if(focusThing){
+      let verb = focusThing.take? "줍기" : focusThing.op? "살핌/작동" : "살핌";
+      statusEl.textContent=`눈앞: ${focusThing.name} — [E] ${verb}`;
+    } else if(performance.now()-lastMsg>2600){
+      statusEl.textContent="좌표 ("+px.toFixed(1)+", "+py.toFixed(1)+") · 방향키 회전, W/S 전후, A/D 횡이동 · 문을 통해 방을 옮겨라";
+    }
+  }
+}
+
+const INV_LABEL={key:"보물고 열쇠", map:"성채 도면", treasure:"보물고의 보물"};
+
+/* ===================== 충돌/이동 ===================== */
+let lastMsg=0;
+function say(t){ statusEl.textContent=t; lastMsg=performance.now(); }
+function passable(x,y){
+  const gx=x|0, gy=y|0;
+  if(gx<0||gy<0||gx>=GW||gy>=GH) return false;
+  return grid[gy][gx]===0;
+}
+function tryMove(nx,ny){
+  const m=0.24;
+  // 사물 충돌(가까이서 통과 방지, 작은 아이템 제외)
+  for(const t of things){
+    if(t.gone) continue;
+    if(t.id.startsWith("oldkey")||t.id.startsWith("scroll")) continue; // 줍는 작은건 통과 가능
+    if(Math.hypot(nx-t.x,ny-t.y)<0.55){ return; }
+  }
+  if(passable(nx+Math.sign(nx-px)*m, py)) px=nx;
+  if(passable(px, ny+Math.sign(ny-py)*m)) py=ny;
+}
+
+/* ===================== 상호작용 ===================== */
+const popup=document.getElementById("popup");
+const popPic=document.getElementById("pop-pic");
+const popTitle=document.getElementById("pop-title");
+const popBody=document.getElementById("pop-body");
+function showPopup(title, body, picArt){
+  popTitle.textContent=title;
+  popBody.innerHTML=body;
+  popPic.textContent = picArt? picArt.join("\n") : "";
+  popup.classList.remove("hidden");
+  popup.style.opacity="1"; popup.style.pointerEvents="auto";
+  popupOpen=true;
+}
+function closePopup(){
+  popup.style.opacity="0"; popup.style.pointerEvents="none";
+  setTimeout(()=>popupOpen=false, 200);
+}
+
+function interact(){
+  if(!focusThing) return;
+  const t=focusThing;
+  const art=thingArt(t);
+
+  // 보물 궤: 열쇠 필요
+  if(t.id==="chest1"){
+    if(t.chestOpen){
+      showPopup("열린 보물 궤", "텅 비었다. 보물은 이미 너의 것이다.", ART.chest);
+    } else if(inv.has("key")){
+      t.chestOpen=true;
+      inv.add("treasure");
+      showPopup("보물 궤 — 열림!", "녹슨 자물쇠가 철컥 풀린다.<br>안에는 금화와 함께 작은 <b>성배의 약도</b>가 들어 있다.<br>「비밀 금고는 왕좌의 방 너머, 들린 돌문 안쪽에」", ART.chest);
+      say("보물 궤를 열었다. 보물을 챙겼다. 비밀 금고로 향하라.");
+    } else {
+      showPopup("봉인된 보물 궤", "무거운 자물쇠. <b>보물고 열쇠</b>가 있어야 열린다.<br>(무기고의 무기 걸이를 살펴라.)", ART.chest);
+    }
+    return;
+  }
+
+  // 보물고 돌문 레버
+  if(t.id==="lever1"){
+    if(flags.has("lever")){
+      showPopup("도르래 레버", "이미 당겼다. 보물고의 돌문은 들려 있다.", ART.lever);
+    } else {
+      flags.add("lever");
+      if(VAULT_DOOR){ grid[VAULT_DOOR.y][VAULT_DOOR.x]=0; }
+      showPopup("도르래 레버 — 작동", t.op, ART.lever);
+      say("동쪽 어딘가에서 돌문이 들렸다. 보물고로 가는 길이 열렸다.");
+    }
+    return;
+  }
+
+  // 성배 — 엔딩
+  if(t.id==="grail1"){
+    endingSequence();
+    return;
+  }
+
+  // 작은 아이템 줍기
+  if(t.take){
+    if(inv.has(t.takeId)){
+      showPopup(t.name, "이미 챙겼다.", art);
+    } else {
+      inv.add(t.takeId);
+      t.gone=true;
+      showPopup(t.name+" — 획득", t.takeMsg||"손에 넣었다.", art);
+      say(t.takeMsg||"획득했다.");
+    }
+    return;
+  }
+
+  // 일반 살핌/작동
+  let body=t.exam||"특별할 것 없어 보인다.";
+  if(t.op){
+    if(!t.opDone){ t.opDone=true; body += "<br><br><span style='color:#d6a45a'>작동 — "+t.op+"</span>"; }
+    else body += "<br><br><span style='color:#8a8068'>"+t.op+"</span>";
+  }
+  showPopup(t.name, body, art);
+}
+
+/* ===================== 엔딩 ===================== */
+function endingSequence(){
+  ended=true; popupOpen=true;
+  const got = inv.has("treasure");
+  popup.style.background="rgba(15,12,8,.96)";
+  popTitle.textContent="성 배";
+  popPic.textContent=ART.grail.join("\n");
+  popBody.innerHTML =
+    "성배를 두 손으로 들자, 죽은 줄 알았던 촛불이 일제히 살아난다.<br><br>"+
+    "텅 빈 왕좌, 빈 갑주, 잠든 가마솥 — 성채가 너를 새 주인으로 받아들인다.<br>"+
+    (got? "궤에서 꺼낸 보물과 함께, 너는 이 돌의 집의 심장을 손에 쥐었다.<br><br>"
+        : "(보물 궤는 아직 잠겨 있지만, 성배만으로 충분하다.)<br><br>")+
+    "<b style='color:#d6a45a'>— 성채 내부, 끝. —</b><br>"+
+    "<span style='font-size:11px;color:#8a8068'>아무 키나 눌러 다시 거닐기</span>";
+  popup.classList.remove("hidden");
+  popup.style.opacity="1"; popup.style.pointerEvents="auto";
+}
+
+/* ===================== 입력 ===================== */
+const intro=document.getElementById("intro");
+const pad=document.getElementById("pad");
+function enter(){
+  if(entered) return;
+  entered=true;
+  intro.classList.add("hidden");
+  say("입구 홀. 횃불을 따라 안으로. 눈앞의 ◇ 표식이 뜨면 [E]로 살펴라.");
+}
+function anyKeyClose(){
+  if(ended){ // 다시 거닐기
+    ended=false; popupOpen=false;
+    popup.style.opacity="0"; popup.style.pointerEvents="none";
+    popup.style.background="rgba(20,17,12,.92)";
+    return true;
+  }
+  if(popupOpen){ closePopup(); return true; }
+  return false;
+}
+addEventListener("keydown", e=>{
+  const k=e.key.toLowerCase();
+  if(!entered){ enter(); if(["w","a","s","d","arrowup","arrowdown","arrowleft","arrowright","e"," "].includes(k)) e.preventDefault(); return; }
+  if(popupOpen || ended){ anyKeyClose(); e.preventDefault(); return; }
+  if(k==="e"){ interact(); e.preventDefault(); return; }
+  keys[k]=true;
+  if(["arrowup","arrowdown","arrowleft","arrowright"," "].includes(k)) e.preventDefault();
+});
+addEventListener("keyup", e=>{ keys[e.key.toLowerCase()]=false; });
+
+/* ---- 터치 ---- */
+let touchShown=false;
+function showPad(){ if(!touchShown){ touchShown=true; pad.style.display="block"; } }
+addEventListener("touchstart", e=>{
+  showPad();
+  if(!entered){ enter(); return; }
+  if(popupOpen||ended){ anyKeyClose(); }
+}, {passive:true});
+function bindBtn(id,key){
+  const el=document.getElementById(id);
+  const set=(v)=>{ if(key==="e"){ if(v && entered && !popupOpen && !ended) interact(); } else keys[key]=v; };
+  el.addEventListener("touchstart",e=>{e.preventDefault(); showPad(); if(!entered){enter();return;} if(popupOpen||ended){anyKeyClose();return;} set(true);},{passive:false});
+  el.addEventListener("touchend",e=>{e.preventDefault(); set(false);},{passive:false});
+  el.addEventListener("mousedown",e=>{e.preventDefault(); if(!entered){enter();return;} if(popupOpen||ended){anyKeyClose();return;} set(true);});
+  el.addEventListener("mouseup",e=>{e.preventDefault(); set(false);});
+  el.addEventListener("mouseleave",e=>{ set(false);});
+}
+bindBtn("b_up","w"); bindBtn("b_dn","s"); bindBtn("b_l","arrowleft"); bindBtn("b_r","arrowright"); bindBtn("b_e","e");
+
+// 데스크탑에서 팝업/엔딩 클릭 닫기
+popup.addEventListener("click", ()=>{ anyKeyClose(); });
+view.addEventListener("click", ()=>{ if(!entered) enter(); });
+
+/* ===================== 루프 ===================== */
+let lastT=performance.now(), acc=0, fpsAcc=0;
+function loop(t){
+  const dt=Math.min(0.05,(t-lastT)/1000); lastT=t;
+  if(entered && !popupOpen && !ended){
+    const rs=2.4*dt, ms=2.7*dt;
+    if(keys["arrowleft"]||keys["q"]) dir-=rs;
+    if(keys["arrowright"]||keys["e2"]) dir+=rs;
+    const fx=Math.cos(dir), fy=Math.sin(dir);
+    if(keys["w"]||keys["arrowup"]) tryMove(px+fx*ms, py+fy*ms);
+    if(keys["s"]||keys["arrowdown"]) tryMove(px-fx*ms, py-fy*ms);
+    if(keys["a"]) tryMove(px+fy*ms, py-fx*ms);
+    if(keys["d"]) tryMove(px-fy*ms, py+fx*ms);
+  }
+  acc+=dt;
+  if(acc>1/30){ acc=0; render(); }
+  requestAnimationFrame(loop);
+}
+
+/* ---- 초기화 ---- */
+function init(){
+  fit();
+  render();
+  requestAnimationFrame(loop);
+}
+addEventListener("resize", ()=>{ fit(); });
+// view 크기 확정 후 fit
+requestAnimationFrame(()=>{ init(); });
+
+})();
+</script>
+</body>
+</html>

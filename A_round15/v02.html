@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>PLASMA — electric orb</title>
+<style>
+  :root{ color-scheme: dark; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#04020a; }
+  body{
+    font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+    cursor: crosshair;
+  }
+  #stage{ position:fixed; inset:0; display:block; }
+  /* layered canvases for cheap bloom */
+  canvas{ position:fixed; inset:0; width:100%; height:100%; display:block; }
+  #glow{ filter: blur(0px); }     /* set per-frame */
+  .ui{
+    position:fixed; z-index:10; pointer-events:none;
+    color:#bfaaff; mix-blend-mode:screen;
+    text-transform:uppercase; letter-spacing:.32em;
+    text-shadow:0 0 14px rgba(150,90,255,.7);
+    user-select:none;
+  }
+  #title{ left:clamp(16px,4vw,54px); top:clamp(16px,4vh,44px); font-size:clamp(11px,1.4vw,15px); }
+  #title b{ font-weight:800; letter-spacing:.5em; color:#fff; }
+  #title span{ display:block; margin-top:8px; font-size:.74em; letter-spacing:.42em; color:#7b6bd8; }
+  #hint{
+    left:50%; bottom:clamp(14px,4vh,40px); transform:translateX(-50%);
+    font-size:clamp(9px,1.1vw,12px); letter-spacing:.34em; color:#6a5bbf;
+    text-align:center; transition:opacity 1.2s ease; white-space:nowrap;
+  }
+  #read{ right:clamp(16px,4vw,54px); top:clamp(16px,4vh,44px); text-align:right; font-size:clamp(9px,1.1vw,12px); line-height:1.9; color:#8a78e0; }
+  #read i{ font-style:normal; color:#fff; font-weight:700; }
+  @media (max-width:520px){
+    #read{ display:none; }
+    #title span{ letter-spacing:.3em; }
+  }
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <canvas id="glow"></canvas>
+
+  <div id="title" class="ui"><b>PLASMA</b><span>electric orb · 015</span></div>
+  <div id="read" class="ui">
+    arcs <i id="rArc">0</i><br>
+    energy <i id="rEn">0</i>%<br>
+    sound <i id="rSnd">off</i>
+  </div>
+  <div id="hint" class="ui">move · hold to touch the glass · scroll to charge · click to surge</div>
+
+<script>
+(()=>{
+  "use strict";
+  const base = document.getElementById('stage');
+  const glow = document.getElementById('glow');
+  const bx = base.getContext('2d');
+  const gx = glow.getContext('2d');
+
+  // ---- responsive sizing with DPR cap (performance) ----
+  let W=0,H=0,DPR=1, cx=0,cy=0, R=0;       // R = orb radius
+  function resize(){
+    const w = window.innerWidth, h = window.innerHeight;
+    DPR = Math.min(window.devicePixelRatio||1, 2);
+    // glow canvas runs at half res for cheap blur + speed
+    W=w; H=h;
+    base.width = Math.round(w*DPR); base.height = Math.round(h*DPR);
+    glow.width = Math.round(w*DPR*0.5); glow.height = Math.round(h*DPR*0.5);
+    base.style.width=w+'px'; base.style.height=h+'px';
+    glow.style.width=w+'px'; glow.style.height=h+'px';
+    bx.setTransform(DPR,0,0,DPR,0,0);
+    gx.setTransform(DPR*0.5,0,0,DPR*0.5,0,0);
+    cx = w*0.5; cy = h*0.5;
+    R = Math.min(w,h) * (w<560 ? 0.36 : 0.30);
+    glow.style.filter = 'blur(' + Math.max(4, R*0.03) + 'px)';
+  }
+  window.addEventListener('resize', resize, {passive:true});
+  resize();
+
+  // ---- pointer state ----
+  const ptr = { x:cx, y:cy, has:false, hold:false, vx:0, vy:0, lx:cx, ly:cy };
+  let energy = 0.42;   // 0..1 charge level, scroll-controlled
+  let surge = 0;       // transient burst on click
+  function setPtr(x,y){ ptr.x=x; ptr.y=y; ptr.has=true; }
+  base.addEventListener('pointermove', e=>{ setPtr(e.clientX,e.clientY); }, {passive:true});
+  base.addEventListener('pointerdown', e=>{
+    setPtr(e.clientX,e.clientY); ptr.hold=true; surge = Math.min(1.6, surge+1.0);
+    ensureAudio(); zap();
+    hideHint();
+  });
+  window.addEventListener('pointerup', ()=>{ ptr.hold=false; });
+  base.addEventListener('pointerleave', ()=>{ ptr.has=false; ptr.hold=false; });
+  // scroll / wheel -> energy
+  window.addEventListener('wheel', e=>{
+    energy = Math.max(0.06, Math.min(1, energy - e.deltaY*0.0006));
+    hideHint();
+  }, {passive:true});
+  // touch scroll fallback (vertical drag delta adds energy lightly handled via pointer)
+  let hintHidden=false;
+  function hideHint(){ if(hintHidden)return; hintHidden=true; const h=document.getElementById('hint'); h.style.opacity='0'; }
+
+  // =================================================================
+  //  AUDIO — synthesized electric hum + crackle, gated by interaction
+  // =================================================================
+  let AC=null, masterGain=null, hum=null, humGain=null, audioOn=false;
+  function ensureAudio(){
+    if(AC) { if(AC.state==='suspended') AC.resume(); return; }
+    try{
+      AC = new (window.AudioContext||window.webkitAudioContext)();
+      masterGain = AC.createGain(); masterGain.gain.value = 0.0; masterGain.connect(AC.destination);
+      // low electric hum
+      hum = AC.createOscillator(); hum.type='sawtooth'; hum.frequency.value=58;
+      const hf = AC.createBiquadFilter(); hf.type='lowpass'; hf.frequency.value=220; hf.Q.value=6;
+      humGain = AC.createGain(); humGain.gain.value=0.0;
+      hum.connect(hf); hf.connect(humGain); humGain.connect(masterGain);
+      hum.start();
+      // gentle fade master in
+      masterGain.gain.setTargetAtTime(0.9, AC.currentTime, 0.4);
+      audioOn=true;
+      document.getElementById('rSnd').textContent='on';
+    }catch(err){ audioOn=false; }
+  }
+  // short noise burst = arc crackle
+  let noiseBuf=null;
+  function getNoise(){
+    if(noiseBuf) return noiseBuf;
+    const n = Math.floor(0.12*44100);
+    noiseBuf = AC.createBuffer(1, n, 44100);
+    const d = noiseBuf.getChannelData(0);
+    for(let i=0;i<n;i++){ d[i]=(Math.random()*2-1); }
+    return noiseBuf;
+  }
+  function crackle(intensity){
+    if(!audioOn) return;
+    const t = AC.currentTime;
+    const src = AC.createBufferSource(); src.buffer=getNoise();
+    const bp = AC.createBiquadFilter(); bp.type='bandpass';
+    bp.frequency.value = 1400 + Math.random()*3000;
+    bp.Q.value = 2 + Math.random()*6;
+    const g = AC.createGain();
+    const amp = 0.05 + 0.16*intensity;
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(amp, t+0.004);
+    g.gain.exponentialRampToValueAtTime(0.0008, t+0.06+Math.random()*0.05);
+    src.connect(bp); bp.connect(g); g.connect(masterGain);
+    src.start(t); src.stop(t+0.16);
+  }
+  function zap(){
+    if(!audioOn) return;
+    const t=AC.currentTime;
+    const o=AC.createOscillator(); o.type='square';
+    o.frequency.setValueAtTime(900,t); o.frequency.exponentialRampToValueAtTime(110,t+0.18);
+    const g=AC.createGain(); g.gain.setValueAtTime(0.0,t);
+    g.gain.linearRampToValueAtTime(0.22,t+0.005); g.gain.exponentialRampToValueAtTime(0.0008,t+0.25);
+    o.connect(g); g.connect(masterGain); o.start(t); o.stop(t+0.28);
+    crackle(1.0);
+  }
+
+  // =================================================================
+  //  PLASMA ARCS — fractal lightning filaments from core to glass
+  // =================================================================
+  // each arc has an angle target, jitter seed, life
+  const NUM_ARCS_DESKTOP = 9;
+  const NUM_ARCS_MOBILE  = 6;
+  function arcCount(){ return W<560 ? NUM_ARCS_MOBILE : NUM_ARCS_DESKTOP; }
+
+  let arcs=[];
+  function makeArc(i,n){
+    const a = (i/n)*Math.PI*2 + Math.random()*0.6;
+    return { ang:a, tang:a, wob:Math.random()*9, life:Math.random(), endX:0, endY:0, hot:Math.random() };
+  }
+  function rebuildArcs(){ const n=arcCount(); arcs=[]; for(let i=0;i<n;i++) arcs.push(makeArc(i,n)); }
+  rebuildArcs();
+  window.addEventListener('resize', rebuildArcs, {passive:true});
+
+  // sparks at arc terminals
+  const sparks=[];
+  const MAX_SPARKS = 220;
+  function emitSpark(x,y,hot){
+    if(sparks.length>MAX_SPARKS) sparks.shift();
+    const a=Math.random()*Math.PI*2, sp=0.6+Math.random()*2.4;
+    sparks.push({x,y, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp, life:1, hot});
+  }
+
+  // pseudo-random hash (deterministic per seed) -> -1..1
+  function hsh(s){ const x=Math.sin(s*127.1+311.7)*43758.5453; return (x-Math.floor(x))*2-1; }
+
+  // generate a jagged lightning point list via midpoint displacement.
+  // returns array of [x,y]. sharp, electric (low smoothing factor).
+  function boltPts(x1,y1,x2,y2, displace, detail, t, seed){
+    let pts=[[x1,y1],[x2,y2]];
+    let d=displace;
+    for(let it=0; it<detail; it++){
+      const np=[];
+      for(let k=0;k<pts.length-1;k++){
+        const a=pts[k], b=pts[k+1];
+        np.push(a);
+        const mx=(a[0]+b[0])/2, my=(a[1]+b[1])/2;
+        const dx=b[0]-a[0], dy=b[1]-a[1], len=Math.hypot(dx,dy)||1;
+        const px=-dy/len, py=dx/len;
+        // mix animated wobble + per-segment hash -> jagged but temporally alive
+        const j = (Math.sin(seed*3.1+it*1.7+k*2.3+t*1.1)*0.6 + hsh(seed+it*13.7+k*5.3)*0.7) * d;
+        np.push([mx+px*j, my+py*j]);
+      }
+      np.push(pts[pts.length-1]);
+      pts=np;
+      d*=0.62;   // less decay -> stays jagged near the tip
+    }
+    return pts;
+  }
+  function strokePts(ctx, pts){
+    ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
+    for(let k=1;k<pts.length;k++) ctx.lineTo(pts[k][0],pts[k][1]);
+    ctx.stroke();
+  }
+
+  // =================================================================
+  //  RENDER LOOP
+  // =================================================================
+  let t=0, last=performance.now(), fpsAvg=60;
+  let coreFlick=0;
+
+  function frame(now){
+    let dt=(now-last)/16.6667; last=now;
+    if(dt>3) dt=3;            // clamp after tab-away
+    t += 0.018*dt + energy*0.01;
+
+    // fps estimate -> adaptive detail
+    const instFps = 1000/Math.max(1,(now - (frame._p||now))); frame._p=now;
+    fpsAvg = fpsAvg*0.92 + instFps*0.08;
+    const lowPerf = fpsAvg < 45;
+
+    // pointer velocity (for arc liveliness)
+    ptr.vx = ptr.vx*0.8 + (ptr.x-ptr.lx)*0.2; ptr.vy = ptr.vy*0.8 + (ptr.y-ptr.ly)*0.2;
+    ptr.lx=ptr.x; ptr.ly=ptr.y;
+    const pSpeed = Math.min(1, Math.hypot(ptr.vx,ptr.vy)/22);
+
+    surge *= Math.pow(0.92, dt);
+    const charge = Math.min(1.5, energy + surge*0.8);
+
+    // ---- clear with motion-trail (no full clear = glow streaks) ----
+    bx.globalCompositeOperation='source-over';
+    bx.fillStyle='rgba(4,2,10,0.34)';
+    bx.fillRect(0,0,W,H);
+    // glow layer: fade fast
+    gx.globalCompositeOperation='source-over';
+    gx.fillStyle='rgba(4,2,10,0.40)';
+    gx.fillRect(0,0,W,H);
+
+    // ---- background nebula vignette around orb ----
+    const bg = bx.createRadialGradient(cx,cy,R*0.1, cx,cy,R*2.4);
+    bg.addColorStop(0,'rgba(40,14,90,'+(0.22+0.18*charge)+')');
+    bg.addColorStop(0.5,'rgba(20,6,50,0.10)');
+    bg.addColorStop(1,'rgba(4,2,10,0)');
+    bx.globalCompositeOperation='lighter';
+    bx.fillStyle=bg; bx.beginPath(); bx.arc(cx,cy,R*2.4,0,7); bx.fill();
+
+    // pointer target direction (attractor). when holding, pull harder + farther
+    let aimX=cx, aimY=cy, aimStrength=0;
+    if(ptr.has){
+      const ddx=ptr.x-cx, ddy=ptr.y-cy, dd=Math.hypot(ddx,ddy)||1;
+      aimX=ddx/dd; aimY=ddy/dd;
+      aimStrength = ptr.hold ? 1 : 0.55;
+    }
+    // where arcs terminate: glass edge, or the touch point if holding & inside reach
+    const holdInside = ptr.hold && ptr.has;
+    const reach = R*1.0;
+
+    bx.globalCompositeOperation='lighter';
+    gx.globalCompositeOperation='lighter';
+
+    let hotPulse = 0;
+    const N = arcs.length;
+    const detail = lowPerf ? 4 : 6;
+
+    const pAng0 = ptr.has ? Math.atan2(aimY,aimX) : 0;
+    bx.lineCap='round'; bx.lineJoin='round';
+    gx.lineCap='round'; gx.lineJoin='round';
+
+    for(let i=0;i<N;i++){
+      const arc=arcs[i];
+      // base evenly spread target + bias toward pointer
+      const baseAng = (i/N)*Math.PI*2;
+      let targetAng = baseAng;
+      let closeness = 0;
+      if(aimStrength>0){
+        let diff = ((pAng0 - baseAng + Math.PI*3)%(Math.PI*2))-Math.PI;
+        closeness = Math.max(0, 1 - Math.abs(diff)/Math.PI); // 1 when aligned
+        targetAng = baseAng + diff*(0.25 + 0.6*aimStrength*closeness);
+      }
+      // wobble (fast, electric)
+      arc.wob += 0.05*dt + 0.02;
+      targetAng += Math.sin(arc.wob*1.7+i)*0.12*(0.5+charge);
+      arc.ang += (targetAng-arc.ang)*Math.min(1,0.14*dt*(1+pSpeed));
+
+      // the single arc most aligned with the cursor becomes the "finger" -> reaches farther/brighter
+      const isFinger = closeness>0.80 && aimStrength>0;
+
+      // endpoint radius
+      let rr=R;
+      if(holdInside){
+        const dd=Math.hypot(ptr.x-cx,ptr.y-cy);
+        const pull = Math.max(0, 1 - Math.abs(((pAng0-arc.ang+Math.PI*3)%(Math.PI*2))-Math.PI)/0.9);
+        rr = R + (Math.min(dd,reach*1.4)-R)*pull;
+      } else if(isFinger){
+        rr = R*(1.0 + 0.05*aimStrength);   // graze the glass toward cursor
+      }
+      const ex = cx + Math.cos(arc.ang)*rr;
+      const ey = cy + Math.sin(arc.ang)*rr;
+      arc.endX=ex; arc.endY=ey;
+
+      const baseHue = 248 + Math.sin(i*1.3+t*0.3)*42;     // violet/blue band
+      const heat = Math.min(1, charge*0.55 + (holdInside?0.35:0) + (isFinger?0.45:0) + pSpeed*0.25 + arc.hot*0.18);
+      hotPulse += heat;
+      const light = 58 + heat*32;
+      const sat = 92 - heat*34;
+
+      const disp = (R*0.30) * (0.55 + 1.0*charge) * (isFinger?1.15:1);
+      const seed = i*3.3 + Math.floor(t*7);      // reseed ~7x/sec -> flicker/jump
+      const dt9 = t*11.0;
+
+      const main = boltPts(cx,cy, ex,ey, disp, detail, dt9, seed);
+      const endPt = main[main.length-1];
+
+      // ---- soft colored glow (glow canvas, blurred later) ----
+      gx.strokeStyle = 'hsla('+baseHue+','+sat+'%,'+light+'%,0.5)';
+      gx.lineWidth = 3.0 + heat*4 + (isFinger?2:0);
+      strokePts(gx, main);
+
+      // ---- on base: wide colored halo + razor white core (this gives the electric look) ----
+      bx.strokeStyle = 'hsla('+baseHue+','+sat+'%,'+light+'%,0.40)';
+      bx.lineWidth = 2.6 + heat*3 + (isFinger?2:0);
+      strokePts(bx, main);
+
+      bx.strokeStyle = 'rgba(255,255,255,'+(0.85+heat*0.15).toFixed(2)+')';
+      bx.lineWidth = 0.7 + heat*1.1 + (isFinger?0.8:0);
+      strokePts(bx, main);
+
+      // ---- forks: branch off interior nodes (real lightning) ----
+      const nFork = lowPerf ? 1 : (1 + (heat>0.5?1:0));
+      for(let f=0; f<nFork; f++){
+        const idx = 2 + ((Math.floor(seed*7+f*13)>>>0) % Math.max(1,(main.length-4)));
+        const a = main[idx];
+        if(!a) continue;
+        const remain = (1 - idx/main.length);
+        const flen = (rr-R*0.2) * remain * (0.45+0.5*Math.random());
+        const fang = arc.ang + (hsh(seed+f*9.1)*0.9);
+        const fx = a[0] + Math.cos(fang)*flen;
+        const fy = a[1] + Math.sin(fang)*flen;
+        const fp = boltPts(a[0],a[1], fx,fy, disp*0.5, Math.max(3,detail-2), dt9*1.3, seed+f*4.7+50);
+        gx.lineWidth = 1.6 + heat*2; gx.strokeStyle='hsla('+baseHue+','+sat+'%,'+light+'%,0.4)'; strokePts(gx,fp);
+        bx.strokeStyle='hsla('+baseHue+','+sat+'%,'+(light+5)+'%,0.32)'; bx.lineWidth=1.4+heat*1.4; strokePts(bx,fp);
+        bx.strokeStyle='rgba(255,255,255,0.6)'; bx.lineWidth=0.5+heat*0.6; strokePts(bx,fp);
+      }
+
+      // terminal flare + sparks (brighter for finger)
+      const flareR = (2.5 + heat*6) * (isFinger?1.6:1);
+      const fg = bx.createRadialGradient(endPt[0],endPt[1],0, endPt[0],endPt[1],flareR*2.2);
+      fg.addColorStop(0,'rgba(255,255,255,0.95)');
+      fg.addColorStop(0.35,'hsla('+baseHue+',95%,80%,0.7)');
+      fg.addColorStop(1,'hsla('+baseHue+',90%,60%,0)');
+      bx.fillStyle=fg; bx.beginPath(); bx.arc(endPt[0],endPt[1],flareR*2.2,0,7); bx.fill();
+
+      if(Math.random()< (0.20+heat*0.5)) emitSpark(endPt[0],endPt[1], heat);
+      if(audioOn && Math.random() < (0.010 + heat*0.05 + pSpeed*0.04 + (isFinger?0.05:0))) crackle(heat);
+    }
+    hotPulse/=N;
+
+    // ---- sparks ----
+    bx.globalCompositeOperation='lighter';
+    for(let s=sparks.length-1;s>=0;s--){
+      const p=sparks[s];
+      p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy+=0.02*dt; p.vx*=0.98; p.life-=0.03*dt;
+      if(p.life<=0){ sparks.splice(s,1); continue; }
+      const a=p.life*p.life;
+      bx.fillStyle='hsla('+(250+p.hot*60)+',90%,'+(75+p.hot*20)+'%,'+a+')';
+      const r=1.2+p.hot*1.8;
+      bx.beginPath(); bx.arc(p.x,p.y,r,0,7); bx.fill();
+    }
+
+    // ---- the bright nucleus / core ----
+    coreFlick = coreFlick*0.7 + (0.7+Math.random()*0.6)*0.3;
+    const coreR = R*(0.16 + 0.05*Math.sin(t*1.3)) * (0.85+0.4*charge) * coreFlick;
+    // core bloom on glow layer
+    const cg = gx.createRadialGradient(cx,cy,0, cx,cy,coreR*4);
+    cg.addColorStop(0,'rgba(255,255,255,0.9)');
+    cg.addColorStop(0.25,'hsla(275,90%,72%,0.7)');
+    cg.addColorStop(1,'hsla(265,90%,55%,0)');
+    gx.fillStyle=cg; gx.beginPath(); gx.arc(cx,cy,coreR*4,0,7); gx.fill();
+    // core on base
+    const cg2 = bx.createRadialGradient(cx,cy,0, cx,cy,coreR*2.2);
+    cg2.addColorStop(0,'rgba(255,255,255,1)');
+    cg2.addColorStop(0.35,'hsla(280,95%,80%,0.95)');
+    cg2.addColorStop(0.7,'hsla(265,90%,60%,0.5)');
+    cg2.addColorStop(1,'hsla(260,90%,50%,0)');
+    bx.fillStyle=cg2; bx.beginPath(); bx.arc(cx,cy,coreR*2.2,0,7); bx.fill();
+    bx.fillStyle='rgba(255,255,255,0.95)'; bx.beginPath(); bx.arc(cx,cy,coreR*0.5,0,7); bx.fill();
+
+    // ---- glass sphere shell ----
+    bx.globalCompositeOperation='lighter';
+    // faint inner gas haze tinting the whole interior (so the orb reads as a filled globe)
+    const haze = bx.createRadialGradient(cx,cy,R*0.2, cx,cy,R);
+    haze.addColorStop(0,'hsla(275,90%,60%,0)');
+    haze.addColorStop(0.65,'hsla(268,85%,52%,'+(0.05+0.06*charge)+')');
+    haze.addColorStop(0.95,'hsla(262,90%,58%,'+(0.10+0.10*charge)+')');
+    haze.addColorStop(1,'hsla(262,90%,60%,0)');
+    bx.fillStyle=haze; bx.beginPath(); bx.arc(cx,cy,R,0,7); bx.fill();
+    // bright fresnel rim band (the glass edge)
+    const rim = bx.createRadialGradient(cx,cy,R*0.78, cx,cy,R*1.06);
+    rim.addColorStop(0,'rgba(120,80,220,0)');
+    rim.addColorStop(0.84,'hsla(272,90%,72%,'+(0.10+0.10*charge)+')');
+    rim.addColorStop(0.965,'hsla(270,95%,78%,'+(0.55+0.30*charge)+')');
+    rim.addColorStop(1,'rgba(160,120,255,0)');
+    bx.fillStyle=rim; bx.beginPath(); bx.arc(cx,cy,R*1.06,0,7); bx.fill();
+    // crisp glass outlines just OUTSIDE arc reach so the ring frames the plasma
+    bx.strokeStyle='hsla(265,98%,90%,'+(0.55+0.35*charge)+')';
+    bx.lineWidth=1.8; bx.beginPath(); bx.arc(cx,cy,R*1.05,0,7); bx.stroke();
+    bx.strokeStyle='hsla(270,90%,74%,'+(0.16+0.16*charge)+')';
+    bx.lineWidth=1.1; bx.beginPath(); bx.arc(cx,cy,R*1.085,0,7); bx.stroke();
+    // specular highlight (glass) — top-left, and a small sharp glint
+    bx.globalCompositeOperation='screen';
+    const hi = bx.createRadialGradient(cx-R*0.36,cy-R*0.42,0, cx-R*0.36,cy-R*0.42,R*0.6);
+    hi.addColorStop(0,'rgba(255,255,255,0.22)');
+    hi.addColorStop(1,'rgba(255,255,255,0)');
+    bx.fillStyle=hi; bx.beginPath(); bx.arc(cx-R*0.36,cy-R*0.42,R*0.6,0,7); bx.fill();
+    const glint = bx.createRadialGradient(cx-R*0.46,cy-R*0.5,0, cx-R*0.46,cy-R*0.5,R*0.12);
+    glint.addColorStop(0,'rgba(255,255,255,0.5)'); glint.addColorStop(1,'rgba(255,255,255,0)');
+    bx.fillStyle=glint; bx.beginPath(); bx.arc(cx-R*0.46,cy-R*0.5,R*0.12,0,7); bx.fill();
+
+    // ---- composite glow layer over base (bloom) ----
+    bx.globalCompositeOperation='lighter';
+    bx.globalAlpha = 0.85;
+    bx.drawImage(glow, 0,0, W, H);
+    bx.globalAlpha = 1;
+
+    // ---- audio: drive hum freq/gain by energy ----
+    if(audioOn){
+      const target = 0.04 + charge*0.10 + hotPulse*0.05;
+      humGain.gain.setTargetAtTime(target, AC.currentTime, 0.1);
+      hum.frequency.setTargetAtTime(46 + charge*30 + pSpeed*20, AC.currentTime, 0.15);
+    }
+
+    // ---- readout ----
+    if((now|0)%6===0){
+      document.getElementById('rArc').textContent = N;
+      document.getElementById('rEn').textContent = Math.round(charge*100);
+    }
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  // gentle idle drift of pointer-less aim so it never looks dead
+  setInterval(()=>{ if(!ptr.has){
+    const a=t*0.4, r=R*1.6;
+    ptr.x=cx+Math.cos(a)*r*0.3; ptr.y=cy+Math.sin(a*1.3)*r*0.3;
+  }}, 60);
+
+})();
+</script>
+</body>
+</html>

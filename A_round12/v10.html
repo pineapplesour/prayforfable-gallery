@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>絲 · Silk</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#04060a; }
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", sans-serif;
+         -webkit-tap-highlight-color: transparent; touch-action:none; }
+  #stage { position:fixed; inset:0; display:block; }
+  /* faint vignette overlay above the canvas */
+  #vig { position:fixed; inset:0; pointer-events:none;
+         background: radial-gradient(120% 120% at 50% 38%, transparent 42%, rgba(2,4,8,0.55) 100%); }
+  .ui { position:fixed; pointer-events:none; user-select:none; z-index:5;
+        color:#cfe6ff; mix-blend-mode:screen; }
+  #title { left:26px; top:22px; }
+  #title .k { font-size:42px; font-weight:300; letter-spacing:.18em; line-height:1;
+              color:#eaf4ff; text-shadow:0 0 22px rgba(120,180,255,.45); }
+  #title .s { margin-top:8px; font-size:11px; letter-spacing:.55em; text-transform:uppercase;
+              color:#7fa6cf; opacity:.85; }
+  #hint { right:24px; bottom:20px; text-align:right; font-size:11px; letter-spacing:.14em;
+          color:#86a8cc; opacity:.7; line-height:1.7; }
+  #hint b { color:#bfe0ff; font-weight:500; }
+  #clock { left:26px; bottom:20px; font-size:10px; letter-spacing:.3em; color:#6f93b8; opacity:.65; }
+  @media (max-width:520px){
+    #title{ left:16px; top:16px; }
+    #title .k{ font-size:32px; }
+    #title .s{ font-size:9px; letter-spacing:.4em; }
+    #hint{ right:14px; bottom:14px; font-size:9px; letter-spacing:.1em; }
+    #clock{ left:16px; bottom:14px; font-size:9px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="vig"></div>
+<div class="ui" id="title">
+  <div class="k">絲</div>
+  <div class="s">silk · 거미줄</div>
+</div>
+<div class="ui" id="hint">
+  <b>움직여</b> 줄을 떨어라 · <b>클릭</b>해 먹이를 던져라<br>
+  <b>스크롤</b>로 밤과 낮을 돌려라
+</div>
+<div class="ui" id="clock">DUSK</div>
+
+<script>
+(() => {
+  "use strict";
+  const cv = document.getElementById('stage');
+  const ctx = cv.getContext('2d', { alpha: false });
+  const clockEl = document.getElementById('clock');
+
+  let W = 0, H = 0, DPR = 1, MIN = 0, CX = 0, CY = 0;
+  const TAU = Math.PI * 2;
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const smooth = t => t * t * (3 - 2 * t);
+
+  // ---- palette: a day cycle scrubbed by scroll (0..1) ----
+  // each stop: bg top, bg bottom, thread, glow, dew, spider
+  const PHASES = [
+    { name:'NIGHT', a:[2,5,12],  b:[5,9,20],   th:[150,195,255], gl:[110,170,255], dew:[180,225,255], sp:[200,225,255] },
+    { name:'DAWN',  a:[16,12,26], b:[40,22,30], th:[255,200,180], gl:[255,150,120], dew:[255,225,205], sp:[255,210,200] },
+    { name:'NOON',  a:[18,30,46], b:[40,70,96], th:[230,250,255], gl:[180,235,255], dew:[255,255,255], sp:[245,252,255] },
+    { name:'DUSK',  a:[24,10,30], b:[60,24,46], th:[255,175,210], gl:[230,110,200], dew:[255,210,235], sp:[255,200,230] },
+    { name:'NIGHT', a:[2,5,12],  b:[5,9,20],   th:[150,195,255], gl:[110,170,255], dew:[180,225,255], sp:[200,225,255] }
+  ];
+  let phase = 3.0;               // start at DUSK, target driven by scroll
+  let phaseTarget = 3.0;
+  function pal() {
+    const f = clamp(phase, 0, PHASES.length - 1);
+    const i = Math.floor(f), t = smooth(f - i);
+    const A = PHASES[i], B = PHASES[Math.min(i + 1, PHASES.length - 1)];
+    const mix = (k, j) => Math.round(lerp(A[k][j], B[k][j], t));
+    const arr = k => [mix(k,0), mix(k,1), mix(k,2)];
+    return { name: t < .5 ? A.name : B.name, a:arr('a'), b:arr('b'), th:arr('th'), gl:arr('gl'), dew:arr('dew'), sp:arr('sp') };
+  }
+
+  // ---- web structure ----
+  // Nodes connected by springs (threads). Anchors are pinned to frame.
+  let nodes = [], links = [], radials = 0, rings = 0;
+  let dewdrops = [];
+
+  function build() {
+    nodes = []; links = []; dewdrops = [];
+    const small = MIN < 560;
+    radials = small ? 11 : 16;
+    rings = small ? 7 : 9;
+    const hub = { x: CX + rand(-MIN*0.04, MIN*0.04), y: CY + rand(-MIN*0.03, MIN*0.03) };
+    const maxR = MIN * (small ? 0.62 : 0.56);
+    const ringR = [];
+    // non-linear ring spacing (denser toward center, like a real orb web)
+    for (let r = 0; r < rings; r++) {
+      const t = (r + 1) / rings;
+      ringR.push(maxR * Math.pow(t, 1.35));
+    }
+    // base angle per radial, with slight jitter so it feels hand-spun
+    const ang = [];
+    for (let s = 0; s < radials; s++) ang.push(s / radials * TAU + rand(-0.05, 0.05));
+
+    // hub node
+    const idx = (s, r) => 1 + r * radials + s;
+    nodes.push(mk(hub.x, hub.y, true, 0)); // hub: pinned-ish (heavy), index 0
+
+    // grid of nodes
+    for (let r = 0; r < rings; r++) {
+      const rr = ringR[r];
+      // gentle radial wobble so rings aren't perfect circles
+      for (let s = 0; s < radials; s++) {
+        const a = ang[s];
+        const wob = 1 + 0.06 * Math.sin(s * 1.7 + r * 0.9);
+        const x = hub.x + Math.cos(a) * rr * wob;
+        const y = hub.y + Math.sin(a) * rr * wob;
+        const pinned = (r === rings - 1); // outer ring anchors to frame
+        nodes.push(mk(x, y, pinned, r + 1));
+      }
+    }
+
+    // radial threads (hub -> outward along each spoke)
+    for (let s = 0; s < radials; s++) {
+      link(0, idx(s, 0), true);
+      for (let r = 0; r < rings - 1; r++) link(idx(s, r), idx(s, r + 1), true);
+    }
+    // spiral / ring threads (the catching silk)
+    for (let r = 1; r < rings; r++) {
+      for (let s = 0; s < radials; s++) {
+        link(idx(s, r), idx((s + 1) % radials, r), false);
+      }
+    }
+    // a few extra long anchor guy-lines from outer ring to the true corners
+    for (let s = 0; s < radials; s += 1) {
+      const n = nodes[idx(s, rings - 1)];
+      n.ax = n.x; n.ay = n.y; // store anchor target (already on frame edge-ish)
+    }
+
+    // dewdrops cling to ring threads. a few are "fat" jewels.
+    const dewCount = small ? 42 : 72;
+    const ringLinks = links.filter(l => !l.radial);
+    for (let d = 0; d < dewCount; d++) {
+      const l = ringLinks[(Math.random() * ringLinks.length) | 0];
+      if (!l) continue;
+      const fat = Math.random() < 0.16;
+      const r = (fat ? rand(3.4, 5.2) : rand(1.3, 3.0)) * (small ? 0.88 : 1);
+      dewdrops.push({ l, t: rand(0.1, 0.9), r, tw: rand(0, TAU), tws: rand(0.6, 1.8), hue: rand(0, 1), fat });
+    }
+  }
+
+  function mk(x, y, pinned, ring) {
+    return { x, y, px: x, py: y, ox: x, oy: y, pinned, ring,
+             vx: 0, vy: 0, m: pinned ? 1e9 : (ring === 0 ? 8 : 1) };
+  }
+  function link(a, b, radial) {
+    const na = nodes[a], nb = nodes[b];
+    const rest = Math.hypot(na.x - nb.x, na.y - nb.y);
+    links.push({ a, b, rest, radial, stress: 0 });
+  }
+
+  // ---- physics: verlet + spring relax ----
+  function step(dt) {
+    const damp = 0.985;
+    for (const n of nodes) {
+      if (n.pinned) {
+        // anchors breathe very subtly so the whole web is alive
+        n.x = n.ox + Math.sin(now * 0.0006 + n.ring) * 0.6;
+        n.y = n.oy + Math.cos(now * 0.0005 + n.ring) * 0.6;
+        n.px = n.x; n.py = n.y;
+        continue;
+      }
+      // restore toward original woven position (the silk remembers its shape)
+      const k = n.ring === 0 ? 0.02 : 0.012;
+      const ax = (n.ox - n.x) * k;
+      const ay = (n.oy - n.y) * k;
+      const nx = n.x + (n.x - n.px) * damp + ax;
+      const ny = n.y + (n.y - n.py) * damp + ay;
+      n.px = n.x; n.py = n.y;
+      n.x = nx; n.y = ny;
+    }
+    // spring relaxation passes
+    const iters = 3;
+    for (let it = 0; it < iters; it++) {
+      for (const l of links) {
+        const na = nodes[l.a], nb = nodes[l.b];
+        let dx = nb.x - na.x, dy = nb.y - na.y;
+        let d = Math.hypot(dx, dy) || 1e-4;
+        const diff = (d - l.rest) / d;
+        const stiff = l.radial ? 0.5 : 0.32;
+        const ima = na.pinned ? 0 : 1 / na.m;
+        const imb = nb.pinned ? 0 : 1 / nb.m;
+        const sum = ima + imb || 1;
+        const fx = dx * diff * stiff, fy = dy * diff * stiff;
+        if (!na.pinned) { na.x += fx * (ima / sum); na.y += fy * (ima / sum); }
+        if (!nb.pinned) { nb.x -= fx * (imb / sum); nb.y -= fy * (imb / sum); }
+        // track stress for color (relaxes over time)
+        l.stress = l.stress * 0.9 + Math.min(1, Math.abs(d - l.rest) / 18) * 0.1;
+      }
+    }
+  }
+
+  // ---- interaction: pointer wind + prey impacts + spider ----
+  const ptr = { x: -1e4, y: -1e4, px: -1e4, py: -1e4, down: false, active: false, vx:0, vy:0 };
+  let preys = [];   // falling/struggling prey that the spider hunts
+  let ripples = []; // expanding shock rings (visual)
+
+  function disturb(x, y, power, radius) {
+    const r2 = radius * radius;
+    for (const n of nodes) {
+      if (n.pinned) continue;
+      const dx = n.x - x, dy = n.y - y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 > r2) continue;
+      const d = Math.sqrt(d2) || 1e-4;
+      const f = (1 - d / radius) * power;
+      n.x += (dx / d) * f;
+      n.y += (dy / d) * f;
+    }
+    ripples.push({ x, y, r: 6, max: radius * 1.25, a: 1, w: 2.4 });
+  }
+
+  function pointerMove(x, y) {
+    ptr.px = ptr.x; ptr.py = ptr.y;
+    ptr.x = x; ptr.y = y; ptr.active = true;
+    ptr.vx = ptr.x - ptr.px; ptr.vy = ptr.y - ptr.py;
+    const sp = Math.hypot(ptr.vx, ptr.vy);
+    if (sp > 1.5) {
+      // gentle wind: push nodes near the cursor along motion
+      const rad = MIN * 0.16;
+      const r2 = rad * rad;
+      const push = clamp(sp * 0.05, 0, 3.2);
+      for (const n of nodes) {
+        if (n.pinned) continue;
+        const dx = n.x - x, dy = n.y - y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > r2) continue;
+        const d = Math.sqrt(d2) || 1e-4;
+        const fall = (1 - d / rad);
+        n.x += ptr.vx * 0.12 * fall * push * 0.4;
+        n.y += ptr.vy * 0.12 * fall * push * 0.4;
+      }
+    }
+  }
+
+  function throwPrey(x, y) {
+    // a prey hits the web: big localized impact + a struggling body the spider chases
+    disturb(x, y, MIN * 0.05, MIN * 0.22);
+    preys.push({
+      x, y, vx: rand(-1, 1), vy: rand(-1, 1), life: 1, age: 0,
+      struggle: rand(0.6, 1), r: rand(3.5, 6), caught: false, hum: rand(0, TAU)
+    });
+  }
+
+  // ---- the spider: a soft pursuer that walks threads toward prey ----
+  const spider = {
+    x: 0, y: 0, tx: 0, ty: 0, legPhase: 0, speed: 0, size: 0, idle: 0, target: null
+  };
+  function initSpider() {
+    spider.x = CX; spider.y = CY; spider.tx = CX; spider.ty = CY;
+    spider.size = MIN * 0.012;
+  }
+  function updateSpider(dt) {
+    // pick target: nearest live prey, else hub, else idle wander near pointer
+    let tgt = null, best = 1e18;
+    for (const p of preys) {
+      if (p.caught) continue;
+      const d = (p.x - spider.x) ** 2 + (p.y - spider.y) ** 2;
+      if (d < best) { best = d; tgt = p; }
+    }
+    spider.target = tgt;
+    if (tgt) { spider.tx = tgt.x; spider.ty = tgt.y; }
+    else {
+      spider.idle += dt;
+      // drift back toward hub, with a slow lissajous wander
+      const hub = nodes[0];
+      spider.tx = hub.x + Math.cos(spider.idle * 0.0009) * MIN * 0.05;
+      spider.ty = hub.y + Math.sin(spider.idle * 0.0013) * MIN * 0.04;
+    }
+    const dx = spider.tx - spider.x, dy = spider.ty - spider.y;
+    const dist = Math.hypot(dx, dy) || 1e-4;
+    const acc = tgt ? 0.085 : 0.025;
+    spider.x += dx * acc; spider.y += dy * acc;
+    spider.speed = lerp(spider.speed, dist, 0.2);
+    spider.legPhase += dt * 0.012 * (1 + Math.min(dist, 80) * 0.02);
+    // catch prey
+    if (tgt && dist < spider.size * 4) {
+      tgt.caught = true; tgt.wrap = 0;
+      disturb(tgt.x, tgt.y, MIN * 0.012, MIN * 0.1);
+    }
+  }
+
+  // ---- render ----
+  let now = 0, last = 0, raf = 0, fpsT = 0, frames = 0;
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    MIN = Math.min(W, H); CX = W / 2; CY = H / 2;
+    cv.width = Math.floor(W * DPR); cv.height = Math.floor(H * DPR);
+    cv.style.width = W + 'px'; cv.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    build(); initSpider();
+  }
+
+  function rgba(c, a) { return `rgba(${c[0]},${c[1]},${c[2]},${a})`; }
+
+  function draw() {
+    const P = pal();
+    // background gradient
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, rgba(P.a, 1));
+    g.addColorStop(1, rgba(P.b, 1));
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+    // soft central glow (moon/sun depending on phase)
+    const lr = MIN * 0.55;
+    const lg = ctx.createRadialGradient(CX, CY * 0.85, 0, CX, CY * 0.85, lr);
+    lg.addColorStop(0, rgba(P.gl, 0.10));
+    lg.addColorStop(1, rgba(P.gl, 0));
+    ctx.fillStyle = lg; ctx.fillRect(0, 0, W, H);
+
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    // --- threads ---
+    // glow pass (additive). a slow angular light-sweep makes the silk catch light.
+    const tSweep = now * 0.00035 * TAU;
+    ctx.globalCompositeOperation = 'lighter';
+    for (const l of links) {
+      const na = nodes[l.a], nb = nodes[l.b];
+      const tension = clamp(l.stress * 2.2, 0, 1);
+      // shimmer: angular position of the segment midpoint vs the sweep
+      const mx = (na.x + nb.x) * 0.5, my = (na.y + nb.y) * 0.5;
+      const ph = Math.atan2(my - CY, mx - CX);
+      const shimmer = Math.pow(0.5 + 0.5 * Math.cos(ph - tSweep), 6); // sharp moving band
+      const t = clamp(tension + shimmer * 0.6, 0, 1);
+      const c = [
+        Math.round(lerp(P.th[0], P.gl[0], t)),
+        Math.round(lerp(P.th[1], P.gl[1], t)),
+        Math.round(lerp(P.th[2], P.gl[2], t))
+      ];
+      const baseA = l.radial ? 0.17 : 0.12;
+      const a = baseA + tension * 0.42 + shimmer * 0.22;
+      ctx.strokeStyle = rgba(c, a);
+      ctx.lineWidth = (l.radial ? 1.2 : 0.85) + tension * 1.6 + shimmer * 0.5;
+      ctx.beginPath();
+      ctx.moveTo(na.x, na.y);
+      ctx.lineTo(nb.x, nb.y);
+      ctx.stroke();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+
+    // crisp hairline pass
+    ctx.strokeStyle = rgba(P.th, 0.5);
+    for (const l of links) {
+      const na = nodes[l.a], nb = nodes[l.b];
+      ctx.lineWidth = l.radial ? 0.55 : 0.4;
+      ctx.beginPath();
+      ctx.moveTo(na.x, na.y);
+      ctx.lineTo(nb.x, nb.y);
+      ctx.stroke();
+    }
+
+    // --- dewdrops (glass beads that catch light) ---
+    ctx.globalCompositeOperation = 'lighter';
+    // a slow light-sweep angle so beads shimmer in sequence even at rest
+    const sweep = now * 0.0004;
+    for (const d of dewdrops) {
+      const na = nodes[d.l.a], nb = nodes[d.l.b];
+      const x = lerp(na.x, nb.x, d.t), y = lerp(na.y, nb.y, d.t);
+      // position-based shimmer: beads light up as the sweep passes over them
+      const ph = Math.atan2(y - CY, x - CX);
+      const sweepHit = 0.5 + 0.5 * Math.cos(ph - sweep * TAU);
+      const tw = (0.45 + 0.35 * Math.sin(now * 0.002 * d.tws + d.tw)) * (0.6 + 0.7 * sweepHit);
+      const r = d.r * (1 + d.l.stress * 1.6);
+      const bloom = r * (d.fat ? 4.2 : 3.2);
+      const dg = ctx.createRadialGradient(x, y, 0, x, y, bloom);
+      dg.addColorStop(0, rgba(P.dew, 0.95 * tw));
+      dg.addColorStop(0.3, rgba(P.dew, 0.30 * tw));
+      dg.addColorStop(1, rgba(P.dew, 0));
+      ctx.fillStyle = dg;
+      ctx.beginPath(); ctx.arc(x, y, bloom, 0, TAU); ctx.fill();
+      // prismatic edge for fat jewels
+      if (d.fat) {
+        const pc = [
+          Math.round(lerp(P.gl[0], P.dew[0], d.hue)),
+          Math.round(lerp(P.dew[1], P.gl[1], d.hue)),
+          255
+        ];
+        ctx.fillStyle = rgba(pc, 0.25 * tw);
+        ctx.beginPath(); ctx.arc(x, y, r * 1.5, 0, TAU); ctx.fill();
+      }
+      // bright glass core + tiny specular glint
+      ctx.fillStyle = rgba([255,255,255], (d.fat ? 0.95 : 0.8) * tw);
+      ctx.beginPath(); ctx.arc(x, y, r * 0.5, 0, TAU); ctx.fill();
+      ctx.fillStyle = rgba([255,255,255], 0.9 * tw);
+      ctx.beginPath(); ctx.arc(x - r * 0.25, y - r * 0.25, r * 0.18, 0, TAU); ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+
+    // --- ripples ---
+    ctx.globalCompositeOperation = 'lighter';
+    for (const rp of ripples) {
+      ctx.strokeStyle = rgba(P.gl, rp.a * 0.5);
+      ctx.lineWidth = rp.w;
+      ctx.beginPath(); ctx.arc(rp.x, rp.y, rp.r, 0, TAU); ctx.stroke();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+
+    // --- prey ---
+    for (const p of preys) {
+      ctx.globalCompositeOperation = 'lighter';
+      const flick = p.caught ? 0.3 : (0.6 + 0.4 * Math.sin(now * 0.02 + p.hum));
+      const pg = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r * 4);
+      pg.addColorStop(0, rgba(P.gl, 0.7 * flick));
+      pg.addColorStop(1, rgba(P.gl, 0));
+      ctx.fillStyle = pg;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r * 4, 0, TAU); ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = p.caught ? rgba(P.dew, 0.7) : rgba([20,18,24], 0.9);
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, TAU); ctx.fill();
+      if (p.caught) {
+        // silk wrap rings
+        ctx.strokeStyle = rgba(P.dew, 0.5);
+        ctx.lineWidth = 0.7;
+        for (let i = 1; i <= 3; i++) {
+          ctx.beginPath();
+          ctx.ellipse(p.x, p.y, p.r * (0.6 + i*0.4), p.r * (0.4 + i*0.3), p.wrap + i, 0, TAU);
+          ctx.stroke();
+        }
+      }
+    }
+
+    // --- luminous hub core (the heart of the web) ---
+    {
+      const hub = nodes[0];
+      ctx.globalCompositeOperation = 'lighter';
+      const pulse = 0.7 + 0.3 * Math.sin(now * 0.0016);
+      const hr = MIN * 0.06 * pulse;
+      const hg = ctx.createRadialGradient(hub.x, hub.y, 0, hub.x, hub.y, hr);
+      hg.addColorStop(0, rgba(P.gl, 0.32 * pulse));
+      hg.addColorStop(0.4, rgba(P.gl, 0.10 * pulse));
+      hg.addColorStop(1, rgba(P.gl, 0));
+      ctx.fillStyle = hg;
+      ctx.beginPath(); ctx.arc(hub.x, hub.y, hr, 0, TAU); ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    // --- spider ---
+    drawSpider(P);
+
+    // --- pointer aura (subtle, so you feel "the wind") ---
+    if (ptr.active) {
+      ctx.globalCompositeOperation = 'lighter';
+      const ar = MIN * 0.05;
+      const ag = ctx.createRadialGradient(ptr.x, ptr.y, 0, ptr.x, ptr.y, ar);
+      ag.addColorStop(0, rgba(P.gl, 0.10));
+      ag.addColorStop(1, rgba(P.gl, 0));
+      ctx.fillStyle = ag;
+      ctx.beginPath(); ctx.arc(ptr.x, ptr.y, ar, 0, TAU); ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+    }
+  }
+
+  function drawSpider(P) {
+    const s = spider.size;
+    const dirX = spider.tx - spider.x, dirY = spider.ty - spider.y;
+    const ang = Math.atan2(dirY, dirX);
+    const moving = spider.speed > 1.2;
+    ctx.save();
+    ctx.translate(spider.x, spider.y);
+    // legs: 8, four each side, with a gait wave
+    ctx.strokeStyle = rgba(P.sp, 0.85);
+    ctx.lineWidth = Math.max(0.7, s * 0.18);
+    for (let side = -1; side <= 1; side += 2) {
+      for (let i = 0; i < 4; i++) {
+        const base = ang + side * (0.5 + i * 0.42) - Math.PI * 0.0;
+        const gait = Math.sin(spider.legPhase + i * 0.9 + (side > 0 ? Math.PI : 0)) * (moving ? 0.35 : 0.12);
+        const a1 = base + gait;
+        const reach = s * (3.4 + i * 0.15);
+        // knee then foot for a jointed look
+        const kx = Math.cos(a1) * reach * 0.55, ky = Math.sin(a1) * reach * 0.55;
+        const fx = Math.cos(a1 + side * 0.5) * reach, fy = Math.sin(a1 + side * 0.5) * reach;
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.quadraticCurveTo(kx, ky, fx, fy);
+        ctx.stroke();
+      }
+    }
+    // body: abdomen + cephalothorax
+    ctx.rotate(ang);
+    ctx.fillStyle = rgba([16,16,22], 0.96);
+    ctx.beginPath(); ctx.ellipse(-s * 1.1, 0, s * 1.5, s * 1.15, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = rgba([28,28,38], 0.98);
+    ctx.beginPath(); ctx.ellipse(s * 0.6, 0, s * 0.9, s * 0.75, 0, 0, TAU); ctx.fill();
+    // dorsal sheen
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = rgba(P.sp, 0.5);
+    ctx.beginPath(); ctx.ellipse(-s * 1.1, -s * 0.3, s * 0.7, s * 0.35, 0, 0, TAU); ctx.fill();
+    // two tiny eye glints
+    ctx.fillStyle = rgba(P.gl, 0.9);
+    ctx.beginPath(); ctx.arc(s * 1.2, -s * 0.25, s * 0.16, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(s * 1.2, s * 0.25, s * 0.16, 0, TAU); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.restore();
+  }
+
+  // ---- prey + ripple update ----
+  function updateEntities(dt) {
+    for (const rp of ripples) { rp.r += (rp.max - rp.r) * 0.08 + 1.5; rp.a *= 0.94; }
+    ripples = ripples.filter(r => r.a > 0.04 && r.r < r.max * 1.1);
+    for (const p of preys) {
+      p.age += dt;
+      if (!p.caught) {
+        // struggle: jitter the nearest thread region
+        p.hum += dt * 0.01;
+        if (Math.random() < 0.05) disturb(p.x, p.y, MIN * 0.006 * p.struggle, MIN * 0.06);
+        p.x += Math.sin(now * 0.01 + p.hum) * 0.3;
+        p.y += Math.cos(now * 0.013 + p.hum) * 0.3 + 0.02; // slight sag
+        p.life -= dt * 0.00004;
+      } else {
+        p.wrap += dt * 0.004;
+        p.life -= dt * 0.00018;
+        // ride toward spider's center subtly as it's wrapped
+        p.x = lerp(p.x, spider.x, 0.01);
+        p.y = lerp(p.y, spider.y, 0.01);
+      }
+    }
+    preys = preys.filter(p => p.life > 0);
+    if (preys.length > 24) preys.splice(0, preys.length - 24);
+  }
+
+  // ---- ambient: a wandering breeze that keeps the web alive ----
+  let breezeT = 0;
+  function breeze(dt) {
+    breezeT += dt;
+    // occasional soft gust from a random edge
+    if (Math.random() < 0.004) {
+      const edge = (Math.random() * 4) | 0;
+      let x, y, fx, fy;
+      const m = MIN * 0.018;
+      if (edge === 0) { x = rand(0, W); y = 0; fx = rand(-1,1)*m; fy = m; }
+      else if (edge === 1) { x = W; y = rand(0, H); fx = -m; fy = rand(-1,1)*m; }
+      else if (edge === 2) { x = rand(0, W); y = H; fx = rand(-1,1)*m; fy = -m; }
+      else { x = 0; y = rand(0, H); fx = m; fy = rand(-1,1)*m; }
+      const rad = MIN * 0.3, r2 = rad*rad;
+      for (const n of nodes) {
+        if (n.pinned) continue;
+        const dx = n.x - x, dy = n.y - y, d2 = dx*dx+dy*dy;
+        if (d2 > r2) continue;
+        const fall = 1 - Math.sqrt(d2)/rad;
+        n.x += fx * fall; n.y += fy * fall;
+      }
+    }
+  }
+
+  function frame(t) {
+    if (!last) last = t;
+    let dt = t - last; last = t; now = t;
+    dt = Math.min(dt, 48); // clamp big gaps
+    // phase easing
+    phase += (phaseTarget - phase) * 0.05;
+    const nm = pal().name;
+    if (clockEl.textContent !== nm) clockEl.textContent = nm;
+
+    step(dt);
+    breeze(dt);
+    updateSpider(dt);
+    updateEntities(dt);
+    draw();
+
+    raf = requestAnimationFrame(frame);
+  }
+
+  // ---- events ----
+  function rel(e) {
+    const r = cv.getBoundingClientRect();
+    const src = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]) || e;
+    return { x: src.clientX - r.left, y: src.clientY - r.top };
+  }
+  cv.addEventListener('mousemove', e => { const p = rel(e); pointerMove(p.x, p.y); });
+  cv.addEventListener('mousedown', e => { const p = rel(e); ptr.down = true; throwPrey(p.x, p.y); });
+  window.addEventListener('mouseup', () => ptr.down = false);
+  cv.addEventListener('mouseleave', () => ptr.active = false);
+
+  cv.addEventListener('touchstart', e => {
+    e.preventDefault();
+    const p = rel(e); pointerMove(p.x, p.y); throwPrey(p.x, p.y);
+  }, { passive: false });
+  cv.addEventListener('touchmove', e => {
+    e.preventDefault();
+    const p = rel(e); pointerMove(p.x, p.y);
+  }, { passive: false });
+
+  // scroll / wheel scrubs the day cycle
+  function scrub(dy) {
+    phaseTarget = clamp(phaseTarget + dy * 0.0016, 0, PHASES.length - 1);
+  }
+  window.addEventListener('wheel', e => { e.preventDefault(); scrub(e.deltaY); }, { passive: false });
+  // touch vertical drag also scrubs when two fingers or near top — keep simple: use a small drag on empty handled by touchmove already disturbing.
+  // Provide keyboard fallback for arrows.
+  window.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown') scrub(120);
+    else if (e.key === 'ArrowUp') scrub(-120);
+    else if (e.key === ' ') { throwPrey(rand(W*0.2, W*0.8), rand(H*0.2, H*0.8)); }
+  });
+
+  window.addEventListener('resize', () => { clearTimeout(window.__rt); window.__rt = setTimeout(resize, 120); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { last = 0; } });
+
+  // expose hooks for headless verification
+  window.__silk = {
+    state: () => ({
+      nodes: nodes.length, links: links.length, dew: dewdrops.length,
+      preys: preys.length, phase: +phase.toFixed(3), phaseName: pal().name,
+      spider: { x: +spider.x.toFixed(1), y: +spider.y.toFixed(1) }
+    }),
+    throwAt: (fx, fy) => throwPrey(fx * W, fy * H),
+    move: (fx, fy) => { pointerMove(fx * W, fy * H); },
+    scrub: (dy) => scrub(dy),
+    energy: () => {
+      let e = 0; for (const n of nodes) if (!n.pinned) e += Math.hypot(n.x - n.px, n.y - n.py);
+      return +e.toFixed(2);
+    }
+  };
+
+  resize();
+  raf = requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

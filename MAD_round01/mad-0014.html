@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>MYXA — Physarum Network</title>
+<style>
+  :root{ color-scheme: dark; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#05060a; }
+  #c{ position:fixed; inset:0; width:100vw; height:100vh; display:block; touch-action:none; cursor:crosshair; }
+
+  .ui{ position:fixed; z-index:5; pointer-events:none; font-family:"Helvetica Neue",Arial,"Apple SD Gothic Neo","Noto Sans KR",sans-serif; -webkit-font-smoothing:antialiased; }
+
+  #brand{ top:26px; left:30px; }
+  #brand .k{ font-size:11px; letter-spacing:.55em; font-weight:700; color:rgba(235,240,255,.92);
+    text-transform:uppercase; }
+  #brand .s{ margin-top:9px; font-size:10.5px; letter-spacing:.16em; color:rgba(150,165,200,.62);
+    font-weight:400; max-width:260px; line-height:1.65; }
+
+  #hud{ right:30px; top:28px; text-align:right; font-family:"SFMono-Regular",ui-monospace,Menlo,Consolas,monospace;
+    font-size:10px; letter-spacing:.06em; line-height:1.85; color:rgba(150,170,210,.5); }
+  #hud b{ color:rgba(220,230,255,.82); font-weight:500; }
+
+  #hint{ left:50%; bottom:32px; transform:translateX(-50%); text-align:center;
+    font-size:10.5px; letter-spacing:.2em; color:rgba(170,185,220,.55); text-transform:uppercase;
+    transition:opacity 1.2s ease 0s; }
+  #hint .d{ color:rgba(120,135,170,.4); margin:0 9px; }
+  .faded{ opacity:0 !important; }
+
+  #fallback{ position:fixed; inset:0; z-index:9; display:none; align-items:center; justify-content:center;
+    background:radial-gradient(circle at 50% 40%,#10131f,#05060a); color:#9fb0d8;
+    font-family:Arial,sans-serif; font-size:13px; letter-spacing:.08em; text-align:center; padding:40px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="ui" id="brand">
+  <div class="k">Myxa&nbsp;/&nbsp;Physarum</div>
+  <div class="s">자가조직 점균 네트워크 — 수십만 개체가 흔적을 남기고 흔적을 따른다.</div>
+</div>
+<div class="ui" id="hud"></div>
+<div class="ui" id="hint">
+  <span>이동 — 양분 유인</span><span class="d">·</span><span>스크롤 — 형태 변이</span><span class="d">·</span><span>R 팔레트</span><span class="d">·</span><span>C 재생</span>
+</div>
+<div id="fallback">이 작품은 WebGL2를 지원하는 브라우저가 필요합니다.</div>
+
+<script>
+(function(){
+"use strict";
+const cv = document.getElementById('c');
+const gl = cv.getContext('webgl2', {antialias:false, alpha:false, depth:false, stencil:false,
+  premultipliedAlpha:false, preserveDrawingBuffer:false, powerPreference:'high-performance'});
+if(!gl){ document.getElementById('fallback').style.display='flex'; return; }
+const extF = gl.getExtension('EXT_color_buffer_float'); // RGBA32F/16F renderable
+
+const isMobile = (Math.min(innerWidth,innerHeight) < 620) ||
+  ('ontouchstart' in window && Math.min(innerWidth,innerHeight) < 820);
+
+// ---- agents (fixed allocation; positions normalized so they survive resize) ----
+const AGW = isMobile ? 512 : 1024;
+const AGH = isMobile ? 320 : 640;
+const NAGENTS = AGW*AGH;
+
+// ---- shader plumbing ----
+function sh(type, src){
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)+"\n"+src);
+  return s;
+}
+function prog(vs, fs){
+  const p = gl.createProgram();
+  gl.attachShader(p, sh(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs));
+  gl.bindAttribLocation(p, 0, 'aPos');
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  p._u = {};
+  return p;
+}
+function U(p, n){ if(!(n in p._u)) p._u[n] = gl.getUniformLocation(p, n); return p._u[n]; }
+
+// fullscreen triangle
+const quadVAO = gl.createVertexArray();
+gl.bindVertexArray(quadVAO);
+const quadBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
+gl.bindVertexArray(null);
+const emptyVAO = gl.createVertexArray(); // for vertexID-driven draws
+
+const FSV = `#version 300 es
+layout(location=0) in vec2 aPos; out vec2 vUv;
+void main(){ vUv = aPos*0.5+0.5; gl_Position=vec4(aPos,0.,1.); }`;
+
+// seed agents from hashed noise
+const SEED = prog(FSV, `#version 300 es
+precision highp float; out vec4 o; in vec2 vUv;
+float h(vec2 p,float s){ p+=s; p=fract(p*vec2(123.34,345.45)); p+=dot(p,p+34.345); return fract(p.x*p.y); }
+void main(){
+  float x=h(vUv,1.0), y=h(vUv,7.3);
+  float a=h(vUv,13.1)*6.28318530718;
+  float sp=floor(h(vUv,27.9)*3.0);
+  o=vec4(x,y,a,sp);
+}`);
+
+// agent update: sense trail (3 sensors), steer, move, wrap
+const UPDATE = prog(FSV, `#version 300 es
+precision highp float;
+uniform sampler2D uAgents, uTrail;
+uniform vec2 uTSize;
+uniform float uTime, uSenseD, uSenseA, uTurn, uMove, uRepel;
+uniform vec2 uMouse; uniform float uMAct, uMStr, uMRad, uMMode;
+in vec2 vUv; out vec4 o;
+float hash21(vec2 p){ p=fract(p*vec2(123.34,345.45)); p+=dot(p,p+34.345); return fract(p.x*p.y); }
+float sense(vec2 pos, float ang, float sp){
+  vec2 d = vec2(cos(ang),sin(ang));
+  vec2 uv = pos + d*(uSenseD/uTSize);
+  vec4 t = texture(uTrail, uv);
+  float own = sp<0.5? t.r : (sp<1.5? t.g : t.b);
+  float oth = (t.r+t.g+t.b) - own;
+  return own - uRepel*oth;
+}
+void main(){
+  vec4 a = texture(uAgents, vUv);
+  vec2 pos=a.xy; float ang=a.z, sp=a.w;
+  float c = sense(pos, ang, sp);
+  float l = sense(pos, ang+uSenseA, sp);
+  float r = sense(pos, ang-uSenseA, sp);
+  float rnd = hash21(vUv + uTime*0.000133);
+  if(c>l && c>r){ /* hold */ }
+  else if(c<l && c<r){ ang += (rnd<0.5?-1.0:1.0)*uTurn; }
+  else if(r>l){ ang -= uTurn*(0.6+0.8*rnd); }
+  else if(l>r){ ang += uTurn*(0.6+0.8*rnd); }
+  ang += (rnd-0.5)*0.07;
+  if(uMAct>0.5){
+    vec2 dm = uMouse - pos;
+    float dist = length(dm);
+    if(dist < uMRad && dist>1e-4){
+      float tgt = atan(dm.y, dm.x);
+      float diff = atan(sin(tgt-ang), cos(tgt-ang));
+      float infl = uMStr*(1.0 - dist/uMRad);
+      ang += diff*infl*uMMode;
+    }
+  }
+  vec2 d = vec2(cos(ang),sin(ang));
+  pos += d*(uMove/uTSize);
+  pos = fract(pos + 1.0);
+  o = vec4(pos, ang, sp);
+}`);
+
+// diffuse + decay (3x3 box)
+const DIFFUSE = prog(FSV, `#version 300 es
+precision highp float;
+uniform sampler2D uTrail; uniform vec2 uTexel; uniform float uDecay, uDiff;
+in vec2 vUv; out vec4 o;
+void main(){
+  vec4 s = vec4(0.0);
+  s += texture(uTrail, vUv+uTexel*vec2(-1.,-1.));
+  s += texture(uTrail, vUv+uTexel*vec2( 0.,-1.));
+  s += texture(uTrail, vUv+uTexel*vec2( 1.,-1.));
+  s += texture(uTrail, vUv+uTexel*vec2(-1., 0.));
+  s += texture(uTrail, vUv+uTexel*vec2( 0., 0.));
+  s += texture(uTrail, vUv+uTexel*vec2( 1., 0.));
+  s += texture(uTrail, vUv+uTexel*vec2(-1., 1.));
+  s += texture(uTrail, vUv+uTexel*vec2( 0., 1.));
+  s += texture(uTrail, vUv+uTexel*vec2( 1., 1.));
+  vec4 blur = s/9.0;
+  vec4 c = texture(uTrail, vUv);
+  o = max(mix(c, blur, uDiff)*uDecay, vec4(0.0));
+}`);
+
+// deposit: each agent -> one additive point into its own channel
+const DEPOSIT = prog(`#version 300 es
+precision highp float;
+uniform sampler2D uAgents; uniform vec2 uADim; uniform float uAmt;
+out vec3 vCol;
+void main(){
+  int id = gl_VertexID; int w = int(uADim.x);
+  ivec2 tc = ivec2(id % w, id / w);
+  vec4 a = texelFetch(uAgents, tc, 0);
+  gl_Position = vec4(a.xy*2.0-1.0, 0.0, 1.0);
+  gl_PointSize = 1.0;
+  float sp=a.w;
+  vCol = (sp<0.5? vec3(1.,0.,0.) : sp<1.5? vec3(0.,1.,0.) : vec3(0.,0.,1.)) * uAmt;
+}`, `#version 300 es
+precision highp float; in vec3 vCol; out vec4 o;
+void main(){ o = vec4(vCol, 1.0); }`);
+
+// brush: soft glowing food at cursor (additive, all channels)
+const BRUSH = prog(`#version 300 es
+precision highp float;
+uniform vec2 uMouse; uniform float uSize;
+void main(){ gl_Position=vec4(uMouse*2.0-1.0,0.,1.); gl_PointSize=uSize; }`,
+`#version 300 es
+precision highp float; uniform float uAmt; out vec4 o;
+void main(){
+  float d = length(gl_PointCoord-0.5)*2.0;
+  float a = smoothstep(1.0,0.0,d); a*=a;
+  o = vec4(vec3(uAmt*a), 1.0);
+}`);
+
+// display: channels -> luminous palette + glow + vignette + grain
+const DISPLAY = prog(FSV, `#version 300 es
+precision highp float;
+uniform sampler2D uTrail; uniform vec2 uRes; uniform float uTime, uExp;
+uniform vec3 uA, uB, uC;
+in vec2 vUv; out vec4 frag;
+float h(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
+void main(){
+  vec3 e = texture(uTrail, vUv).rgb;
+  vec3 it = vec3(1.0) - exp(-e*uExp);
+  vec3 col = uA*it.r + uB*it.g + uC*it.b;
+  vec3 bloom = uA*sqrt(it.r) + uB*sqrt(it.g) + uC*sqrt(it.b);
+  col += 0.22*bloom;
+  vec2 p = vUv-0.5; p.x *= uRes.x/uRes.y;
+  float rad = length(p);
+  vec3 base = mix(vec3(0.018,0.022,0.036), vec3(0.006,0.007,0.013), smoothstep(0.0,1.0,rad));
+  col += base;
+  col *= smoothstep(1.32,0.30,rad);            // vignette
+  col += (h(gl_FragCoord.xy + uTime)-0.5)*0.030; // grain
+  col = pow(clamp(col,0.0,1.0), vec3(0.86));
+  frag = vec4(col, 1.0);
+}`);
+
+// ---- textures / framebuffers ----
+function tex(w,h,internal,fmt,type,filter,wrap){
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, fmt, type, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrap);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrap);
+  return t;
+}
+function fbo(t){
+  const f = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+  return f;
+}
+
+const agInternal = extF ? gl.RGBA32F : gl.RGBA16F;
+const agType = extF ? gl.FLOAT : gl.HALF_FLOAT;
+const agTex = [], agFbo = [];
+for(let i=0;i<2;i++){
+  agTex[i] = tex(AGW,AGH, agInternal, gl.RGBA, agType, gl.NEAREST, gl.CLAMP_TO_EDGE);
+  agFbo[i] = fbo(agTex[i]);
+}
+let agCur = 0;
+
+let SW=2, SH=2;
+let trTex=[], trFbo=[], trCur=0;
+function buildTrail(){
+  for(let i=0;i<2;i++){
+    if(trTex[i]) gl.deleteTexture(trTex[i]);
+    if(trFbo[i]) gl.deleteFramebuffer(trFbo[i]);
+    trTex[i] = tex(SW,SH, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR, gl.REPEAT);
+    trFbo[i] = fbo(trTex[i]);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, trFbo[i]);
+    gl.clearColor(0,0,0,1); gl.clear(gl.COLOR_BUFFER_BIT);
+  }
+  trCur = 0;
+}
+
+function seedAgents(){
+  gl.bindVertexArray(quadVAO);
+  gl.useProgram(SEED);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, agFbo[agCur]);
+  gl.viewport(0,0,AGW,AGH);
+  gl.disable(gl.BLEND);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  gl.bindVertexArray(null);
+}
+
+// ---- params / state ----
+const PALS = [
+  [[1.00,0.55,0.16],[0.10,0.86,0.96],[0.92,0.22,0.86]], // amber / cyan / magenta
+  [[1.00,0.78,0.24],[0.16,0.92,0.74],[1.00,0.35,0.42]], // gold / teal / coral
+  [[0.40,0.72,1.00],[0.74,0.40,1.00],[0.62,1.00,0.42]], // ice / violet / lime
+  [[1.00,0.42,0.20],[1.00,0.30,0.62],[0.30,0.66,1.00]], // ember / rose / azure
+  [[0.96,0.92,0.62],[0.32,0.95,0.92],[0.78,0.52,1.00]]  // sand / aqua / lilac
+];
+let palIdx = 0;
+
+let scrollVal = 0, scrollTarget = 0; // [-1,1] morphology
+const P = { senseD:9, senseA:0.42, turn:0.34, move:1.0, decay:0.965, diff:0.16, repel:0.40, deposit:0.20, exp:1.35 };
+
+const mouse = { x:0.5, y:0.5, act:0, mode:1, str:0.62, rad:0.27, down:0 };
+let paused = false;
+
+// ---- sizing ----
+function resize(){
+  const cssW = innerWidth, cssH = innerHeight;
+  let dpr = Math.min(window.devicePixelRatio||1, 2);
+  let w = cssW*dpr, h = cssH*dpr;
+  const cap = isMobile ? 820 : 1320;
+  const m = Math.max(w,h);
+  if(m > cap){ const s = cap/m; w*=s; h*=s; }
+  SW = Math.max(2, Math.round(w));
+  SH = Math.max(2, Math.round(h));
+  cv.width = SW; cv.height = SH;
+  buildTrail();
+  // brief warmup so a resize re-blooms smoothly
+  for(let i=0;i<14;i++) stepSim(0.016, performance.now());
+}
+
+// ---- sim step ----
+function morph(){
+  const t = (scrollVal+1)*0.5;          // 0..1
+  P.senseD = 6.0 + t*16.0;              // filaments -> coarse
+  P.senseA = 0.30 + t*0.36;
+  P.turn   = 0.24 + t*0.30;
+  P.repel  = 0.30 + (1.0-t)*0.22;
+}
+
+function stepSim(dt, now){
+  morph();
+  const liveA = P.senseA + 0.05*Math.sin(now*0.00022);
+  gl.disable(gl.BLEND);
+
+  // 1) update agents
+  gl.bindVertexArray(quadVAO);
+  gl.useProgram(UPDATE);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, agFbo[1-agCur]);
+  gl.viewport(0,0,AGW,AGH);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, agTex[agCur]);
+  gl.uniform1i(U(UPDATE,'uAgents'),0);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, trTex[trCur]);
+  gl.uniform1i(U(UPDATE,'uTrail'),1);
+  gl.uniform2f(U(UPDATE,'uTSize'), SW, SH);
+  gl.uniform1f(U(UPDATE,'uTime'), now);
+  gl.uniform1f(U(UPDATE,'uSenseD'), P.senseD);
+  gl.uniform1f(U(UPDATE,'uSenseA'), liveA);
+  gl.uniform1f(U(UPDATE,'uTurn'), P.turn);
+  gl.uniform1f(U(UPDATE,'uMove'), P.move);
+  gl.uniform1f(U(UPDATE,'uRepel'), P.repel);
+  gl.uniform2f(U(UPDATE,'uMouse'), mouse.x, mouse.y);
+  gl.uniform1f(U(UPDATE,'uMAct'), mouse.act);
+  gl.uniform1f(U(UPDATE,'uMStr'), mouse.str);
+  gl.uniform1f(U(UPDATE,'uMRad'), mouse.rad);
+  gl.uniform1f(U(UPDATE,'uMMode'), mouse.mode);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  agCur = 1-agCur;
+
+  // 2) diffuse+decay  (trCur -> 1-trCur)
+  gl.useProgram(DIFFUSE);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, trFbo[1-trCur]);
+  gl.viewport(0,0,SW,SH);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, trTex[trCur]);
+  gl.uniform1i(U(DIFFUSE,'uTrail'),0);
+  gl.uniform2f(U(DIFFUSE,'uTexel'), 1/SW, 1/SH);
+  gl.uniform1f(U(DIFFUSE,'uDecay'), P.decay);
+  gl.uniform1f(U(DIFFUSE,'uDiff'), P.diff);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+
+  // 3) deposit agents additively onto the diffused field
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.ONE, gl.ONE);
+  gl.bindVertexArray(emptyVAO);
+  gl.useProgram(DEPOSIT);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, agTex[agCur]);
+  gl.uniform1i(U(DEPOSIT,'uAgents'),0);
+  gl.uniform2f(U(DEPOSIT,'uADim'), AGW, AGH);
+  gl.uniform1f(U(DEPOSIT,'uAmt'), P.deposit);
+  gl.drawArrays(gl.POINTS, 0, NAGENTS);
+
+  // 3b) brush food
+  if(mouse.act>0.5){
+    gl.useProgram(BRUSH);
+    gl.uniform2f(U(BRUSH,'uMouse'), mouse.x, mouse.y);
+    gl.uniform1f(U(BRUSH,'uSize'), Math.min(SW,SH)*(mouse.down?0.11:0.075));
+    gl.uniform1f(U(BRUSH,'uAmt'), mouse.down?0.85:0.45);
+    gl.drawArrays(gl.POINTS, 0, 1);
+  }
+  gl.disable(gl.BLEND);
+  gl.bindVertexArray(null);
+
+  trCur = 1-trCur;
+}
+
+function draw(now){
+  const pal = PALS[palIdx];
+  gl.bindVertexArray(quadVAO);
+  gl.useProgram(DISPLAY);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0,0,SW,SH);
+  gl.disable(gl.BLEND);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, trTex[trCur]);
+  gl.uniform1i(U(DISPLAY,'uTrail'),0);
+  gl.uniform2f(U(DISPLAY,'uRes'), SW, SH);
+  gl.uniform1f(U(DISPLAY,'uTime'), now*0.001);
+  gl.uniform1f(U(DISPLAY,'uExp'), P.exp);
+  gl.uniform3fv(U(DISPLAY,'uA'), pal[0]);
+  gl.uniform3fv(U(DISPLAY,'uB'), pal[1]);
+  gl.uniform3fv(U(DISPLAY,'uC'), pal[2]);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  gl.bindVertexArray(null);
+}
+
+// ---- interaction ----
+function setPointer(clientX, clientY){
+  mouse.x = clientX/innerWidth;
+  mouse.y = 1.0 - clientY/innerHeight;
+  mouse.act = 1; hideHint();
+}
+window.addEventListener('mousemove', e=> setPointer(e.clientX,e.clientY));
+window.addEventListener('mousedown', e=>{ mouse.down=1; mouse.str=1.15; setPointer(e.clientX,e.clientY); });
+window.addEventListener('mouseup', ()=>{ mouse.down=0; mouse.str=0.62; });
+window.addEventListener('mouseleave', ()=>{ mouse.act=0; mouse.down=0; });
+
+cv.addEventListener('touchstart', e=>{ if(e.touches[0]){ mouse.down=1; mouse.str=1.15; setPointer(e.touches[0].clientX,e.touches[0].clientY);} }, {passive:true});
+cv.addEventListener('touchmove', e=>{ if(e.touches[0]){ setPointer(e.touches[0].clientX,e.touches[0].clientY);} e.preventDefault(); }, {passive:false});
+cv.addEventListener('touchend', ()=>{ mouse.act=0; mouse.down=0; mouse.str=0.62; }, {passive:true});
+
+window.addEventListener('wheel', e=>{
+  scrollTarget = Math.max(-1, Math.min(1, scrollTarget + (e.deltaY>0?-1:1)*0.07));
+  hideHint(); e.preventDefault();
+}, {passive:false});
+
+window.addEventListener('keydown', e=>{
+  const k = e.key.toLowerCase();
+  if(k===' '){ paused=!paused; e.preventDefault(); }
+  else if(k==='r'){ palIdx=(palIdx+1)%PALS.length; }
+  else if(k==='c'){ buildTrail(); for(let i=0;i<10;i++) stepSim(0.016, performance.now()); }
+});
+
+// ---- hint / hud ----
+let hintHidden=false;
+const hintEl=document.getElementById('hint'), hudEl=document.getElementById('hud');
+function hideHint(){ if(!hintHidden){ hintHidden=true; setTimeout(()=>hintEl.classList.add('faded'), 400); } }
+setTimeout(hideHint, 7000);
+
+let fps=60, lastHud=0;
+function updateHud(now){
+  if(now-lastHud < 320) return; lastHud=now;
+  const morphPct = Math.round((scrollVal+1)*50);
+  hudEl.innerHTML =
+    'AGENTS <b>'+ (NAGENTS>=1000? (NAGENTS/1000).toFixed(0)+'K':NAGENTS) +'</b>　'+
+    'FIELD <b>'+SW+'×'+SH+'</b><br>'+
+    'SENSE <b>'+P.senseD.toFixed(1)+'</b>　ANGLE <b>'+P.senseA.toFixed(2)+'</b><br>'+
+    'MORPH <b>'+morphPct+'%</b>　FPS <b>'+fps.toFixed(0)+'</b>';
+}
+
+// ---- boot ----
+seedAgents();
+resize();
+window.addEventListener('resize', resize);
+// warmup so the very first painted frame is already a living network
+for(let i=0;i<48;i++) stepSim(0.016, performance.now());
+mouse.x=0.5; mouse.y=0.5;
+
+let prev = performance.now();
+function frame(now){
+  const dt = Math.min(0.05, (now-prev)/1000); prev = now;
+  fps += ((1/Math.max(dt,1e-4)) - fps)*0.08;
+  scrollVal += (scrollTarget - scrollVal)*0.06;
+  if(!paused) stepSim(dt, now);
+  draw(now);
+  updateHud(now);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

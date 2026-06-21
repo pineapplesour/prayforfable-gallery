@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>glass on keyboard — liquid lens</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#000;cursor:none}
+  #gl{position:fixed;inset:0;width:100vw;height:100vh;display:block}
+  #hint{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);
+    font:11px/1.4 "SF Mono",Menlo,monospace;letter-spacing:.18em;color:rgba(255,255,255,.55);
+    text-shadow:0 0 6px rgba(0,0,0,.85);pointer-events:none;transition:opacity 1.2s;text-transform:uppercase}
+  #fallback{color:#888;font:14px sans-serif;padding:2em}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="hint">move mouse · hold to press · right-drag to tilt</div>
+<script>
+'use strict';
+/* ============================================================
+   "glass on a keyboard" — a heavy tumbler set on a mechanical
+   keyboard, filmed handheld. it refracts and magnifies the keys
+   beneath it. scene = canvas2d, optics = webgl shader.
+   ============================================================ */
+
+const DPR = Math.min(window.devicePixelRatio || 1, 1.75);
+let W = 0, H = 0;
+
+const glCanvas = document.getElementById('gl');
+const gl = glCanvas.getContext('webgl', { antialias:false, preserveDrawingBuffer:false });
+if (!gl) document.body.innerHTML = '<p id="fallback">WebGL unavailable.</p>';
+
+/* ------------------------------------------------------------
+   SCENE — a mechanical keyboard shot at a slight angle. logical
+   space 1600x1000, cover-scaled and tilted like a filmed desk.
+   keycaps with legends, RGB underglow, switch wells, deck.
+   ------------------------------------------------------------ */
+const scene = document.createElement('canvas');
+const sx = scene.getContext('2d');
+const LW = 1600, LH = 1000;
+
+function tw(c, text, x, y, size, color, weight, align) {
+  c.fillStyle = color;
+  c.font = (weight||400) + ' ' + size + 'px -apple-system,"Helvetica Neue","Segoe UI",sans-serif';
+  c.textAlign = align || 'left';
+  c.fillText(text, x, y);
+  c.textAlign = 'left';
+}
+function rr(c, x, y, w, h, r) {
+  c.beginPath();
+  c.moveTo(x+r, y); c.arcTo(x+w, y, x+w, y+h, r); c.arcTo(x+w, y+h, x, y+h, r);
+  c.arcTo(x, y+h, x, y, r); c.arcTo(x, y, x+w, y, r); c.closePath();
+}
+
+/* hue helper for RGB underglow */
+function hsl(h, s, l) { return 'hsl(' + h + ',' + s + '%,' + l + '%)'; }
+
+/* keyboard layout: rows of [label, widthUnits] tokens. */
+const ROWS = [
+  ['Esc','`','1','2','3','4','5','6','7','8','9','0','-','=','{bksp:2}'],
+  ['{tab:1.5}','Q','W','E','R','T','Y','U','I','O','P','[',']','{bsl:1.5}'],
+  ['{caps:1.75}','A','S','D','F','G','H','J','K','L',';','\'','{enter:2.25}'],
+  ['{shift:2.25}','Z','X','C','V','B','N','M',',','.','/','{shiftR:2.75}'],
+  ['{ctrl:1.25}','{win:1.25}','{alt:1.25}','{space:6.25}','{altR:1.25}','{fn:1.25}','{menu:1.25}','{ctrlR:1.25}'],
+];
+const SPECIAL = {
+  bksp:'⌫', tab:'⇥  tab', caps:'caps', enter:'enter ↩', shift:'⇧ shift',
+  shiftR:'shift ⇧', ctrl:'ctrl', win:'⌘', alt:'alt', space:'', altR:'alt',
+  fn:'fn', menu:'☰', ctrlR:'ctrl', bsl:'\\'
+};
+const PARSE = (tok) => {
+  const m = /^\{(\w+):([\d.]+)\}$/.exec(tok);
+  if (m) return { key:m[1], label:SPECIAL[m[1]] !== undefined ? SPECIAL[m[1]] : m[1], u:parseFloat(m[2]) };
+  return { key:tok, label:tok, u:1 };
+};
+
+let pulse = 0; // animated underglow phase, advanced each scene draw
+
+function drawScene() {
+  scene.width = W; scene.height = H;
+  const c = sx;
+
+  // dark room backdrop
+  const rg = c.createRadialGradient(W*0.5, H*0.42, H*0.15, W*0.5, H*0.55, H*0.95);
+  rg.addColorStop(0, '#16171b'); rg.addColorStop(1, '#040405');
+  c.fillStyle = rg; c.fillRect(0, 0, W, H);
+
+  // cover-scale logical space, slight desk tilt (camera angle)
+  const sc = Math.max(W / LW, H / LH) * 1.06;
+  c.save();
+  c.translate(W/2, H/2); c.rotate(-0.022); c.scale(sc, sc); c.translate(-LW/2, -LH/2);
+
+  // ---- desk surface (dark brushed wood / mat) behind & around board ----
+  const deskG = c.createLinearGradient(0, 0, 0, LH);
+  deskG.addColorStop(0, '#1b1712'); deskG.addColorStop(0.5, '#120f0c'); deskG.addColorStop(1, '#0a0807');
+  c.fillStyle = deskG; c.fillRect(-200, -200, LW+400, LH+400);
+  // faint mat texture streaks
+  c.globalAlpha = 0.05; c.strokeStyle = '#5a4a36'; c.lineWidth = 1;
+  for (let i = 0; i < 60; i++) {
+    const yy = (i * 53) % (LH + 200) - 100;
+    c.beginPath(); c.moveTo(-100, yy); c.lineTo(LW + 100, yy + 8); c.stroke();
+  }
+  c.globalAlpha = 1;
+
+  // ---- keyboard chassis ----
+  const BX = 150, BY = 250, BW = 1300, BH = 560, BR = 34;
+  // RGB underglow halo bleeding onto the desk
+  c.save();
+  for (let i = 0; i < 7; i++) {
+    const h = (pulse * 40 + i * 52) % 360;
+    const gx = BX + 60 + (BW - 120) * (i / 6);
+    const g = c.createRadialGradient(gx, BY + BH + 6, 4, gx, BY + BH + 6, 230);
+    g.addColorStop(0, hsl(h, 90, 55).replace(')', ',0.55)').replace('hsl', 'hsla'));
+    g.addColorStop(0.5, hsl(h, 90, 50).replace(')', ',0.16)').replace('hsl', 'hsla'));
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    c.fillStyle = g; c.fillRect(gx - 230, BY + BH - 60, 460, 320);
+  }
+  c.restore();
+
+  // chassis body (anodized aluminium)
+  rr(c, BX, BY, BW, BH, BR);
+  const body = c.createLinearGradient(0, BY, 0, BY + BH);
+  body.addColorStop(0, '#3a3d44'); body.addColorStop(0.06, '#2a2c31');
+  body.addColorStop(0.5, '#202226'); body.addColorStop(1, '#15161a');
+  c.fillStyle = body; c.fill();
+  // top bevel highlight
+  c.save(); rr(c, BX, BY, BW, BH, BR); c.clip();
+  const bev = c.createLinearGradient(0, BY, 0, BY + 24);
+  bev.addColorStop(0, 'rgba(255,255,255,0.18)'); bev.addColorStop(1, 'rgba(255,255,255,0)');
+  c.fillStyle = bev; c.fillRect(BX, BY, BW, 24);
+  // side edge anodize highlight
+  c.fillStyle = 'rgba(255,255,255,0.05)'; c.fillRect(BX, BY, 6, BH);
+  c.restore();
+  c.strokeStyle = 'rgba(0,0,0,0.6)'; c.lineWidth = 2; rr(c, BX, BY, BW, BH, BR); c.stroke();
+
+  // inner deck (plate) — recessed, where keys sit
+  const DX = BX + 30, DY = BY + 34, DW = BW - 60, DH = BH - 64;
+  rr(c, DX, DY, DW, DH, 14);
+  c.fillStyle = '#0c0d10'; c.fill();
+  c.save(); rr(c, DX, DY, DW, DH, 14); c.clip();
+  const dsh = c.createLinearGradient(0, DY, 0, DY + 30);
+  dsh.addColorStop(0, 'rgba(0,0,0,0.6)'); dsh.addColorStop(1, 'rgba(0,0,0,0)');
+  c.fillStyle = dsh; c.fillRect(DX, DY, DW, 30);
+  c.restore();
+
+  // ---- keys ----
+  const U = (DW - 30) / 15;            // one key unit width
+  const KH = (DH - 60) / 5.6;          // key height
+  const GAP = 7;
+  const padX = DX + 15, padY = DY + 18;
+
+  function keycap(x, y, w, h, label, key) {
+    const inset = 3;
+    // switch well shadow under cap
+    rr(c, x - 1, y + h - 4, w + 2, 9, 5); c.fillStyle = 'rgba(0,0,0,0.55)'; c.fill();
+    // RGB per-key glow leaking from the seam
+    const h2 = (pulse * 36 + (x * 0.18) + (y * 0.12)) % 360;
+    rr(c, x - 2, y - 2, w + 4, h + 4, 8);
+    c.fillStyle = hsl(h2, 85, 52).replace(')', ',0.28)').replace('hsl', 'hsla');
+    c.fill();
+    // keycap top — PBT, dark grey with subtle gradient
+    rr(c, x, y, w, h, 7);
+    const g = c.createLinearGradient(0, y, 0, y + h);
+    g.addColorStop(0, '#33363c'); g.addColorStop(0.5, '#2a2d33'); g.addColorStop(1, '#202228');
+    c.fillStyle = g; c.fill();
+    // top dish highlight
+    rr(c, x + inset, y + inset, w - inset*2, h*0.46, 5);
+    const tg = c.createLinearGradient(0, y, 0, y + h*0.5);
+    tg.addColorStop(0, 'rgba(255,255,255,0.13)'); tg.addColorStop(1, 'rgba(255,255,255,0.01)');
+    c.fillStyle = tg; c.fill();
+    // bottom inner shadow (concave)
+    rr(c, x + inset, y + h*0.5, w - inset*2, h*0.5 - inset, 5);
+    c.fillStyle = 'rgba(0,0,0,0.16)'; c.fill();
+    // edge stroke
+    c.strokeStyle = 'rgba(0,0,0,0.5)'; c.lineWidth = 1.2; rr(c, x, y, w, h, 7); c.stroke();
+    c.strokeStyle = 'rgba(255,255,255,0.06)'; c.lineWidth = 1; rr(c, x+1, y+1, w-2, h-2, 6); c.stroke();
+    // legend
+    if (label) {
+      const single = label.length === 1;
+      const fs = single ? Math.min(h * 0.42, 26) : Math.max(10, Math.min(h * 0.26, 15));
+      c.fillStyle = 'rgba(232,236,244,0.92)';
+      c.font = (single ? 600 : 500) + ' ' + fs + 'px -apple-system,"Segoe UI",sans-serif';
+      c.textAlign = single ? 'center' : 'left';
+      c.shadowColor = hsl(h2, 90, 60); c.shadowBlur = 6;       // backlit legend bleed
+      const lx = single ? x + w/2 : x + 9;
+      const ly = single ? y + h/2 + fs*0.34 : y + 18;
+      c.fillText(label, lx, ly);
+      c.shadowBlur = 0; c.textAlign = 'left';
+    }
+  }
+
+  ROWS.forEach((row, ri) => {
+    const y = padY + ri * (KH + GAP);
+    let x = padX;
+    row.forEach((tok) => {
+      const k = PARSE(tok);
+      const w = k.u * U + (k.u - 1) * GAP;
+      keycap(x, y, w, KH, k.label, k.key);
+      // tiny homing bumps on F and J
+      if (k.key === 'F' || k.key === 'J') {
+        c.strokeStyle = 'rgba(255,255,255,0.35)'; c.lineWidth = 2;
+        c.beginPath(); c.moveTo(x + w/2 - 6, y + KH - 12); c.lineTo(x + w/2 + 6, y + KH - 12); c.stroke();
+      }
+      x += w + GAP;
+    });
+  });
+
+  // a small brand etch on the chassis bottom-right
+  tw(c, 'FABLE · 75', BX + BW - 150, BY + BH - 14, 16, 'rgba(180,186,196,0.5)', 600);
+  // status LEDs row top-right
+  ['#ff5a3c','#3cff7a','#3ca8ff'].forEach((col, i) => {
+    c.fillStyle = col; c.shadowColor = col; c.shadowBlur = 10;
+    c.beginPath(); c.arc(BX + BW - 40 - i*26, BY + 16, 3.6, 0, 7); c.fill(); c.shadowBlur = 0;
+  });
+
+  // braided usb-c cable curling off the top
+  c.strokeStyle = '#2b2d33'; c.lineWidth = 14; c.lineCap = 'round';
+  c.beginPath(); c.moveTo(BX + BW*0.5, BY); c.bezierCurveTo(BX + BW*0.55, BY-70, BX + BW*0.8, BY-40, BX + BW*0.9, BY-120); c.stroke();
+  c.strokeStyle = '#3c3f46'; c.lineWidth = 6; c.stroke();
+
+  // ---- ambient room lighting on whole scene ----
+  const sg = c.createRadialGradient(LW*0.42, LH*0.32, LH*0.15, LW*0.5, LH*0.5, LH*0.95);
+  sg.addColorStop(0, 'rgba(255,255,255,0.06)'); sg.addColorStop(1, 'rgba(0,0,10,0.30)');
+  c.fillStyle = sg; c.fillRect(-200, -200, LW+400, LH+400);
+
+  c.restore(); // untilt
+}
+
+/* ------------------------------------------------------------
+   WEBGL — the optics: refraction, smear, rim rings, milky veil,
+   speculars, caustics, then handheld-camera post.
+   (lens model adapted from the reference "glass on a monitor")
+   ------------------------------------------------------------ */
+const VS = `
+attribute vec2 aP;
+void main(){ gl_Position = vec4(aP, 0.0, 1.0); }`;
+
+const FS = `
+precision highp float;
+uniform sampler2D uScene;
+uniform vec2  uRes, uGlass, uShake, uTilt;
+uniform float uR, uTime, uPress, uBlur, uExpo, uRot;
+
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+
+vec3 scn(vec2 uv){
+  return texture2D(uScene, clamp(uv / uRes, vec2(0.002), vec2(0.998))).rgb;
+}
+/* handheld camera: rotate + slight lens barrel + shake on source coords */
+vec2 cam(vec2 v){
+  vec2 cen = uRes * 0.5;
+  vec2 p = v - cen;
+  float ca = cos(uRot), sa = sin(uRot);
+  p = vec2(ca*p.x - sa*p.y, sa*p.x + ca*p.y);
+  float rr = dot(p, p) / dot(cen, cen);
+  p *= 1.0 + 0.045 * rr;
+  return cen + p + uShake;
+}
+float gband(float x, float c, float w){ float d = (x - c) / w; return exp(-d * d); }
+
+void main(){
+  vec2 fc = gl_FragCoord.xy;
+  vec2 d  = fc - uGlass;
+  /* tilt: viewed at an angle the glass foreshortens into an ellipse */
+  float tA = length(uTilt);
+  vec2 tD = tA > 0.001 ? uTilt / tA : vec2(1.0, 0.0);
+  vec2 pD = vec2(-tD.y, tD.x);
+  float squash = 1.0 - 0.42 * tA;
+  vec2 ds = tD * (dot(d, tD) / squash) + pD * dot(d, pD);
+  float r = length(ds);
+  vec2 dir = r > 0.5 ? ds / r : vec2(1.0, 0.0);
+  vec2 tdir = vec2(-dir.y, dir.x);
+  float x = r / uR;
+
+  float innerX = 0.80;
+  float w    = smoothstep(innerX - 0.05, innerX + 0.03, x);   // rim weight
+  float wOut = smoothstep(1.0, 1.07, x);                      // outside weight
+  float q = clamp(x / innerX, 0.0, 1.0);
+
+  /* refracted source radius: magnified center, compressed edge */
+  float magA = mix(0.40, 0.34, uPress);
+  float q5 = q*q*q*q*q;
+  float rsG = uR * (magA * q + (1.06 - magA) * q5);
+  /* tilted glass: asymmetric magnification + prism deviation */
+  float asym = 1.0 + 0.38 * tA * dot(dir, tD);
+  vec2 refr = dir * mix(rsG, uR * 1.07, w) * asym + uTilt * uR * 0.55;
+
+  /* anisotropic blur amounts (source-space, px) */
+  float q4 = q*q*q*q;
+  float radial = mix(mix(q4 * uR * 0.15, uR * 0.02, w), 0.0, wOut) + uBlur + 0.8;
+  float tang   = mix(mix(q*q*q * uR * 0.05, uR * 0.20, w), 0.0, wOut) + uBlur + 0.8;
+
+  vec2 srcBase = uGlass + mix(refr, d, wOut);
+  vec3 col = vec3(0.0);
+  #define TAP(rx, ty) col += scn(cam(srcBase + dir * ((rx) * radial) + tdir * ((ty) * tang)));
+  TAP( 0.00,  0.00) TAP( 0.62,  0.25) TAP(-0.58,  0.30) TAP( 0.21, -0.64)
+  TAP(-0.25, -0.61) TAP( 0.45,  0.68) TAP(-0.70, -0.15) TAP( 0.86, -0.18)
+  TAP(-0.41,  0.74) TAP( 0.05,  0.94) TAP(-0.88,  0.35) TAP( 0.33,  0.13)
+  TAP(-0.18,  0.20) TAP( 0.69, -0.55)
+  col /= 14.0;
+
+  float inG = (1.0 - wOut);          // inside glass (incl. rim)
+  float inI = inG * (1.0 - w);       // inner refraction zone only
+
+  /* chromatic aberration, stronger toward the rim and when tilted */
+  float caW = 0.5 * smoothstep(0.25, 1.0, x) * (1.0 + 1.4 * tA) * inG;
+  caW = min(caW, 0.85);
+  if (caW > 0.01) {
+    vec3 cR = scn(cam(uGlass + refr * 0.972));
+    vec3 cB = scn(cam(uGlass + refr * 1.028));
+    col.r = mix(col.r, cR.r, caW);
+    col.b = mix(col.b, cB.b, caW);
+  }
+
+  /* milky glass: desaturate, lift blacks, white veil that grows outward */
+  float lum = dot(col, vec3(0.299, 0.587, 0.114));
+  col = mix(col, vec3(lum), 0.15 * inI);
+  col = mix(col, col * 0.90 + vec3(0.06), inG);
+  float veil = (0.04 + 0.15 * x * x + 0.06 * uPress) * inI;
+  col = mix(col, vec3(0.96, 0.97, 1.0), veil);
+  col += inI * 0.05 * (1.0 - x * x);            // soft center bloom
+
+  /* faint radial caustic streaks */
+  float th = atan(d.y, d.x);
+  float cau = 0.5 * sin(th * 13.0 + 2.0) + 0.5 * sin(th * 29.0 + 0.6) + 0.35 * sin(th * 7.0 - 1.2);
+  col += cau * 0.05 * q4 * inI;
+
+  /* rim: dark glass wall + concentric rings + specular arcs */
+  float rim = w * (1.0 - wOut);
+  col = mix(col, col * 0.32, rim);
+  float bands = gband(x, 0.835, 0.018) * 0.85
+              + gband(x, 0.920, 0.014) * 0.50
+              + gband(x, 0.985, 0.010) * 0.75;
+  float arc = pow(max(cos(th - 2.45), 0.0), 6.0)
+            + 0.7 * pow(max(cos(th + 0.55), 0.0), 10.0)
+            + 0.45 * pow(max(cos(th - 4.30), 0.0), 14.0);
+  col += rim * bands * (0.12 + 0.65 * arc);
+  col *= mix(1.0, 0.5, rim * gband(x, 1.0, 0.012));            // dark outer lip
+  col += inI * 0.15 * gband(x, 0.805, 0.012);                  // bright inner ring
+
+  /* soft window-reflection highlight on the glass, upper-left */
+  vec2 hp = uGlass + vec2(-0.30, 0.40) * uR + uTilt * uR * 0.5;
+  vec2 hd = fc - hp;
+  col += exp(-dot(hd, hd) / (uR * uR * 0.16)) * (0.14 + 0.07 * uPress) * inG;
+  /* second sharp specular glint, upper-right (point light) */
+  vec2 hp2 = uGlass + vec2(0.36, 0.30) * uR + uTilt * uR * 0.4;
+  vec2 hd2 = fc - hp2;
+  col += exp(-dot(hd2, hd2) / (uR * uR * 0.006)) * 0.5 * inG;
+
+  /* contact shadow hugging the outside of the glass (on the keyboard) */
+  col *= 1.0 - (0.30 - 0.10 * uPress) * gband(x, 1.035, 0.045) * wOut;
+  col += 0.08 * gband(x, 1.10, 0.022) * wOut;                  // outer caustic ring on deck
+
+  /* ---- phone-camera post ---- */
+  col *= uExpo;
+  col *= vec3(0.99, 1.0, 1.03);                                // warm-ish white balance
+  vec2 vc = (fc - uRes * 0.5) / (uRes * 0.5);
+  col *= 1.0 - 0.34 * pow(dot(vc, vc) * 0.55, 1.4);            // vignette
+  col *= 1.0 + 0.010 * sin(fc.y * 0.07 - uTime * 9.0);         // refresh banding
+  col *= 1.0 + 0.007 * sin(fc.x * 0.21 + fc.y * 0.13 + uTime); // faint moire
+  float gn = hash(fc + fract(uTime * 7.0) * 113.0);
+  col += (gn - 0.5) * 0.05;                                     // luma grain
+  col.r += (hash(fc.yx + 7.7 + fract(uTime * 5.0) * 51.0) - 0.5) * 0.022;
+  col.b += (hash(fc + 3.1 + fract(uTime * 3.0) * 77.0) - 0.5) * 0.018;
+  col = clamp(col, 0.0, 1.0);
+  col = pow(col, vec3(0.97));                                   // slight cam lift
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+const aP = gl.getAttribLocation(prog, 'aP');
+gl.enableVertexAttribArray(aP);
+gl.vertexAttribPointer(aP, 2, gl.FLOAT, false, 0, 0);
+
+const Uloc = {};
+for (const n of ['uScene','uRes','uGlass','uShake','uTilt','uR','uTime','uPress','uBlur','uExpo','uRot'])
+  Uloc[n] = gl.getUniformLocation(prog, n);
+
+function makeTex(unit) {
+  const t = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0 + unit);
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  return t;
+}
+const sceneTex = makeTex(0);
+gl.uniform1i(Uloc.uScene, 0);
+
+function uploadScene() {
+  gl.activeTexture(gl.TEXTURE0);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, scene);
+}
+
+/* ------------------------------------------------------------ state */
+const mouse = { x: 0, y: 0 };          // CSS px, y-down
+const glass = { x: 0, y: 0 };          // device px, y-up
+const tilt = { x: 0, y: 0 };           // current tilt vector (y-up)
+const tiltManual = { x: 0, y: 0 };
+const tiltVel = { x: 0, y: 0 };
+let rightDrag = null;
+let pressTarget = 0, press = 0;
+
+function resize() {
+  W = Math.round(innerWidth * DPR); H = Math.round(innerHeight * DPR);
+  glCanvas.width = W; glCanvas.height = H;
+  gl.viewport(0, 0, W, H);
+  if (!mouse.x) { mouse.x = innerWidth * 0.5; mouse.y = innerHeight * 0.52; glass.x = W * 0.5; glass.y = H * 0.48; }
+  // re-render scene every frame anyway (animated underglow), but mark dims dirty
+}
+addEventListener('resize', resize); resize();
+
+addEventListener('contextmenu', e => e.preventDefault());
+addEventListener('pointermove', e => {
+  mouse.x = e.clientX; mouse.y = e.clientY;
+  if (rightDrag) {
+    tiltManual.x = rightDrag.tx + (e.clientX - rightDrag.x) * 0.0035;
+    tiltManual.y = rightDrag.ty + (rightDrag.y - e.clientY) * 0.0035;
+    const m = Math.hypot(tiltManual.x, tiltManual.y);
+    if (m > 0.5) { tiltManual.x *= 0.5 / m; tiltManual.y *= 0.5 / m; }
+  }
+});
+addEventListener('pointerdown', e => {
+  if (e.button === 2) rightDrag = { x: e.clientX, y: e.clientY, tx: tiltManual.x, ty: tiltManual.y };
+  else pressTarget = 1;
+});
+addEventListener('pointerup', e => {
+  if (e.button === 2) rightDrag = null;
+  else pressTarget = 0;
+});
+// touch: drag the lens
+addEventListener('touchmove', e => {
+  if (e.touches.length) { mouse.x = e.touches[0].clientX; mouse.y = e.touches[0].clientY; }
+}, { passive: true });
+setTimeout(() => { const h = document.getElementById('hint'); if (h) h.style.opacity = '0'; }, 5000);
+
+/* autofocus hunts */
+let huntT0 = 1800 + Math.random() * 3000;
+function focusHunt(now) {
+  const dt = now - huntT0;
+  if (dt > 900) { huntT0 = now + 2600 + Math.random() * 4800; return 0; }
+  if (dt < 0) return 0;
+  const ph = dt / 900;
+  return Math.sin(ph * Math.PI) * (3.5 + Math.random() * 0.6);
+}
+
+function frame(tms) {
+  const t = tms * 0.001;
+  pulse = t * 0.6;
+  drawScene();                       // animated RGB underglow -> redraw each frame
+  uploadScene();
+
+  // glass follows the mouse with physical lag + grip tremor
+  const tx = mouse.x * DPR + Math.sin(t * 8.7) * 1.6 * DPR + Math.sin(t * 13.1 + 2.0) * 0.9 * DPR;
+  const ty = (innerHeight - mouse.y) * DPR + Math.cos(t * 9.4 + 1.0) * 1.5 * DPR;
+  const pgx = glass.x, pgy = glass.y;
+  glass.x += (tx - glass.x) * 0.16;
+  glass.y += (ty - glass.y) * 0.16;
+  press += (pressTarget - press) * 0.09;
+
+  // tilt: leans against motion + manual right-drag
+  const vk = -0.010 / DPR;
+  tiltVel.x += ((glass.x - pgx) * vk - tiltVel.x) * 0.18;
+  tiltVel.y += ((glass.y - pgy) * vk - tiltVel.y) * 0.18;
+  if (!rightDrag) { tiltManual.x *= 0.95; tiltManual.y *= 0.95; }
+  let ttx = tiltManual.x + tiltVel.x, tty = tiltManual.y + tiltVel.y;
+  const tm = Math.hypot(ttx, tty);
+  if (tm > 0.55) { ttx *= 0.55 / tm; tty *= 0.55 / tm; }
+  tilt.x += (ttx - tilt.x) * 0.12;
+  tilt.y += (tty - tilt.y) * 0.12;
+
+  const R = Math.min(W, H) * (0.345 + press * 0.022);
+
+  // handheld shake / drift
+  const shx = (Math.sin(t * 1.3) * 3.0 + Math.sin(t * 0.7 + 1.7) * 4.2 + Math.sin(t * 3.1 + 0.5) * 1.3 + Math.sin(t * 7.3) * 0.5) * DPR;
+  const shy = (Math.cos(t * 1.1 + 0.4) * 3.4 + Math.sin(t * 0.5 + 2.6) * 4.6 + Math.cos(t * 2.7 + 1.2) * 1.4 + Math.cos(t * 8.1) * 0.5) * DPR;
+  const rot = 0.0045 * Math.sin(t * 0.45) + 0.002 * Math.sin(t * 1.7 + 1.0);
+
+  // focus breathing + hunts
+  const blur = Math.max(0.0, 0.9 + 0.8 * Math.sin(t * 0.8) + 0.5 * Math.sin(t * 2.3 + 0.7)) * DPR + focusHunt(tms) * DPR;
+
+  // exposure slowly re-metering
+  const expo = 1.0 + 0.045 * Math.sin(t * 0.4) + 0.03 * Math.sin(t * 1.1 + 2.2) - press * 0.05;
+
+  gl.uniform2f(Uloc.uRes, W, H);
+  gl.uniform2f(Uloc.uGlass, glass.x, glass.y);
+  gl.uniform2f(Uloc.uShake, shx, shy);
+  gl.uniform2f(Uloc.uTilt, tilt.x, tilt.y);
+  gl.uniform1f(Uloc.uR, R);
+  gl.uniform1f(Uloc.uTime, t);
+  gl.uniform1f(Uloc.uPress, press);
+  gl.uniform1f(Uloc.uBlur, blur);
+  gl.uniform1f(Uloc.uExpo, expo);
+  gl.uniform1f(Uloc.uRot, rot);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(frame);
+}
+if (gl) requestAnimationFrame(frame);
+</script>
+</body>
+</html>

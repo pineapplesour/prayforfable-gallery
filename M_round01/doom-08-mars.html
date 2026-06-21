@@ -1,0 +1,942 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>적색 강하 — RED DESCENT</title>
+<style>
+  :root{ --amber:#ffb347; --red:#ff5c4d; --dim:#7a4a3a; --paper:#1a0d0a; --hud:#0d0605; }
+  html,body{ margin:0; height:100%; overflow:hidden; background:#0a0504; }
+  body{ font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace; }
+  #wrap{ position:fixed; inset:0; display:flex; flex-direction:column; }
+  #view{
+    margin:0; flex:1 1 auto; width:100%;
+    font:13px/13px ui-monospace,Menlo,Consolas,monospace;
+    color:#d8a07a; background:#160a07; white-space:pre; overflow:hidden;
+    letter-spacing:0; user-select:none; cursor:crosshair; text-align:left;
+    contain:strict;
+  }
+  /* crosshair overlay */
+  #cross{ position:fixed; left:50%; top:calc(50% - 28px); transform:translate(-50%,-50%);
+    color:var(--amber); font-size:18px; pointer-events:none; z-index:5; text-shadow:0 0 4px #000; opacity:.85;}
+  #flash{ position:fixed; inset:0; background:var(--red); opacity:0; pointer-events:none; z-index:6; transition:opacity .08s;}
+  #muzz{ position:fixed; inset:0; background:radial-gradient(ellipse at 50% 62%, rgba(255,210,120,.55), transparent 42%);
+    opacity:0; pointer-events:none; z-index:6; transition:opacity .05s;}
+  /* HUD */
+  #hud{ flex:0 0 auto; background:var(--hud); color:var(--amber);
+    border-top:2px solid #3a1d12; padding:5px 10px 7px;
+    font:12px/1.35 ui-monospace,Menlo,monospace; display:flex; gap:14px; align-items:center;
+    flex-wrap:wrap; }
+  #hud .cell{ display:flex; flex-direction:column; line-height:1.1; min-width:54px; }
+  #hud .k{ color:var(--dim); font-size:9px; letter-spacing:1px; }
+  #hud .v{ font-size:17px; font-weight:bold; }
+  #hp .v{ color:#7dff7d;} #ap .v{ color:#8fd0ff;} #am .v{ color:var(--amber);}
+  #wp .v{ font-size:13px; color:#ffd28a;}
+  #keys{ font-size:16px; letter-spacing:3px; }
+  #msg{ flex:1 1 200px; color:#e9c9a0; font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; text-align:right; }
+  #credit{ color:var(--dim); font-size:9px; letter-spacing:.3px; }
+  /* minimap */
+  #mini{ position:fixed; right:8px; top:8px; z-index:4; background:rgba(10,5,4,.72);
+    border:1px solid #4a2418; font:9px/9px ui-monospace,monospace; color:#c98; white-space:pre;
+    padding:4px; letter-spacing:0; pointer-events:none; }
+  /* overlays */
+  .screen{ position:fixed; inset:0; z-index:10; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; text-align:center; padding:24px;
+    background:radial-gradient(ellipse at 50% 40%, #2a0f08 0%, #0a0403 80%);
+    color:#e9c9a0; transition:opacity .6s ease; }
+  .screen h1{ font-size:42px; letter-spacing:10px; margin:0 0 4px; color:var(--red);
+    text-shadow:0 0 18px rgba(255,80,60,.5); font-weight:800;}
+  .screen .sub{ color:var(--amber); letter-spacing:6px; font-size:13px; margin-bottom:18px;}
+  .screen p{ font-size:13px; line-height:1.85; max-width:520px; margin:5px 0; color:#cdaa86;}
+  .screen .keys{ margin-top:18px; color:#9a7258; font-size:12px; line-height:1.9;}
+  .screen .btn{ margin-top:22px; padding:11px 30px; border:1px solid var(--amber); color:var(--amber);
+    background:rgba(255,179,71,.06); cursor:pointer; letter-spacing:4px; font-family:inherit; font-size:14px;
+    border-radius:2px; }
+  .screen .btn:hover{ background:rgba(255,179,71,.18); }
+  .screen .cr{ position:absolute; bottom:14px; font-size:10px; color:#7a4a3a; letter-spacing:.5px; max-width:90%;}
+  .hidden{ opacity:0 !important; pointer-events:none !important; }
+  /* touch controls */
+  #touch{ position:fixed; inset:0; z-index:7; display:none; pointer-events:none; }
+  #touch .pad{ position:absolute; pointer-events:auto; }
+  #stickL{ left:14px; bottom:74px; width:118px; height:118px; border-radius:50%;
+    border:1.5px solid rgba(255,179,71,.4); background:rgba(255,179,71,.05);}
+  #nub{ position:absolute; left:39px; top:39px; width:40px; height:40px; border-radius:50%;
+    background:rgba(255,179,71,.32); pointer-events:none;}
+  #lookR{ right:0; top:0; width:55%; height:100%; }
+  #btnFire{ right:18px; bottom:96px; width:84px; height:84px; border-radius:50%;
+    border:1.5px solid var(--red); color:var(--red); background:rgba(255,92,77,.12);
+    font:bold 12px/84px ui-monospace,monospace; text-align:center; letter-spacing:1px;}
+  #btnSwap{ right:112px; bottom:30px; width:62px; height:62px; border-radius:50%;
+    border:1.5px solid var(--amber); color:var(--amber); background:rgba(255,179,71,.1);
+    font:bold 10px/62px ui-monospace,monospace; text-align:center;}
+  #btnUse{ right:22px; bottom:8px; width:62px; height:62px; border-radius:50%;
+    border:1.5px solid #8fd0ff; color:#8fd0ff; background:rgba(143,208,255,.1);
+    font:bold 10px/62px ui-monospace,monospace; text-align:center;}
+  @media (max-width:900px){ #mini{ font-size:8px; line-height:8px; } }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <pre id="view"></pre>
+  <div id="hud">
+    <div class="cell" id="hp"><span class="k">체력 HP</span><span class="v">100</span></div>
+    <div class="cell" id="ap"><span class="k">방어구 ARM</span><span class="v">0</span></div>
+    <div class="cell" id="am"><span class="k">탄약 AMMO</span><span class="v">--</span></div>
+    <div class="cell" id="wp"><span class="k">무기</span><span class="v">파이프 렌치</span></div>
+    <div class="cell"><span class="k">열쇠 KEYS</span><span class="v" id="keys">···</span></div>
+    <div id="msg">화성 벙커 B-7. 비상 승강기를 찾아 탈출하라.</div>
+    <div id="credit">DOOM (id Software)에서 영감 — © id Software. 오리지널 구현</div>
+  </div>
+</div>
+<div id="cross">+</div>
+<div id="flash"></div>
+<div id="muzz"></div>
+<div id="mini"></div>
+
+<div id="touch">
+  <div class="pad" id="stickL"><div id="nub"></div></div>
+  <div class="pad" id="lookR"></div>
+  <div class="pad" id="btnFire">발사</div>
+  <div class="pad" id="btnSwap">무기</div>
+  <div class="pad" id="btnUse">사용</div>
+</div>
+
+<div id="intro" class="screen">
+  <h1>적색 강하</h1>
+  <div class="sub">R E D &nbsp; D E S C E N T &nbsp;·&nbsp; 화성 군용 벙커 B-7</div>
+  <p>표류 채굴 컨소시엄의 보안이 끊긴 지 19시간.<br>
+  당신은 마지막 회수조다. 격벽 너머에서 무언가가 깨어났다.</p>
+  <p>붉은 격벽실의 <b style="color:#ff7;">RED 키카드</b>를 찾아 봉인문을 열고,<br>
+  <b style="color:#8fd0ff;">비상 승강기 ▼</b>에 도달해 탈출하라.</p>
+  <p class="keys">WASD 이동 · 마우스 조준(클릭=화면잠금) · ←→ 회전<br>
+  좌클릭/Space 발사 · 1·2·3 또는 휠/Q 무기교체 · E 문열기·사용<br>
+  <span style="color:#c98;">모바일: 좌측 스틱 이동 · 우측 화면 조준 · 발사/무기/사용 버튼</span></p>
+  <button class="btn" id="startBtn">강하 시작</button>
+  <div class="cr">DOOM (id Software)에서 영감을 받은 오리지널 구현. 둠의 맵·스프라이트·코드·고유명을 복제하지 않음. — © id Software (영감 출처 표기)</div>
+</div>
+
+<div id="dead" class="screen hidden">
+  <h1 style="color:#a33;">전사</h1>
+  <div class="sub" style="color:#c66;">D E C E A S E D</div>
+  <p id="deadMsg">벙커가 당신을 삼켰다.</p>
+  <button class="btn" id="retryBtn">재시도</button>
+  <div class="cr">DOOM (id Software)에서 영감 — © id Software. 오리지널 구현</div>
+</div>
+
+<div id="win" class="screen hidden">
+  <h1 style="color:#7dff7d;">탈출</h1>
+  <div class="sub" style="color:#8fd0ff;">E X T R A C T E D</div>
+  <p id="winMsg">승강기가 상승한다. 붉은 행성이 멀어진다.</p>
+  <button class="btn" id="againBtn">다시 강하</button>
+  <div class="cr">DOOM (id Software)에서 영감 — © id Software. 오리지널 구현</div>
+</div>
+
+<script>
+(() => {
+"use strict";
+
+/* =========================================================================
+   적색 강하 (RED DESCENT) — ASCII raycast boomer-shooter
+   DDA raycaster inherited in spirit from the "내부" reference renderer.
+   Original Mars-bunker level / enemies / weapons. DOOM-inspired, not copied.
+   ========================================================================= */
+
+// ---------- MAP ----------
+// Legend:
+//  # standard bunker wall      = bulkhead / metal grate wall
+//  D red-keycard sealed door   d normal door (E to open)
+//  . floor                     S secret wall (looks solid, E to open)
+//  E exit elevator             space = void/wall fill (treated as wall)
+// Player starts at 'P'. Letters in lower 'r' = red keycard pickup, etc are placed by entity list.
+const MAPSTR = [
+"###########################################",
+"#P#.......#...........#.......#...........#",
+"#.#.#.#.###.###.#.#####.#.##.##.###.#.#####",
+"#.#.#...........#.#.....#.........#.......#",
+"#.#####.#...#.#.#...################.####.#",
+"#.....#.#...#.....#.#...#.....#...........#",
+"#####.#.#########.#...#.###.#.#.#.#######.#",
+"#...#.#...#.....#.....#.....#.#...#.....#.#",
+"#.###.###.#.###.....#.#######.##..###.###.#",
+"#.#...#.......#.#.........#...#...#...#...#",
+"#.#.###.#####.#.#####.###.#####.###.###.#.#",
+"#.......#.#...#.......#.#.......#.....#...#",
+"#.###.###.#.###########.###.#..##.#.#.#.#.#",
+"#.#.......#.#.....#.......#.....#...#.#...#",
+"#.#..##.###.#.#.###.#.#.###.###.###.#.#.###",
+"#.#.....#...#.#.......#...#.....#.#.#...#.#",
+"#.#######.###.#.########..#######.#.#####.#",
+"#...#.....#...#.#.#...............#...#...#",
+"###.#.###.#.#.#.#.#.###.####..#.#####.###.#",
+"#...#.#.......#...#...#.......#.....#.....#",
+"#.#.#.#.#.#.#####.###.#.####.####.#.###.#.#",
+"#.#...#.#.#.#.....#...#.......#.......#...#",
+"#.#####.#.###.#.S##.###.#..##.#.#######..##",
+"#.......#.........#...........#.........DE#",
+"###########################################",
+];
+const H = MAPSTR.length, W = MAPSTR[0].length;
+let grid;            // mutable working copy of chars
+let px=0, py=0;      // player pos
+function isWall(c){ return c==='#'||c==='='||c==='S'||c==='D'||c==='d'||c===' '; }
+function isSolid(x,y){
+  if(x<0||y<0||x>=W||y>=H) return true;
+  const c=grid[y|0][x|0];
+  return c==='#'||c==='='||c==='S'||c==='D'||c==='d'||c===' '||c==='E'? (c==='E'?false:isWall(c)) : false;
+}
+// E (exit) and . are walkable; doors block until opened (replaced by '.')
+
+// ---------- STATE ----------
+const S = {
+  dir:0, hp:100, arm:0,
+  weapon:0,             // 0 wrench, 1 pulse, 2 rocket
+  haveWeapon:[true,false,false],
+  ammo:[Infinity,0,0],  // wrench infinite
+  redKey:false,
+  alive:true, won:false, started:false,
+  lastShot:0, kills:0, totalEnemies:0,
+};
+const WEAPONS = [
+  {name:"파이프 렌치", short:"렌치", dmg:34, rate:430, range:1.5, type:"melee", glyph:"╥"},
+  {name:"펄스 라이플", short:"펄스", dmg:17, rate:115, range:18,  type:"hit",  spread:0.02, glyph:"╪"},
+  {name:"로켓 런처",   short:"로켓", dmg:90, rate:760, range:22,  type:"rocket",glyph:"◉", splash:1.9},
+];
+const AMMO_LABEL=["∞","셀","로켓"];
+
+// ---------- ENTITIES ----------
+// pickups + enemies; placed by world coords
+let ents=[];           // {x,y,type,...}
+let projectiles=[];    // rockets in flight {x,y,vx,vy,life}
+let particles=[];      // visual blips (impacts) {x,y,life,ch}
+
+function spawnWorld(){
+  grid = MAPSTR.map(r=>r.split(""));
+  // find P
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+    if(grid[y][x]==='P'){ px=x+0.5; py=y+0.5; grid[y][x]='.'; }
+  }
+  S.dir=0; S.hp=100; S.arm=0; S.weapon=0; S.haveWeapon=[true,false,false];
+  S.ammo=[Infinity,0,0]; S.redKey=false; S.alive=true; S.won=false;
+  S.lastShot=0; S.kills=0;
+  ents=[]; projectiles=[]; particles=[];
+
+  // ---- pickups (col,row are grid centers) — coords validated reachable ----
+  const P=(x,y,type,extra={})=>ents.push(Object.assign({x:x+0.5,y:y+0.5,type,alive:true},extra));
+  // weapons
+  P(9,7,"weapon",{wid:1, msg:"펄스 라이플 획득. [2]로 장착."});            // pulse rifle (early)
+  P(37,9,"weapon",{wid:2, msg:"로켓 런처 획득! [3]로 장착."});           // rocket launcher (deeper)
+  // ammo
+  P(15,2,"ammo",{ammo:1, amt:40, msg:"펄스 셀 +40"});
+  P(1,12,"ammo",{ammo:1, amt:30, msg:"펄스 셀 +30"});
+  P(23,18,"ammo",{ammo:1, amt:40, msg:"펄스 셀 +40"});
+  P(11,20,"ammo",{ammo:2, amt:4, msg:"로켓 +4"});
+  P(12,11,"ammo",{ammo:2, amt:6, msg:"로켓 +6"});
+  // health / armor
+  P(27,6,"health",{amt:25, msg:"의료팩 +25 체력"});
+  P(5,3,"health",{amt:25, msg:"의료팩 +25 체력"});
+  P(41,1,"health",{amt:25, msg:"의료팩 +25 체력"});
+  P(1,7,"armor",{amt:50, msg:"방어판 +50 ARM"});
+  P(32,3,"armor",{amt:25, msg:"방어판 +25 ARM"});
+  // RED keycard — deep, in the dead-end pocket right by the exit corridor
+  P(41,21,"redkey",{msg:"RED 키카드 획득! 봉인문(D)이 열린다 — E로 개방."});
+  // secret stash — floor cell beside the 'S' secret wall (already in MAPSTR at [15][22])
+  P(16,21,"secret",{amt:100, msg:"시크릿 발견! 보급 캐시 — 체력+100 · 방어구+50 · 로켓+4"});
+
+  // ---- enemies (original Mars-bunker creatures) — coords validated reachable ----
+  // types: grunt (강하병), drone (부유 드론, fast), brute (중장 브루트, tanky)
+  const E=(x,y,kind)=>ents.push(makeEnemy(x+0.5,y+0.5,kind));
+  const ek=[
+    [28,1,"grunt"],[1,17,"drone"],[14,7,"grunt"],[41,7,"brute"],[28,15,"grunt"],
+    [5,9,"drone"],[25,23,"grunt"],[7,23,"brute"],[22,9,"grunt"],[32,8,"drone"],
+    [20,1,"grunt"],[9,1,"drone"],[36,1,"grunt"],[37,14,"brute"],[10,15,"drone"],
+    [33,21,"grunt"],[19,15,"drone"],[1,23,"brute"]
+  ];
+  for(const [x,y,k] of ek) E(x,y,k);
+  S.totalEnemies = ents.filter(e=>e.enemy).length;
+}
+function makeEnemy(x,y,kind){
+  const base={
+    grunt:{hp:50, dmg:9,  speed:1.5, glyph:"Ѫ", color:0, atkRange:1.2, atkRate:900, name:"강하병"},
+    drone:{hp:26, dmg:6,  speed:2.7, glyph:"ψ", color:1, atkRange:1.1, atkRate:650, name:"부유 드론"},
+    brute:{hp:130,dmg:18, speed:1.15,glyph:"Ѭ", color:2, atkRange:1.4, atkRate:1100,name:"중장 브루트"},
+  }[kind];
+  return {x,y,type:"enemy",enemy:true,alive:true,kind,
+    hp:base.hp,maxhp:base.hp,dmg:base.dmg,speed:base.speed,glyph:base.glyph,
+    color:base.color,atkRange:base.atkRange,atkRate:base.atkRate,name:base.name,
+    lastAtk:0,hurt:0,active:false};
+}
+
+// ---------- RENDER ----------
+const view=document.getElementById("view");
+let VW=110, VH=44, CW=7.8, horizon=22;
+function fit(){
+  const probe=document.createElement("span");
+  probe.style.cssText="position:absolute;visibility:hidden;font:13px/13px ui-monospace,Menlo,monospace;white-space:pre";
+  probe.textContent="M".repeat(100);
+  document.body.appendChild(probe);
+  CW=probe.getBoundingClientRect().width/100 || 7.8;
+  probe.remove();
+  const rect=view.getBoundingClientRect();
+  VW=Math.max(60,Math.min(240,Math.floor(rect.width/CW)));
+  VH=Math.max(24,Math.floor(rect.height/13));
+  horizon=VH>>1;
+}
+addEventListener("resize",fit);
+
+// depth shading ramps (near -> far)
+const WALL_RAMP="@▓▒░|:.· ";          // wall by distance band, dark->light? we map bright near
+const WALL_TEX ="█▓▒MWNB#H%K8&$X=+*:."; // texture variety
+const SPR_DARK = {0:"#abdo:.",1:"%xso:.",2:"@WBmo:."};
+
+const FLOOR=" `.,:;\"^".split("");
+const CEIL =" .'`".split("");
+
+let zbuf=new Float32Array(VW);
+
+function shadeWall(d, side, gx, gy, ty){
+  // brightness by distance; pick a char
+  let b = 1 - Math.min(1, (d-0.4)/13);   // 1 near .. 0 far
+  if(side) b*=0.72;                       // side walls darker
+  // texture pattern from grid cell content + coords
+  const cellc = grid[gy] ? grid[gy][gx] : '#';
+  let glyphSet;
+  if(cellc==='='){ glyphSet="=≡╪┼╫╬H#"; }      // grate bulkhead
+  else if(cellc==='D'){ glyphSet="▓RED▓DR▓"; }  // red door (will be amber-tinted by spans? plain)
+  else if(cellc==='d'){ glyphSet="▓██▓██▓█"; }
+  else if(cellc==='E'){ glyphSet="▼▽▼▽▼▽▼▽"; }
+  else { glyphSet="█▓▒▒░MWNBH#%8K&$X+*:."; }
+  if(b<=0.06) return "·";
+  if(b<0.16) return ":";
+  if(b<0.30) return ".";
+  // banding: choose char by a hash of position so walls have grain
+  const seed=((gx*73856093)^(gy*19349663)^((ty*64)|0)*83492791)>>>0;
+  const lvl = Math.min(glyphSet.length-1, Math.floor((1-b)*glyphSet.length*0.9));
+  // mix grain
+  const gi = (lvl + (seed%3)) % glyphSet.length;
+  return glyphSet[gi];
+}
+
+function render(){
+  const half=VW; const fov=0.66;
+  // build raw char grid
+  const buf=new Array(VH);
+  for(let y=0;y<VH;y++) buf[y]=new Array(VW);
+
+  const cosD=Math.cos(S.dir), sinD=Math.sin(S.dir);
+  const planeX=Math.cos(S.dir+Math.PI/2)*fov, planeY=Math.sin(S.dir+Math.PI/2)*fov;
+
+  // wall columns
+  const colTop=new Int16Array(VW), colBot=new Int16Array(VW);
+  const colGx=new Int16Array(VW), colGy=new Int16Array(VW);
+  const colSide=new Uint8Array(VW), colTy=new Float32Array(VW);
+  for(let x=0;x<VW;x++){
+    const cam=(2*x)/VW-1;
+    const rdx=cosD+planeX*cam, rdy=sinD+planeY*cam;
+    let mx=px|0, my=py|0;
+    const ddx=Math.abs(1/(rdx||1e-9)), ddy=Math.abs(1/(rdy||1e-9));
+    let sx,sy,sdx,sdy,side=0;
+    if(rdx<0){sx=-1;sdx=(px-mx)*ddx;}else{sx=1;sdx=(mx+1-px)*ddx;}
+    if(rdy<0){sy=-1;sdy=(py-my)*ddy;}else{sy=1;sdy=(my+1-py)*ddy;}
+    let hit=0,guard=0;
+    while(!hit&&guard++<80){
+      if(sdx<sdy){sdx+=ddx;mx+=sx;side=0;}else{sdy+=ddy;my+=sy;side=1;}
+      if(mx<0||my<0||mx>=W||my>=H){hit=1;break;}
+      const c=grid[my][mx];
+      if(c!=='.'&&c!=='E') hit=1;  // anything not floor/exit is a wall-ish; E rendered specially
+      if(c==='E') hit=2;
+    }
+    const dist=Math.max(0.06, side===0? sdx-ddx : sdy-ddy);
+    zbuf[x]=dist;
+    const lh=Math.min(VH*4,(VH/dist*1.15)|0);
+    const ds=Math.max(0,horizon-(lh>>1));
+    const de=Math.min(VH-1,horizon+(lh>>1));
+    let wallX = side===0 ? py+dist*rdy : px+dist*rdx; wallX-=wallX|0;
+    colTop[x]=ds; colBot[x]=de; colGx[x]=mx; colGy[x]=my; colSide[x]=side; colTy[x]=wallX;
+  }
+
+  // paint ceiling/floor/walls
+  for(let y=0;y<VH;y++){
+    const fbright = y>horizon ? (y-horizon)/(VH-horizon) : 0;
+    for(let x=0;x<VW;x++){
+      if(y<colTop[x]){
+        // ceiling — dark, faint flicker
+        const cb=(horizon-y)/horizon;
+        buf[y][x]= cb>0.7?" ":(cb>0.45?" ":".");
+      } else if(y>colBot[x]){
+        const fi=Math.min(FLOOR.length-1, (fbright*FLOOR.length)|0);
+        buf[y][x]=FLOOR[fi]||" ";
+      } else {
+        const gx=colGx[x], gy=colGy[x];
+        if(gx<0||gy<0||gx>=W||gy>=H){ buf[y][x]="█"; continue; }
+        const cc=grid[gy][gx];
+        if(cc==='E'){ // exit elevator — glowy
+          const t=(y-colTop[x])/Math.max(1,colBot[x]-colTop[x]);
+          buf[y][x]= zbuf[x]<6 ? (t<0.5?"▼":"▽") : (t<0.5?"v":".");
+          continue;
+        }
+        const ty=(y-colTop[x])/Math.max(1,(colBot[x]-colTop[x]));
+        buf[y][x]=shadeWall(zbuf[x],colSide[x],gx,gy,ty);
+      }
+    }
+  }
+
+  // ---- sprites (entities + projectiles + particles) ----
+  const sprites=[];
+  for(const e of ents){
+    if(!e.alive) continue;
+    if(e.type==="enemy"){ sprites.push({x:e.x,y:e.y,kind:"enemy",e}); }
+    else { sprites.push({x:e.x,y:e.y,kind:"pickup",e}); }
+  }
+  for(const p of projectiles) sprites.push({x:p.x,y:p.y,kind:"rocket"});
+  for(const pa of particles) sprites.push({x:pa.x,y:pa.y,kind:"part",pa});
+
+  // sort far->near
+  for(const s of sprites){ const dx=s.x-px,dy=s.y-py; s.d=dx*dx+dy*dy; }
+  sprites.sort((a,b)=>b.d-a.d);
+
+  const invDet=1/(planeX*sinD - cosD*planeY);
+  for(const s of sprites){
+    const dx=s.x-px, dy=s.y-py;
+    const tx=invDet*(sinD*dx - cosD*dy);
+    const ty=invDet*(-planeY*dx + planeX*dy); // depth
+    if(ty<=0.18) continue;
+    const screenX=(VW/2)*(1+tx/ty);
+    const sd=Math.sqrt(s.d);
+    let sh;            // sprite pixel-height in rows
+    let glyphRows;     // ascii art rows for this sprite scaled
+    let baseGlyph, pal;
+    if(s.kind==="enemy"){
+      sh=Math.min(VH*1.6, (VH/ty*0.9)|0);
+      baseGlyph=s.e.glyph; pal=SPR_DARK[s.e.color]||"@o:.";
+    } else if(s.kind==="pickup"){
+      sh=Math.min(VH, (VH/ty*0.5)|0);
+      baseGlyph=pickGlyph(s.e); pal="*o:.";
+    } else if(s.kind==="rocket"){
+      sh=Math.min(VH, (VH/ty*0.4)|0); baseGlyph="◉"; pal="◉o:.";
+    } else {
+      sh=Math.min(VH, (VH/ty*0.5)|0); baseGlyph=s.pa.ch||"*"; pal="*o:.";
+    }
+    if(sh<2) sh=2;
+    const sw=Math.max(1,(sh* (s.kind==="enemy"?0.62:0.5))|0);
+    const top=Math.floor(horizon - sh/2 + (s.kind==="pickup"? sh*0.30: (s.kind==="enemy"? sh*0.04: sh*0.25)));
+    const left=Math.floor(screenX - sw/2);
+    // brightness by distance
+    let b=1-Math.min(1,(sd-0.4)/14);
+    for(let yy=0; yy<sh; yy++){
+      const py2=top+yy; if(py2<0||py2>=VH) continue;
+      for(let xx=0; xx<sw; xx++){
+        const px2=left+xx; if(px2<0||px2>=VW) continue;
+        if(ty>=zbuf[px2]) continue; // occluded by wall
+        // shape mask
+        const u=xx/sw, v=yy/sh;
+        let on=false, ch=baseGlyph;
+        if(s.kind==="enemy"){
+          on = enemyMask(s.e.kind,u,v);
+          if(s.e.hurt>0 && Math.random()<0.5) ch="✶";
+        } else if(s.kind==="pickup"){
+          // diamond shape
+          on = Math.abs(u-0.5)+Math.abs(v-0.5) < 0.42;
+          ch = (Math.abs(u-0.5)+Math.abs(v-0.5)<0.12)? baseGlyph : "·";
+          if(Math.abs(u-0.5)+Math.abs(v-0.5)<0.30) ch=baseGlyph;
+        } else if(s.kind==="rocket"){
+          on = Math.abs(u-0.5)<0.5 && Math.abs(v-0.5)<0.5; ch="◉";
+        } else { on=true; ch=baseGlyph; }
+        if(!on) continue;
+        // distance dim -> swap to dimmer glyph
+        if(b<0.25 && s.kind==="enemy"){ ch = sd>9? ":" : (sd>6? "o":ch); }
+        buf[py2][px2]=ch;
+      }
+    }
+  }
+
+  // weapon viewmodel at bottom center
+  drawViewmodel(buf);
+
+  // flatten
+  let out="";
+  for(let y=0;y<VH;y++){ out+=buf[y].join(""); if(y<VH-1) out+="\n"; }
+  view.textContent=out;
+}
+
+function enemyMask(kind,u,v){
+  // crude humanoid/drone silhouettes
+  if(kind==="drone"){
+    // floating orb + tendrils
+    const cx=u-0.5, cy=v-0.4;
+    if(cx*cx+cy*cy<0.10) return true;
+    if(v>0.55 && Math.abs(u-0.5)<0.06+v*0.18) return true;
+    return false;
+  }
+  // grunt / brute humanoid: head + torso + legs
+  const head = v<0.22 && Math.abs(u-0.5)<0.16;
+  const torso = v>=0.22 && v<0.62 && Math.abs(u-0.5)< (kind==="brute"?0.40:0.30);
+  const legs = v>=0.62 && (Math.abs(u-0.32)<0.10 || Math.abs(u-0.68)<0.10);
+  const arms = v>=0.26 && v<0.5 && (Math.abs(u-0.18)<0.08 || Math.abs(u-0.82)<0.08) && kind!=="drone";
+  return head||torso||legs||arms;
+}
+function pickGlyph(e){
+  switch(e.type){
+    case "weapon": return e.wid===1?"╪":"◉";
+    case "ammo": return e.ammo===2?"◊":"▪";
+    case "health": return "✚";
+    case "armor": return "▣";
+    case "redkey": return "✦";
+    case "secret": return "★";
+  } return "*";
+}
+
+// weapon viewmodel (simple ASCII at bottom, bobs slightly)
+let bobT=0;
+function drawViewmodel(buf){
+  const w=WEAPONS[S.weapon];
+  const cx=(VW/2)|0;
+  const bob=Math.round(Math.sin(bobT)*1.2);
+  const baseY=VH-1;
+  const art=({
+    0:["  ╓─╖","  ║▓║","══╩═╩══"],            // wrench
+    1:[" ┌──────┐","═╪════════╕"," └─┘    └"],  // pulse rifle
+    2:["  ╔═◉═╗"," ═╣███╠══","   ╙─╜"],          // rocket launcher
+  })[S.weapon];
+  for(let i=0;i<art.length;i++){
+    const row=art[i];
+    const y=baseY-(art.length-1-i)+bob;
+    if(y<0||y>=VH) continue;
+    const start=cx-((row.length/2)|0)+ (S.weapon===1? -4: (S.weapon===2? 2: 0));
+    for(let j=0;j<row.length;j++){
+      const x=start+j; if(x<0||x>=VW) continue;
+      if(row[j]!==' ') buf[y][x]=row[j];
+    }
+  }
+  // muzzle flash flicker handled via overlay
+}
+
+// ---------- MINIMAP ----------
+const miniEl=document.getElementById("mini");
+function drawMini(){
+  const R=7; // radius cells
+  let s="";
+  const cx=px|0, cy=py|0;
+  for(let y=cy-R;y<=cy+R;y++){
+    let row="";
+    for(let x=cx-R;x<=cx+R;x++){
+      if(x===cx&&y===cy){ row+=dirArrow(); continue; }
+      if(x<0||y<0||x>=W||y>=H){ row+=" "; continue; }
+      const c=grid[y][x];
+      // enemies?
+      let e=null;
+      for(const en of ents){ if(en.alive&&en.enemy&&(en.x|0)===x&&(en.y|0)===y){e=en;break;} }
+      if(e){ row+="!"; continue; }
+      if(c==='.'||c==='E') row+= c==='E'?"▼":"·";
+      else if(c==='D') row+="D";
+      else if(c==='d') row+="d";
+      else row+="█";
+    }
+    s+=row+(y<cy+R?"\n":"");
+  }
+  miniEl.textContent=s;
+}
+function dirArrow(){
+  const a=((S.dir%(2*Math.PI))+2*Math.PI)%(2*Math.PI);
+  const i=Math.round(a/(Math.PI/4))%8;
+  return ["→","↘","↓","↙","←","↖","↑","↗"][i];
+}
+
+// ---------- HUD ----------
+const hpV=document.querySelector("#hp .v"), apV=document.querySelector("#ap .v");
+const amV=document.querySelector("#am .v"), wpV=document.querySelector("#wp .v");
+const keysV=document.getElementById("keys"), msgV=document.getElementById("msg");
+let msgTimer=0;
+function setMsg(t){ msgV.textContent=t; msgTimer=performance.now(); }
+function drawHud(){
+  hpV.textContent=Math.max(0,S.hp|0);
+  hpV.style.color = S.hp>50?"#7dff7d":(S.hp>20?"#ffd24a":"#ff5c4d");
+  apV.textContent=S.arm|0;
+  const a=S.ammo[S.weapon];
+  amV.textContent = a===Infinity? "∞" : (a+" "+AMMO_LABEL[S.weapon]);
+  wpV.textContent=WEAPONS[S.weapon].name;
+  keysV.innerHTML = S.redKey? '<span style="color:#ff5c4d;">◆RED</span>' : '<span style="color:#5a3328;">·RED</span>';
+}
+
+// ---------- COMBAT ----------
+const flashEl=document.getElementById("flash"), muzzEl=document.getElementById("muzz");
+function hurtFlash(){ flashEl.style.opacity="0.45"; setTimeout(()=>flashEl.style.opacity="0",90); }
+function muzzleFlash(){ muzzEl.style.opacity="1"; setTimeout(()=>muzzEl.style.opacity="0",55); }
+
+function lineClear(x0,y0,x1,y1){
+  // is there a wall between two points?
+  const dx=x1-x0, dy=y1-y0; const dist=Math.hypot(dx,dy);
+  const steps=Math.ceil(dist*4);
+  for(let i=1;i<steps;i++){
+    const t=i/steps; const x=x0+dx*t, y=y0+dy*t;
+    const c=grid[y|0] && grid[y|0][x|0];
+    if(c && c!=='.'&&c!=='E') return false;
+  }
+  return true;
+}
+
+function fire(){
+  if(!S.alive||!S.started) return;
+  const w=WEAPONS[S.weapon];
+  const now=performance.now();
+  if(now-S.lastShot < w.rate) return;
+  if(w.type!=="melee" && S.ammo[S.weapon]<=0){ setMsg("탄약 없음 — 다른 무기로 교체(1/2/3)"); return; }
+  S.lastShot=now;
+  if(w.type!=="melee") S.ammo[S.weapon]--;
+  muzzleFlash();
+
+  if(w.type==="rocket"){
+    projectiles.push({x:px+Math.cos(S.dir)*0.6,y:py+Math.sin(S.dir)*0.6,
+      vx:Math.cos(S.dir)*7,vy:Math.sin(S.dir)*7,life:2.2});
+    return;
+  }
+  if(w.type==="melee"){
+    // hit nearest enemy in front within range
+    let best=null,bd=1e9;
+    for(const e of ents){ if(!e.alive||!e.enemy) continue;
+      const dx=e.x-px,dy=e.y-py,dd=Math.hypot(dx,dy);
+      if(dd>w.range) continue;
+      const ang=Math.atan2(dy,dx); let da=Math.abs(angDiff(ang,S.dir));
+      if(da<0.8 && dd<bd){bd=dd;best=e;}
+    }
+    if(best){ damageEnemy(best,w.dmg); }
+    return;
+  }
+  // hitscan (pulse): nearest enemy along aim with LOS
+  let best=null,bd=1e9;
+  for(const e of ents){ if(!e.alive||!e.enemy) continue;
+    const dx=e.x-px,dy=e.y-py,dd=Math.hypot(dx,dy);
+    if(dd>w.range) continue;
+    const ang=Math.atan2(dy,dx); let da=Math.abs(angDiff(ang,S.dir));
+    const hitWidth = Math.atan2(0.45,dd)+ (w.spread||0);
+    if(da<hitWidth && lineClear(px,py,e.x,e.y) && dd<bd){bd=dd;best=e;}
+  }
+  if(best){ damageEnemy(best,w.dmg);
+    particles.push({x:best.x,y:best.y,life:0.18,ch:"✶"});
+  } else {
+    // wall spark along aim
+    let hx=px,hy=py;
+    for(let t=0.3;t<w.range;t+=0.3){
+      const x=px+Math.cos(S.dir)*t,y=py+Math.sin(S.dir)*t;
+      const c=grid[y|0]&&grid[y|0][x|0];
+      if(c&&c!=='.'&&c!=='E'){ hx=x;hy=y; break;}
+    }
+    particles.push({x:hx,y:hy,life:0.14,ch:"·"});
+  }
+}
+function angDiff(a,b){ let d=a-b; while(d>Math.PI)d-=2*Math.PI; while(d<-Math.PI)d+=2*Math.PI; return d; }
+
+function damageEnemy(e,dmg){
+  e.hp-=dmg; e.hurt=0.18; e.active=true;
+  if(e.hp<=0){
+    e.alive=false; S.kills++;
+    particles.push({x:e.x,y:e.y,life:0.4,ch:"✺"});
+    setMsg(`${e.name} 처치 (${S.kills}/${S.totalEnemies})`);
+  }
+}
+function splashDamage(x,y,radius,dmg){
+  for(const e of ents){ if(!e.alive||!e.enemy) continue;
+    const dd=Math.hypot(e.x-x,e.y-y);
+    if(dd<radius){ damageEnemy(e, dmg*(1-dd/radius)); }
+  }
+  // self damage if too close
+  const pd=Math.hypot(px-x,py-y);
+  if(pd<radius*0.8){ hurtPlayer(dmg*0.4*(1-pd/(radius*0.8))); }
+  for(let i=0;i<5;i++) particles.push({x:x+(Math.random()-0.5),y:y+(Math.random()-0.5),life:0.35,ch:"✷"});
+}
+
+function hurtPlayer(dmg){
+  if(!S.alive) return;
+  // armor absorbs 50%
+  if(S.arm>0){ const ab=Math.min(S.arm,dmg*0.5); S.arm-=ab; dmg-=ab; }
+  S.hp-=dmg; hurtFlash();
+  if(S.hp<=0){ S.hp=0; die(); }
+}
+
+// ---------- AI / UPDATE ----------
+function updateEnemies(dt){
+  const now=performance.now();
+  for(const e of ents){
+    if(!e.alive||!e.enemy) continue;
+    if(e.hurt>0) e.hurt-=dt;
+    const dx=px-e.x, dy=py-e.y, dd=Math.hypot(dx,dy);
+    // activate when seen / close
+    if(!e.active && dd<9 && lineClear(e.x,e.y,px,py)) e.active=true;
+    if(!e.active) continue;
+    if(dd>e.atkRange){
+      // chase: move toward player, sliding along walls
+      const ux=dx/dd, uy=dy/dd, step=e.speed*dt;
+      // light obstacle avoidance: try direct, then axis
+      if(!moveEnt(e, e.x+ux*step, e.y+uy*step)){
+        if(!moveEnt(e, e.x+ux*step, e.y)) moveEnt(e, e.x, e.y+uy*step);
+      }
+    } else {
+      // attack
+      if(now-e.lastAtk > e.atkRate){
+        e.lastAtk=now;
+        if(lineClear(e.x,e.y,px,py)) hurtPlayer(e.dmg);
+      }
+    }
+  }
+}
+function moveEnt(e,nx,ny){
+  // keep enemies from stacking into walls / each other (loosely)
+  if(isSolid(nx,e.y) && isSolid(e.x,ny) && isSolid(nx,ny)) return false;
+  let moved=false;
+  if(!isSolid(nx,e.y)){ e.x=nx; moved=true; }
+  if(!isSolid(e.x,ny)){ e.y=ny; moved=true; }
+  return moved;
+}
+
+function updateProjectiles(dt){
+  for(const p of projectiles){
+    p.life-=dt;
+    const nx=p.x+p.vx*dt, ny=p.y+p.vy*dt;
+    // collide with wall
+    const c=grid[ny|0]&&grid[ny|0][nx|0];
+    let boom=false;
+    if(c&&c!=='.'&&c!=='E') boom=true;
+    // collide with enemy
+    for(const e of ents){ if(e.alive&&e.enemy&&Math.hypot(e.x-nx,e.y-ny)<0.6){ boom=true; break; } }
+    if(p.life<=0) boom=true;
+    p.x=nx; p.y=ny;
+    if(boom){
+      splashDamage(p.x,p.y,WEAPONS[2].splash,WEAPONS[2].dmg);
+      p.life=-1;
+    }
+  }
+  projectiles=projectiles.filter(p=>p.life>0);
+}
+function updateParticles(dt){
+  for(const pa of particles) pa.life-=dt;
+  particles=particles.filter(p=>p.life>0);
+}
+
+// ---------- PICKUPS / DOORS ----------
+function checkPickups(){
+  for(const e of ents){
+    if(!e.alive||e.enemy) continue;
+    if(Math.hypot(e.x-px,e.y-py)<0.55){
+      grabPickup(e);
+    }
+  }
+}
+function grabPickup(e){
+  switch(e.type){
+    case "health":
+      if(S.hp>=100){ return; }                 // full health: leave the pack
+      S.hp=Math.min(100, S.hp+e.amt); setMsg(e.msg); break;
+    case "armor":
+      if(S.arm>=200){ return; }
+      S.arm=Math.min(200,S.arm+e.amt); setMsg(e.msg); break;
+    case "ammo": S.ammo[e.ammo]+=e.amt; setMsg(e.msg); break;
+    case "weapon":
+      if(S.haveWeapon[e.wid]){ S.ammo[e.wid]+=10; setMsg(WEAPONS[e.wid].name+" 추가 탄약"); break; }
+      S.haveWeapon[e.wid]=true; S.ammo[e.wid]+= e.wid===1?40:4;
+      S.weapon=e.wid; setMsg(e.msg); break;
+    case "redkey": S.redKey=true; setMsg(e.msg); break;
+    case "secret":
+      S.hp=Math.min(200,S.hp+e.amt); S.ammo[2]+=4; S.arm=Math.min(200,S.arm+50);
+      setMsg(e.msg); break;
+  }
+  e.alive=false;
+}
+function tryUse(){
+  // open door / secret in front of player
+  const fx=Math.cos(S.dir), fy=Math.sin(S.dir);
+  for(let t=0.3;t<1.6;t+=0.25){
+    const x=(px+fx*t)|0, y=(py+fy*t)|0;
+    if(x<0||y<0||x>=W||y>=H) break;
+    const c=grid[y][x];
+    if(c==='d'){ grid[y][x]='.'; setMsg("문을 열었다."); return; }
+    if(c==='D'){
+      if(S.redKey){ grid[y][x]='.'; setMsg("RED 봉인문 해제 — 통로가 열렸다."); }
+      else setMsg("봉인문(D): RED 키카드가 필요하다.");
+      return;
+    }
+    if(c==='S'){ grid[y][x]='.'; setMsg("숨겨진 통로를 발견했다!"); return; }
+  }
+  setMsg("열 것이 없다.");
+}
+
+function checkExit(){
+  const c=grid[py|0] && grid[py|0][px|0];
+  if(c==='E' && !S.won){ winGame(); }
+}
+
+// ---------- MOVEMENT ----------
+const keys={};
+function tryMove(nx,ny){
+  const m=0.22;
+  const cx=nx+Math.sign(nx-px)*m, cy=ny+Math.sign(ny-py)*m;
+  if(!isSolid(cx,py)) px=nx;
+  if(!isSolid(px,cy)) py=ny;
+}
+
+// ---------- INPUT ----------
+const introEl=document.getElementById("intro");
+const deadEl=document.getElementById("dead"), winEl=document.getElementById("win");
+function startGame(){
+  if(S.started) return;
+  spawnWorld(); fit();
+  S.started=true;
+  introEl.classList.add("hidden");
+  setMsg("화성 벙커 B-7. 비상 승강기 ▼를 찾아 탈출하라.");
+}
+function restart(){
+  spawnWorld();
+  S.started=true; S.alive=true; S.won=false;
+  deadEl.classList.add("hidden"); winEl.classList.add("hidden");
+  setMsg("재강하. 같은 벙커, 새 기회.");
+}
+function die(){
+  S.alive=false;
+  document.getElementById("deadMsg").textContent =
+    `처치한 적: ${S.kills}/${S.totalEnemies}. 벙커가 당신을 삼켰다.`;
+  deadEl.classList.remove("hidden");
+  if(document.pointerLockElement) document.exitPointerLock();
+}
+function winGame(){
+  S.won=true; S.alive=false;
+  document.getElementById("winMsg").textContent =
+    `처치한 적 ${S.kills}/${S.totalEnemies}. 승강기가 상승한다. 붉은 행성이 멀어진다.`;
+  winEl.classList.remove("hidden");
+  if(document.pointerLockElement) document.exitPointerLock();
+}
+
+document.getElementById("startBtn").addEventListener("click",startGame);
+document.getElementById("retryBtn").addEventListener("click",restart);
+document.getElementById("againBtn").addEventListener("click",restart);
+
+addEventListener("keydown",e=>{
+  const k=e.key.toLowerCase();
+  if(!S.started && (k===" "||k==="enter")){ startGame(); return; }
+  keys[k]=true;
+  if(["w","a","s","d","arrowup","arrowdown","arrowleft","arrowright"," "].includes(k)) e.preventDefault();
+  if(k==="1"&&S.haveWeapon[0]) S.weapon=0;
+  if(k==="2"&&S.haveWeapon[1]) S.weapon=1;
+  if(k==="3"&&S.haveWeapon[2]) S.weapon=2;
+  if(k==="q"||k==="tab"){ e.preventDefault(); swapWeapon(); }
+  if(k==="e") tryUse();
+  if(k===" ") fire();
+});
+addEventListener("keyup",e=>{ keys[e.key.toLowerCase()]=false; });
+function swapWeapon(){
+  for(let i=1;i<=3;i++){ const w=(S.weapon+i)%3; if(S.haveWeapon[w]){S.weapon=w;break;} }
+}
+addEventListener("wheel",e=>{ if(S.started){ swapWeapon(); } },{passive:true});
+
+// mouse look (pointer lock) + click fire
+view.addEventListener("click",()=>{
+  if(!S.started){ return; }
+  if(!isTouch && !document.pointerLockElement) view.requestPointerLock();
+});
+addEventListener("mousedown",e=>{ if(S.started && document.pointerLockElement){ fire(); } });
+let isTouch=('ontouchstart'in window)|| navigator.maxTouchPoints>0;
+addEventListener("mousemove",e=>{
+  if(document.pointerLockElement===view){ S.dir+= e.movementX*0.0026; }
+});
+
+// ---------- TOUCH ----------
+const touchEl=document.getElementById("touch");
+let moveVec={x:0,y:0}, touchFire=false;
+function setupTouch(){
+  if(!isTouch) return;
+  touchEl.style.display="block";
+  document.getElementById("cross").style.display="block";
+  const stick=document.getElementById("stickL"), nub=document.getElementById("nub");
+  let sid=null,scx=0,scy=0;
+  stick.addEventListener("touchstart",e=>{ if(!S.started)startGame();
+    const t=e.changedTouches[0]; sid=t.identifier;
+    const r=stick.getBoundingClientRect(); scx=r.left+r.width/2; scy=r.top+r.height/2;
+    e.preventDefault();},{passive:false});
+  addEventListener("touchmove",e=>{
+    for(const t of e.changedTouches){ if(t.identifier===sid){
+      let dx=t.clientX-scx, dy=t.clientY-scy; const mag=Math.hypot(dx,dy)||1;
+      const cl=Math.min(1,mag/45); dx=dx/mag*cl; dy=dy/mag*cl;
+      moveVec.x=dx; moveVec.y=dy;
+      nub.style.left=(39+dx*38)+"px"; nub.style.top=(39+dy*38)+"px";
+    }}
+  },{passive:false});
+  addEventListener("touchend",e=>{
+    for(const t of e.changedTouches){ if(t.identifier===sid){ sid=null; moveVec.x=moveVec.y=0;
+      nub.style.left="39px"; nub.style.top="39px"; } }
+  });
+  // look area (right)
+  const look=document.getElementById("lookR");
+  let lid=null,lx=0;
+  look.addEventListener("touchstart",e=>{ if(!S.started)startGame();
+    const t=e.changedTouches[0]; lid=t.identifier; lx=t.clientX; e.preventDefault();},{passive:false});
+  look.addEventListener("touchmove",e=>{
+    for(const t of e.changedTouches){ if(t.identifier===lid){
+      S.dir += (t.clientX-lx)*0.006; lx=t.clientX; } }
+    e.preventDefault();
+  },{passive:false});
+  look.addEventListener("touchend",e=>{ for(const t of e.changedTouches){ if(t.identifier===lid) lid=null; }});
+  // buttons
+  const bind=(id,fn)=>{ const el=document.getElementById(id);
+    el.addEventListener("touchstart",e=>{e.preventDefault(); if(!S.started)startGame(); fn();},{passive:false}); };
+  document.getElementById("btnFire").addEventListener("touchstart",e=>{e.preventDefault(); touchFire=true; fire();},{passive:false});
+  document.getElementById("btnFire").addEventListener("touchend",e=>{ touchFire=false; });
+  bind("btnSwap",swapWeapon);
+  bind("btnUse",tryUse);
+}
+
+// ---------- MAIN LOOP ----------
+let lastT=performance.now(), racc=0, fireHeld=false;
+addEventListener("mousedown",()=>{fireHeld=true;});
+addEventListener("mouseup",()=>{fireHeld=false;});
+
+function loop(t){
+  const dt=Math.min(0.05,(t-lastT)/1000); lastT=t;
+  if(S.started && S.alive){
+    const rs=2.6*dt, ms=3.1*dt;
+    // rotation (keyboard)
+    if(keys["arrowleft"]) S.dir-=rs;
+    if(keys["arrowright"]) S.dir+=rs;
+    const fx=Math.cos(S.dir), fy=Math.sin(S.dir);
+    let mv=false;
+    if(keys["w"]||keys["arrowup"]){ tryMove(px+fx*ms,py+fy*ms); mv=true; }
+    if(keys["s"]||keys["arrowdown"]){ tryMove(px-fx*ms,py-fy*ms); mv=true; }
+    if(keys["a"]){ tryMove(px+fy*ms,py-fx*ms); mv=true; }
+    if(keys["d"]){ tryMove(px-fy*ms,py+fx*ms); mv=true; }
+    // touch move (relative to facing)
+    if(moveVec.x||moveVec.y){
+      const f=-moveVec.y, st=moveVec.x;
+      tryMove(px+fx*f*ms+fy*st*ms, py+fy*f*ms-fx*st*ms); mv=true;
+    }
+    if(mv) bobT+=dt*9; else bobT*=0.9;
+    // continuous fire
+    if((fireHeld&&document.pointerLockElement) || keys[" "] || touchFire) fire();
+
+    updateEnemies(dt);
+    updateProjectiles(dt);
+    updateParticles(dt);
+    checkPickups();
+    checkExit();
+  }
+  racc+=dt;
+  if(racc>1/30 && S.started){ racc=0; render(); drawMini(); drawHud(); }
+  // idle ambient message
+  if(S.started && msgTimer && performance.now()-msgTimer>5000 && S.alive){
+    msgTimer=0;
+    const left=S.totalEnemies-S.kills;
+    setMsg(`B-7 격벽 · 남은 적 ${left} · ${S.redKey?"RED 키카드 확보됨":"RED 키카드 미확보"}`);
+    msgTimer=0;
+  }
+  requestAnimationFrame(loop);
+}
+
+// ---------- BOOT ----------
+spawnWorld();
+fit();
+setupTouch();
+render(); drawMini(); drawHud();
+requestAnimationFrame(loop);
+
+// expose minimal for sanity / self-verification
+window.__RD={S, ents:()=>ents, fire, render,
+  pos:()=>({px,py,dir:S.dir}), tp:(x,y)=>{px=x;py=y;}, setDir:(d)=>{S.dir=d;}};
+})();
+</script>
+</body>
+</html>

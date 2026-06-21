@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CAPE VESPER — 486 DITHER RENDER</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --rust:#b8472a; --salmon:#e08a5f; --maroon:#5c1f1f; --peach:#f0c39a;
+    --teal:#1f6b6b; --dgreen:#143b2e; --ink:#241016; --cream:#f3d9b8;
+    --panel:#163f3f; --panel-line:#2f7a72;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    background:#1a0c0c;
+    font-family:'VT323',monospace;
+    color:var(--cream);
+    display:flex;align-items:center;justify-content:center;
+    min-height:100vh;
+    padding:24px;
+    -webkit-font-smoothing:none;
+    image-rendering:pixelated;
+    overflow-x:hidden;
+  }
+
+  /* outer window frame chrome */
+  .frame{
+    width:100%;max-width:1180px;
+    background:#0e0606;
+    border:3px solid #3a1414;
+    box-shadow:0 0 0 3px #1a0c0c, 0 0 0 6px #4a1c14, 0 18px 0 -6px rgba(0,0,0,.55);
+    position:relative;
+  }
+  .titlebar{
+    display:flex;align-items:center;gap:10px;
+    background:linear-gradient(#7a2a1c,#5c1f1f);
+    border-bottom:3px solid #3a1414;
+    padding:7px 12px;
+    font-family:'Press Start 2P',monospace;
+    font-size:9px;letter-spacing:1px;color:#f0c39a;
+    text-transform:uppercase;
+  }
+  .titlebar .dots{display:flex;gap:6px}
+  .titlebar .dots i{width:11px;height:11px;display:block;background:#f0c39a;border:2px solid #2a0e0e;image-rendering:pixelated}
+  .titlebar .dots i:nth-child(1){background:#e08a5f}
+  .titlebar .dots i:nth-child(2){background:#d9b24a}
+  .titlebar .dots i:nth-child(3){background:#2f7a72}
+  .titlebar .tb-title{flex:1;white-space:nowrap;overflow:hidden;text-overflow:clip}
+  .titlebar .tb-meta{font-size:8px;opacity:.85;letter-spacing:0;white-space:nowrap}
+
+  /* stage holds canvas + overlays */
+  .stage{position:relative;width:100%;line-height:0;background:#2a0f12}
+  canvas#scene{display:block;width:100%;height:auto;image-rendering:pixelated}
+
+  /* CRT scanline + grain overlay */
+  .crt{position:absolute;inset:0;pointer-events:none;mix-blend-mode:multiply;opacity:.5;
+    background:repeating-linear-gradient(0deg,rgba(0,0,0,.0) 0px,rgba(0,0,0,.0) 2px,rgba(0,0,0,.45) 3px,rgba(0,0,0,.0) 4px);}
+  .vig{position:absolute;inset:0;pointer-events:none;
+    background:radial-gradient(120% 90% at 50% 38%,rgba(0,0,0,0) 55%,rgba(20,5,5,.55) 100%);}
+
+  /* pixel title block top-left */
+  .titleblock{position:absolute;left:3.2%;top:6%;pointer-events:none;z-index:4}
+  .titleblock .kicker{
+    font-family:'Press Start 2P',monospace;font-size:9px;letter-spacing:2px;
+    color:#143b2e;background:#7fcf9a;display:inline-block;padding:5px 8px;
+    border:2px solid #0c241b;box-shadow:3px 3px 0 #0c241b;text-transform:uppercase;
+  }
+  .titleblock h1{
+    font-family:'Press Start 2P',monospace;
+    font-size:34px;line-height:1.18;color:#fbe2c0;
+    margin-top:14px;letter-spacing:1px;
+    text-shadow:4px 4px 0 #5c1f1f, 8px 8px 0 #2a0e0e;
+    text-transform:uppercase;
+  }
+  .titleblock .sub{
+    font-family:'VT323',monospace;font-size:24px;color:#f0c39a;
+    letter-spacing:5px;margin-top:12px;text-transform:uppercase;
+    text-shadow:2px 2px 0 #2a0e0e;
+  }
+
+  /* CONTROL panel chip right side */
+  .control{
+    position:absolute;right:3%;top:8%;width:212px;z-index:5;
+    background:var(--panel);
+    border:3px solid #0a2222;
+    box-shadow:0 0 0 2px #2f7a72, 5px 6px 0 rgba(0,0,0,.45);
+    font-family:'VT323',monospace;color:#bfeede;
+    image-rendering:pixelated;
+  }
+  .control .c-head{
+    display:flex;align-items:center;justify-content:space-between;
+    background:#0e2c2c;border-bottom:2px solid #2f7a72;
+    padding:6px 9px;
+    font-family:'Press Start 2P',monospace;font-size:9px;letter-spacing:1px;color:#6fe0c6;
+  }
+  .control .c-head .led{width:9px;height:9px;background:#7fcf9a;box-shadow:0 0 6px #7fcf9a;animation:blink 1.4s steps(2) infinite}
+  @keyframes blink{50%{opacity:.25}}
+  .control .c-body{padding:9px}
+  .c-row{display:flex;justify-content:space-between;font-size:18px;line-height:1.5;letter-spacing:1px;padding:1px 0;border-bottom:1px dotted #2f7a72;}
+  .c-row span:last-child{color:#f0c39a}
+  .c-section{margin-top:9px;font-family:'Press Start 2P',monospace;font-size:7px;color:#3fae9a;letter-spacing:1px;margin-bottom:5px}
+  /* slider chips */
+  .chip-row{display:flex;gap:5px;margin-top:6px;flex-wrap:wrap}
+  .chip{
+    flex:1;min-width:42px;text-align:center;
+    font-family:'VT323',monospace;font-size:15px;letter-spacing:1px;
+    background:#0e2c2c;border:2px solid #2f7a72;color:#8fe6cf;
+    padding:5px 2px;cursor:pointer;user-select:none;image-rendering:pixelated;
+    transition:none;
+  }
+  .chip:hover{background:#155050}
+  .chip.on{background:#7fcf9a;color:#0c241b;border-color:#bdf0d6}
+  .icon-row{display:flex;gap:6px;margin-top:9px}
+  .ibtn{
+    flex:1;text-align:center;font-family:'Press Start 2P',monospace;font-size:11px;
+    background:#0e2c2c;border:2px solid #2f7a72;color:#8fe6cf;padding:7px 0;cursor:pointer;
+  }
+  .ibtn:active{background:#7fcf9a;color:#0c241b}
+  .bar{height:9px;background:#0e2c2c;border:2px solid #2f7a72;margin-top:5px;position:relative;overflow:hidden}
+  .bar i{position:absolute;left:0;top:0;bottom:0;background:repeating-linear-gradient(90deg,#7fcf9a 0 4px,#0e2c2c 4px 6px)}
+
+  /* footer ticker */
+  .ticker{
+    background:#0e0606;border-top:3px solid #3a1414;
+    font-family:'VT323',monospace;color:#e08a5f;font-size:18px;letter-spacing:2px;
+    padding:7px 12px;white-space:nowrap;overflow:hidden;text-transform:uppercase;
+  }
+  .ticker .run{display:inline-block;animation:scrollx 22s linear infinite}
+  @keyframes scrollx{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+
+  /* responsive — mobile 390 */
+  @media (max-width:760px){
+    body{padding:10px}
+    .titlebar{font-size:7px;gap:6px;padding:6px 8px}
+    .titlebar .dots i{width:8px;height:8px}
+    .titlebar .tb-meta{font-size:6px}
+    .titleblock{top:4%}
+    .titleblock h1{font-size:20px;line-height:1.2;text-shadow:3px 3px 0 #5c1f1f,6px 6px 0 #2a0e0e}
+    .titleblock .kicker{font-size:7px}
+    .titleblock .sub{font-size:16px;letter-spacing:3px}
+    .control{position:static;width:auto;margin:0;border-top:3px solid #0a2222;box-shadow:none}
+    .control{right:auto}
+    .stage .control{position:static}
+    .mobwrap{display:block}
+  }
+</style>
+</head>
+<body>
+  <div class="frame">
+    <div class="titlebar">
+      <div class="dots"><i></i><i></i><i></i></div>
+      <div class="tb-title">CAPE VESPER.EXE — DITHER RENDER v4.86</div>
+      <div class="tb-meta">VGA · 320×200 · 16C</div>
+    </div>
+
+    <div class="stage" id="stage">
+      <canvas id="scene" width="960" height="600"></canvas>
+      <div class="crt"></div>
+      <div class="vig"></div>
+
+      <div class="titleblock">
+        <span class="kicker">RESOLVE LANDSCAPE №05</span>
+        <h1>CAPE<br>VESPER</h1>
+        <div class="sub">LIGHTHOUSE COAST</div>
+      </div>
+
+      <div class="control" id="control">
+        <div class="c-head"><span>CONTROL</span><span class="led" id="led"></span></div>
+        <div class="c-body">
+          <div class="c-row"><span>RENDER</span><span id="rstat">DITHER</span></div>
+          <div class="c-row"><span>PALETTE</span><span id="pstat">SUNSET-14</span></div>
+          <div class="c-row"><span>MATRIX</span><span id="mstat">BAYER 8×8</span></div>
+          <div class="c-row"><span>SCAN</span><span id="sstat">ON</span></div>
+
+          <div class="c-section">DITHER MODE</div>
+          <div class="chip-row">
+            <div class="chip on" data-mode="bayer8">8×8</div>
+            <div class="chip" data-mode="bayer4">4×4</div>
+            <div class="chip" data-mode="off">FLAT</div>
+          </div>
+
+          <div class="c-section">PALETTE</div>
+          <div class="chip-row">
+            <div class="chip on" data-pal="sunset">SUNSET</div>
+            <div class="chip" data-pal="dusk">DUSK</div>
+            <div class="chip" data-pal="ember">EMBER</div>
+          </div>
+
+          <div class="c-section">SIGNAL</div>
+          <div class="bar"><i id="bar" style="width:72%"></i></div>
+
+          <div class="icon-row">
+            <div class="ibtn" id="btnScan">▤ SCAN</div>
+            <div class="ibtn" id="btnRnd">⟳ SEED</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="ticker"><span class="run" id="tick">★ PRAY FOR FABLE — CAPE VESPER LIGHTHOUSE · 47°N 5°W · WIND 12KT · TIDE RISING · BEAM 1FL 8S · DITHER PIPELINE NOMINAL · &nbsp;&nbsp;★ PRAY FOR FABLE — CAPE VESPER LIGHTHOUSE · 47°N 5°W · WIND 12KT · TIDE RISING · BEAM 1FL 8S · DITHER PIPELINE NOMINAL · &nbsp;&nbsp;</span></div>
+  </div>
+
+<script>
+(function(){
+  const cv = document.getElementById('scene');
+  const ctx = cv.getContext('2d', {willReadFrequently:true});
+  const W = cv.width, H = cv.height;
+
+  // ---- low-res internal buffer (true 486 chunky pixels) ----
+  const SCALE = 3;                 // each art pixel = 3 device px
+  const LW = Math.floor(W/SCALE);  // 320
+  const LH = Math.floor(H/SCALE);  // 200
+  const buf = document.createElement('canvas');
+  buf.width = LW; buf.height = LH;
+  const bx = buf.getContext('2d', {willReadFrequently:true});
+
+  // ---- palettes (RGB tuples) ----
+  const PALETTES = {
+    sunset: [
+      [38,16,22],[92,31,31],[140,46,38],[184,71,42],[214,108,66],
+      [224,138,95],[240,195,154],[243,217,184],
+      [20,59,46],[31,107,107],[47,122,114],[127,207,154],
+      [12,30,24],[58,20,20]
+    ],
+    dusk: [
+      [20,14,34],[44,28,66],[78,42,96],[120,58,104],[166,80,110],
+      [214,120,120],[238,170,150],[245,214,180],
+      [16,40,60],[28,86,110],[60,140,150],[150,210,210],
+      [10,18,30],[60,30,60]
+    ],
+    ember: [
+      [26,10,8],[70,18,12],[120,30,16],[170,52,20],[206,92,28],
+      [232,140,52],[244,190,110],[248,222,170],
+      [40,30,12],[90,70,24],[60,90,70],[150,200,150],
+      [14,8,6],[44,16,10]
+    ]
+  };
+  let palName='sunset';
+  let palette = PALETTES[palName];
+
+  // Bayer matrices, normalized to [0,1)-0.5 thresholds
+  const BAYER4 = [
+    [0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]
+  ];
+  const BAYER8 = [
+    [ 0,32, 8,40, 2,34,10,42],[48,16,56,24,50,18,58,26],
+    [12,44, 4,36,14,46, 6,38],[60,28,52,20,62,30,54,22],
+    [ 3,35,11,43, 1,33, 9,41],[51,19,59,27,49,17,57,25],
+    [15,47, 7,39,13,45, 5,37],[63,31,55,23,61,29,53,21]
+  ];
+
+  let ditherMode='bayer8';   // bayer8 | bayer4 | off
+  let scanOn=true;
+  let seed=1337;
+  function rng(){ seed=(seed*1103515245+12345)&0x7fffffff; return seed/0x7fffffff; }
+
+  // ---------- procedural lighthouse-coast scene (drawn at LW×LH) ----------
+  function drawScene(){
+    seed = (seedBase|0);
+    const g = bx;
+    g.clearRect(0,0,LW,LH);
+
+    // SKY gradient — sunset bands
+    for(let y=0;y<LH;y++){
+      const t=y/LH;
+      let c;
+      if(t<0.55){
+        // sky: maroon top -> rust -> salmon -> peach toward horizon
+        c = lerp3([60,24,40],[224,138,95], smooth(t/0.55));
+        c = lerp3(c,[243,217,184], Math.pow(t/0.55,2.2));
+      } else {
+        // sea: reflect warm at horizon -> deep teal/maroon below
+        const tt=(t-0.55)/0.45;
+        c = lerp3([224,150,110],[20,59,46], smooth(tt));
+        c = lerp3(c,[38,16,22], Math.pow(tt,1.6)*0.7);
+      }
+      g.fillStyle=rgb(c);
+      g.fillRect(0,y,LW,1);
+    }
+
+    const horizon = Math.floor(LH*0.55);
+
+    // SUN — big low disc with warm halo
+    const sunX=Math.floor(LW*0.30), sunY=Math.floor(LH*0.40), sunR=Math.floor(LH*0.16);
+    radial(g,sunX,sunY,sunR*2.4,[244,206,150],[224,138,95],0.0);
+    disc(g,sunX,sunY,sunR,[248,224,180]);
+    disc(g,sunX,sunY,sunR-3,[244,200,150]);
+
+    // distant cloud bands (horizontal salmon streaks)
+    for(let i=0;i<7;i++){
+      const cy=Math.floor(8+rng()*horizon*0.7);
+      const cw=Math.floor(60+rng()*180);
+      const cx=Math.floor(rng()*LW);
+      const ch=2+Math.floor(rng()*3);
+      g.fillStyle=rgb(lerp3([240,195,154],[214,108,66],rng()));
+      g.globalAlpha=0.45;
+      roundbar(g,cx,cy,cw,ch);
+      g.globalAlpha=1;
+    }
+
+    // SUN reflection column on water
+    for(let y=horizon;y<LH;y++){
+      const tt=(y-horizon)/(LH-horizon);
+      const wob=Math.sin(y*0.7+seed)*3 + Math.sin(y*0.31)*4;
+      const halfw=(sunR*0.9)*(1-tt*0.4)+ (tt*10);
+      const x0=sunX-halfw+wob, x1=sunX+halfw+wob;
+      g.fillStyle=rgb(lerp3([248,214,160],[214,108,66],tt));
+      g.globalAlpha=0.5*(1-tt*0.5);
+      // broken reflection: skip some scanlines
+      if(((y+seed)%3)!==0) g.fillRect(x0|0,y,(x1-x0)|0,1);
+      g.globalAlpha=1;
+    }
+
+    // FAR HEADLAND silhouette (right) — dark green ridge
+    g.fillStyle=rgb([20,59,46]);
+    ridge(g, horizon, [ [LW*0.62,8],[LW*0.74,18],[LW*0.86,10],[LW*1.0,22] ], 0.0, true);
+
+    // LEFT low rocks
+    g.fillStyle=rgb([31,107,107]);
+    ridge(g, horizon+2, [ [0,4],[LW*0.10,12],[LW*0.20,3] ], 0.0, true, 0, LW*0.22);
+
+    // CLIFF / promontory under lighthouse (right-center)
+    const baseX=Math.floor(LW*0.70);
+    g.fillStyle=rgb([58,20,20]);
+    // a chunky rock mass rising from sea
+    rock(g, baseX, horizon, 70, LH-horizon, [58,20,20],[92,31,31]);
+
+    // LIGHTHOUSE on the promontory
+    const lhX=baseX+18, lhBase=horizon-2, lhTop=Math.floor(LH*0.20);
+    drawLighthouse(g, lhX, lhTop, lhBase);
+
+    // foreground dark shore bottom band with dither-friendly texture
+    g.fillStyle=rgb([38,16,22]);
+    for(let x=0;x<LW;x++){
+      const h=3+((Math.sin(x*0.25+seed)+1)*2|0);
+      g.fillRect(x,LH-h,1,h);
+    }
+
+    // a couple of seabirds (V shapes)
+    g.fillStyle=rgb([92,31,31]);
+    for(let i=0;i<5;i++){
+      const bxp=Math.floor(LW*0.40+rng()*LW*0.4);
+      const byp=Math.floor(LH*0.16+rng()*LH*0.14);
+      g.fillRect(bxp,byp,2,1); g.fillRect(bxp+2,byp-1,2,1);
+      g.fillRect(bxp+4,byp,2,1);
+    }
+  }
+
+  // lighthouse: tapered tower, red/cream bands, lantern room + beam
+  function drawLighthouse(g, cx, top, base){
+    const totalH=base-top;
+    const topW=8, botW=16;
+    for(let y=0;y<totalH;y++){
+      const ty=y/totalH;
+      const w=topW+(botW-topW)*ty;
+      const x0=cx-w/2;
+      // alternating bands every ~ totalH/6
+      const band=Math.floor((y/totalH)*6)%2;
+      g.fillStyle=rgb(band? [184,71,42] : [243,217,184]);
+      g.fillRect(Math.round(x0), top+y, Math.round(w), 1);
+    }
+    // gallery / lantern room
+    const gy=top-9;
+    g.fillStyle=rgb([58,20,20]); g.fillRect(cx-7, top-2, 14, 2);          // gallery deck
+    g.fillStyle=rgb([20,59,46]); g.fillRect(cx-6, gy, 12, 8);             // lantern housing
+    g.fillStyle=rgb([248,224,180]); g.fillRect(cx-4, gy+2, 8, 4);         // glowing light
+    g.fillStyle=rgb([244,200,150]); g.fillRect(cx-2, gy+1, 4, 6);
+    // dome cap
+    g.fillStyle=rgb([92,31,31]); g.fillRect(cx-4, gy-3, 8, 3); g.fillRect(cx-1,gy-5,2,2);
+
+    // light BEAM — two faint triangular rays
+    g.save();
+    g.globalAlpha=0.30;
+    beam(g, cx, gy+3, -1, 70, 26, [248,224,180]);
+    g.globalAlpha=0.18;
+    beam(g, cx, gy+3, 1, 55, 20, [243,217,184]);
+    g.restore();
+  }
+  function beam(g,x,y,dir,len,spread,col){
+    g.fillStyle=rgb(col);
+    for(let i=0;i<len;i++){
+      const t=i/len;
+      const h=Math.max(1,(spread*t)|0);
+      const xx=x+dir*i;
+      g.globalAlpha*= 1; // keep
+      g.fillRect(xx, y-(h>>1), 1, h);
+    }
+  }
+
+  // ---- geometry helpers ----
+  function rgb(c){return 'rgb('+(c[0]|0)+','+(c[1]|0)+','+(c[2]|0)+')';}
+  function smooth(t){return t*t*(3-2*t);}
+  function lerp(a,b,t){return a+(b-a)*t;}
+  function lerp3(a,b,t){return [lerp(a[0],b[0],t),lerp(a[1],b[1],t),lerp(a[2],b[2],t)];}
+  function disc(g,cx,cy,r,col){g.fillStyle=rgb(col);for(let y=-r;y<=r;y++){const w=Math.sqrt(r*r-y*y)|0;g.fillRect(cx-w,cy+y,w*2,1);}}
+  function radial(g,cx,cy,r,inner,outer){
+    for(let rr=r;rr>0;rr-=1){const t=rr/r;g.globalAlpha=0.05;g.fillStyle=rgb(lerp3(inner,outer,t));
+      const w=rr;g.fillRect(cx-w,cy-w,w*2,w*2);}
+    g.globalAlpha=1;
+  }
+  function roundbar(g,x,y,w,h){g.fillRect(x,y,w,h);}
+  function ridge(g,horizon,pts,_,fillDown,xs,xe){
+    xs=xs||0; xe=xe||LW;
+    // build heights across [xs,xe] by interpolating control points (height above horizon)
+    let prevX=xs, prevH= pts[0][1];
+    g.beginPath();
+    let last=horizon;
+    for(let i=0;i<pts.length;i++){
+      const X=pts[i][0], Hh=pts[i][1];
+      for(let x=prevX;x<=X;x++){
+        const t=(x-prevX)/Math.max(1,(X-prevX));
+        const hh=lerp(prevH,Hh,t)+Math.sin(x*0.4)*1.2;
+        const yTop=horizon-hh;
+        g.fillRect(x, yTop, 1, (LH-yTop));
+      }
+      prevX=X; prevH=Hh;
+    }
+  }
+  function rock(g,cx,top,w,h,c1,c2){
+    for(let y=0;y<h;y++){
+      const t=y/h;
+      const ww=w*(0.5+0.5*t)+Math.sin(y*0.5+seed)*3;
+      const x0=cx-ww/2;
+      g.fillStyle=rgb(lerp3(c2,c1,t));
+      g.fillRect(x0|0, top+y, ww|0, 1);
+    }
+  }
+
+  // ---------- ORDERED DITHER (real Bayer quantization) ----------
+  function nearest(r,gc,b){
+    let best=0,bd=1e9;
+    for(let i=0;i<palette.length;i++){
+      const p=palette[i];
+      const dr=r-p[0],dg=gc-p[1],db=b-p[2];
+      const d=dr*dr+dg*dg+db*db;
+      if(d<bd){bd=d;best=i;}
+    }
+    return palette[best];
+  }
+  function applyDither(){
+    const img=bx.getImageData(0,0,LW,LH);
+    const d=img.data;
+    let M, N;
+    if(ditherMode==='bayer8'){M=BAYER8;N=8;}
+    else if(ditherMode==='bayer4'){M=BAYER4;N=4;}
+    else {M=null;}
+    const spread=36; // dither strength in [0..255]
+    for(let y=0;y<LH;y++){
+      for(let x=0;x<LW;x++){
+        const idx=(y*LW+x)*4;
+        let r=d[idx],gc=d[idx+1],b=d[idx+2];
+        if(M){
+          const thr=(M[y%N][x%N]/(N*N))-0.5; // [-0.5,0.5)
+          const add=thr*spread;
+          r=clamp(r+add); gc=clamp(gc+add); b=clamp(b+add);
+        }
+        const q=nearest(r,gc,b);
+        d[idx]=q[0]; d[idx+1]=q[1]; d[idx+2]=q[2]; d[idx+3]=255;
+      }
+    }
+    bx.putImageData(img,0,0);
+  }
+  function clamp(v){return v<0?0:v>255?255:v;}
+
+  // ---- composite low buffer -> visible canvas with nearest-neighbour upscale ----
+  function blit(){
+    ctx.imageSmoothingEnabled=false;
+    ctx.clearRect(0,0,W,H);
+    ctx.drawImage(buf,0,0,LW,LH,0,0,W,H);
+  }
+
+  let seedBase=1337;
+  function render(){
+    drawScene();
+    applyDither();
+    blit();
+  }
+
+  // ---------- CONTROL panel wiring ----------
+  document.querySelectorAll('.chip[data-mode]').forEach(c=>{
+    c.addEventListener('click',()=>{
+      document.querySelectorAll('.chip[data-mode]').forEach(o=>o.classList.remove('on'));
+      c.classList.add('on');
+      ditherMode=c.dataset.mode;
+      document.getElementById('mstat').textContent =
+        ditherMode==='bayer8'?'BAYER 8×8':ditherMode==='bayer4'?'BAYER 4×4':'OFF';
+      document.getElementById('rstat').textContent = ditherMode==='off'?'FLAT':'DITHER';
+      render();
+    });
+  });
+  document.querySelectorAll('.chip[data-pal]').forEach(c=>{
+    c.addEventListener('click',()=>{
+      document.querySelectorAll('.chip[data-pal]').forEach(o=>o.classList.remove('on'));
+      c.classList.add('on');
+      palName=c.dataset.pal; palette=PALETTES[palName];
+      document.getElementById('pstat').textContent =
+        (palName==='sunset'?'SUNSET-14':palName==='dusk'?'DUSK-14':'EMBER-14');
+      render();
+    });
+  });
+  document.getElementById('btnScan').addEventListener('click',()=>{
+    scanOn=!scanOn;
+    document.querySelector('.crt').style.display = scanOn?'block':'none';
+    document.getElementById('sstat').textContent = scanOn?'ON':'OFF';
+  });
+  document.getElementById('btnRnd').addEventListener('click',()=>{
+    seedBase = (Math.random()*100000)|0;
+    document.getElementById('bar').style.width=(50+Math.random()*45)+'%';
+    render();
+  });
+
+  // resize internal device-canvas to keep crisp scaling on hi-dpi
+  function fit(){
+    // keep fixed art res; CSS scales. nothing needed beyond initial.
+  }
+
+  render();
+  window.__ready=true; // signal for screenshot tooling
+})();
+</script>
+</body>
+</html>

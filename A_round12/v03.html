@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>PRISM — spectral dispersion</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#04040a; }
+  body { font-family: "Helvetica Neue", Inter, system-ui, sans-serif; cursor:none; }
+  #stage { display:block; width:100vw; height:100vh; touch-action:none; }
+  #ui {
+    position:fixed; left:22px; bottom:20px; z-index:5;
+    color:rgba(235,238,255,.82); pointer-events:none;
+    mix-blend-mode:screen; user-select:none;
+  }
+  #ui .title {
+    font-size:13px; letter-spacing:.62em; font-weight:600;
+    text-transform:uppercase; opacity:.9;
+  }
+  #ui .sub {
+    font-size:10px; letter-spacing:.28em; margin-top:8px;
+    opacity:.45; line-height:1.7; max-width:60vw;
+  }
+  #ui .ior {
+    font-size:10px; letter-spacing:.22em; margin-top:9px; opacity:.55;
+  }
+  #ui .ior b { font-weight:600; color:rgba(180,200,255,.95); }
+  @media (max-width:520px){
+    #ui { left:16px; bottom:16px; }
+    #ui .title { font-size:11px; letter-spacing:.42em; }
+    #ui .sub { font-size:9px; letter-spacing:.18em; max-width:88vw; }
+  }
+  .hint {
+    position:fixed; top:18px; right:20px; z-index:5;
+    font-size:9.5px; letter-spacing:.3em; text-transform:uppercase;
+    color:rgba(200,210,255,.4); pointer-events:none; mix-blend-mode:screen;
+    text-align:right; line-height:2;
+  }
+  @media (max-width:520px){ .hint{ font-size:8.5px; letter-spacing:.18em; } }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="ui">
+  <div class="title">P&nbsp;R&nbsp;I&nbsp;S&nbsp;M</div>
+  <div class="sub">움직여 빛을 굴절시키세요 · 누르면 새 광원 · 휠/핀치로 분산 조절 · 더블클릭 어둠</div>
+  <div class="ior">REFRACTIVE&nbsp;INDEX&nbsp;<b><span id="iorv">1.52</span></b></div>
+</div>
+<div class="hint">spectral dispersion<br>drag · tap · scroll</div>
+<script>
+(() => {
+"use strict";
+
+// ---------- canvas / dpr ----------
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', { alpha:false });
+let W=0,H=0,DPR=1,DIAG=1;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = Math.round(W*DPR); cv.height = Math.round(H*DPR);
+  cv.style.width=W+'px'; cv.style.height=H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  DIAG = Math.hypot(W,H);
+}
+window.addEventListener('resize', resize, {passive:true});
+resize();
+
+// ---------- helpers ----------
+const TAU = Math.PI*2;
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const lerp=(a,b,t)=>a+(b-a)*t;
+const rnd=(a,b)=>a+Math.random()*(b-a);
+
+// wavelength (nm) -> rgb (approx visible spectrum)
+function wlColor(wl){
+  let r=0,g=0,b=0;
+  if(wl>=380&&wl<440){ r=-(wl-440)/60; b=1; }
+  else if(wl<490){ g=(wl-440)/50; b=1; }
+  else if(wl<510){ g=1; b=-(wl-510)/20; }
+  else if(wl<580){ r=(wl-510)/70; g=1; }
+  else if(wl<645){ r=1; g=-(wl-645)/65; }
+  else if(wl<=781){ r=1; }
+  // intensity falloff at ends
+  let f=1;
+  if(wl<420) f=.35+.65*(wl-380)/40;
+  else if(wl>700) f=.35+.65*(781-wl)/81;
+  const gamma=.85;
+  r=Math.pow(Math.max(0,r)*f,gamma);
+  g=Math.pow(Math.max(0,g)*f,gamma);
+  b=Math.pow(Math.max(0,b)*f,gamma);
+  return [r,g,b];
+}
+// precompute spectrum LUT
+const NLUT=120, LUT=[];
+for(let i=0;i<NLUT;i++){
+  const wl=lerp(400,700,i/(NLUT-1));
+  const c=wlColor(wl);
+  LUT.push({wl,r:c[0],g:c[1],b:c[2]});
+}
+
+// ---------- the prism ----------
+// pointer drives the prism position; drag tilts it; rotation gentle auto-spin
+const prism = {
+  x: W*0.5, y: H*0.5,         // target follows pointer
+  cx: W*0.5, cy: H*0.5,       // smoothed
+  tilt: 0, tiltTarget: 0,
+  spin: 0,
+  size: Math.min(W,H)*0.10,
+  ior: 1.52, iorTarget: 1.52, // base refractive index (glass~1.52)
+  dragging:false
+};
+
+// light sources: each emits a primary beam toward a moving point.
+class Source {
+  constructor(x,y,ang,born){
+    this.x=x; this.y=y;
+    this.ang=ang;            // beam direction (radians)
+    this.angV=rnd(-0.0015,0.0015);
+    this.born=born;
+    this.life=1;             // fade in
+    this.phase=Math.random()*TAU;
+  }
+}
+let sources=[];
+let t0=performance.now();
+function seed(){
+  sources=[];
+  // a wide flat beam from left
+  sources.push(new Source(-40, H*0.40, 0.02*Math.PI*0, performance.now()));
+  sources.push(new Source(-40, H*0.62, 0, performance.now()));
+}
+seed();
+
+// ---------- background haze field (soft animated nebula) ----------
+let bgCanvas=document.createElement('canvas'), bgScale=0.18, bgCtx=bgCanvas.getContext('2d');
+function buildBG(){
+  bgCanvas.width=Math.max(2,Math.round(W*bgScale));
+  bgCanvas.height=Math.max(2,Math.round(H*bgScale));
+}
+buildBG();
+
+// floating dust motes that catch the light
+const motes=[];
+function seedMotes(){
+  motes.length=0;
+  const n=Math.round(clamp(DIAG/12,70,160));
+  for(let i=0;i<n;i++){
+    motes.push({x:Math.random()*W,y:Math.random()*H,
+      z:rnd(0.3,1), r:rnd(0.4,1.8), ph:Math.random()*TAU,
+      vx:rnd(-0.06,0.06), vy:rnd(-0.05,0.02)});
+  }
+}
+seedMotes();
+
+// ---------- interaction ----------
+let pointer={x:W*0.5,y:H*0.5,active:false,downX:0,downY:0,downTilt:0};
+function setPointer(x,y){ pointer.x=x; pointer.y=y; pointer.active=true; prism.x=x; prism.y=y; }
+
+cv.addEventListener('pointermove', e=>{
+  setPointer(e.clientX,e.clientY);
+  if(prism.dragging){
+    // vertical drag tilts the prism
+    prism.tiltTarget = clamp((e.clientY-pointer.downY)*0.004 + pointer.downTilt, -0.9, 0.9);
+  }
+}, {passive:true});
+cv.addEventListener('pointerdown', e=>{
+  cv.setPointerCapture && cv.setPointerCapture(e.pointerId);
+  setPointer(e.clientX,e.clientY);
+  prism.dragging=true; pointer.downX=e.clientX; pointer.downY=e.clientY; pointer.downTilt=prism.tiltTarget;
+  // spawn a new source aimed at the prism, from a random edge
+  spawnSourceTowardPrism(e.clientX,e.clientY);
+}, {passive:true});
+window.addEventListener('pointerup', ()=>{ prism.dragging=false; }, {passive:true});
+
+function spawnSourceTowardPrism(px,py){
+  if(sources.length>=7){ sources.shift(); }
+  const edge=Math.floor(rnd(0,4));
+  let sx,sy;
+  if(edge===0){ sx=-40; sy=rnd(0,H); }
+  else if(edge===1){ sx=W+40; sy=rnd(0,H); }
+  else if(edge===2){ sx=rnd(0,W); sy=-40; }
+  else { sx=rnd(0,W); sy=H+40; }
+  const ang=Math.atan2(prism.cy-sy, prism.cx-sx);
+  const s=new Source(sx,sy,ang,performance.now());
+  s.life=0; s.aim=true;
+  sources.push(s);
+}
+
+let dblTimer=0;
+cv.addEventListener('dblclick', ()=>{ flash=1; sources=sources.slice(-1); });
+let flash=0;
+
+cv.addEventListener('wheel', e=>{
+  e.preventDefault();
+  prism.iorTarget = clamp(prism.iorTarget + (e.deltaY>0?0.03:-0.03), 1.10, 2.30);
+}, {passive:false});
+
+// pinch zoom -> ior
+let pinch={active:false,d0:0,ior0:0};
+const touches=new Map();
+cv.addEventListener('pointerdown', e=>{ if(e.pointerType==='touch'){ touches.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(touches.size===2){ const a=[...touches.values()]; pinch.active=true; pinch.d0=Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y); pinch.ior0=prism.iorTarget; prism.dragging=false; } } });
+cv.addEventListener('pointermove', e=>{ if(e.pointerType==='touch'&&touches.has(e.pointerId)){ touches.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(pinch.active&&touches.size>=2){ const a=[...touches.values()]; const d=Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y); prism.iorTarget=clamp(pinch.ior0*(pinch.d0/Math.max(1,d)),1.10,2.30); } } });
+function endTouch(e){ touches.delete(e.pointerId); if(touches.size<2) pinch.active=false; }
+window.addEventListener('pointerup', endTouch);
+window.addEventListener('pointercancel', endTouch);
+
+// ---------- physics: refraction with dispersion ----------
+// Treat prism as a thin dispersive element. For an incoming ray with direction `inAng`,
+// the prism normal is `nrm` (prism.spin+tilt). Each wavelength gets a slightly different
+// refractive index (Cauchy-ish), so the exit angle fans out -> rainbow.
+function dispersedIndex(baseIor, wl){
+  // shorter wavelength -> higher index (normal dispersion). Map 400..700 -> +k..-k
+  const norm=(wl-550)/150; // ~ -1..+1
+  return baseIor + (-norm)*0.085 - 0.0; // blue bends more
+}
+
+// compute deviation angle through a symmetric prism for given index n and apex A
+function prismDeviation(n, A, incident){
+  // simplified: deviation grows with (n-1) and apex; we synthesize a smooth, believable fan.
+  // use min-deviation-ish: D ~ (n-1)*A scaled
+  return (n-1.0)*A;
+}
+
+// ---------- render loop ----------
+let last=performance.now();
+function frame(now){
+  const dt=Math.min(40, now-last); last=now;
+  const T=(now-t0)*0.001;
+
+  // smooth prism follow
+  prism.cx += (prism.x-prism.cx)*0.12;
+  prism.cy += (prism.y-prism.cy)*0.12;
+  prism.tilt += (prism.tiltTarget-prism.tilt)*0.10;
+  prism.ior += (prism.iorTarget-prism.ior)*0.08;
+  prism.spin += 0.0016*(prism.dragging?0.3:1);
+  prism.size = Math.min(W,H)*0.10;
+  document.getElementById('iorv').textContent = prism.ior.toFixed(2);
+
+  // ---- background ----
+  drawBackground(T);
+
+  // additive light pass
+  ctx.globalCompositeOperation='lighter';
+
+  // ---- dust motes (subtle) ----
+  for(const m of motes){
+    m.x+=m.vx*dt*0.06; m.y+=m.vy*dt*0.06;
+    if(m.x<-5)m.x=W+5; if(m.x>W+5)m.x=-5; if(m.y<-5)m.y=H+5; if(m.y>H+5)m.y=-5;
+    const tw=0.4+0.6*(0.5+0.5*Math.sin(T*1.3+m.ph));
+    ctx.globalAlpha=0.05*m.z*tw;
+    ctx.fillStyle='#cfe0ff';
+    ctx.beginPath(); ctx.arc(m.x,m.y,m.r*m.z,0,TAU); ctx.fill();
+  }
+  ctx.globalAlpha=1;
+
+  // ---- each source: draw incoming beam, then dispersed fan out of prism ----
+  for(const s of sources){
+    s.life=Math.min(1, s.life + dt*0.0022);
+    s.ang += s.angV*dt;
+    if(s.aim){
+      // keep aiming at prism while young
+      const want=Math.atan2(prism.cy-s.y, prism.cx-s.x);
+      s.ang = lerp(s.ang, want, 0.05);
+    }
+    drawBeam(s, T);
+  }
+
+  // ---- the prism glass itself ----
+  drawPrism(T);
+
+  // ---- caustic glints on the floor ----
+  drawCaustics(T);
+
+  // ---- darkness flash (double click) ----
+  if(flash>0){
+    ctx.globalCompositeOperation='source-over';
+    ctx.fillStyle='rgba(2,2,8,'+(flash*0.9)+')';
+    ctx.fillRect(0,0,W,H);
+    flash*=0.90; if(flash<0.01)flash=0;
+  }
+
+  // soft vignette
+  ctx.globalCompositeOperation='source-over';
+  ctx.fillStyle=vignette;
+  ctx.fillRect(0,0,W,H);
+
+  // pointer ring (cursor replacement) sits at prism
+  drawCursor();
+
+  requestAnimationFrame(frame);
+}
+
+// ---------- background nebula ----------
+let vignette=null;
+function rebuildVignette(){
+  const g=ctx.createRadialGradient(W*0.5,H*0.52,Math.min(W,H)*0.2, W*0.5,H*0.52,DIAG*0.62);
+  g.addColorStop(0,'rgba(0,0,0,0)');
+  g.addColorStop(1,'rgba(0,0,6,0.55)');
+  vignette=g;
+}
+rebuildVignette();
+window.addEventListener('resize',()=>{ buildBG(); seedMotes(); rebuildVignette(); });
+
+function drawBackground(T){
+  ctx.globalCompositeOperation='source-over';
+  // deep gradient base
+  const g=ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#05060e');
+  g.addColorStop(0.55,'#070512');
+  g.addColorStop(1,'#03030a');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+
+  // slow drifting color clouds on low-res buffer, blurred up
+  const bw=bgCanvas.width, bh=bgCanvas.height;
+  bgCtx.clearRect(0,0,bw,bh);
+  bgCtx.globalCompositeOperation='lighter';
+  const blobs=4;
+  for(let i=0;i<blobs;i++){
+    const a=T*0.06+i*1.9;
+    const x=(0.5+0.42*Math.cos(a*0.8+i))*bw;
+    const y=(0.5+0.38*Math.sin(a*0.6+i*1.3))*bh;
+    const rr=bw*(0.30+0.12*Math.sin(a+i));
+    const hue=[ '40,40,90','20,40,80','60,30,80','30,55,90' ][i%4];
+    const rg=bgCtx.createRadialGradient(x,y,0,x,y,rr);
+    rg.addColorStop(0,'rgba('+hue+',0.55)');
+    rg.addColorStop(1,'rgba('+hue+',0)');
+    bgCtx.fillStyle=rg; bgCtx.beginPath(); bgCtx.arc(x,y,rr,0,TAU); bgCtx.fill();
+  }
+  ctx.globalAlpha=0.55;
+  ctx.imageSmoothingEnabled=true;
+  ctx.drawImage(bgCanvas,0,0,W,H);
+  ctx.globalAlpha=1;
+}
+
+// ---------- a single light source: white beam in, rainbow fan out ----------
+function drawBeam(s, T){
+  // incoming ray travels until it reaches the prism center plane
+  const px=prism.cx, py=prism.cy;
+  const dx=Math.cos(s.ang), dy=Math.sin(s.ang);
+  // intersection-ish: project source toward prism, stop near prism radius
+  const toX=px - dx*prism.size*0.55;
+  const toY=py - dy*prism.size*0.55;
+
+  const a=s.life;
+  // ---- incoming white shaft (soft) ----
+  ctx.lineCap='round';
+  const beamW = 2.2 + 1.4*Math.sin(T*2+s.phase);
+  // outer glow
+  ctx.strokeStyle='rgba(225,232,255,'+(0.10*a)+')';
+  ctx.lineWidth=beamW*5;
+  ctx.beginPath(); ctx.moveTo(s.x,s.y); ctx.lineTo(toX,toY); ctx.stroke();
+  // core
+  ctx.strokeStyle='rgba(255,255,255,'+(0.55*a)+')';
+  ctx.lineWidth=beamW;
+  ctx.beginPath(); ctx.moveTo(s.x,s.y); ctx.lineTo(toX,toY); ctx.stroke();
+
+  // ---- dispersed fan out the other side ----
+  // base exit direction = incoming dir bent by prism orientation
+  const nrm = prism.spin + prism.tilt;            // prism axis
+  const apex = 0.95;                               // virtual apex angle factor
+  const baseDev = prismDeviation(prism.ior, apex, s.ang);
+  // central exit angle: incoming continues, then bends by deviation toward prism axis
+  const bendDir = Math.sin((s.ang - nrm));         // which way it splits
+  const exitBase = s.ang + baseDev*0.9*Math.sign(bendDir||1);
+
+  const len = DIAG*0.95;
+  const ox=px + dx*prism.size*0.30;  // emit from far face of prism
+  const oy=py + dy*prism.size*0.30;
+
+  // spread proportional to (ior-1): more dispersion at higher index
+  const spread = (prism.ior-1.0)*1.35;            // radians total fan
+  const glow = 0.0;
+
+  // draw spectrum as many thin colored rays. Denser + curved + shimmering.
+  ctx.globalCompositeOperation='lighter';
+  const step= (window.innerWidth<520)?2:1;
+  // dispersion is nonlinear: blue end fans much harder than red (Cauchy-like)
+  for(let i=0;i<NLUT;i+=step){
+    const c=LUT[i];
+    const u=i/(NLUT-1);              // 0 violet .. 1 red
+    // nonlinear deviation: violet (u=0) deviates most
+    const disp = Math.pow(0.5-u, 1.0)*Math.abs(0.5-u)*0 + (0.5-u);
+    const dev = (Math.sign(0.5-u)*Math.pow(Math.abs(0.5-u)*2,1.35)*0.5)*spread;
+    // gentle shimmer per wavelength
+    const shimmer = Math.sin(T*1.6 + u*9 + s.phase)*0.012*spread;
+    const aRay = exitBase + dev + shimmer;
+    const c0=Math.cos(aRay), s0=Math.sin(aRay);
+    // slight arc: bend the far end perpendicular for a refracted-sheet look
+    const perp = (0.5-u)*spread*0.12;
+    const ex=ox + c0*len - s0*perp*len*0.25;
+    const ey=oy + s0*len + c0*perp*len*0.25;
+    const grad=ctx.createLinearGradient(ox,oy,ex,ey);
+    const al=0.46*a;
+    const cs=`${c.r*255|0},${c.g*255|0},${c.b*255|0}`;
+    grad.addColorStop(0,`rgba(${cs},0)`);
+    grad.addColorStop(0.03,`rgba(${cs},${al})`);
+    grad.addColorStop(0.35,`rgba(${cs},${al*0.55})`);
+    grad.addColorStop(0.7,`rgba(${cs},${al*0.20})`);
+    grad.addColorStop(1,`rgba(${cs},0)`);
+    ctx.strokeStyle=grad;
+    ctx.lineWidth=1.6;
+    ctx.beginPath(); ctx.moveTo(ox,oy); ctx.lineTo(ex,ey); ctx.stroke();
+  }
+  // a bright saturated inner spectral band near the prism (the "burst")
+  for(let i=0;i<NLUT;i+=2){
+    const c=LUT[i]; const u=i/(NLUT-1);
+    const dev=(Math.sign(0.5-u)*Math.pow(Math.abs(0.5-u)*2,1.35)*0.5)*spread;
+    const aRay=exitBase+dev;
+    const innerLen=prism.size*4.2;
+    const ex=ox+Math.cos(aRay)*innerLen, ey=oy+Math.sin(aRay)*innerLen;
+    const cs=`${Math.min(255,c.r*255+30)|0},${Math.min(255,c.g*255+30)|0},${Math.min(255,c.b*255+30)|0}`;
+    const grad=ctx.createLinearGradient(ox,oy,ex,ey);
+    grad.addColorStop(0,`rgba(${cs},${0.7*a})`);
+    grad.addColorStop(1,`rgba(${cs},0)`);
+    ctx.strokeStyle=grad; ctx.lineWidth=2.2;
+    ctx.beginPath(); ctx.moveTo(ox,oy); ctx.lineTo(ex,ey); ctx.stroke();
+  }
+
+  // bright bloom at the split point
+  const bg=ctx.createRadialGradient(ox,oy,0,ox,oy,prism.size*0.9);
+  bg.addColorStop(0,'rgba(255,255,255,'+(0.5*a)+')');
+  bg.addColorStop(0.4,'rgba(200,220,255,'+(0.18*a)+')');
+  bg.addColorStop(1,'rgba(255,255,255,0)');
+  ctx.fillStyle=bg; ctx.beginPath(); ctx.arc(ox,oy,prism.size*0.9,0,TAU); ctx.fill();
+}
+
+// ---------- the prism glass ----------
+function drawPrism(T){
+  const px=prism.cx, py=prism.cy, s=prism.size;
+  const rot=prism.spin+prism.tilt;
+  ctx.save();
+  ctx.translate(px,py); ctx.rotate(rot);
+  // triangular prism silhouette
+  const h=s*1.25, w=s*1.05;
+  ctx.globalCompositeOperation='lighter';
+  // glass body fill (subtle internal rainbow)
+  const gg=ctx.createLinearGradient(-w,-h,w,h);
+  gg.addColorStop(0,'rgba(120,160,255,0.10)');
+  gg.addColorStop(0.5,'rgba(255,255,255,0.06)');
+  gg.addColorStop(1,'rgba(255,170,210,0.10)');
+  ctx.beginPath();
+  ctx.moveTo(0,-h);
+  ctx.lineTo(w,h*0.9);
+  ctx.lineTo(-w,h*0.9);
+  ctx.closePath();
+  ctx.fillStyle=gg; ctx.fill();
+  // edges with chromatic fringe
+  ctx.lineWidth=1.6;
+  ctx.strokeStyle='rgba(255,255,255,0.55)';
+  ctx.stroke();
+  // inner edge glints
+  ctx.strokeStyle='rgba(150,200,255,0.35)';
+  ctx.lineWidth=1; ctx.beginPath();
+  ctx.moveTo(0,-h*0.92); ctx.lineTo(w*0.92,h*0.82); ctx.stroke();
+  ctx.strokeStyle='rgba(255,160,210,0.30)';
+  ctx.beginPath(); ctx.moveTo(0,-h*0.92); ctx.lineTo(-w*0.92,h*0.82); ctx.stroke();
+  // central highlight streak
+  const hl=ctx.createLinearGradient(0,-h,0,h);
+  hl.addColorStop(0,'rgba(255,255,255,0.0)');
+  hl.addColorStop(0.5,'rgba(255,255,255,0.22)');
+  hl.addColorStop(1,'rgba(255,255,255,0)');
+  ctx.fillStyle=hl;
+  ctx.beginPath();
+  ctx.moveTo(-w*0.12,-h*0.7);
+  ctx.lineTo(w*0.05,-h*0.7);
+  ctx.lineTo(-w*0.5,h*0.85);
+  ctx.lineTo(-w*0.66,h*0.85);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+
+  // outer aura
+  const ag=ctx.createRadialGradient(px,py,0,px,py,s*1.8);
+  ag.addColorStop(0,'rgba(180,200,255,0.10)');
+  ag.addColorStop(1,'rgba(180,200,255,0)');
+  ctx.fillStyle=ag; ctx.beginPath(); ctx.arc(px,py,s*1.8,0,TAU); ctx.fill();
+}
+
+// ---------- caustics: shifting spectral glints near bottom ----------
+function drawCaustics(T){
+  ctx.globalCompositeOperation='lighter';
+  const baseY=H*0.86;
+  const n=9;
+  for(let i=0;i<n;i++){
+    const u=i/(n-1);
+    const c=LUT[(u*(NLUT-1))|0];
+    const x = lerp(W*0.12, W*0.88, u) + Math.sin(T*0.7+i)*40;
+    const y = baseY + Math.sin(T*1.1+i*0.7)*10;
+    const r = 26+18*Math.sin(T*0.9+i*1.7);
+    const g=ctx.createRadialGradient(x,y,0,x,y,Math.abs(r)+8);
+    const al=0.07+0.05*Math.sin(T*1.5+i);
+    g.addColorStop(0,`rgba(${c.r*255|0},${c.g*255|0},${c.b*255|0},${al})`);
+    g.addColorStop(1,`rgba(${c.r*255|0},${c.g*255|0},${c.b*255|0},0)`);
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(x,y,Math.abs(r)+8,0,TAU); ctx.fill();
+  }
+}
+
+// ---------- cursor (sits at prism) ----------
+function drawCursor(){
+  ctx.globalCompositeOperation='lighter';
+  const x=pointer.x,y=pointer.y;
+  ctx.strokeStyle='rgba(255,255,255,0.45)';
+  ctx.lineWidth=1;
+  ctx.beginPath(); ctx.arc(x,y,7,0,TAU); ctx.stroke();
+  ctx.fillStyle='rgba(255,255,255,0.8)';
+  ctx.beginPath(); ctx.arc(x,y,1.4,0,TAU); ctx.fill();
+}
+
+// kick: place prism near center, pointer too
+pointer.x=W*0.52; pointer.y=H*0.5; prism.x=W*0.52; prism.y=H*0.5; prism.cx=W*0.52; prism.cy=H*0.5;
+requestAnimationFrame(frame);
+
+// expose for verification
+window.__prism = {
+  state(){ return {ior:prism.ior, sources:sources.length, cx:prism.cx, cy:prism.cy, tilt:prism.tilt}; },
+  move(x,y){ setPointer(x,y); },
+  spawn(){ spawnSourceTowardPrism(prism.cx,prism.cy); },
+  setIor(v){ prism.iorTarget=clamp(v,1.10,2.30); },
+  pixelEnergy(){
+    // sample center region brightness sum
+    const s=ctx.getImageData(0,0,Math.min(W*DPR,800),Math.min(H*DPR,600));
+    let sum=0; for(let i=0;i<s.data.length;i+=4){ sum+=s.data[i]+s.data[i+1]+s.data[i+2]; }
+    return sum;
+  }
+};
+})();
+</script>
+</body>
+</html>

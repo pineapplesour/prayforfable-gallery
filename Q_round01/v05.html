@@ -1,0 +1,1562 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Frostfall — 빙결의 영혼사</title>
+<style>
+  :root{
+    --bg:#0a1428; --panel:#13243f; --panel2:#1c3458; --ink:#eaf3ff;
+    --accent:#7fd9ff; --accent2:#b98bff; --gold:#ffd86b; --good:#7cf2a0; --bad:#ff7a8a;
+    --line:#2c4a78;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;padding:0;height:100%;background:#05080f;color:var(--ink);
+    font-family:"Courier New",ui-monospace,monospace; overflow:hidden; user-select:none;}
+  #stage{position:relative;width:100vw;height:100vh;display:flex;align-items:center;justify-content:center;
+    background:radial-gradient(circle at 50% 30%,#142a4d,#05080f 80%);}
+  canvas{image-rendering:pixelated;image-rendering:crisp-edges;display:block;
+    background:#0b1b33;border:2px solid var(--line);box-shadow:0 0 0 4px #05080f,0 0 40px #001a33;}
+  /* HUD / overlays */
+  .overlay{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;
+    background:rgba(5,8,15,.82);backdrop-filter:blur(2px);z-index:30;padding:14px;text-align:center;}
+  .overlay.show{display:flex;}
+  .card{background:var(--panel);border:2px solid var(--line);border-radius:10px;padding:18px 20px;max-width:560px;width:100%;
+    box-shadow:0 8px 30px #000a;}
+  h1{font-size:30px;margin:.1em 0 .1em;letter-spacing:2px;color:var(--accent);text-shadow:0 0 12px #1f6dff;}
+  h2{font-size:18px;margin:.2em 0;color:var(--gold);}
+  .sub{color:#9fc2ee;font-size:13px;line-height:1.5;}
+  .credit{font-size:11px;color:#7d97bd;margin-top:10px;line-height:1.5;border-top:1px dashed var(--line);padding-top:8px;}
+  button{font-family:inherit;cursor:pointer;background:var(--panel2);color:var(--ink);border:2px solid var(--accent);
+    border-radius:8px;padding:10px 16px;font-size:15px;margin:5px;transition:.08s;font-weight:bold;}
+  button:hover{background:var(--accent);color:#06121f;}
+  button:active{transform:translateY(1px);}
+  button.sec{border-color:var(--line);}
+  button.sec:hover{background:var(--panel2);border-color:var(--accent);}
+  /* bottom touch controls */
+  #touch{position:absolute;inset:0;z-index:20;display:none;pointer-events:none;}
+  #touch.on{display:block;}
+  .dpad{position:absolute;left:16px;bottom:20px;width:150px;height:150px;pointer-events:auto;}
+  .dbtn{position:absolute;width:50px;height:50px;background:rgba(28,52,88,.78);border:2px solid var(--accent);
+    border-radius:9px;color:var(--accent);font-size:22px;display:flex;align-items:center;justify-content:center;}
+  .dbtn:active{background:var(--accent);color:#06121f;}
+  .du{left:50px;top:0;} .dd{left:50px;top:100px;} .dl{left:0;top:50px;} .dr{left:100px;top:50px;}
+  .abtns{position:absolute;right:16px;bottom:24px;pointer-events:auto;display:flex;flex-direction:column;gap:10px;align-items:flex-end;}
+  .rbtn{width:64px;height:64px;border-radius:50%;background:rgba(185,139,255,.25);border:2px solid var(--accent2);
+    color:var(--accent2);font-size:13px;font-weight:bold;display:flex;align-items:center;justify-content:center;}
+  .rbtn:active{background:var(--accent2);color:#120a1f;}
+  .rbtn.a{background:rgba(127,217,255,.22);border-color:var(--accent);color:var(--accent);}
+  .rbtn.a:active{background:var(--accent);color:#06121f;}
+  .hint{position:absolute;top:8px;left:0;right:0;text-align:center;font-size:11px;color:#6e8cb8;z-index:15;pointer-events:none;}
+  .row{display:flex;flex-wrap:wrap;justify-content:center;gap:6px;}
+  .small{font-size:12px;}
+  ::-webkit-scrollbar{width:8px}::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="cv" width="320" height="288"></canvas>
+  <div class="hint" id="hint">방향키/WASD 이동 · Enter 메뉴 · 수풀에서 야생 조우</div>
+
+  <!-- TITLE -->
+  <div class="overlay show" id="ovTitle">
+    <div class="card">
+      <h1>❄ FROSTFALL ❄</h1>
+      <div class="sub">빙결의 영혼사 — 설산의 정령들을 만나고, 길들이고, 함께 싸우자.</div>
+      <div style="height:8px"></div>
+      <div class="row">
+        <button id="btnStart">▶ 모험 시작</button>
+        <button class="sec" id="btnHowto">조작법</button>
+      </div>
+      <div class="credit">
+        포켓몬에서 영감을 받음 — © Nintendo / Game Freak / The Pokémon Company.<br>
+        본 작품은 그와 무관한 <b>오리지널 구현</b>입니다. 모든 크리처·타입·지역·이름은 창작물입니다.
+      </div>
+    </div>
+  </div>
+
+  <!-- HOWTO -->
+  <div class="overlay" id="ovHowto">
+    <div class="card">
+      <h2>조작법</h2>
+      <div class="sub" style="text-align:left">
+        <b>이동:</b> 방향키 또는 WASD / 화면 좌하단 D패드<br>
+        <b>메뉴/결정:</b> Enter 또는 Z / A버튼<br>
+        <b>취소:</b> X 또는 Esc / B버튼<br>
+        <b>전투:</b> 공격·스킬·아이템·포획볼 선택. 약한 적은 더 잘 잡힌다.<br>
+        <b>타입 상성:</b> 빙결·화염·암석·바람·영혼 5종 순환 상성.<br>
+        <b>목표:</b> 12종의 정령을 도감에 등록하고, 진화시키고, 빙왕을 만나라.
+      </div>
+      <button id="btnHowBack" style="margin-top:10px">◀ 돌아가기</button>
+    </div>
+  </div>
+
+  <!-- generic menu/battle overlay rendered on its own canvas via DOM -->
+  <div class="overlay" id="ovMenu">
+    <div class="card" id="menuCard"></div>
+  </div>
+
+  <!-- touch controls -->
+  <div id="touch">
+    <div class="dpad">
+      <div class="dbtn du" data-dir="up">▲</div>
+      <div class="dbtn dd" data-dir="down">▼</div>
+      <div class="dbtn dl" data-dir="left">◀</div>
+      <div class="dbtn dr" data-dir="right">▶</div>
+    </div>
+    <div class="abtns">
+      <div class="rbtn a" data-key="a">A</div>
+      <div class="rbtn" data-key="b">B</div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   FROSTFALL — 빙결의 영혼사  (original ice-region monster JRPG)
+   Single self-contained file. No backend. CDN-free.
+   Inspired-by Pokémon genre; all content original.
+   ============================================================ */
+
+const CV = document.getElementById('cv');
+const ctx = CV.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+const TILE = 16;             // logical tile size
+const VW = 320, VH = 288;    // viewport (20x18 tiles)
+
+/* ---------- responsive scaling ---------- */
+function fit(){
+  const pad = 8;
+  const availW = window.innerWidth - pad, availH = window.innerHeight - pad;
+  let scale = Math.min(availW/VW, availH/VH);
+  scale = Math.max(1, Math.floor(scale*2)/2); // half-step crispness
+  CV.style.width = (VW*scale)+'px';
+  CV.style.height = (VH*scale)+'px';
+  // touch controls only on narrow / coarse pointers
+  const coarse = window.matchMedia('(pointer:coarse)').matches || window.innerWidth < 760;
+  document.getElementById('touch').classList.toggle('on', coarse);
+}
+window.addEventListener('resize', fit);
+
+/* ===========================================================
+   TYPE SYSTEM (original 5-type cycle + dual edge)
+   Frost > Stone > Gale > Ember(? ) ... define a clean chart.
+   Types: Frost(빙결) Ember(화염) Stone(암석) Gale(바람) Soul(영혼)
+   Cycle: Frost>Gale>Stone>Ember>Frost ; Soul<->Soul neutral, strong vs all weakly? keep simple.
+   =========================================================== */
+const TYPES = ['빙결','화염','암석','바람','영혼'];
+const TCOL  = {'빙결':'#7fd9ff','화염':'#ff8a5c','암석':'#c9a06b','바람':'#9cf0c4','영혼':'#c79bff'};
+// effectiveness[atk][def]: 2 super, .5 not very, 1 normal
+const EFF = {
+  '빙결':{'빙결':1,'화염':.5,'암석':1,'바람':2,'영혼':1},
+  '화염':{'빙결':2,'화염':1,'암석':.5,'바람':1,'영혼':1},
+  '암석':{'빙결':1,'화염':2,'암석':1,'바람':.5,'영혼':1},
+  '바람':{'빙결':.5,'화염':1,'암석':2,'바람':1,'영혼':1},
+  '영혼':{'빙결':1,'화염':1,'암석':1,'바람':1,'영혼':2},
+};
+function eff(a,d){ return (EFF[a] && EFF[a][d]) || 1; }
+
+/* ===========================================================
+   SPECIES (original creatures) — 12 species, with evolutions
+   Each: id, name, type, base stats, learnset (moves by level),
+   evolveTo + evolveLv, sprite key, dex desc, catchRate(0..1 base)
+   =========================================================== */
+const MOVES = {
+  // name: {type, power, acc, kind:'phys'/'spec', desc}
+  '얼음송곳':{type:'빙결',power:24,acc:.95,desc:'날카로운 고드름을 발사'},
+  '눈보라' :{type:'빙결',power:38,acc:.8 ,desc:'광역 눈보라, 명중 낮음'},
+  '서리물기':{type:'빙결',power:18,acc:1  ,desc:'얼린 송곳니로 문다'},
+  '불씨'  :{type:'화염',power:22,acc:.95,desc:'작은 불꽃을 던진다'},
+  '화염숨' :{type:'화염',power:34,acc:.85,desc:'뜨거운 숨을 내뿜는다'},
+  '바위치기':{type:'암석',power:26,acc:.9 ,desc:'단단한 바위로 가격'},
+  '낙석'  :{type:'암석',power:36,acc:.8 ,desc:'바위를 떨어뜨린다'},
+  '돌풍'  :{type:'바람',power:24,acc:.95,desc:'거센 바람을 일으킨다'},
+  '회오리' :{type:'바람',power:34,acc:.85,desc:'소용돌이로 휘감는다'},
+  '영혼광선':{type:'영혼',power:30,acc:.9 ,desc:'영혼의 빛을 쏜다'},
+  '혼불'  :{type:'영혼',power:40,acc:.8 ,desc:'푸른 혼의 불꽃'},
+  '몸통박치기':{type:'영혼',power:16,acc:1 ,desc:'평범한 돌진'},
+};
+// stats: hp, atk, def, spd
+const SPECIES = {
+  glacip:{name:'글래시핍',type:'빙결',dex:'설원의 어린 정령. 호기심이 많아 사람에게 잘 다가온다.',
+    base:{hp:40,atk:11,def:10,spd:12}, catch:.55, sprite:'glacip',
+    learn:[[1,'서리물기'],[1,'몸통박치기'],[5,'얼음송곳'],[10,'눈보라']],
+    evolveTo:'frostmaw', evolveLv:14},
+  frostmaw:{name:'프로스트모',type:'빙결',dex:'성장한 빙결 정령. 송곳니에서 영하의 한기가 흐른다.',
+    base:{hp:62,atk:17,def:15,spd:14}, catch:.28, sprite:'frostmaw',
+    learn:[[1,'얼음송곳'],[1,'서리물기'],[16,'눈보라']],
+    evolveTo:'glactitan', evolveLv:30},
+  glacitan:{name:'글래시탄',type:'빙결',dex:'전설로 불리는 거대 빙결 정령. 한 번의 숨결로 호수를 얼린다.',
+    base:{hp:95,atk:24,def:22,spd:16}, catch:.12, sprite:'glacitan',
+    learn:[[1,'눈보라'],[1,'얼음송곳']]},
+
+  emberkit:{name:'엠버킷',type:'화염',dex:'얼어붙은 산에서도 꺼지지 않는 작은 불의 정령.',
+    base:{hp:38,atk:13,def:9,spd:13}, catch:.5, sprite:'emberkit',
+    learn:[[1,'불씨'],[1,'몸통박치기'],[8,'화염숨']],
+    evolveTo:'pyrelynx', evolveLv:16},
+  pyrelynx:{name:'파이렐링크스',type:'화염',dex:'불꽃 갈기를 두른 민첩한 정령. 눈을 녹이며 달린다.',
+    base:{hp:60,atk:20,def:13,spd:18}, catch:.26, sprite:'pyrelynx',
+    learn:[[1,'화염숨'],[1,'불씨']]},
+
+  pebbling:{name:'페블링',type:'암석',dex:'산기슭의 돌무더기에서 태어난 정령. 느리지만 단단하다.',
+    base:{hp:46,atk:12,def:16,spd:7}, catch:.5, sprite:'pebbling',
+    learn:[[1,'바위치기'],[1,'몸통박치기'],[9,'낙석']],
+    evolveTo:'boulderon', evolveLv:18},
+  boulderon:{name:'볼더론',type:'암석',dex:'걸어다니는 작은 산. 발걸음이 지진처럼 울린다.',
+    base:{hp:78,atk:19,def:24,spd:8}, catch:.22, sprite:'boulderon',
+    learn:[[1,'낙석'],[1,'바위치기']]},
+
+  zephlet:{name:'제플렛',type:'바람',dex:'고산의 상승기류를 타고 사는 깃털 정령.',
+    base:{hp:40,atk:12,def:9,spd:16}, catch:.5, sprite:'zephlet',
+    learn:[[1,'돌풍'],[1,'몸통박치기'],[10,'회오리']],
+    evolveTo:'cyclorn', evolveLv:17},
+  cyclorn:{name:'사이클론',type:'바람',dex:'작은 폭풍을 두른 정령. 날갯짓 한 번에 눈가루가 휘몰아친다.',
+    base:{hp:58,atk:18,def:13,spd:22}, catch:.24, sprite:'cyclorn',
+    learn:[[1,'회오리'],[1,'돌풍']]},
+
+  wispling:{name:'위스플링',type:'영혼',dex:'설산에서 길을 잃은 여행자의 온기가 모여 태어난 정령.',
+    base:{hp:42,atk:13,def:11,spd:13}, catch:.45, sprite:'wispling',
+    learn:[[1,'몸통박치기'],[1,'영혼광선'],[12,'혼불']],
+    evolveTo:'soulumen', evolveLv:20},
+  soulumen:{name:'소울루멘',type:'영혼',dex:'푸른 혼불을 두른 정령. 그 빛을 본 자는 길을 잃지 않는다.',
+    base:{hp:66,atk:21,def:16,spd:17}, catch:.2, sprite:'soulumen',
+    learn:[[1,'혼불'],[1,'영혼광선']]},
+
+  // boss-tier wild legend
+  rimewarden:{name:'리메워든',type:'빙결',dex:'정상을 지키는 빙왕. 산의 의지 그 자체라 전해진다.',
+    base:{hp:120,atk:26,def:24,spd:18}, catch:.08, sprite:'glacitan',
+    learn:[[1,'눈보라'],[1,'혼불'],[1,'얼음송곳']]},
+};
+
+/* ---------- creature instance factory ---------- */
+let UID=1;
+function statAt(sp, key, lv){
+  const b = SPECIES[sp].base[key];
+  if(key==='hp') return Math.floor(b + b*0.45*(lv-1)) + 6;
+  return Math.floor(b + b*0.28*(lv-1));
+}
+function learnedMoves(sp, lv){
+  const out=[];
+  for(const [l,m] of SPECIES[sp].learn){ if(l<=lv && !out.includes(m)) out.push(m); }
+  return out.slice(-4); // last 4
+}
+function makeMon(sp, lv){
+  const maxhp = statAt(sp,'hp',lv);
+  return {
+    uid:UID++, sp, name:SPECIES[sp].name, type:SPECIES[sp].type, lv,
+    hp:maxhp, maxhp,
+    atk:statAt(sp,'atk',lv), def:statAt(sp,'def',lv), spd:statAt(sp,'spd',lv),
+    moves: learnedMoves(sp,lv), xp:0, xpNext: 8 + lv*lv*4,
+  };
+}
+function healFull(m){ m.hp=m.maxhp; }
+
+/* ===========================================================
+   PIXEL SPRITES — drawn procedurally onto offscreen canvases.
+   Palette-grid based, scaled up with nearest-neighbor.
+   =========================================================== */
+const SPR = {}; // cache key -> canvas
+function px(grid, pal, cell){
+  const h=grid.length, w=grid[0].length;
+  const c=document.createElement('canvas'); c.width=w*cell; c.height=h*cell;
+  const g=c.getContext('2d');
+  for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+    const ch=grid[y][x]; if(ch===' '||ch==='.') continue;
+    g.fillStyle = pal[ch] || '#f0f'; g.fillRect(x*cell,y*cell,cell,cell);
+  }
+  return c;
+}
+/* 12x12 monster sprites (cell auto). Letters map to palette. */
+function buildSprites(){
+  const cell=4; // 12x12 -> 48x48
+  const S = {};
+  // shared blanks
+  const O='.';
+  S.glacip = px([
+    "....bbbb....",
+    "...bwwwwb...",
+    "..bwLwwLwb..",
+    "..bwwwwwwb..",
+    "..bwkwwkwb..",
+    "...bwwwwb...",
+    "..bbwwwwbb..",
+    ".bcwwwwwwcb.",
+    ".bcwwwwwwcb.",
+    "..b.cwwc.b..",
+    "...cc..cc...",
+    "...........",
+  ], {b:'#2f7fb8',w:'#dff4ff',L:'#0a3a5c',k:'#1d6aa0',c:'#7fd9ff'}, cell);
+  S.frostmaw = px([
+    "...bbbbbb...",
+    "..bwwwwwwb..",
+    ".bwLwwwwLwb.",
+    ".bwwwwwwwwb.",
+    ".bwwffffwwb.",
+    ".bwffwwffwb.",
+    "..bwwwwwwb..",
+    ".bcwwwwwwcb.",
+    "bcwwwwwwwwcb",
+    "bc.cwwwwc.cb",
+    "...cc..cc...",
+    "..cc....cc..",
+  ], {b:'#1f6aa0',w:'#cfeaff',L:'#072b46',f:'#ffffff',c:'#5fc4ef'}, cell);
+  S.glacitan = px([
+    "..bbb..bbb..",
+    ".bwwwbbwwwb.",
+    "bwLwwwwwwLwb",
+    "bwwwwwwwwwwb",
+    "bwwffffffwwb",
+    "bwffwwwwffwb",
+    "bwwwwwwwwwwb",
+    "bcwwwwwwwwcb",
+    "ccwwwwwwwwcc",
+    "c.cwwwwwwc.c",
+    "...cc..cc...",
+    "..ccc..ccc..",
+  ], {b:'#15527f',w:'#bfe2ff',L:'#04203a',f:'#ffffff',c:'#7fd9ff'}, cell);
+
+  S.emberkit = px([
+    "....rr......",
+    "...roor.....",
+    "..roooor.rr.",
+    "..rooooorroo",
+    "..rokookoroo",
+    "..rooooooro.",
+    "...rooooor..",
+    "..rrrooorr..",
+    ".ro.rrrr.or.",
+    ".r..r..r..r.",
+    "....r..r....",
+    "...rr..rr...",
+  ], {r:'#c43a1f',o:'#ff8a3a',k:'#3a1004',R:'#ffd27a'}, cell);
+  S.pyrelynx = px([
+    ".r..rr..r...",
+    "rro.roor.orr",
+    ".roooooooor.",
+    "..rookkooor.",
+    "..roooooorr.",
+    "..rooooooro.",
+    ".rrooooooorr",
+    "ro.rooooor.o",
+    "r..roo.oor..",
+    "...ro..or...",
+    "...r....r...",
+    "..rr....rr..",
+  ], {r:'#c43a1f',o:'#ff9a3a',k:'#2a0c02'}, cell);
+
+  S.pebbling = px([
+    "............",
+    "...gggggg...",
+    "..gddggddg..",
+    ".gdgggggdg..",
+    ".ggkggkggg..",
+    ".ggggggggg..",
+    ".gdggggdgg..",
+    ".gggggggggg.",
+    "..gggggggg..",
+    "..gg....gg..",
+    "..gg....gg..",
+    "............",
+  ], {g:'#a6855a',d:'#7a5e38',k:'#2c1d0c'}, cell);
+  S.boulderon = px([
+    "..gggggggg..",
+    ".gddgggggdg.",
+    "gdgggggggggg",
+    "gggkgggkgggg",
+    "ggggggggggdg",
+    "gdgggggggggg",
+    "ggggggggggdg",
+    "gddggggggdgg",
+    "gggggggggggg",
+    ".gggggggggg.",
+    ".gg......gg.",
+    ".gg......gg.",
+  ], {g:'#8f7148',d:'#5f4a2a',k:'#241708'}, cell);
+
+  S.zephlet = px([
+    ".....cc.....",
+    "....cwwc....",
+    "..ccwwwwcc..",
+    ".cwwLwwLwwc.",
+    "cwwwwwwwwwwc",
+    "cwwwkkwwwwwc",
+    ".cwwwwwwwwc.",
+    "..ccwwwwcc..",
+    "...cwwwwc...",
+    "..c.cwwc.c..",
+    ".c...cc...c.",
+    "............",
+  ], {c:'#5fbf8f',w:'#d9fff0',L:'#0d4a32',k:'#0a3a26'}, cell);
+  S.cyclorn = px([
+    "c..cccc..c..",
+    ".ccwwwwcc.c.",
+    "ccwwLwwLwwcc",
+    "cwwwwwwwwwwc",
+    "cwwwkkkkwwwc",
+    "cwwwwwwwwwwc",
+    ".cwwwwwwwwc.",
+    "c.ccwwwwcc.c",
+    "cc.cwwwwc.cc",
+    ".cc.cwwc.cc.",
+    "..c..cc..c..",
+    ".c........c.",
+  ], {c:'#46a877',w:'#ccffe6',L:'#093a26',k:'#072a1c'}, cell);
+
+  S.wispling = px([
+    "....pppp....",
+    "...pwwwwp...",
+    "..pwWwwWwp..",
+    "..pwwwwwwp..",
+    "..pwwkkwwp..",
+    "...pwwwwp...",
+    "....pwwp....",
+    "...ppwwpp...",
+    "..p.pwwp.p..",
+    ".p..pwwp..p.",
+    "....p..p....",
+    "...p....p...",
+  ], {p:'#7d4fd6',w:'#e7d6ff',W:'#3a1d78',k:'#23104a'}, cell);
+  S.soulumen = px([
+    "..p..pp..p..",
+    ".ppwwwwwwpp.",
+    "ppwWwwwwWwpp",
+    "pwwwwwwwwwwp",
+    "pwwwkkkkwwwp",
+    "pwwwwwwwwwwp",
+    ".pwwwwwwwwp.",
+    "ppwwwwwwwwpp",
+    "p.ppwwwwpp.p",
+    "...pwwwwp...",
+    "...p.pp.p...",
+    "..p......p..",
+  ], {p:'#6a39c9',w:'#ead9ff',W:'#2e1466',k:'#1d0d44'}, cell);
+
+  // player overworld sprite (16x16, 4 dirs simplified to one + flash)
+  S.player = px([
+    "....kkkk....",
+    "...khhhhk...",
+    "..khhhhhhk..",
+    "..khsshsk...",
+    "..khhhhhhk..",
+    "...kffffk...",
+    "..jjjjjjjj..",
+    ".jjbbbbbbjj.",
+    ".jbbbbbbbbj.",
+    ".jbbbbbbbbj.",
+    "..bb.bb.bb..",
+    "..bb.bb.bb..",
+    "...bb..bb...",
+    "...nn..nn...",
+    "..nnn..nnn..",
+    "............",
+  ], {k:'#3a2a18',h:'#e8b07a',s:'#1a1a1a',f:'#caa05a',j:'#2f6fb0',b:'#3f86d6',n:'#243a52'}, 1);
+  // upscale player to 16
+  const p2=document.createElement('canvas'); p2.width=16;p2.height=16;
+  p2.getContext('2d').imageSmoothingEnabled=false;
+  // player grid above is 16 wide cell=1, already 16x16
+  SPR.player = S.player;
+
+  for(const k in S){ if(k!=='player') SPR[k]=S[k]; }
+  // overworld NPC (healer)
+  SPR.npc = px([
+    "....kkkk....",
+    "...kwwwwk...",
+    "..kwwwwwwk..",
+    "..kwsswsk...",
+    "..kwwwwwwk..",
+    "...krrrrk...",
+    "..rrrrrrrr..",
+    ".rrwwwwwwrr.",
+    ".rwwwwwwwwr.",
+    ".rwwwwwwwwr.",
+    "..ww.ww.ww..",
+    "..ww.ww.ww..",
+    "...ww..ww...",
+    "...nn..nn...",
+    "..nnn..nnn..",
+    "............",
+  ], {k:'#3a2a18',w:'#f3e9d8',s:'#1a1a1a',r:'#d23a4a',n:'#3a2a40'}, 1);
+}
+
+/* ===========================================================
+   WORLD MAP — tile grid. Legend:
+   0 snow ground, 1 deep snow (encounter), 2 tree(block),
+   3 rock(block), 4 water/ice(block), 5 path, 6 sign,
+   H healer NPC, T trainer NPC, B boss tile (deep cave), E exit/portal
+   =========================================================== */
+const MAPW=40, MAPH=36;
+const RAW = [
+"2222222222222222222222222222222222222222",
+"2000000000000000022222220000000000000002",
+"2011111100000005550000000001111111000002",
+"2011111100000005H50000022201111111000002",
+"2011111100050005550022222201111111000T02",
+"2000000000050000000002220000000000000002",
+"2222200005555550000003330000222222200002",
+"2000000005000050000003330000200000200002",
+"2011110005000050001113330000201111200002",
+"2011110005000050001110000000201111200002",
+"2011110005555550001110005550201111200002",
+"2000000000050000000000005050200000200002",
+"2222222000050000222220005550222222222002",
+"2000000000050000200000000050000000000002",
+"2011111000550000201111110050001111100002",
+"2011111000500000201111110050001111100002",
+"2011111000500000201111110050001111100002",
+"2000000000500000200000000050000000000002",
+"2444444400500000333333333350044444440002",
+"2444444400500000300000000050044444440002",
+"2444444400555550300011100050044444440002",
+"2000000000005050300011100055000000000002",
+"2222222220005050300011100050022222222202",
+"2000000000005050300000000050020000000002",
+"2011111100005055555555555550020111110002",
+"2011111100005000000000000000020111110002",
+"2011111100005000222222222222220111110002",
+"2000000000005000200000000000000000000002",
+"2222220000005000201111111100000022222202",
+"2000000000005000201111111100000020000002",
+"2011110000555000201111111100005550011002",
+"2011110000500000200000000000005B50011002",
+"2011110005550000222222222222205550011002",
+"2000000005000000000000000000000000000002",
+"2000000005000000000000000000000000000002",
+"2222222222222222222222222222222222222222",
+];
+const MAP = RAW.map(r=>r.split(''));
+function tileAt(x,y){ if(x<0||y<0||x>=MAPW||y>=MAPH) return '2'; return MAP[y][x]; }
+function isBlocked(x,y){
+  const t=tileAt(x,y);
+  return t==='2'||t==='3'||t==='4'; // trees, rocks, water/ice block
+}
+const ENCOUNTER_TILES = new Set(['1']);
+
+/* spawn pools by region depth (top area easier) */
+function poolFor(ty){
+  // weighted base species
+  return [
+    {sp:'glacip',w:30},{sp:'emberkit',w:20},{sp:'pebbling',w:18},
+    {sp:'zephlet',w:18},{sp:'wispling',w:14},
+  ];
+}
+function pickSpawn(){
+  const pool = poolFor();
+  let tot=pool.reduce((a,b)=>a+b.w,0), r=Math.random()*tot;
+  for(const e of pool){ if((r-=e.w)<=0) return e.sp; }
+  return 'glacip';
+}
+
+/* ===========================================================
+   GAME STATE
+   =========================================================== */
+const G = {
+  mode:'title', // title|world|battle|menu
+  px:6, py:2,   // player tile pos
+  dir:'down',
+  steps:0,
+  party:[],
+  box:[],
+  items:{ '회복약':5, '대회복약':1, '서리볼':10, '강화볼':3 },
+  dex:new Set(),
+  flags:{},   // npc talked, boss done
+  money:300,
+  battle:null,
+  walkPhase:0,
+};
+
+/* starter chosen at first start */
+function newGame(starterSp){
+  G.party=[]; G.box=[]; G.dex=new Set();
+  const s = makeMon(starterSp, 5); healFull(s);
+  G.party.push(s); G.dex.add(starterSp);
+  G.items={ '회복약':5,'대회복약':1,'서리볼':12,'강화볼':3 };
+  G.px=6; G.py=2; G.dir='down'; G.money=300; G.flags={};
+}
+
+/* ===========================================================
+   INPUT
+   =========================================================== */
+const KEY={up:false,down:false,left:false,right:false};
+let lastMove=0;
+const keymap={
+  ArrowUp:'up',ArrowDown:'down',ArrowLeft:'left',ArrowRight:'right',
+  w:'up',s:'down',a:'left',d:'right',W:'up',S:'down',A:'left',D:'right',
+};
+window.addEventListener('keydown',e=>{
+  const uiOpen = UI.active && (G.mode==='menu'||G.mode==='battle');
+  if(keymap[e.key]){
+    if(!uiOpen){ KEY[keymap[e.key]]=true; G.dir=keymap[e.key]; }
+    e.preventDefault();
+  }
+  if(e.key==='Enter'||e.key==='z'||e.key==='Z'){ onConfirm(); e.preventDefault(); }
+  if(e.key==='x'||e.key==='X'||e.key==='Escape'){ onCancel(); e.preventDefault(); }
+});
+window.addEventListener('keyup',e=>{ if(keymap[e.key]) KEY[keymap[e.key]]=false; });
+
+// touch
+document.querySelectorAll('.dbtn').forEach(b=>{
+  const dir=b.dataset.dir;
+  const on=e=>{e.preventDefault();KEY[dir]=true;G.dir=dir;};
+  const off=e=>{e.preventDefault();KEY[dir]=false;};
+  b.addEventListener('touchstart',on,{passive:false}); b.addEventListener('touchend',off,{passive:false});
+  b.addEventListener('touchcancel',off,{passive:false});
+  b.addEventListener('mousedown',on); b.addEventListener('mouseup',off); b.addEventListener('mouseleave',off);
+});
+document.querySelectorAll('.rbtn').forEach(b=>{
+  const k=b.dataset.key;
+  const fire=e=>{e.preventDefault(); if(k==='a')onConfirm(); else onCancel();};
+  b.addEventListener('touchstart',fire,{passive:false});
+  b.addEventListener('mousedown',fire);
+});
+
+/* confirm/cancel route depending on mode + UI state */
+function onConfirm(){
+  // dialog has priority in world
+  if(G.mode==='world' && dialog){
+    const done = !advanceDialog();
+    if(done && G.pendingTrainer){ G.pendingTrainer=false; talkTrainerBattle(); }
+    return;
+  }
+  if(G.mode==='title') return;
+  if((G.mode==='menu'||G.mode==='battle') && UI.active){ UI.confirm(); return; }
+  if(G.mode==='world'){ interactFront(); return; }
+}
+function onCancel(){
+  if(G.mode==='world' && dialog){ return; }
+  if((G.mode==='menu'||G.mode==='battle') && UI.active){ UI.cancel(); return; }
+  if(G.mode==='world'){ openMainMenu(); return; }
+}
+
+/* ===========================================================
+   OVERWORLD MOVEMENT (grid-step with smooth tween)
+   =========================================================== */
+let moveAnim=null; // {fromx,fromy,tox,toy,t}
+function tryStep(){
+  if(moveAnim) return;
+  let dx=0,dy=0,d=null;
+  if(KEY.up){dy=-1;d='up';} else if(KEY.down){dy=1;d='down';}
+  else if(KEY.left){dx=-1;d='left';} else if(KEY.right){dx=1;d='right';}
+  if(!d) return;
+  G.dir=d;
+  const nx=G.px+dx, ny=G.py+dy;
+  if(isBlocked(nx,ny)){ moveAnim=null; return; }
+  // NPC blocking
+  const t=tileAt(nx,ny);
+  if(t==='H'||t==='T'){ return; } // can't walk onto NPC; interact via facing
+  moveAnim={fx:G.px,fy:G.py,tx:nx,ty:ny,t:0};
+}
+function finishStep(){
+  G.px=moveAnim.tx; G.py=moveAnim.ty; G.walkPhase^=1;
+  const t=tileAt(G.px,G.py);
+  moveAnim=null;
+  G.steps++;
+  // boss tile
+  if(t==='B' && !G.flags.boss){ startBoss(); return; }
+  // encounter
+  if(ENCOUNTER_TILES.has(t)){
+    if(Math.random()<0.16){ startWild(); }
+  }
+}
+function interactFront(){
+  let dx=0,dy=0;
+  if(G.dir==='up')dy=-1; else if(G.dir==='down')dy=1;
+  else if(G.dir==='left')dx=-1; else dx=1;
+  const fx=G.px+dx, fy=G.py+dy, t=tileAt(fx,fy);
+  if(t==='H'){ talkHealer(); }
+  else if(t==='T'){ talkTrainer(); }
+  else if(t==='6'){ toast('표지판: "깊은 눈 속엔 정령이 산다. ❄"'); }
+  else { openMainMenu(); }
+}
+
+/* ===========================================================
+   TOASTS / dialog (rendered on canvas during world)
+   =========================================================== */
+let dialog=null; // {lines:[...], i:0}
+function toast(msg){ dialog={lines:Array.isArray(msg)?msg:[msg], i:0}; }
+function advanceDialog(){
+  if(!dialog) return false;
+  dialog.i++;
+  if(dialog.i>=dialog.lines.length){ dialog=null; }
+  return true;
+}
+
+/* ===========================================================
+   NPC INTERACTIONS
+   =========================================================== */
+function talkHealer(){
+  G.party.forEach(healFull);
+  toast(['빙결의 사제: "정령들을 보살펴 드렸습니다.','파티가 모두 회복되었습니다. ❄"']);
+}
+function talkTrainer(){
+  if(G.flags.trainer){ toast('등반가: "자네는 강하군. 정상의 빙왕에게 도전해 보게."'); return; }
+  toast(['등반가: "이봐, 한 수 겨뤄보지 않겠나!"']);
+  G.pendingTrainer=true;
+}
+
+/* ===========================================================
+   BATTLE SYSTEM
+   =========================================================== */
+function startWild(){
+  const sp=pickSpawn();
+  const lv = 3 + Math.floor(Math.random()*4) + Math.floor(G.steps/120);
+  const foe=makeMon(sp, Math.max(3,Math.min(12,lv))); healFull(foe);
+  enterBattle(foe, {kind:'wild'});
+}
+function startBoss(){
+  const foe=makeMon('rimewarden', 22); healFull(foe);
+  enterBattle(foe, {kind:'boss', name:'빙왕 리메워든'});
+}
+function talkTrainerBattle(){
+  const foe=makeMon(['frostmaw','pyrelynx','boulderon'][Math.floor(Math.random()*3)], 12); healFull(foe);
+  enterBattle(foe, {kind:'trainer', name:'등반가'});
+}
+function activeMon(){ return G.party.find(m=>m.hp>0) || G.party[0]; }
+function enterBattle(foe, meta){
+  G.mode='battle';
+  G.battle={ foe, meta, me:activeMon(), log:[], msg:'', anim:0, shake:0, flash:0,
+             phase:'menu', caught:false, fled:false, result:null };
+  setBattleMenu();
+}
+/* damage calc */
+function calcDamage(att, mv, defn){
+  const move=MOVES[mv];
+  if(Math.random()>move.acc) return {miss:true};
+  const e=eff(move.type, defn.type);
+  const stab = (move.type===att.type)?1.3:1;
+  const base = (move.power * att.atk / (defn.def+18)) ;
+  let dmg = base * stab * e * (0.85+Math.random()*0.3);
+  dmg = Math.max(1, Math.floor(dmg));
+  const crit = Math.random()<0.07; if(crit) dmg=Math.floor(dmg*1.6);
+  return {dmg, e, crit};
+}
+function foeMove(foe){ return foe.moves[Math.floor(Math.random()*foe.moves.length)]; }
+
+/* battle turn flow handled via UI + queue */
+let bAnimQueue=[];
+function bsay(t, cb){ bAnimQueue.push({type:'msg',t,cb}); }
+function bfx(fn){ bAnimQueue.push({type:'fx',fn}); }
+function processQueue(){
+  if(G.mode!=='battle') return;
+  if(G.battle.busy) return;
+}
+
+function playerAttack(mv){
+  const B=G.battle; B.phase='anim'; UI.active=false;
+  const me=B.me, foe=B.foe;
+  const order = me.spd >= foe.spd; // who first
+  const seq = order ? ['me','foe'] : ['foe','me'];
+  runTurn(seq, mv);
+}
+function runTurn(seq, myMove){
+  const B=G.battle;
+  let idx=0;
+  const step=()=>{
+    if(B.result){ return; }
+    if(idx>=seq.length){ // turn end
+      B.phase='menu'; setBattleMenu(); return;
+    }
+    const who=seq[idx++];
+    if(who==='me'){
+      if(B.me.hp<=0){ step(); return; }
+      doAttack(B.me, myMove, B.foe, 'foe', ()=>{
+        if(B.foe.hp<=0){ winBattle(); } else step();
+      });
+    } else {
+      if(B.foe.hp<=0){ step(); return; }
+      const fm=foeMove(B.foe);
+      doAttack(B.foe, fm, B.me, 'me', ()=>{
+        if(B.me.hp<=0){ faintMe(); } else step();
+      });
+    }
+  };
+  step();
+}
+function doAttack(att, mv, target, side, done){
+  const B=G.battle;
+  B.msg = `${att.name}의 ${mv}!`;
+  B.phase='anim';
+  setTimeout(()=>{
+    const r=calcDamage(att, mv, target);
+    if(r.miss){ B.msg=`${att.name}의 공격이 빗나갔다!`; B.flash=0; redraw();
+      setTimeout(done, 650); return; }
+    target.hp=Math.max(0, target.hp-r.dmg);
+    B.shake = side==='me'?8:0;
+    B.foeFlash = side==='foe'?6:0;
+    B.meFlash = side==='me'?6:0;
+    let extra = r.crit?' 급소에 맞았다!':'';
+    if(r.e>1) extra+=' 효과가 굉장했다!';
+    else if(r.e<1) extra+=' 효과가 별로였다...';
+    B.msg=`${att.name}의 ${mv}!`+ (extra?('  '+extra.trim()):'');
+    redraw();
+    setTimeout(done, 720);
+  }, 420);
+}
+
+function tryCatch(ballName){
+  const B=G.battle; UI.active=false; B.phase='anim';
+  const foe=B.foe;
+  if(B.meta.kind==='trainer'){ B.msg='상대 정령은 잡을 수 없다!'; setTimeout(()=>{ enemyTurnThen(); },800); return; }
+  const ballBonus = ballName==='강화볼'?1.9:1.0;
+  G.items[ballName]--;
+  const base = SPECIES[foe.sp].catch;
+  const hpFactor = 1 - (foe.hp/foe.maxhp)*0.65;     // lower hp -> easier
+  const lvFactor = Math.max(.4, 1 - foe.lv*0.02);
+  let chance = base * ballBonus * hpFactor * lvFactor;
+  chance=Math.min(.95, chance);
+  B.msg=`${ballName}을 던졌다!`;
+  redraw();
+  setTimeout(()=>{
+    // wobble animation simulated by 3 ticks
+    let ticks=0; const wob=()=>{
+      ticks++; B.ballWobble=ticks; redraw();
+      if(ticks<3){ setTimeout(wob, 420); return; }
+      if(Math.random()<chance){
+        B.ballWobble=0; catchSuccess(foe);
+      } else {
+        B.ballWobble=0; B.msg=`앗! ${foe.name}이(가) 튀어나왔다!`; redraw();
+        setTimeout(()=>{ enemyTurnThen(); }, 800);
+      }
+    };
+    setTimeout(wob, 420);
+  }, 500);
+}
+function enemyTurnThen(){
+  const B=G.battle;
+  const fm=foeMove(B.foe);
+  doAttack(B.foe, fm, B.me, 'me', ()=>{
+    if(B.me.hp<=0){ faintMe(); } else { B.phase='menu'; setBattleMenu(); }
+  });
+}
+function catchSuccess(foe){
+  const B=G.battle;
+  healFull(foe);
+  const wasNew = !G.dex.has(foe.sp);
+  G.dex.add(foe.sp);
+  if(G.party.length<6) G.party.push(foe); else G.box.push(foe);
+  B.caught=true; B.result='caught';
+  B.msg=`${foe.name}을(를) 잡았다!`+(wasNew?'  도감에 새로 등록! 📖':'');
+  redraw();
+  setTimeout(()=>{ exitBattle(); }, 1500);
+}
+function tryFlee(){
+  const B=G.battle; UI.active=false;
+  if(B.meta.kind!=='wild'){ B.msg='도망칠 수 없다!'; B.phase='menu'; setTimeout(setBattleMenu,800); return; }
+  const ok = Math.random()<0.7 || B.me.spd>B.foe.spd;
+  if(ok){ B.msg='무사히 도망쳤다.'; B.result='fled'; redraw(); setTimeout(exitBattle,800); }
+  else { B.msg='도망치지 못했다!'; redraw(); setTimeout(enemyTurnThen,800); }
+}
+function useItemInBattle(name){
+  const B=G.battle; UI.active=false;
+  if(name==='회복약'||name==='대회복약'){
+    const amt = name==='회복약'?28:65;
+    const m=B.me;
+    if(m.hp>=m.maxhp){ B.msg='HP가 가득 차 있다!'; B.phase='menu'; setTimeout(setBattleMenu,700); return; }
+    G.items[name]--;
+    m.hp=Math.min(m.maxhp, m.hp+amt);
+    B.msg=`${m.name}의 HP를 ${amt} 회복했다!`; redraw();
+    setTimeout(enemyTurnThen, 800);
+  }
+}
+function faintMe(){
+  const B=G.battle;
+  B.msg=`${B.me.name}이(가) 쓰러졌다!`; redraw();
+  setTimeout(()=>{
+    const next=G.party.find(m=>m.hp>0);
+    if(next){
+      // prompt switch
+      B.me=next; B.msg=`가라, ${next.name}!`; B.phase='menu'; redraw();
+      setTimeout(setBattleMenu,700);
+    } else {
+      B.result='lose'; B.msg='눈앞이 캄캄해졌다...'; redraw();
+      setTimeout(()=>{
+        // revive party at half, return to healer area
+        G.party.forEach(m=>{ m.hp=Math.floor(m.maxhp/2); });
+        G.px=16;G.py=3; exitBattle();
+        toast('빙결의 사제에게 옮겨졌다... 정령들이 절반 회복되었다.');
+      }, 1400);
+    }
+  }, 900);
+}
+function winBattle(){
+  const B=G.battle, foe=B.foe, me=B.me;
+  B.result = B.meta.kind==='boss'?'boss':'win';
+  const gain = Math.floor(foe.maxhp*0.6 + foe.lv*6);
+  B.msg=`${foe.name}을(를) 쓰러뜨렸다!  ${me.name}은(는) ${gain} 경험치 획득!`;
+  // money
+  const reward = B.meta.kind==='trainer'?120:(B.meta.kind==='boss'?500:20+foe.lv*4);
+  G.money+=reward;
+  redraw();
+  setTimeout(()=>{ gainXP(me, gain, ()=>{
+    if(B.meta.kind==='boss'){ G.flags.boss=true; setTimeout(()=>{ exitBattle(); toast(['빙왕 리메워든을 물리쳤다!','설산에 평화가 돌아왔다. ❄','— 당신은 진정한 빙결의 영혼사다 —']); },300); }
+    else if(B.meta.kind==='trainer'){ G.flags.trainer=true; setTimeout(exitBattle,200); }
+    else { exitBattle(); }
+  }); }, 1200);
+}
+function gainXP(m, amt, done){
+  const B=G.battle;
+  m.xp+=amt;
+  let leveled=false;
+  const loop=()=>{
+    if(m.xp>=m.xpNext && m.lv<60){
+      m.xp-=m.xpNext; m.lv++; leveled=true;
+      // recompute stats keeping hp ratio
+      const ratio=m.hp/m.maxhp;
+      m.maxhp=statAt(m.sp,'hp',m.lv); m.atk=statAt(m.sp,'atk',m.lv);
+      m.def=statAt(m.sp,'def',m.lv); m.spd=statAt(m.sp,'spd',m.lv);
+      m.hp=Math.max(1,Math.floor(m.maxhp*ratio));
+      m.xpNext=8+m.lv*m.lv*4;
+      // learn new moves
+      const nl=learnedMoves(m.sp,m.lv);
+      m.moves=nl;
+      B.msg=`${m.name}은(는) 레벨 ${m.lv}이 되었다!`; redraw();
+      setTimeout(()=>{
+        // evolution check
+        const spec=SPECIES[m.sp];
+        if(spec.evolveTo && m.lv>=spec.evolveLv){
+          evolve(m, ()=>{ setTimeout(loop,400); });
+        } else { setTimeout(loop, 700); }
+      }, 800);
+      return;
+    }
+    done && done();
+  };
+  loop();
+}
+function evolve(m, cb){
+  const B=G.battle; const to=SPECIES[m.sp].evolveTo;
+  B.evolving=m; B.msg=`어라...? ${m.name}의 모습이...!`; redraw();
+  setTimeout(()=>{
+    const ratio=m.hp/m.maxhp;
+    m.sp=to; m.name=SPECIES[to].name; m.type=SPECIES[to].type;
+    m.maxhp=statAt(to,'hp',m.lv); m.atk=statAt(to,'atk',m.lv);
+    m.def=statAt(to,'def',m.lv); m.spd=statAt(to,'spd',m.lv);
+    m.hp=Math.max(1,Math.floor(m.maxhp*ratio));
+    m.moves=learnedMoves(to,m.lv);
+    G.dex.add(to);
+    B.evolving=null; B.msg=`축하합니다!  ${m.name}(으)로 진화했다! 📖`; redraw();
+    setTimeout(cb, 1300);
+  }, 1100);
+}
+function exitBattle(){
+  if(G.pendingTrainer){ G.pendingTrainer=false; }
+  G.battle=null; G.mode='world'; UI.active=false; UI.stack=[];
+  document.getElementById('ovMenu').classList.remove('show');
+}
+
+/* ===========================================================
+   UI (canvas-drawn menus with cursor) for battle + main menu
+   We model a simple stack of menus with cursor index.
+   =========================================================== */
+const UI = {
+  active:false,
+  stack:[], // each: {title, items:[{label,act,sub}], cursor, cols, kind}
+  top(){ return this.stack[this.stack.length-1]; },
+  open(menu){ menu.cursor=menu.cursor||0; this.stack.push(menu); this.active=true; redraw(); },
+  close(){ this.stack.pop(); if(this.stack.length===0)this.active=false; redraw(); },
+  move(dx,dy){
+    const m=this.top(); if(!m||!m.items.length) return;
+    const cols=m.cols||1, n=m.items.length;
+    let c=m.cursor;
+    if(dx){ c+=dx; }
+    if(dy){ c+=dy*cols; }
+    if(c<0)c=0; if(c>=n)c=n-1;
+    m.cursor=c; redraw();
+  },
+  confirm(){ const m=this.top(); if(!m||!m.items.length)return; const it=m.items[m.cursor];
+    if(it && it.act) it.act(); },
+  cancel(){ const m=this.top(); if(m && m.onCancel){ m.onCancel(); } else if(this.stack.length>1){ this.close(); } },
+};
+// route arrow keys into UI when active and not in world-move
+function uiArrow(dir){
+  if(!UI.active) return false;
+  if(dir==='up')UI.move(0,-1); else if(dir==='down')UI.move(0,1);
+  else if(dir==='left')UI.move(-1,0); else UI.move(1,0);
+  return true;
+}
+
+/* ---- battle main menu ---- */
+function setBattleMenu(){
+  const B=G.battle;
+  UI.stack=[];
+  UI.open({ kind:'battle', cols:2, cursor:0, title:'무엇을 할까?',
+    items:[
+      {label:'싸운다', act:openMoveMenu},
+      {label:'포획볼', act:openBallMenu},
+      {label:'아이템', act:openItemMenu},
+      {label:(B.meta.kind==='wild')?'도망친다':'교체', act:()=> (B.meta.kind==='wild')?tryFlee():openSwitchMenu() },
+    ]});
+}
+function openMoveMenu(){
+  const me=G.battle.me;
+  const items=me.moves.map(mv=>({label:mv, sub:MOVES[mv], act:()=>{ UI.active=false; playerAttack(mv); }}));
+  items.push({label:'◀ 뒤로', act:()=>UI.close()});
+  UI.open({kind:'moves', cols:2, cursor:0, title:'기술 선택', items, onCancel:()=>UI.close()});
+}
+function openBallMenu(){
+  const items=[];
+  for(const b of ['서리볼','강화볼']){
+    items.push({label:`${b} ×${G.items[b]||0}`, disabled:!(G.items[b]>0),
+      act:()=>{ if(G.items[b]>0){ UI.active=false; tryCatch(b);} } });
+  }
+  items.push({label:'◀ 뒤로', act:()=>UI.close()});
+  UI.open({kind:'balls', cols:1, cursor:0, title:'포획볼', items, onCancel:()=>UI.close()});
+}
+function openItemMenu(){
+  const items=[];
+  for(const it of ['회복약','대회복약']){
+    items.push({label:`${it} ×${G.items[it]||0}`, disabled:!(G.items[it]>0),
+      act:()=>{ if(G.items[it]>0){ UI.active=false; useItemInBattle(it);} }});
+  }
+  items.push({label:'◀ 뒤로', act:()=>UI.close()});
+  UI.open({kind:'items', cols:1, cursor:0, title:'아이템', items, onCancel:()=>UI.close()});
+}
+function openSwitchMenu(){
+  const items=G.party.map((m,i)=>({label:`${m.name} Lv${m.lv} (${m.hp}/${m.maxhp})`,
+    disabled:(m.hp<=0||m===G.battle.me),
+    act:()=>{ if(m.hp>0 && m!==G.battle.me){ G.battle.me=m; UI.active=false;
+      G.battle.msg=`가라, ${m.name}!`; redraw(); setTimeout(enemyTurnThen,700); } }}));
+  items.push({label:'◀ 뒤로', act:()=>UI.close()});
+  UI.open({kind:'switch', cols:1, cursor:0, title:'정령 교체', items, onCancel:()=>UI.close()});
+}
+
+/* ---- main (overworld) menu ---- */
+function openMainMenu(){
+  if(G.mode!=='world') return;
+  G.mode='menu'; UI.stack=[];
+  UI.open({kind:'main', cols:1, cursor:0, title:'메뉴',
+    items:[
+      {label:'정령 (파티)', act:openPartyMenu},
+      {label:'도감', act:openDex},
+      {label:'가방', act:openBag},
+      {label:'보관함', act:openBox},
+      {label:'정보 / 크레딧', act:openInfo},
+      {label:'◀ 닫기', act:closeMainMenu},
+    ], onCancel:closeMainMenu});
+}
+function closeMainMenu(){ UI.stack=[]; UI.active=false; G.mode='world'; redraw(); }
+function openPartyMenu(){
+  const items=G.party.map((m,i)=>({label:`${m.name} Lv${m.lv}  ${m.hp}/${m.maxhp}HP`, mon:m,
+    act:()=>showMonDetail(m)}));
+  items.push({label:'◀ 뒤로', act:()=>UI.close()});
+  UI.open({kind:'party', cols:1, cursor:0, title:'정령 파티', items, onCancel:()=>UI.close()});
+}
+function showMonDetail(m){
+  UI.open({kind:'detail', mon:m, cols:1, cursor:0, title:m.name,
+    items:[{label:'◀ 뒤로', act:()=>UI.close()}], onCancel:()=>UI.close()});
+}
+function openDex(){
+  const all=Object.keys(SPECIES).filter(k=>k!=='rimewarden');
+  const items=all.map(k=>({label:(G.dex.has(k)?SPECIES[k].name:'？？？？'), spk:k, seen:G.dex.has(k),
+    act:()=>{ if(G.dex.has(k)) showDexEntry(k); }}));
+  items.push({label:'◀ 뒤로', act:()=>UI.close()});
+  UI.open({kind:'dex', cols:2, cursor:0, title:`도감  ${G.dex.size}/${all.length}`, items, onCancel:()=>UI.close()});
+}
+function showDexEntry(k){
+  UI.open({kind:'dexentry', spk:k, cols:1, cursor:0, title:SPECIES[k].name,
+    items:[{label:'◀ 뒤로', act:()=>UI.close()}], onCancel:()=>UI.close()});
+}
+function openBag(){
+  const items=[];
+  for(const it in G.items){ items.push({label:`${it} ×${G.items[it]}`, act:()=>{}}); }
+  items.push({label:`소지금: ${G.money} G`, act:()=>{}});
+  items.push({label:'◀ 뒤로', act:()=>UI.close()});
+  UI.open({kind:'bag', cols:1, cursor:0, title:'가방', items, onCancel:()=>UI.close()});
+}
+function openBox(){
+  const items = G.box.length? G.box.map(m=>({label:`${m.name} Lv${m.lv}`,mon:m,
+    act:()=>{ if(G.party.length<6){ G.party.push(m); G.box=G.box.filter(x=>x!==m); UI.close(); openBox(); } }}))
+    : [{label:'(보관된 정령 없음)',act:()=>{}}];
+  items.push({label:'◀ 뒤로', act:()=>UI.close()});
+  UI.open({kind:'box', cols:1, cursor:0, title:'보관함 (선택→파티로)', items, onCancel:()=>UI.close()});
+}
+function openInfo(){
+  UI.open({kind:'info', cols:1, cursor:0, title:'정보 / 크레딧',
+    items:[{label:'◀ 뒤로', act:()=>UI.close()}], onCancel:()=>UI.close()});
+}
+
+/* ===========================================================
+   RENDERING
+   =========================================================== */
+const TILECOL={
+  '0':'#cfe4f5','1':'#a9d6ef','5':'#b0916a','6':'#8a6a3a',
+  'H':'#cfe4f5','T':'#cfe4f5','B':'#3a4b66','E':'#9b7',
+};
+function drawTileBg(t,sx,sy){
+  // base snow
+  ctx.fillStyle = '#d8ecfa'; ctx.fillRect(sx,sy,TILE,TILE);
+  if(t==='1'){ // deep snow / encounter grass-equivalent (frost tufts)
+    ctx.fillStyle='#bfe2f5'; ctx.fillRect(sx,sy,TILE,TILE);
+    ctx.fillStyle='#8fc8e8';
+    ctx.fillRect(sx+2,sy+9,2,4); ctx.fillRect(sx+6,sy+7,2,6);
+    ctx.fillRect(sx+10,sy+9,2,4); ctx.fillRect(sx+13,sy+8,2,5);
+    ctx.fillStyle='#e8f6ff'; ctx.fillRect(sx+7,sy+4,2,2);
+  } else if(t==='5'){ // path
+    ctx.fillStyle='#c2a878'; ctx.fillRect(sx,sy,TILE,TILE);
+    ctx.fillStyle='#b39a6a'; ctx.fillRect(sx,sy,TILE,2); ctx.fillRect(sx,sy+TILE-2,TILE,2);
+  } else if(t==='2'){ // tree (frost pine)
+    ctx.fillStyle='#d8ecfa'; ctx.fillRect(sx,sy,TILE,TILE);
+    ctx.fillStyle='#1f5e44';
+    ctx.beginPath(); ctx.moveTo(sx+8,sy+1); ctx.lineTo(sx+2,sy+9); ctx.lineTo(sx+14,sy+9); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(sx+8,sy+5); ctx.lineTo(sx+1,sy+13); ctx.lineTo(sx+15,sy+13); ctx.closePath(); ctx.fill();
+    ctx.fillStyle='#e8f6ff'; ctx.fillRect(sx+5,sy+7,2,1); ctx.fillRect(sx+9,sy+10,2,1);
+    ctx.fillStyle='#6a4a2a'; ctx.fillRect(sx+7,sy+13,2,3);
+  } else if(t==='3'){ // rock
+    ctx.fillStyle='#d8ecfa'; ctx.fillRect(sx,sy,TILE,TILE);
+    ctx.fillStyle='#8a93a0'; ctx.fillRect(sx+2,sy+5,12,9);
+    ctx.fillStyle='#6a737f'; ctx.fillRect(sx+2,sy+11,12,3);
+    ctx.fillStyle='#aab3bf'; ctx.fillRect(sx+4,sy+6,4,3);
+    ctx.fillStyle='#fff'; ctx.fillRect(sx+2,sy+5,12,1);
+  } else if(t==='4'){ // frozen water
+    ctx.fillStyle='#86b9da'; ctx.fillRect(sx,sy,TILE,TILE);
+    ctx.fillStyle='#a9d6ef'; ctx.fillRect(sx+1,sy+2,6,1); ctx.fillRect(sx+8,sy+9,6,1);
+    ctx.fillStyle='#cdeafb'; ctx.fillRect(sx+3,sy+11,5,1);
+  } else if(t==='6'){ // sign
+    ctx.fillStyle='#d8ecfa'; ctx.fillRect(sx,sy,TILE,TILE);
+    ctx.fillStyle='#7a5a2a'; ctx.fillRect(sx+3,sy+3,10,7);
+    ctx.fillStyle='#5a3a1a'; ctx.fillRect(sx+7,sy+10,2,5);
+    ctx.fillStyle='#e8d6b0'; ctx.fillRect(sx+4,sy+4,8,5);
+  } else if(t==='B'){ // boss cave entrance
+    ctx.fillStyle='#cfe4f5'; ctx.fillRect(sx,sy,TILE,TILE);
+    ctx.fillStyle='#1a2438'; ctx.beginPath(); ctx.arc(sx+8,sy+10,6,Math.PI,0); ctx.fill();
+    ctx.fillRect(sx+2,sy+10,12,6);
+    ctx.fillStyle='#7fd9ff'; ctx.fillRect(sx+6,sy+11,1,3); ctx.fillRect(sx+9,sy+11,1,3);
+  } else if(t==='H'||t==='T'){
+    ctx.fillStyle='#cfe4f5'; ctx.fillRect(sx,sy,TILE,TILE);
+  }
+  // subtle grid sparkle
+}
+function drawWorld(){
+  ctx.clearRect(0,0,VW,VH);
+  // camera centered on player
+  let camx = G.px - 9.5, camy = G.py - 8.5;
+  // smooth with moveAnim
+  let pfx=G.px, pfy=G.py;
+  if(moveAnim){ const tt=moveAnim.t; pfx=moveAnim.fx+(moveAnim.tx-moveAnim.fx)*tt; pfy=moveAnim.fy+(moveAnim.ty-moveAnim.fy)*tt; camx=pfx-9.5; camy=pfy-8.5; }
+  camx=Math.max(0,Math.min(MAPW-20,camx)); camy=Math.max(0,Math.min(MAPH-18,camy));
+  const ox=Math.floor(camx*TILE), oy=Math.floor(camy*TILE);
+  const startX=Math.floor(camx), startY=Math.floor(camy);
+  for(let y=startY-1;y<startY+19;y++){
+    for(let x=startX-1;x<startX+21;x++){
+      const sx=x*TILE-ox, sy=y*TILE-oy;
+      drawTileBg(tileAt(x,y),sx,sy);
+    }
+  }
+  // NPCs
+  for(let y=0;y<MAPH;y++)for(let x=0;x<MAPW;x++){
+    const t=MAP[y][x];
+    if(t==='H'||t==='T'){ const sx=x*TILE-ox, sy=y*TILE-oy;
+      if(sx>-16&&sx<VW&&sy>-16&&sy<VH){ ctx.drawImage(SPR.npc, sx, sy-2); }
+    }
+  }
+  // player
+  const psx=Math.round(pfx*TILE-ox), psy=Math.round(pfy*TILE-oy);
+  const bob = (moveAnim && G.walkPhase===0)? -1:0;
+  ctx.drawImage(SPR.player, psx, psy-2+bob);
+  // facing indicator (small)
+  // snow particles
+  drawSnow();
+  // dialog box
+  if(dialog){ drawDialog(); }
+  // top HUD strip
+  ctx.fillStyle='rgba(10,20,40,.7)'; ctx.fillRect(0,0,VW,14);
+  ctx.fillStyle='#bfe2ff'; ctx.font='8px monospace'; ctx.textBaseline='top';
+  ctx.fillText(`❄ FROSTFALL   파티 ${G.party.length}/6   도감 ${G.dex.size}/${Object.keys(SPECIES).length-1}   ${G.money}G`, 4, 3);
+}
+let snowflakes=null;
+function drawSnow(){
+  if(!snowflakes){ snowflakes=[]; for(let i=0;i<26;i++) snowflakes.push({x:Math.random()*VW,y:Math.random()*VH,s:.3+Math.random()*.8,r:Math.random()<.5?1:2}); }
+  ctx.fillStyle='rgba(255,255,255,.85)';
+  for(const f of snowflakes){ ctx.fillRect(f.x|0,f.y|0,f.r,f.r); f.y+=f.s; f.x+=Math.sin((f.y+f.x)*.04)*.3; if(f.y>VH){f.y=-2;f.x=Math.random()*VW;} }
+}
+function drawDialog(){
+  const h=46; const y=VH-h-4;
+  rrect(6,y,VW-12,h,4,'#0c1c33','#7fd9ff',2);
+  ctx.fillStyle='#eaf3ff'; ctx.font='9px monospace'; ctx.textBaseline='top';
+  const line=dialog.lines[dialog.i]||'';
+  wrapText(line, 14, y+9, VW-28, 12);
+  ctx.fillStyle='#7fd9ff'; ctx.font='8px monospace';
+  ctx.fillText('▼ Enter/A', VW-70, y+h-12);
+}
+function wrapText(text,x,y,maxw,lh){
+  const words=text.split('');
+  let line='', yy=y;
+  for(const ch of words){
+    const test=line+ch;
+    if(ctx.measureText(test).width>maxw){ ctx.fillText(line,x,yy); line=ch; yy+=lh; }
+    else line=test;
+  }
+  ctx.fillText(line,x,yy);
+}
+function rrect(x,y,w,h,r,fill,stroke,sw){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
+  if(fill){ctx.fillStyle=fill;ctx.fill();}
+  if(stroke){ctx.lineWidth=sw||1;ctx.strokeStyle=stroke;ctx.stroke();}
+}
+
+/* ----- battle render ----- */
+function drawBattle(){
+  const B=G.battle; if(!B) return;
+  ctx.clearRect(0,0,VW,VH);
+  // bg gradient
+  let g=ctx.createLinearGradient(0,0,0,VH);
+  g.addColorStop(0,'#1a3a66'); g.addColorStop(.6,'#2a5a8a'); g.addColorStop(1,'#dfeffb');
+  ctx.fillStyle=g; ctx.fillRect(0,0,VW,VH);
+  // distant mountains
+  ctx.fillStyle='#9ec3e0';
+  ctx.beginPath(); ctx.moveTo(0,150); ctx.lineTo(70,90); ctx.lineTo(140,150); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(120,150); ctx.lineTo(210,80); ctx.lineTo(300,150); ctx.closePath(); ctx.fill();
+  ctx.fillStyle='#f0f8ff';
+  ctx.beginPath(); ctx.moveTo(190,108);ctx.lineTo(210,80);ctx.lineTo(232,110);ctx.closePath();ctx.fill();
+  // ground platforms
+  ctx.fillStyle='#cfe7f7'; ctx.beginPath(); ctx.ellipse(232,150,64,16,0,0,7); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(78,200,72,18,0,0,7); ctx.fill();
+  drawSnow();
+
+  // foe sprite top-right
+  const foe=B.foe;
+  const fimg=SPR[SPECIES[foe.sp].sprite]||SPR.glacip;
+  let fx=200, fy=98;
+  if(B.foeFlash>0){ B.foeFlash--; }
+  ctx.save();
+  if(B.foeFlash>0 && B.foeFlash%2===0){ ctx.globalAlpha=.3; }
+  if(B.ballWobble>0){ ctx.globalAlpha=.5; }
+  ctx.drawImage(fimg, fx, fy, 56,56);
+  ctx.restore();
+
+  // me sprite bottom-left (back-ish, just same sprite bigger)
+  const me=B.me;
+  const mimg=SPR[SPECIES[me.sp].sprite]||SPR.glacip;
+  let mx=44+(B.shake?Math.round(Math.sin(Date.now()/40)*B.shake):0), my=150;
+  if(B.shake>0)B.shake-=0.6;
+  ctx.save();
+  if(B.meFlash>0){ B.meFlash--; if(B.meFlash%2===0)ctx.globalAlpha=.3; }
+  ctx.drawImage(mimg, mx, my, 64,64);
+  ctx.restore();
+
+  // foe HP bar (top-left card)
+  drawHpCard(8,18,foe,false);
+  // my HP bar (bottom-right card)
+  drawHpCard(168,138,me,true);
+
+  // ball wobble visual
+  if(B.ballWobble>0){
+    const bx=fx+24+Math.sin(Date.now()/120)*6, by=fy+50;
+    ctx.fillStyle='#7fd9ff'; ctx.beginPath(); ctx.arc(bx,by,5,0,7); ctx.fill();
+    ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(bx,by,5,Math.PI,0); ctx.fill();
+    ctx.strokeStyle='#06121f'; ctx.lineWidth=1; ctx.beginPath();ctx.moveTo(bx-5,by);ctx.lineTo(bx+5,by);ctx.stroke();
+  }
+
+  // message box
+  drawBattleMsg();
+  // menu
+  if(UI.active) drawUIMenu();
+}
+function drawHpCard(x,y,m,mine){
+  const w=144,h=mine?38:30;
+  rrect(x,y,w,h,4,'rgba(12,28,51,.92)','#7fd9ff',1.5);
+  ctx.fillStyle='#eaf3ff'; ctx.font='9px monospace'; ctx.textBaseline='top';
+  ctx.fillText(`${m.name}`, x+6, y+4);
+  ctx.fillStyle=TCOL[m.type]; ctx.fillText(m.type, x+w-34, y+4);
+  ctx.fillStyle='#bfe2ff'; ctx.font='8px monospace';
+  ctx.fillText(`Lv${m.lv}`, x+6, y+15);
+  // hp bar
+  const bx=x+30, by=y+16, bw=w-38, bh=6;
+  ctx.fillStyle='#1c3458'; ctx.fillRect(bx,by,bw,bh);
+  const ratio=Math.max(0,m.hp/m.maxhp);
+  ctx.fillStyle= ratio>.5?'#7cf2a0':ratio>.2?'#ffd86b':'#ff7a8a';
+  ctx.fillRect(bx,by,Math.round(bw*ratio),bh);
+  ctx.strokeStyle='#06121f'; ctx.lineWidth=1; ctx.strokeRect(bx,by,bw,bh);
+  if(mine){
+    ctx.fillStyle='#eaf3ff'; ctx.font='8px monospace';
+    ctx.fillText(`${m.hp}/${m.maxhp}`, x+6, y+25);
+    // xp bar
+    const xr=Math.min(1,m.xp/m.xpNext);
+    ctx.fillStyle='#13243f'; ctx.fillRect(x+60,y+28,w-66,3);
+    ctx.fillStyle='#7fd9ff'; ctx.fillRect(x+60,y+28,Math.round((w-66)*xr),3);
+  }
+}
+function drawBattleMsg(){
+  const B=G.battle;
+  const y=VH-58;
+  rrect(6,y,VW-12,52,4,'#0c1c33','#b98bff',1.5);
+  ctx.fillStyle='#eaf3ff'; ctx.font='9px monospace'; ctx.textBaseline='top';
+  wrapText(B.msg||'', 14, y+8, VW-26, 12);
+}
+function drawUIMenu(){
+  const m=UI.top(); if(!m) return;
+  // battle menus drawn bottom; world menus centered
+  if(m.kind==='battle'||m.kind==='moves'||m.kind==='balls'||m.kind==='items'||m.kind==='switch'){
+    drawBattleSubmenu(m);
+  } else {
+    drawWorldMenu(m);
+  }
+}
+function drawBattleSubmenu(m){
+  const x=176, y=VH-58, w=VW-182, h=52;
+  rrect(x,y,w,h,4,'#13243f','#7fd9ff',1.5);
+  ctx.font='9px monospace'; ctx.textBaseline='middle';
+  const cols=m.cols||1, rows=Math.ceil(m.items.length/cols);
+  const cw=(w-10)/cols, ch=(h-8)/Math.min(rows,3);
+  m.items.forEach((it,i)=>{
+    const cx=i%cols, cy=Math.floor(i/cols);
+    const ix=x+5+cx*cw, iy=y+6+cy*ch + ch/2;
+    const sel=i===m.cursor;
+    ctx.fillStyle= it.disabled? '#5a6b85' : sel?'#ffd86b':'#eaf3ff';
+    ctx.fillText((sel?'▸':'  ')+it.label, ix, iy);
+  });
+  // submove info: show move detail if moves menu
+  if(m.kind==='moves'){
+    const it=m.items[m.cursor];
+    if(it && it.sub){
+      rrect(6,y,166,52,4,'#0c1c33','#b98bff',1.5);
+      ctx.fillStyle=TCOL[it.sub.type]; ctx.font='9px monospace'; ctx.textBaseline='top';
+      ctx.fillText(`${it.label}  [${it.sub.type}]`,14,y+8);
+      ctx.fillStyle='#bfe2ff'; ctx.fillText(`위력 ${it.sub.power}  명중 ${Math.round(it.sub.acc*100)}%`,14,y+22);
+      ctx.fillStyle='#9fc2ee'; ctx.font='8px monospace';
+      wrapText(it.sub.desc,14,y+34,150,10);
+    }
+  }
+}
+function drawWorldMenu(m){
+  // dim
+  ctx.fillStyle='rgba(5,8,15,.55)'; ctx.fillRect(0,0,VW,VH);
+  const w=232, h=232, x=(VW-w)/2, y=(VH-h)/2;
+  rrect(x,y,w,h,6,'#0e2038','#7fd9ff',2);
+  ctx.fillStyle='#ffd86b'; ctx.font='11px monospace'; ctx.textBaseline='top';
+  ctx.fillText(m.title||'', x+12, y+10);
+  ctx.strokeStyle='#2c4a78'; ctx.beginPath(); ctx.moveTo(x+10,y+26); ctx.lineTo(x+w-10,y+26); ctx.stroke();
+
+  // special detail panels
+  if(m.kind==='detail'){ drawMonDetail(m.mon,x,y,w,h); return; }
+  if(m.kind==='dexentry'){ drawDexEntry(m.spk,x,y,w,h); return; }
+  if(m.kind==='info'){ drawInfoPanel(x,y,w,h); return; }
+  if(m.kind==='dex'){ drawDexGrid(m,x,y,w,h); return; }
+
+  // generic list
+  ctx.font='9px monospace';
+  const cols=m.cols||1;
+  const listX=x+14, listY=y+34, lh=15, cw=(w-24)/cols;
+  m.items.forEach((it,i)=>{
+    const cx=i%cols, cy=Math.floor(i/cols);
+    const ix=listX+cx*cw, iy=listY+cy*lh;
+    const sel=i===m.cursor;
+    ctx.fillStyle= it.disabled?'#5a6b85': sel?'#ffd86b':'#eaf3ff';
+    ctx.textBaseline='top';
+    ctx.fillText((sel?'▸ ':'  ')+it.label, ix, iy);
+    // mini hp for party
+    if(m.kind==='party' && it.mon){
+      const r=it.mon.hp/it.mon.maxhp;
+      ctx.fillStyle='#1c3458'; ctx.fillRect(ix+150,iy+2,0,0);
+    }
+  });
+}
+function drawMonDetail(m,x,y,w,h){
+  const img=SPR[SPECIES[m.sp].sprite]||SPR.glacip;
+  ctx.drawImage(img, x+16, y+34, 64,64);
+  ctx.fillStyle=TCOL[m.type]; ctx.font='10px monospace'; ctx.textBaseline='top';
+  ctx.fillText(`타입: ${m.type}`, x+92, y+36);
+  ctx.fillStyle='#eaf3ff'; ctx.font='9px monospace';
+  ctx.fillText(`Lv ${m.lv}`, x+92, y+52);
+  ctx.fillText(`HP  ${m.hp}/${m.maxhp}`, x+92, y+66);
+  ctx.fillText(`공격 ${m.atk}   방어 ${m.def}`, x+92, y+80);
+  ctx.fillText(`속도 ${m.spd}`, x+92, y+94);
+  // xp
+  ctx.fillStyle='#bfe2ff'; ctx.fillText(`경험치 ${m.xp}/${m.xpNext}`, x+16, y+106);
+  // moves
+  ctx.fillStyle='#ffd86b'; ctx.fillText('기술:', x+16, y+124);
+  m.moves.forEach((mv,i)=>{
+    ctx.fillStyle=TCOL[MOVES[mv].type];
+    ctx.fillText(`• ${mv} (위력${MOVES[mv].power})`, x+22, y+138+i*14);
+  });
+  // evolution hint
+  const sp=SPECIES[m.sp];
+  ctx.fillStyle='#9fc2ee'; ctx.font='8px monospace';
+  if(sp.evolveTo){ wrapText(`Lv${sp.evolveLv}에서 ${SPECIES[sp.evolveTo].name}(으)로 진화`, x+16, y+200, w-32, 10); }
+  else { ctx.fillText('최종 진화형', x+16, y+200); }
+  ctx.fillStyle='#7fd9ff'; ctx.fillText('X/B: 뒤로', x+w-70, y+h-16);
+}
+function drawDexGrid(m,x,y,w,h){
+  ctx.font='9px monospace'; ctx.textBaseline='top';
+  const cols=2, listX=x+14, listY=y+34, lh=16, cw=(w-24)/cols;
+  m.items.forEach((it,i)=>{
+    const cx=i%cols, cy=Math.floor(i/cols);
+    const ix=listX+cx*cw, iy=listY+cy*lh;
+    const sel=i===m.cursor;
+    ctx.fillStyle= sel?'#ffd86b': (it.seen===false? '#5a6b85':'#eaf3ff');
+    if(it.spk===undefined){ ctx.fillStyle=sel?'#ffd86b':'#eaf3ff'; }
+    ctx.fillText((sel?'▸':' ')+it.label, ix, iy);
+  });
+  ctx.fillStyle='#7fd9ff'; ctx.font='8px monospace'; ctx.fillText('A:상세  X/B:뒤로', x+12, y+h-16);
+}
+function drawDexEntry(k,x,y,w,h){
+  const sp=SPECIES[k];
+  const img=SPR[sp.sprite]||SPR.glacip;
+  ctx.drawImage(img, x+16, y+34, 72,72);
+  ctx.fillStyle=TCOL[sp.type]; ctx.font='10px monospace'; ctx.textBaseline='top';
+  ctx.fillText(`타입: ${sp.type}`, x+100, y+40);
+  ctx.fillStyle='#bfe2ff'; ctx.font='9px monospace';
+  ctx.fillText(`기본 HP ${sp.base.hp}`, x+100, y+58);
+  ctx.fillText(`공격 ${sp.base.atk} 방어 ${sp.base.def}`, x+100, y+72);
+  ctx.fillText(`속도 ${sp.base.spd}`, x+100, y+86);
+  ctx.fillStyle='#eaf3ff'; ctx.font='9px monospace';
+  wrapText(sp.dex, x+16, y+118, w-32, 13);
+  if(sp.evolveTo){
+    ctx.fillStyle='#9fc2ee'; ctx.font='8px monospace';
+    ctx.fillText(`→ Lv${sp.evolveLv}: ${SPECIES[sp.evolveTo].name}`, x+16, y+190);
+  }
+  ctx.fillStyle='#7fd9ff'; ctx.fillText('X/B: 뒤로', x+w-70, y+h-16);
+}
+function drawInfoPanel(x,y,w,h){
+  ctx.fillStyle='#eaf3ff'; ctx.font='9px monospace'; ctx.textBaseline='top';
+  const lines=[
+    'FROSTFALL — 빙결의 영혼사',
+    '설산을 무대로 한 오리지널',
+    '몬스터 수집 JRPG.',
+    '',
+    '타입 상성:',
+    '빙결>바람>암석>화염>빙결',
+    '영혼>영혼 (특수)',
+    '',
+    '─ 크레딧 ─',
+    '포켓몬에서 영감을 받음.',
+    '© Nintendo / Game Freak /',
+    'The Pokémon Company.',
+    '본 작품은 무관한',
+    '오리지널 구현입니다.',
+  ];
+  lines.forEach((l,i)=>{
+    if(l.startsWith('─')||l==='타입 상성:') ctx.fillStyle='#ffd86b';
+    else if(l.includes('©')||l.includes('Nintendo')||l.includes('Pokémon')||l.includes('Game Freak')||l.includes('영감')||l.includes('오리지널')) ctx.fillStyle='#9fc2ee';
+    else ctx.fillStyle='#eaf3ff';
+    ctx.fillText(l, x+14, y+34+i*13);
+  });
+  ctx.fillStyle='#7fd9ff'; ctx.fillText('X/B: 뒤로', x+w-70, y+h-16);
+}
+
+/* master redraw */
+function redraw(){
+  if(G.mode==='battle') drawBattle();
+  else drawWorld();
+}
+
+/* ===========================================================
+   MAIN LOOP
+   =========================================================== */
+let last=0;
+function loop(ts){
+  const dt=ts-last; last=ts;
+  if(G.mode==='world' || G.mode==='menu'){
+    if(G.mode==='world'){
+      if(moveAnim){ moveAnim.t += dt/130; if(moveAnim.t>=1){ moveAnim.t=1; finishStep(); } }
+      else { tryStep(); }
+    }
+    drawWorld();
+    if(G.mode==='menu' && UI.active) drawUIMenu();
+  } else if(G.mode==='battle'){
+    drawBattle();
+  } else if(G.mode==='title'){
+    drawTitleScene();
+  }
+  requestAnimationFrame(loop);
+}
+function drawTitleScene(){
+  // animated snowy backdrop so the canvas is never blank
+  let g=ctx.createLinearGradient(0,0,0,VH);
+  g.addColorStop(0,'#0a1428'); g.addColorStop(.55,'#16335c'); g.addColorStop(1,'#bcdcf2');
+  ctx.fillStyle=g; ctx.fillRect(0,0,VW,VH);
+  // mountains
+  ctx.fillStyle='#244a72';
+  ctx.beginPath(); ctx.moveTo(0,210); ctx.lineTo(80,110); ctx.lineTo(160,210); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(120,210); ctx.lineTo(220,90); ctx.lineTo(320,210); ctx.closePath(); ctx.fill();
+  ctx.fillStyle='#eaf6ff';
+  ctx.beginPath(); ctx.moveTo(200,120);ctx.lineTo(220,90);ctx.lineTo(242,122);ctx.closePath();ctx.fill();
+  ctx.beginPath(); ctx.moveTo(64,135);ctx.lineTo(80,110);ctx.lineTo(98,138);ctx.closePath();ctx.fill();
+  // snow field
+  ctx.fillStyle='#d8ecfa'; ctx.fillRect(0,205,VW,VH-205);
+  // a couple of pine trees
+  for(const tx of [40,90,250,290]){
+    ctx.fillStyle='#1f5e44';
+    ctx.beginPath(); ctx.moveTo(tx,215);ctx.lineTo(tx-12,245);ctx.lineTo(tx+12,245);ctx.closePath();ctx.fill();
+    ctx.beginPath(); ctx.moveTo(tx,230);ctx.lineTo(tx-15,262);ctx.lineTo(tx+15,262);ctx.closePath();ctx.fill();
+    ctx.fillStyle='#6a4a2a'; ctx.fillRect(tx-2,262,4,8);
+  }
+  drawSnow();
+}
+
+/* ===========================================================
+   arrow-key routing into UI when menus open
+   =========================================================== */
+window.addEventListener('keydown',e=>{
+  if((G.mode==='menu'||G.mode==='battle') && UI.active){
+    if(e.key==='ArrowUp'||e.key==='w'||e.key==='W')uiArrow('up');
+    else if(e.key==='ArrowDown'||e.key==='s'||e.key==='S')uiArrow('down');
+    else if(e.key==='ArrowLeft'||e.key==='a'||e.key==='A')uiArrow('left');
+    else if(e.key==='ArrowRight'||e.key==='d'||e.key==='D')uiArrow('right');
+  }
+});
+
+/* touch dpad should also drive UI cursor when menu open */
+document.querySelectorAll('.dbtn').forEach(b=>{
+  const dir=b.dataset.dir;
+  const fire=e=>{ if((G.mode==='menu'||G.mode==='battle')&&UI.active){ e.preventDefault(); uiArrow(dir);} };
+  b.addEventListener('touchstart',fire,{passive:false});
+  b.addEventListener('mousedown',fire);
+});
+
+/* ===========================================================
+   TITLE / STARTER FLOW
+   =========================================================== */
+document.getElementById('btnStart').onclick=()=>{ showStarterSelect(); };
+document.getElementById('btnHowto').onclick=()=>{ document.getElementById('ovTitle').classList.remove('show'); document.getElementById('ovHowto').classList.add('show'); };
+document.getElementById('btnHowBack').onclick=()=>{ document.getElementById('ovHowto').classList.remove('show'); document.getElementById('ovTitle').classList.add('show'); };
+
+function showStarterSelect(){
+  const card=document.getElementById('menuCard');
+  const ov=document.getElementById('ovMenu');
+  const starters=[['glacip','빙결'],['emberkit','화염'],['zephlet','바람']];
+  card.innerHTML='<h2>파트너를 선택하세요</h2><div class="sub">설산에서 처음 함께할 정령입니다.</div>'+
+    '<div class="row" id="starterRow" style="margin-top:12px"></div>'+
+    '<div class="credit">포켓몬에서 영감 — © Nintendo / Game Freak / The Pokémon Company. 오리지널 구현.</div>';
+  const row=card.querySelector('#starterRow');
+  starters.forEach(([sp,ty])=>{
+    const wrap=document.createElement('div');
+    wrap.style.cssText='display:flex;flex-direction:column;align-items:center;margin:6px;';
+    const c=document.createElement('canvas'); c.width=64;c.height=64;
+    c.style.cssText='image-rendering:pixelated;width:72px;height:72px;background:#0b1b33;border:2px solid '+TCOL[ty]+';border-radius:8px;';
+    c.getContext('2d').drawImage(SPR[SPECIES[sp].sprite],0,0,64,64);
+    const btn=document.createElement('button');
+    btn.textContent=SPECIES[sp].name+' ['+ty+']';
+    btn.style.marginTop='6px';
+    btn.onclick=()=>{ ov.classList.remove('show'); document.getElementById('ovTitle').classList.remove('show');
+      beginGame(sp); };
+    wrap.appendChild(c); wrap.appendChild(btn); row.appendChild(wrap);
+  });
+  ov.classList.add('show');
+}
+function beginGame(starterSp){
+  newGame(starterSp);
+  G.mode='world';
+  document.getElementById('ovMenu').classList.remove('show');
+  toast(['빙결의 영혼사가 되어 설산으로 떠난다!',
+         `파트너 ${SPECIES[starterSp].name}와(과) 함께. 파란 수풀(깊은 눈)에서 야생 정령을 만나자.`,
+         '메뉴는 Esc/B, 결정은 Enter/A.']);
+  redraw();
+}
+
+/* ===========================================================
+   BOOT
+   =========================================================== */
+buildSprites();
+fit();
+requestAnimationFrame(loop);
+
+// expose a couple helpers for self-test via window
+window.__G=G; window.__SPECIES=SPECIES; window.__startWild=startWild;
+window.__enterBattle=enterBattle; window.__makeMon=makeMon; window.__beginGame=beginGame;
+window.__SPR=SPR; window.__UI=UI;
+</script>
+</body>
+</html>

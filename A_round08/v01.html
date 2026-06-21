@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>PHYSARUM ∙ 점균의 정원</title>
+<style>
+  :root{ color-scheme: dark; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#02030a; }
+  body{
+    font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+    cursor: crosshair;
+  }
+  #stage{ position:fixed; inset:0; }
+  canvas{ position:absolute; inset:0; width:100%; height:100%; display:block; }
+  /* vignette + subtle grain to deepen the dark and focus the eye */
+  #vig{
+    position:fixed; inset:0; z-index:5; pointer-events:none;
+    background:
+      radial-gradient(120% 120% at 50% 46%, transparent 52%, rgba(2,3,10,.42) 82%, rgba(1,2,7,.78) 100%);
+  }
+  /* glass overlay HUD */
+  #hud{
+    position:fixed; left:0; top:0; padding:18px 20px;
+    pointer-events:none; user-select:none; z-index:10;
+    mix-blend-mode: screen;
+  }
+  #title{
+    font-size:13px; letter-spacing:.42em; font-weight:600;
+    color:#bff6ff; text-transform:uppercase;
+    text-shadow:0 0 18px rgba(120,240,255,.55);
+  }
+  #sub{
+    margin-top:6px; font-size:10px; letter-spacing:.18em;
+    color:#6fd9b8; opacity:.82;
+  }
+  #readout{
+    margin-top:14px; font-size:9.5px; letter-spacing:.12em;
+    color:#9fb6ff; opacity:.55; line-height:1.7; white-space:pre;
+  }
+  /* bottom hint bar */
+  #hint{
+    position:fixed; left:50%; bottom:18px; transform:translateX(-50%);
+    z-index:10; pointer-events:none; user-select:none;
+    font-size:10px; letter-spacing:.2em; color:#7fe6d2;
+    opacity:.0; transition:opacity 1.2s ease;
+    text-shadow:0 0 14px rgba(60,230,200,.5);
+    text-align:center; white-space:nowrap;
+  }
+  #hint.show{ opacity:.7; }
+  #hint b{ color:#bff6ff; font-weight:600; }
+  /* species legend, right side */
+  #legend{
+    position:fixed; right:20px; top:18px; z-index:10;
+    pointer-events:none; user-select:none; text-align:right;
+    mix-blend-mode: screen;
+  }
+  .lg{ font-size:9px; letter-spacing:.14em; margin-bottom:5px; opacity:.78; }
+  .dot{ display:inline-block; width:7px; height:7px; border-radius:50%; margin-left:7px; vertical-align:middle; box-shadow:0 0 8px currentColor; }
+  /* control pills */
+  #ctl{
+    position:fixed; right:18px; bottom:16px; z-index:11;
+    display:flex; gap:8px; align-items:center;
+  }
+  .pill{
+    pointer-events:auto; cursor:pointer;
+    font-family:inherit; font-size:10px; letter-spacing:.12em;
+    color:#bdeaff; background:rgba(20,40,60,.34);
+    border:1px solid rgba(120,220,255,.28); border-radius:20px;
+    padding:7px 13px; backdrop-filter: blur(6px);
+    transition:.22s; text-transform:uppercase;
+  }
+  .pill:hover{ background:rgba(40,90,130,.5); color:#fff; border-color:rgba(160,240,255,.7); }
+  .pill.on{ background:rgba(70,200,180,.32); border-color:rgba(120,255,220,.7); color:#dfffff; }
+  @media (max-width:520px){
+    #hud{ padding:13px 14px; }
+    #title{ font-size:11px; letter-spacing:.3em; }
+    #readout{ display:none; }
+    #legend{ display:none; }
+    .pill{ font-size:9px; padding:6px 10px; }
+    #hint{ font-size:9px; letter-spacing:.12em; }
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="c"></canvas>
+</div>
+<div id="vig"></div>
+
+<div id="hud">
+  <div id="title">P H Y S A R U M</div>
+  <div id="sub">점균의 정원 · slime-mold agent network</div>
+  <div id="readout">agents   : —
+flux     : —
+fps      : —</div>
+</div>
+
+<div id="legend">
+  <div class="lg" style="color:#5cf2c8">CORAL<span class="dot" style="color:#5cf2c8"></span></div>
+  <div class="lg" style="color:#7aa8ff">VEIN<span class="dot" style="color:#7aa8ff"></span></div>
+  <div class="lg" style="color:#ff7ad0">BLOOM<span class="dot" style="color:#ff7ad0"></span></div>
+</div>
+
+<div id="hint"><b>움직여라</b> · 점균이 빛을 따라온다 &nbsp;|&nbsp; <b>클릭</b> 양분 투하 &nbsp;|&nbsp; <b>홀드</b> 군집 소환</div>
+
+<div id="ctl">
+  <div class="pill" id="bPalette">PALETTE</div>
+  <div class="pill on" id="bGlow">GLOW</div>
+  <div class="pill" id="bBurst">⟳ SPORE</div>
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   PHYSARUM — 점균의 정원
+   Agent-based slime-mold simulation.
+   Thousands of agents sense a shared chemical trail field,
+   steer toward concentration, and deposit pheromone.
+   The trail field diffuses + decays each frame, self-organising
+   into living vein networks. Rendered as bioluminescent mycelium.
+   Single self-contained file. Canvas2D + typed-array field.
+   ============================================================ */
+(function(){
+const cnv = document.getElementById('c');
+const ctx = cnv.getContext('2d', { alpha:false });
+const readout = document.getElementById('readout');
+const hint = document.getElementById('hint');
+
+// ---- responsive sim grid (capped for perf) ----------------
+let DPR=1, W=0, H=0;          // CSS pixels
+let GW=0, GH=0, SCALE=1;      // sim grid dims, css->grid scale
+let trail, trailB, blur;      // Float32 fields
+let img, imgData;             // ImageData for blit
+const MAX_CELLS = 480*270;    // hard cap on grid cells (~130k)
+
+// ---- agents -----------------------------------------------
+let N=0;                      // agent count
+let ax, ay, ah, asp;         // x, y (grid space), heading, species
+let MAXN = 0;
+
+// ---- palettes (3 LUTs over trail intensity) ---------------
+// each entry: function(t in 0..1) -> [r,g,b]
+// All palettes: near-black floor at t=0 (dark bioluminescent background),
+// rising through a signature hue, into a hot near-white core at t=1.
+const PAL = [
+  // 0: abyssal coral — deep teal-navy -> cyan -> magenta -> white
+  function(t){
+    t=t<0?0:t>1?1:t;
+    const r = 4 + 255*Math.pow(t,2.2)*0.95;
+    const g = 6 + 255*Math.pow(t,1.05)*0.85;
+    const b = 14 + 255*Math.pow(t,0.85)*0.78;
+    const hl = Math.max(0,t-0.7)/0.3;          // magenta in highlights
+    return [ r + hl*130, g - hl*60, b + hl*30 ];
+  },
+  // 1: ember gold — near-black -> deep violet -> amber -> white
+  function(t){
+    t=t<0?0:t>1?1:t;
+    const r = 8 + 255*Math.pow(t,0.7)*0.98;
+    const g = 2 + 255*Math.pow(t,1.7)*0.92;
+    const b = 10 + 120*Math.pow(t,3.0) + 90*(t<0.4?Math.sin(t*7.85):0);
+    return [ r, g, b ];
+  },
+  // 2: ice plasma — black-navy -> electric blue -> white-cyan
+  function(t){
+    t=t<0?0:t>1?1:t;
+    const r = 3 + 255*Math.pow(t,2.6)*0.9;
+    const g = 8 + 255*Math.pow(t,1.25)*0.9;
+    const b = 18 + 255*Math.pow(t,0.6)*0.82;
+    return [ r, g, b ];
+  }
+];
+let palIdx = 0;
+let LUT = null;              // precomputed 256x3 byte LUT
+function buildLUT(){
+  LUT = new Uint8ClampedArray(256*3);
+  const f = PAL[palIdx];
+  for(let i=0;i<256;i++){
+    const c = f(i/255);
+    LUT[i*3]   = c[0];
+    LUT[i*3+1] = c[1];
+    LUT[i*3+2] = c[2];
+  }
+}
+
+// ---- params ------------------------------------------------
+const P = {
+  sensorAng: 0.40,     // radians, sensor offset angle
+  sensorDist: 7.0,     // grid cells ahead
+  turnAng: 0.34,       // turn step
+  speed: 0.85,         // grid cells / step
+  deposit: 0.95,       // pheromone per step (low -> crisp filaments)
+  decay: 0.075,        // trail decay per frame
+  diffuse: 0.20,       // diffusion blend weight (low -> thin veins)
+  randTurn: 0.14       // jitter
+};
+
+let glow = true;
+let mx=-999, my=-999;     // mouse in grid space
+let mActive=false, mDown=false, mDownT=0;
+let lastMx=0, lastMy=0, mvel=0;
+const blooms = [];        // {x,y,r,life,maxlife,spec}
+
+// ---- sizing ------------------------------------------------
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  // choose grid resolution so GW*GH <= MAX_CELLS, keep aspect
+  const aspect = W/H;
+  let gw = Math.round(Math.sqrt(MAX_CELLS*aspect));
+  let gh = Math.round(gw/aspect);
+  // clamp absolute
+  if(gw>520){ gw=520; gh=Math.round(gw/aspect); }
+  if(gh>340){ gh=340; gw=Math.round(gh*aspect); }
+  GW=gw; GH=gh;
+  SCALE = W/GW;
+
+  trail  = new Float32Array(GW*GH);
+  trailB = new Float32Array(GW*GH);
+  img = ctx.createImageData(GW, GH);
+  imgData = img.data;
+  // opaque alpha
+  for(let i=3;i<imgData.length;i+=4) imgData[i]=255;
+
+  cnv.width = GW; cnv.height = GH;       // backing store == grid
+  cnv.style.width = W+'px';
+  cnv.style.height = H+'px';
+  ctx.imageSmoothingEnabled = true;      // browser upscales grid smoothly
+
+  // scale sensing to grid size so vein granularity is consistent
+  const gscale = Math.min(GW,GH)/270;
+  P.sensorDist = Math.max(4.5, 7.0*gscale);
+  P.speed = Math.max(0.6, 0.85*gscale);
+
+  // agent budget scaled to grid area (denser -> richer filament web)
+  const target = Math.min(22000, Math.round(GW*GH*0.42));
+  spawnAgents(target);
+}
+
+function spawnAgents(n){
+  MAXN = n; N = n;
+  ax = new Float32Array(n); ay = new Float32Array(n);
+  ah = new Float32Array(n); asp = new Uint8Array(n);
+  // seed: full-frame uniform scatter with random headings, so the colony
+  // self-organises into an edge-to-edge vein network at any aspect ratio.
+  // A gentle central bias keeps the middle a touch denser (focal point).
+  const cx=GW*0.5, cy=GH*0.5;
+  for(let i=0;i<n;i++){
+    let x,y;
+    if(i%5===0){                       // 20% central cluster -> focal core
+      const a=Math.random()*6.283, r=Math.sqrt(Math.random())*Math.min(GW,GH)*0.28;
+      x=cx+Math.cos(a)*r; y=cy+Math.sin(a)*r;
+    } else {                           // 80% spread across whole field
+      x=Math.random()*GW; y=Math.random()*GH;
+    }
+    ax[i]=x; ay[i]=y;
+    ah[i]=Math.random()*6.283;
+    const s=Math.random();
+    asp[i] = s<0.6?0 : (s<0.85?1:2);
+  }
+}
+
+// ---- field sampling ----------------------------------------
+function sampleT(x,y){
+  // wrap-around toroidal sampling
+  let xi = x|0, yi = y|0;
+  if(xi<0) xi+=GW; else if(xi>=GW) xi-=GW;
+  if(yi<0) yi+=GH; else if(yi>=GH) yi-=GH;
+  return trail[yi*GW + xi];
+}
+
+// ---- one simulation step -----------------------------------
+let frame=0;
+function step(){
+  const sa=P.sensorAng, sd=P.sensorDist;
+  const sp=P.speed, dep=P.deposit, ta=P.turnAng, rt=P.randTurn;
+
+  // mouse attractant strength scales with movement velocity
+  const mInfl = mActive ? (0.6 + Math.min(mvel*0.10, 2.4)) : 0;
+  const holdPull = (mDown? 1.0:0);
+
+  for(let i=0;i<N;i++){
+    let x=ax[i], y=ay[i], h=ah[i];
+
+    // --- sense three points ahead ---
+    const fx = x + Math.cos(h)*sd,        fy = y + Math.sin(h)*sd;
+    const lx = x + Math.cos(h-sa)*sd,     ly = y + Math.sin(h-sa)*sd;
+    const rx = x + Math.cos(h+sa)*sd,     ry = y + Math.sin(h+sa)*sd;
+    let F = sampleT(fx,fy), L = sampleT(lx,ly), Rr = sampleT(rx,ry);
+
+    // --- mouse/bloom attractant injected into sensing ---
+    if(mInfl>0){
+      const d2f=(fx-mx)*(fx-mx)+(fy-my)*(fy-my);
+      const d2l=(lx-mx)*(lx-mx)+(ly-my)*(ly-my);
+      const d2r=(rx-mx)*(rx-mx)+(ry-my)*(ry-my);
+      const k = mInfl*140;
+      F += k/(d2f+50); L += k/(d2l+50); Rr += k/(d2r+50);
+    }
+
+    // --- steer ---
+    if(F>L && F>Rr){
+      // keep heading
+    } else if(F<L && F<Rr){
+      h += (Math.random()<0.5?-1:1)*ta;          // turn randomly
+    } else if(L<Rr){
+      h += ta;                                    // turn right
+    } else if(Rr<L){
+      h -= ta;                                    // turn left
+    }
+    h += (Math.random()-0.5)*rt;
+
+    // hold-pull: drag agents toward cursor
+    if(holdPull>0){
+      const dx=mx-x, dy=my-y; const d=Math.sqrt(dx*dx+dy*dy)+1e-3;
+      const want=Math.atan2(dy,dx);
+      let diff=want-h;
+      while(diff>Math.PI)diff-=6.283; while(diff<-Math.PI)diff+=6.283;
+      h += diff*0.10*holdPull;
+    }
+
+    // --- move ---
+    x += Math.cos(h)*sp; y += Math.sin(h)*sp;
+    // toroidal wrap
+    if(x<0)x+=GW; else if(x>=GW)x-=GW;
+    if(y<0)y+=GH; else if(y>=GH)y-=GH;
+
+    ax[i]=x; ay[i]=y; ah[i]=h;
+
+    // --- deposit pheromone (species-weighted) ---
+    const xi=x|0, yi=y|0, idx=yi*GW+xi;
+    const w = asp[i]===2 ? dep*1.4 : (asp[i]===1? dep*0.8 : dep);
+    trail[idx] += w;
+  }
+
+  // --- bloom nutrient sources (decaying food) ---
+  for(let b=blooms.length-1;b>=0;b--){
+    const bl=blooms[b]; bl.life--;
+    const str = (bl.life/bl.maxlife);
+    const cx=bl.x|0, cy=bl.y|0, rr=bl.r;
+    const amp = bl.amp*str;
+    const r2=rr*rr;
+    const x0=Math.max(0,cx-rr), x1=Math.min(GW-1,cx+rr);
+    const y0=Math.max(0,cy-rr), y1=Math.min(GH-1,cy+rr);
+    for(let yy=y0;yy<=y1;yy++){
+      const dy=yy-cy;
+      for(let xx=x0;xx<=x1;xx++){
+        const dx=xx-cx; const d2=dx*dx+dy*dy;
+        if(d2<r2){
+          trail[yy*GW+xx] += amp*(1-d2/r2);
+        }
+      }
+    }
+    if(bl.life<=0) blooms.splice(b,1);
+  }
+
+  diffuseDecay();
+  frame++;
+}
+
+// ---- diffuse + decay (3x3 box blur into trailB, blend back) -
+function diffuseDecay(){
+  // gentle "breathing": decay oscillates slowly so the resting colony pulses
+  const breathe = 1 + 0.16*Math.sin(frame*0.012);
+  const df=P.diffuse, dc=1-P.decay*breathe;
+  const gw=GW, gh=GH;
+  // horizontal+vertical separable-ish box via direct 3x3 (toroidal on edges via clamp)
+  for(let y=0;y<gh;y++){
+    const yU = y>0? y-1 : 0;
+    const yD = y<gh-1? y+1 : gh-1;
+    const rowU=yU*gw, row=y*gw, rowD=yD*gw;
+    for(let x=0;x<gw;x++){
+      const xL=x>0?x-1:0, xR=x<gw-1?x+1:gw-1;
+      const s = (trail[row+xL]+trail[row+x]+trail[row+xR]
+               + trail[rowU+xL]+trail[rowU+x]+trail[rowU+xR]
+               + trail[rowD+xL]+trail[rowD+x]+trail[rowD+xR]) * 0.111111;
+      const v = trail[row+x];
+      trailB[row+x] = (v*(1-df) + s*df) * dc;
+    }
+  }
+  const tmp=trail; trail=trailB; trailB=tmp;
+}
+
+// ---- render field to ImageData via LUT --------------------
+let fps=60, fpsT=performance.now(), fpsC=0;
+function render(){
+  const d=imgData, t=trail, n=GW*GH;
+  // exposure: low gain so only true filaments light up; gamma lifts mids
+  const k = 1.35;   // exposure gain
+  for(let i=0,p=0;i<n;i++,p+=4){
+    let v = t[i]*k;
+    v = v/(0.9+v);            // soft knee tonemap -> 0..1
+    v = Math.pow(v, 0.78);    // gamma lift for delicate threads
+    let li = (v*255)|0; if(li>255)li=255;
+    const l3=li*3;
+    d[p]=LUT[l3]; d[p+1]=LUT[l3+1]; d[p+2]=LUT[l3+2];
+  }
+  ctx.putImageData(img,0,0);
+
+  // glow pass: redraw canvas onto itself, scaled-blurred & screened
+  if(glow){
+    ctx.save();
+    ctx.globalCompositeOperation='lighter';
+    ctx.globalAlpha=0.30;
+    ctx.filter='blur(1.5px)';
+    ctx.drawImage(cnv,0,0,GW,GH);
+    ctx.globalAlpha=0.14;
+    ctx.filter='blur(4px)';
+    ctx.drawImage(cnv,0,0,GW,GH);
+    ctx.restore();
+    ctx.filter='none';
+    ctx.globalCompositeOperation='source-over';
+    ctx.globalAlpha=1;
+  }
+
+  // cursor presence: subtle bright core where attractant is
+  if(mActive){
+    ctx.save();
+    ctx.globalCompositeOperation='lighter';
+    const rad = mDown? 7 : 3.2;
+    const g=ctx.createRadialGradient(mx,my,0,mx,my,rad);
+    const lead = LUT[255*3], leag=LUT[255*3+1], leab=LUT[255*3+2];
+    g.addColorStop(0,`rgba(${lead},${leag},${leab},0.9)`);
+    g.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=g;
+    ctx.beginPath(); ctx.arc(mx,my,rad,0,6.283); ctx.fill();
+    ctx.restore();
+    ctx.globalCompositeOperation='source-over';
+  }
+}
+
+// ---- main loop --------------------------------------------
+let running=true;
+let prev=performance.now();
+function loop(now){
+  if(!running){ requestAnimationFrame(loop); return; }
+  const dt=now-prev; prev=now;
+
+  // decay mouse velocity
+  mvel *= 0.86;
+
+  // run sim (can do 1-2 substeps if frame is fast)
+  step();
+
+  render();
+
+  // fps
+  fpsC++;
+  if(now-fpsT>500){
+    fps = Math.round(fpsC*1000/(now-fpsT));
+    fpsC=0; fpsT=now;
+    updateReadout();
+  }
+  requestAnimationFrame(loop);
+}
+
+function updateReadout(){
+  let flux=0; const t=trail, n=GW*GH, stp=Math.max(1,(n/4000)|0);
+  for(let i=0;i<n;i+=stp) flux+=t[i];
+  flux = (flux*stp/n);
+  readout.textContent =
+    `agents   : ${N.toLocaleString()}\n`+
+    `grid     : ${GW}×${GH}\n`+
+    `flux     : ${flux.toFixed(2)}\n`+
+    `fps      : ${fps}`;
+}
+
+// ---- interaction ------------------------------------------
+function toGrid(clientX, clientY){
+  const r=cnv.getBoundingClientRect();
+  return [ (clientX-r.left)/r.width*GW, (clientY-r.top)/r.height*GH ];
+}
+function pointerMove(cx,cy){
+  const g=toGrid(cx,cy);
+  const ndx=g[0]-lastMx, ndy=g[1]-lastMy;
+  mvel += Math.sqrt(ndx*ndx+ndy*ndy);
+  lastMx=g[0]; lastMy=g[1];
+  mx=g[0]; my=g[1]; mActive=true;
+}
+function dropBloom(cx,cy,big){
+  const g=toGrid(cx,cy);
+  const r = big? Math.max(GW,GH)*0.12 : Math.max(GW,GH)*0.06;
+  blooms.push({ x:g[0], y:g[1], r:r|0, life: big?80:52, maxlife:big?80:52,
+                amp: big?1.4:1.0, spec:(Math.random()*3)|0 });
+  // also seed a ring of fresh agents around the bloom for a visible burst
+  reseedRing(g[0],g[1], big?Math.min(900,(N*0.08)|0):Math.min(420,(N*0.04)|0), r*0.6);
+}
+function reseedRing(gx,gy,count,rad){
+  // recycle some agents to the bloom site
+  for(let k=0;k<count;k++){
+    const i=(Math.random()*N)|0;
+    const a=Math.random()*6.283, rr=Math.random()*rad;
+    ax[i]=gx+Math.cos(a)*rr; ay[i]=gy+Math.sin(a)*rr;
+    ah[i]=a; // radiate outward
+  }
+}
+
+// mouse
+window.addEventListener('mousemove', e=> pointerMove(e.clientX,e.clientY), {passive:true});
+window.addEventListener('mousedown', e=>{
+  if(e.target.classList && e.target.classList.contains('pill')) return;
+  mDown=true; mDownT=performance.now();
+  pointerMove(e.clientX,e.clientY);
+});
+window.addEventListener('mouseup', e=>{
+  if(!mDown) return;
+  const held=performance.now()-mDownT;
+  dropBloom(e.clientX,e.clientY, held>340);
+  mDown=false;
+});
+window.addEventListener('mouseleave', ()=>{ mActive=false; mDown=false; });
+
+// touch
+window.addEventListener('touchstart', e=>{
+  if(e.target.classList && e.target.classList.contains('pill')) return;
+  const t=e.touches[0]; mDown=true; mDownT=performance.now();
+  pointerMove(t.clientX,t.clientY);
+}, {passive:true});
+window.addEventListener('touchmove', e=>{
+  const t=e.touches[0]; pointerMove(t.clientX,t.clientY);
+}, {passive:true});
+window.addEventListener('touchend', e=>{
+  if(!mDown) return;
+  const held=performance.now()-mDownT;
+  const t=(e.changedTouches&&e.changedTouches[0]);
+  if(t) dropBloom(t.clientX,t.clientY, held>340);
+  mDown=false;
+  setTimeout(()=>{mActive=false;},900);
+}, {passive:true});
+
+// scroll / wheel -> reorganise the colony (sensor distance morph)
+window.addEventListener('wheel', e=>{
+  P.sensorDist = Math.max(4, Math.min(20, P.sensorDist + (e.deltaY>0?0.6:-0.6)));
+  P.turnAng = 0.30 + (P.sensorDist-4)/16*0.4;
+}, {passive:true});
+
+// ---- controls ----------------------------------------------
+const bPalette=document.getElementById('bPalette');
+const bGlow=document.getElementById('bGlow');
+const bBurst=document.getElementById('bBurst');
+bPalette.addEventListener('click', ()=>{
+  palIdx=(palIdx+1)%PAL.length; buildLUT();
+  bPalette.textContent = ['PALETTE','EMBER','PLASMA'][palIdx];
+});
+bGlow.addEventListener('click', ()=>{
+  glow=!glow; bGlow.classList.toggle('on',glow);
+});
+bBurst.addEventListener('click', ()=>{
+  // spore storm: random blooms + agent reshuffle
+  for(let k=0;k<6;k++){
+    const cx=Math.random()*W, cy=Math.random()*H;
+    dropBloom(cx,cy, Math.random()<0.4);
+  }
+});
+
+// keyboard niceties
+window.addEventListener('keydown', e=>{
+  if(e.key===' '){ running=!running; e.preventDefault(); }
+  if(e.key==='p'||e.key==='P') bPalette.click();
+  if(e.key==='g'||e.key==='G') bGlow.click();
+  if(e.key==='b'||e.key==='B') bBurst.click();
+});
+
+// pause when tab hidden (saves cpu)
+document.addEventListener('visibilitychange', ()=>{ running=!document.hidden; prev=performance.now(); });
+
+// ---- boot --------------------------------------------------
+function boot(){
+  buildLUT();
+  resize();
+  // pre-warm: run enough steps that the first painted frame already shows
+  // a self-organised vein network (no loading gate, the art IS frame 0)
+  for(let i=0;i<90;i++) step();
+  render();
+  requestAnimationFrame(loop);
+  // reveal hint after a beat, hide later
+  setTimeout(()=>hint.classList.add('show'), 1100);
+  setTimeout(()=>hint.classList.remove('show'), 8200);
+}
+let rT=null;
+window.addEventListener('resize', ()=>{ clearTimeout(rT); rT=setTimeout(resize,180); });
+
+boot();
+
+// expose state for verification
+window.__phys = {
+  state: ()=>({ N, GW, GH, frame, blooms:blooms.length, fps,
+                fluxSum:(()=>{let s=0;for(let i=0;i<trail.length;i+=7)s+=trail[i];return s;})() }),
+  drop: (cx,cy,big)=>dropBloom(cx,cy,big),
+  move: (cx,cy)=>pointerMove(cx,cy)
+};
+})();
+</script>
+</body>
+</html>

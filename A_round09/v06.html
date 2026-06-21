@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>TRUCHET TIDE</title>
+<style>
+  :root{ color-scheme: dark; }
+  html,body{ margin:0; padding:0; height:100%; width:100%; overflow:hidden; background:#05060a; }
+  body{ font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; touch-action:none; cursor:crosshair; }
+  #stage{ display:block; position:fixed; inset:0; width:100vw; height:100vh; }
+  #hud{
+    position:fixed; left:18px; bottom:16px; z-index:10;
+    color:rgba(220,232,255,.62); font-size:11px; line-height:1.5;
+    letter-spacing:.5px; pointer-events:none; mix-blend-mode:screen;
+    text-shadow:0 0 8px rgba(80,160,255,.35);
+  }
+  #hud b{ color:rgba(255,255,255,.92); font-weight:600; }
+  #hud .k{ color:rgba(120,230,255,.9); }
+  #title{
+    position:fixed; left:18px; top:14px; z-index:10; pointer-events:none;
+    color:rgba(235,242,255,.9); mix-blend-mode:screen;
+    font-size:13px; letter-spacing:6px; font-weight:600;
+    text-shadow:0 0 14px rgba(120,180,255,.5);
+  }
+  #title small{ display:block; letter-spacing:3px; font-size:9px; margin-top:3px; color:rgba(160,180,220,.55); font-weight:400; }
+  @media (max-width:520px){
+    #title{ font-size:11px; letter-spacing:4px; }
+    #hud{ font-size:10px; left:12px; bottom:12px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="title">TRUCHET&nbsp;TIDE<small>generative weave · living curvature</small></div>
+<div id="hud">
+  <span class="k">move</span> warp the field &nbsp;·&nbsp; <span class="k">click</span> ripple &nbsp;·&nbsp; <span class="k">scroll</span> zoom &nbsp;·&nbsp; <span class="k">space</span> palette &nbsp;·&nbsp; <span class="k">g</span> grid
+</div>
+<script>
+(()=>{
+"use strict";
+const cvs = document.getElementById('stage');
+const ctx = cvs.getContext('2d', { alpha:false, desynchronized:true });
+
+// ---------- sizing / DPR cap ----------
+let W=0,H=0,DPR=1;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cvs.width = Math.floor(W*DPR); cvs.height = Math.floor(H*DPR);
+  cvs.style.width = W+'px'; cvs.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+}
+window.addEventListener('resize', resize, {passive:true});
+resize();
+
+// ---------- interaction state ----------
+const pointer = { x: W*0.5, y: H*0.5, tx:W*0.5, ty:H*0.5, active:false, vx:0, vy:0 };
+let tileTarget = 78;          // px, controlled by scroll
+let tile = 78;
+let qFloor = 34;              // adaptive perf floor on tile size
+const TILE_MIN = 34, TILE_MAX = 168;
+let paletteIndex = 0, paletteMix = 0;   // crossfade between palettes
+let paletteTarget = 0;
+let showGrid = false;
+let reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// ripples dropped on click/tap (capped)
+const ripples = [];
+const MAX_RIPPLES = 14;
+
+// ---------- palettes (curated) ----------
+// each: bg ink, and 3 stroke colors that the glow cycles through
+const PALETTES = [
+  { name:'abyss',  bg:[6,8,15],    a:[64,210,255],  b:[120,110,255], c:[255,120,200] },
+  { name:'ember',  bg:[12,7,8],    a:[255,176,72],  b:[255,86,120],  c:[120,200,255] },
+  { name:'jade',   bg:[5,12,11],   a:[80,255,190],  b:[60,200,255],  c:[200,255,120] },
+  { name:'viol',   bg:[9,6,16],    a:[180,120,255], b:[255,110,210], c:[100,230,255] },
+];
+function lerp(a,b,t){return a+(b-a)*t;}
+function mix3(p,q,t){return [lerp(p[0],q[0],t),lerp(p[1],q[1],t),lerp(p[2],q[2],t)];}
+function curPalette(){
+  const p = PALETTES[paletteIndex], q = PALETTES[paletteTarget];
+  return {
+    bg: mix3(p.bg,q.bg,paletteMix),
+    a:  mix3(p.a,q.a,paletteMix),
+    b:  mix3(p.b,q.b,paletteMix),
+    c:  mix3(p.c,q.c,paletteMix),
+  };
+}
+
+// ---------- flow field: smooth pseudo-noise from layered trig ----------
+// returns continuous phase value used to choose/blend the truchet glyph.
+function flow(x, y, t){
+  // multi-octave swirling scalar
+  let v = 0;
+  v += Math.sin(x*0.9 + t*0.55) * Math.cos(y*0.8 - t*0.40);
+  v += 0.55*Math.sin((x+y)*0.6 - t*0.30 + Math.cos(x*0.4)*1.4);
+  v += 0.40*Math.cos(x*1.7 - y*1.3 + t*0.7);
+  v += 0.30*Math.sin((x*0.5 - y*0.9)*1.3 + t*0.22);
+  return v;
+}
+
+// ---------- glyph drawing (optimized, allocation-free) ----------
+// A morphing Truchet cell: two connectors swing between arc style A and B,
+// each able to straighten from a quarter-arc into a diagonal. We only
+// crossfade the two styles inside a narrow transition band; elsewhere we
+// draw a single style -> ~2 strokes/cell instead of 4.
+
+// one connector: edge-mid (p0) -> edge-mid (p1) curving around 'corner',
+// straightened toward the midpoint by 'st' in [0,1].
+function connector(p0x,p0y,p1x,p1y,cnx,cny,st){
+  const midx=(p0x+p1x)*0.5, midy=(p0y+p1y)*0.5;
+  const cx = cnx + (midx-cnx)*st;
+  const cy = cny + (midy-cny)*st;
+  ctx.moveTo(p0x,p0y);
+  ctx.quadraticCurveTo(cx,cy,p1x,p1y);
+}
+
+function drawCell(cx, cy, s, phase, energy, col){
+  const half = s*0.5;
+  const m = phase;
+  const k = Math.sin(m)*0.5+0.5;            // style A<->B selector
+  const st = Math.cos(m*1.37)*0.5+0.5;      // arc<->diagonal straighten
+
+  const lw = (0.09 + 0.21*energy) * s;
+  ctx.lineWidth = lw;
+
+  // color a->b->c along a slow phase wave
+  const tcol = Math.sin(m*0.5)*0.5+0.5;
+  let r,g,b;
+  if (tcol < 0.5){ const u=tcol*2; r=col.a[0]+(col.b[0]-col.a[0])*u; g=col.a[1]+(col.b[1]-col.a[1])*u; b=col.a[2]+(col.b[2]-col.a[2])*u; }
+  else { const u=(tcol-0.5)*2; r=col.b[0]+(col.c[0]-col.b[0])*u; g=col.b[1]+(col.c[1]-col.b[1])*u; b=col.b[2]+(col.c[2]-col.b[2])*u; }
+
+  // edge mid points + corners (no arrays)
+  const Tx=cx,        Ty=cy-half;
+  const Bx=cx,        By=cy+half;
+  const Lx=cx-half,   Ly=cy;
+  const Rx=cx+half,   Ry=cy;
+  const TLx=cx-half,TLy=cy-half, TRx=cx+half,TRy=cy-half, BLx=cx-half,BLy=cy+half, BRx=cx+half,BRy=cy+half;
+
+  // transition band: only crossfade where styles are close to even
+  const band = 0.22;
+  if (k > 1-band){
+    // pure style B
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = `rgba(${r|0},${g|0},${b|0},${(0.16+0.62*energy).toFixed(3)})`;
+    ctx.beginPath();
+    connector(Tx,Ty,Rx,Ry,TRx,TRy,st);
+    connector(Bx,By,Lx,Ly,BLx,BLy,st);
+    ctx.stroke();
+  } else if (k < band){
+    // pure style A
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = `rgba(${r|0},${g|0},${b|0},${(0.16+0.62*energy).toFixed(3)})`;
+    ctx.beginPath();
+    connector(Tx,Ty,Lx,Ly,TLx,TLy,st);
+    connector(Bx,By,Rx,Ry,BRx,BRy,st);
+    ctx.stroke();
+  } else {
+    // crossfade band: weight by k, draw both
+    const a = 0.16+0.62*energy;
+    ctx.strokeStyle = `rgba(${r|0},${g|0},${b|0},${a.toFixed(3)})`;
+    ctx.globalAlpha = (1-k);
+    ctx.beginPath();
+    connector(Tx,Ty,Lx,Ly,TLx,TLy,st);
+    connector(Bx,By,Rx,Ry,BRx,BRy,st);
+    ctx.stroke();
+    ctx.globalAlpha = k;
+    ctx.beginPath();
+    connector(Tx,Ty,Rx,Ry,TRx,TRy,st);
+    connector(Bx,By,Lx,Ly,BLx,BLy,st);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ---------- main loop ----------
+let t0 = performance.now();
+let last = t0;
+let smoothFps = 60;
+let frameCount = 0;
+
+function frame(now){
+  const dtRaw = (now - last)/1000; last = now;
+  const dt = Math.min(dtRaw, 0.05);
+  const t = reduceMotion ? 0 : (now - t0)/1000;
+  frameCount++;
+
+  // fps estimate (for adaptive quality)
+  const fps = 1/Math.max(dtRaw, 1e-3);
+  smoothFps = smoothFps*0.92 + fps*0.08;
+
+  // ease pointer + zoom + palette
+  pointer.x = lerp(pointer.x, pointer.tx, 0.18);
+  pointer.y = lerp(pointer.y, pointer.ty, 0.18);
+  tile = lerp(tile, tileTarget, 0.12);
+  if (paletteTarget !== paletteIndex){
+    paletteMix += dt*1.6;
+    if (paletteMix >= 1){ paletteMix=0; paletteIndex=paletteTarget; }
+  }
+  const col = curPalette();
+
+  // background: deep ink with a soft vignette wash so trails breathe
+  const bg = col.bg;
+  ctx.globalCompositeOperation='source-over';
+  ctx.fillStyle = `rgb(${bg[0]|0},${bg[1]|0},${bg[2]|0})`;
+  ctx.fillRect(0,0,W,H);
+
+  // optional faint grid
+  if (showGrid){
+    ctx.globalCompositeOperation='source-over';
+    ctx.strokeStyle='rgba(255,255,255,0.04)';
+    ctx.lineWidth=1;
+    ctx.beginPath();
+    for(let gx= (-((Date.now()*0.0)%tile)); gx<W; gx+=tile){ ctx.moveTo(gx,0); ctx.lineTo(gx,H); }
+    for(let gy=0; gy<H; gy+=tile){ ctx.moveTo(0,gy); ctx.lineTo(W,gy); }
+    ctx.stroke();
+  }
+
+  // additive glow for the weave
+  ctx.globalCompositeOperation='lighter';
+  ctx.lineCap = 'round';
+
+  // adaptive quality: if frame rate sags, lift the minimum tile size to thin
+  // the cell count. Tracked globally so scroll can't drop below it.
+  if (smoothFps < 50 && qFloor < 96) qFloor += 0.4;
+  else if (smoothFps > 58 && qFloor > TILE_MIN) qFloor -= 0.25;
+  const effTile = Math.max(tile, qFloor);
+
+  // grid bounds (cover viewport + 1 cell margin)
+  const cols = Math.ceil(W/effTile)+2;
+  const rows = Math.ceil(H/effTile)+2;
+  // cap total cells for perf
+  const totalCells = cols*rows;
+  // pointer field coords
+  const pfx = pointer.x, pfy = pointer.y;
+
+  // pointer velocity magnitude -> extra energy
+  const pv = Math.min(1, Math.hypot(pointer.vx, pointer.vy)/30);
+  pointer.vx *= 0.86; pointer.vy *= 0.86;
+
+  // update ripples
+  for (let i=ripples.length-1;i>=0;i--){
+    const rp = ripples[i];
+    rp.age += dt;
+    rp.radius = rp.age * rp.speed;
+    if (rp.age > rp.life) ripples.splice(i,1);
+  }
+
+  // scroll-coupled global zoom into the noise (scale field freq with tile)
+  const noiseScale = 2.6 * (78/effTile);   // smaller tiles => denser swirl
+  const warpR = effTile*4.2, ripBand = effTile*1.6;
+
+  for (let j=-1; j<rows-1; j++){
+    const cyc = (j+0.5)*effTile;
+    for (let i=-1; i<cols-1; i++){
+      const cxc = (i+0.5)*effTile;
+
+      // ---- warp: pull tiles toward the pointer (radial displacement) ----
+      let dx = cxc - pfx, dy = cyc - pfy;
+      const dist = Math.hypot(dx, dy)+0.0001;
+      let wx=cxc, wy=cyc, warpAmt=0;
+      if (dist < warpR){
+        warpAmt = 1 - dist/warpR;
+        warpAmt = warpAmt*warpAmt;
+        const pull = warpAmt * effTile*0.55;
+        wx = cxc - (dx/dist)*pull;
+        wy = cyc - (dy/dist)*pull;
+      }
+
+      // ---- phase from flow field (field coords scaled) ----
+      const fx = (wx/W)*noiseScale*3.0;
+      const fy = (wy/H)*noiseScale*3.0;
+      let phase = flow(fx*1.3, fy*1.3, t) * 2.2 + t*0.6;
+
+      // pointer also rotates/advances local phase
+      phase += warpAmt*3.2;
+
+      // ---- ripples bump phase + energy ----
+      let rEnergy = 0;
+      for (let r=0;r<ripples.length;r++){
+        const rp = ripples[r];
+        const rd = Math.hypot(cxc-rp.x, cyc-rp.y);
+        const band = Math.abs(rd - rp.radius);
+        if (band < ripBand){
+          const fall = (1-band/ripBand);
+          const lifeF = 1 - rp.age/rp.life;
+          const e = fall*fall*lifeF;
+          rEnergy += e;
+          phase += e*4.0*Math.sin(rp.age*6);
+        }
+      }
+      rEnergy = Math.min(rEnergy,1);
+
+      // ---- energy: base breathing + warp + velocity + ripple ----
+      const breathe = 0.30 + 0.20*Math.sin(t*0.8 + (i*0.3+j*0.27));
+      let energy = breathe + warpAmt*0.9*(0.5+pv*0.8) + rEnergy*0.9;
+      energy = Math.min(energy, 1.25);
+
+      drawCell(wx, wy, effTile, phase, energy, col);
+    }
+  }
+
+  // pointer aura (soft additive bloom that follows cursor)
+  const aR = tile*2.4;
+  const grad = ctx.createRadialGradient(pointer.x,pointer.y,0, pointer.x,pointer.y,aR);
+  const ac = col.a;
+  grad.addColorStop(0, `rgba(${ac[0]|0},${ac[1]|0},${ac[2]|0},${0.16+pv*0.18})`);
+  grad.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = grad;
+  ctx.beginPath(); ctx.arc(pointer.x,pointer.y,aR,0,Math.PI*2); ctx.fill();
+
+  // ripple rings (subtle) for clarity
+  ctx.globalCompositeOperation='lighter';
+  for (const rp of ripples){
+    const a = (1-rp.age/rp.life)*0.18;
+    if (a<=0) continue;
+    ctx.strokeStyle=`rgba(${col.c[0]|0},${col.c[1]|0},${col.c[2]|0},${a})`;
+    ctx.lineWidth=2;
+    ctx.beginPath(); ctx.arc(rp.x,rp.y,rp.radius,0,Math.PI*2); ctx.stroke();
+  }
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ---------- input ----------
+function setPointer(x,y){
+  pointer.vx += (x - pointer.tx);
+  pointer.vy += (y - pointer.ty);
+  pointer.tx = x; pointer.ty = y; pointer.active = true;
+}
+window.addEventListener('mousemove', e=> setPointer(e.clientX, e.clientY), {passive:true});
+window.addEventListener('mousedown', e=> dropRipple(e.clientX, e.clientY), {passive:true});
+window.addEventListener('touchstart', e=>{
+  if(e.touches[0]){ setPointer(e.touches[0].clientX,e.touches[0].clientY); dropRipple(e.touches[0].clientX,e.touches[0].clientY);}
+}, {passive:true});
+window.addEventListener('touchmove', e=>{
+  if(e.touches[0]) setPointer(e.touches[0].clientX,e.touches[0].clientY);
+}, {passive:true});
+
+function dropRipple(x,y){
+  ripples.push({ x, y, age:0, radius:0, speed: tile*5.0, life: 1.5 });
+  if (ripples.length>MAX_RIPPLES) ripples.shift();
+}
+
+window.addEventListener('wheel', e=>{
+  e.preventDefault();
+  const dir = Math.sign(e.deltaY);
+  tileTarget = Math.max(TILE_MIN, Math.min(TILE_MAX, tileTarget * (dir>0 ? 0.92 : 1.087)));
+}, {passive:false});
+
+window.addEventListener('keydown', e=>{
+  if (e.code==='Space'){ e.preventDefault(); cyclePalette(); }
+  else if (e.key==='g' || e.key==='G'){ showGrid=!showGrid; }
+  else if (e.key==='r' || e.key==='R'){ tileTarget=78; }
+});
+function cyclePalette(){
+  if (paletteTarget!==paletteIndex) return; // mid-fade, ignore
+  paletteTarget = (paletteIndex+1)%PALETTES.length;
+  paletteMix=0;
+}
+
+// ---------- test/verify hooks ----------
+window.__truchet = {
+  state(){ return {
+    tile, tileTarget, paletteIndex, paletteTarget, ripples: ripples.length,
+    fps: Math.round(smoothFps), frames: frameCount,
+    pointer:{x:pointer.x,y:pointer.y}, showGrid
+  };},
+  move(x,y){ setPointer(x,y); },
+  ripple(x,y){ dropRipple(x,y); },
+  zoom(dir){ tileTarget = Math.max(TILE_MIN, Math.min(TILE_MAX, tileTarget*(dir>0?0.92:1.087))); },
+  palette(){ cyclePalette(); },
+  toggleGrid(){ showGrid=!showGrid; },
+  // sample non-black pixel ratio for first-paint verification
+  ink(){
+    const img = ctx.getImageData(0,0,Math.min(cvs.width,400),Math.min(cvs.height,400)).data;
+    let lit=0, n=0;
+    for(let i=0;i<img.length;i+=4){ n++; if(img[i]+img[i+1]+img[i+2] > 60) lit++; }
+    return lit/n;
+  }
+};
+})();
+</script>
+</body>
+</html>

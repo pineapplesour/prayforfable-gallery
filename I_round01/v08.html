@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Aurora Tundra · Liquid Glass Player</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink: #eaf4ff;
+    --ink-dim: rgba(234,244,255,.62);
+    --ink-faint: rgba(234,244,255,.40);
+    --glass-bg: rgba(18,28,40,.34);
+    --glass-bg-2: rgba(255,255,255,.07);
+    --glass-brd: rgba(190,225,255,.30);
+    --glass-hl: rgba(255,255,255,.35);
+    --acc: #6ff0c9;     /* aurora teal */
+    --acc2: #b58cff;    /* aurora violet */
+    --acc3: #57d6ff;    /* aurora cyan */
+    --blur: 22px;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;height:100%;overflow:hidden;background:#04070e;}
+  body{
+    font-family:"Inter",system-ui,sans-serif;color:var(--ink);
+    -webkit-font-smoothing:antialiased;
+  }
+  #scene{position:fixed;inset:0;width:100%;height:100%;display:block;z-index:0;cursor:default;touch-action:none;}
+
+  /* ---------- floating glass layer ---------- */
+  #stage{position:fixed;inset:0;z-index:2;pointer-events:none;
+    will-change:transform;}
+  .panel{position:absolute;pointer-events:auto;
+    background:linear-gradient(155deg, var(--glass-bg-2), rgba(255,255,255,.02) 46%, rgba(10,18,30,.10));
+    background-color:var(--glass-bg);
+    border:1px solid var(--glass-brd);
+    -webkit-backdrop-filter:blur(var(--blur)) saturate(1.5);
+    backdrop-filter:blur(var(--blur)) saturate(1.5);
+    box-shadow:
+      0 26px 60px rgba(0,10,25,.55),
+      0 8px 22px rgba(0,8,20,.40),
+      inset 0 1px 0 var(--glass-hl),
+      inset 0 0 0 1px rgba(255,255,255,.03);
+    border-radius:26px;
+    overflow:hidden;
+    cursor:grab;
+    transition:box-shadow .35s ease, transform .12s ease;
+  }
+  .panel:active{cursor:grabbing;}
+  /* specular sheen sweeping the top-left edge */
+  .panel::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+    background:radial-gradient(120% 80% at 12% 0%, rgba(255,255,255,.16), rgba(255,255,255,0) 42%);
+    mix-blend-mode:screen;}
+  /* faint inner refraction edge */
+  .panel::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+    box-shadow:inset 0 -22px 40px rgba(0,12,28,.35);}
+
+  .grab{position:absolute;top:0;left:0;right:0;height:46px;cursor:grab;z-index:5;}
+
+  /* ----- main player ----- */
+  #player{width:392px;padding:22px 22px 20px;left:9%;top:50%;transform:translateY(-50%);}
+  .ptop{display:flex;align-items:center;gap:15px;position:relative;z-index:6;}
+  .art{width:74px;height:74px;border-radius:18px;flex:0 0 auto;position:relative;overflow:hidden;
+    box-shadow:0 8px 22px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.3);}
+  .art canvas{display:block;width:100%;height:100%;}
+  .meta{min-width:0;flex:1;}
+  .eyebrow{font:600 10.5px/1 "Space Grotesk",sans-serif;letter-spacing:.28em;
+    text-transform:uppercase;color:var(--acc);opacity:.9;margin-bottom:8px;
+    display:flex;align-items:center;gap:7px;}
+  .eyebrow .dot{width:6px;height:6px;border-radius:50%;background:var(--acc);
+    box-shadow:0 0 10px var(--acc);animation:pulse 2.4s ease-in-out infinite;}
+  @keyframes pulse{0%,100%{opacity:.4;transform:scale(.8);}50%{opacity:1;transform:scale(1.15);}}
+  .title{font:700 21px/1.18 "Space Grotesk",sans-serif;letter-spacing:-.01em;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin:0;}
+  .artist{font-size:13px;color:var(--ink-dim);margin-top:3px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+
+  /* equalizer */
+  .eq{display:flex;align-items:flex-end;gap:3px;height:30px;margin:18px 2px 12px;}
+  .eq i{flex:1;background:linear-gradient(to top,var(--acc3),var(--acc) 55%,var(--acc2));
+    border-radius:3px;opacity:.85;height:30%;
+    animation:bar 1s ease-in-out infinite;transform-origin:bottom;}
+  @keyframes bar{0%,100%{transform:scaleY(.28);}50%{transform:scaleY(1);}}
+
+  /* progress */
+  .prog{position:relative;height:6px;border-radius:99px;margin:4px 2px 0;
+    background:rgba(255,255,255,.12);overflow:hidden;cursor:pointer;}
+  .prog .fill{position:absolute;inset:0;width:34%;border-radius:99px;
+    background:linear-gradient(90deg,var(--acc3),var(--acc));box-shadow:0 0 12px rgba(111,240,201,.5);}
+  .prog .knob{position:absolute;top:50%;left:34%;width:12px;height:12px;border-radius:50%;
+    transform:translate(-50%,-50%);background:#fff;box-shadow:0 0 0 4px rgba(111,240,201,.25),0 2px 6px rgba(0,0,0,.4);}
+  .times{display:flex;justify-content:space-between;font:500 11px/1 "Space Grotesk",sans-serif;
+    color:var(--ink-faint);margin:11px 2px 0;letter-spacing:.04em;}
+
+  /* controls */
+  .ctrls{display:flex;align-items:center;justify-content:center;gap:18px;margin-top:18px;position:relative;z-index:6;}
+  .btn{display:grid;place-items:center;border:none;cursor:pointer;color:var(--ink);
+    background:var(--glass-bg-2);border:1px solid rgba(255,255,255,.16);
+    border-radius:50%;width:42px;height:42px;transition:.18s;}
+  .btn:hover{background:rgba(255,255,255,.16);transform:translateY(-1px);}
+  .btn svg{width:18px;height:18px;fill:currentColor;}
+  .btn.play{width:58px;height:58px;color:#06121a;
+    background:linear-gradient(160deg,#9ffbe0,var(--acc) 60%,#37c79e);
+    box-shadow:0 8px 22px rgba(111,240,201,.45),inset 0 1px 0 rgba(255,255,255,.6);}
+  .btn.play:hover{transform:translateY(-1px) scale(1.04);}
+  .btn.play svg{width:22px;height:22px;}
+
+  /* ----- chips ----- */
+  .chip{padding:13px 17px;border-radius:18px;display:flex;align-items:center;gap:12px;}
+  #wx{right:8%;top:19%;width:184px;}
+  #coord{right:11%;bottom:16%;width:210px;}
+  .chip .ico{width:34px;height:34px;border-radius:12px;display:grid;place-items:center;flex:0 0 auto;
+    background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);}
+  .chip .ico svg{width:18px;height:18px;stroke:var(--acc3);fill:none;stroke-width:1.7;}
+  .chip .k{font:600 9.5px/1 "Space Grotesk",sans-serif;letter-spacing:.22em;
+    text-transform:uppercase;color:var(--ink-faint);}
+  .chip .v{font:700 18px/1.1 "Space Grotesk",sans-serif;margin-top:4px;}
+  .chip .v small{font-size:12px;font-weight:500;color:var(--ink-dim);}
+
+  /* brand stamp */
+  #stamp{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:2;
+    font:500 11px/1 "Space Grotesk",sans-serif;letter-spacing:.34em;text-transform:uppercase;
+    color:var(--ink-faint);background:rgba(8,16,28,.34);border:1px solid rgba(190,225,255,.16);
+    padding:9px 20px;border-radius:99px;-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
+    pointer-events:none;white-space:nowrap;}
+
+  /* ---------- responsive: phone 390 ---------- */
+  @media (max-width:560px){
+    :root{--blur:18px;}
+    #player{left:50%;top:auto;bottom:20px;transform:translateX(-50%);
+      width:min(360px,92vw);padding:18px 18px 16px;}
+    .art{width:62px;height:62px;}
+    .title{font-size:18.5px;}
+    .eq{height:24px;margin:14px 2px 10px;}
+    #wx{left:50%;right:auto;top:18px;transform:translateX(-50%);width:min(360px,92vw);}
+    #coord{display:none;}
+    #stamp{bottom:auto;top:84px;font-size:9.5px;letter-spacing:.26em;padding:7px 15px;}
+  }
+  @media (max-width:560px) and (max-height:720px){
+    #wx{display:none;} #stamp{display:none;}
+  }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+
+<div id="stage">
+  <!-- main liquid-glass player -->
+  <section class="panel" id="player" data-px="34">
+    <div class="grab"></div>
+    <div class="ptop">
+      <div class="art"><canvas id="art" width="148" height="148"></canvas></div>
+      <div class="meta">
+        <div class="eyebrow"><span class="dot"></span>Now Playing</div>
+        <h1 class="title" id="trkTitle">Borealis Drift</h1>
+        <div class="artist" id="trkArtist">Polar Sessions — Northern Lights</div>
+      </div>
+    </div>
+
+    <div class="eq" id="eq"></div>
+
+    <div class="prog" id="prog">
+      <div class="fill" id="fill"></div>
+      <div class="knob" id="knob"></div>
+    </div>
+    <div class="times"><span id="tCur">1:42</span><span id="tTot">4:58</span></div>
+
+    <div class="ctrls">
+      <button class="btn" id="prev" aria-label="이전 곡">
+        <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+      </button>
+      <button class="btn play" id="play" aria-label="재생/일시정지">
+        <svg id="playIco" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+      </button>
+      <button class="btn" id="next" aria-label="다음 곡">
+        <svg viewBox="0 0 24 24"><path d="M16 6h2v12h-2zM6 6l8.5 6L6 18z"/></svg>
+      </button>
+    </div>
+  </section>
+
+  <!-- aurora index chip -->
+  <aside class="panel chip" id="wx" data-px="20">
+    <div class="grab"></div>
+    <div class="ico">
+      <svg viewBox="0 0 24 24"><path d="M3 16c2-5 4-7 6-7s2 3 4 3 3-4 5-4 3 2 3 2"/><path d="M3 11c2-5 4-7 6-7s2 3 4 3 3-4 5-4 3 2 3 2"/></svg>
+    </div>
+    <div>
+      <div class="k">Aurora KP</div>
+      <div class="v">Kp 7 <small>· vivid</small></div>
+    </div>
+  </aside>
+
+  <!-- coordinate chip -->
+  <aside class="panel chip" id="coord" data-px="26">
+    <div class="grab"></div>
+    <div class="ico">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="10" r="3"/><path d="M12 21c5-5 7-8 7-11a7 7 0 1 0-14 0c0 3 2 6 7 11z"/></svg>
+    </div>
+    <div>
+      <div class="k">Station · Lat</div>
+      <div class="v">68.4°N <small>· −24°C</small></div>
+    </div>
+  </aside>
+</div>
+
+<div id="stamp">Aurora Tundra — Liquid Glass</div>
+
+<script>
+"use strict";
+(() => {
+  const TAU = Math.PI * 2;
+  const cv = document.getElementById('scene');
+  const ctx = cv.getContext('2d', { alpha:false });
+
+  /* =================== background scene =================== */
+  let W=0, H=0, DPR=1, horizon=0;
+  let stars=[], snow=[], particles=[];
+
+  function build(){
+    stars = [];
+    const sn = Math.round(W*H/9000);
+    for(let i=0;i<sn;i++){
+      stars.push({
+        x:Math.random()*W, y:Math.random()*(horizon*0.96),
+        r:Math.random()*1.3+0.3, tw:Math.random()*TAU, ts:0.6+Math.random()*1.8
+      });
+    }
+    particles = [];
+    const pn = Math.round(W*H/26000);
+    for(let i=0;i<pn;i++){
+      particles.push({
+        x:Math.random()*W, y:Math.random()*horizon,
+        r:Math.random()*1.6+0.5, sp:6+Math.random()*16,
+        drift:(Math.random()-0.5)*8, a:0.15+Math.random()*0.35, ph:Math.random()*TAU
+      });
+    }
+  }
+
+  function resize(){
+    W = window.innerWidth; H = window.innerHeight;
+    DPR = Math.min(window.devicePixelRatio||1, 2);
+    cv.width = Math.round(W*DPR); cv.height = Math.round(H*DPR);
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    horizon = H*0.66;
+    build();
+  }
+  window.addEventListener('resize', resize);
+
+  // aurora ribbon: layered traveling sine curtains with vertical falloff
+  const ribbons = [
+    { col:[111,240,201], yk:0.30, amp:0.085, len:1.7, sp:0.06, w:0.20, ph:0.0,  a:0.55 },
+    { col:[87,214,255],  yk:0.40, amp:0.11,  len:1.2, sp:0.045,w:0.26, ph:1.7,  a:0.48 },
+    { col:[181,140,255], yk:0.50, amp:0.07,  len:2.3, sp:0.08, w:0.18, ph:3.4,  a:0.40 },
+    { col:[120,255,180], yk:0.24, amp:0.10,  len:0.9, sp:0.035,w:0.30, ph:5.0,  a:0.30 }
+  ];
+
+  function ribbonY(rb, x, t){
+    const u = x / W;
+    return horizon*rb.yk
+      + Math.sin(u*Math.PI*rb.len + t*rb.sp*TAU + rb.ph)*horizon*rb.amp
+      + Math.sin(u*Math.PI*rb.len*2.3 - t*rb.sp*1.5*TAU + rb.ph*1.7)*horizon*rb.amp*0.4;
+  }
+
+  function drawAurora(t, mx){
+    ctx.globalCompositeOperation = 'lighter';
+    const step = Math.max(6, W/220);
+    for(const rb of ribbons){
+      const bandH = horizon*rb.w;
+      // shimmer of brightness along the curtain
+      ctx.beginPath();
+      ctx.moveTo(0, ribbonY(rb,0,t)+bandH);
+      for(let x=0;x<=W;x+=step) ctx.lineTo(x, ribbonY(rb,x,t)+bandH);
+      for(let x=W;x>=0;x-=step) ctx.lineTo(x, ribbonY(rb,x,t));
+      ctx.closePath();
+      const cy = horizon*rb.yk;
+      const g = ctx.createLinearGradient(0, cy-bandH*0.2, 0, cy+bandH);
+      const [r,gn,b]=rb.col;
+      g.addColorStop(0,   `rgba(${r},${gn},${b},0)`);
+      g.addColorStop(0.18,`rgba(${r},${gn},${b},${rb.a})`);
+      g.addColorStop(0.55,`rgba(${r},${gn},${b},${rb.a*0.4})`);
+      g.addColorStop(1,   `rgba(${r},${gn},${b},0)`);
+      ctx.fillStyle = g;
+      ctx.fill();
+
+      // vertical ray streaks for curtain texture
+      ctx.save();
+      ctx.globalAlpha = 0.5;
+      for(let x=0;x<=W;x+=step*2){
+        const yt = ribbonY(rb,x,t);
+        const flick = 0.4 + 0.6*Math.abs(Math.sin(x*0.013 + t*0.9 + rb.ph));
+        const lg = ctx.createLinearGradient(0,yt,0,yt+bandH);
+        lg.addColorStop(0,`rgba(${r},${gn},${b},0)`);
+        lg.addColorStop(0.3,`rgba(${r},${gn},${b},${rb.a*0.5*flick})`);
+        lg.addColorStop(1,`rgba(${r},${gn},${b},0)`);
+        ctx.strokeStyle = lg;
+        ctx.lineWidth = step*0.9;
+        ctx.beginPath(); ctx.moveTo(x,yt); ctx.lineTo(x,yt+bandH); ctx.stroke();
+      }
+      ctx.restore();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  function drawReflection(t, mx){
+    // mirror the aurora into the "snow/ice plain" below horizon, blurred & faded
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0,horizon,W,H-horizon); ctx.clip();
+    ctx.translate(0, horizon*2);
+    ctx.scale(1,-1);
+    ctx.globalAlpha = 0.34;
+    ctx.filter = 'blur(7px)';
+    drawAurora(t, mx);
+    ctx.filter = 'none';
+    ctx.restore();
+    // wavy sheen on the ice to break the mirror
+    ctx.globalCompositeOperation='lighter';
+    for(let i=0;i<5;i++){
+      const y = horizon + (H-horizon)*(0.1+i*0.2);
+      const a = 0.05*(1-i/6);
+      ctx.strokeStyle=`rgba(150,210,255,${a})`;
+      ctx.lineWidth=1.2;
+      ctx.beginPath();
+      for(let x=0;x<=W;x+=12){
+        const yy=y+Math.sin(x*0.02 + t*0.5 + i)*4;
+        x===0?ctx.moveTo(x,yy):ctx.lineTo(x,yy);
+      }
+      ctx.stroke();
+    }
+    ctx.globalCompositeOperation='source-over';
+  }
+
+  function drawTundra(){
+    // distant snow ridges as soft silhouettes near horizon
+    const ridges=[
+      {y:horizon, h:0, c:'#0a1422'},
+    ];
+    // foreground snow plain gradient
+    const pg = ctx.createLinearGradient(0,horizon,0,H);
+    pg.addColorStop(0,'#0c1a2b');
+    pg.addColorStop(0.5,'#0a1422');
+    pg.addColorStop(1,'#05090f');
+    ctx.fillStyle=pg;
+    ctx.fillRect(0,horizon,W,H-horizon);
+
+    // gentle snow dunes silhouette right at the horizon
+    ctx.fillStyle='#0b1726';
+    ctx.beginPath();
+    ctx.moveTo(0,horizon+2);
+    for(let x=0;x<=W;x+=W/8){
+      ctx.quadraticCurveTo(x+W/16, horizon - 6 + Math.sin(x*0.5)*5, x+W/8, horizon+2);
+    }
+    ctx.lineTo(W,horizon+30); ctx.lineTo(0,horizon+30); ctx.closePath();
+    ctx.fill();
+  }
+
+  function drawSky(){
+    const g = ctx.createLinearGradient(0,0,0,horizon);
+    g.addColorStop(0,'#050a16');
+    g.addColorStop(0.45,'#081427');
+    g.addColorStop(0.8,'#0a1e30');
+    g.addColorStop(1,'#0c2436');
+    ctx.fillStyle=g; ctx.fillRect(0,0,W,horizon);
+    // subtle high glow
+    const gl=ctx.createRadialGradient(W*0.5,horizon*0.35,0,W*0.5,horizon*0.35,horizon*1.1);
+    gl.addColorStop(0,'rgba(40,90,120,0.18)');
+    gl.addColorStop(1,'rgba(40,90,120,0)');
+    ctx.fillStyle=gl; ctx.fillRect(0,0,W,horizon);
+  }
+
+  function drawStars(t){
+    for(const s of stars){
+      const tw = 0.45 + 0.55*Math.abs(Math.sin(t*s.ts + s.tw));
+      ctx.globalAlpha = tw;
+      ctx.fillStyle = '#dCeBFF';
+      ctx.beginPath(); ctx.arc(s.x,s.y,s.r,0,TAU); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawParticles(t, dt){
+    ctx.globalCompositeOperation='lighter';
+    for(const p of particles){
+      p.y -= p.sp*dt;
+      p.x += Math.sin(t*0.3+p.ph)*p.drift*dt;
+      if(p.y < -4){ p.y = horizon+4; p.x=Math.random()*W; }
+      const a = p.a*(0.5+0.5*Math.sin(t*1.3+p.ph));
+      ctx.fillStyle=`rgba(170,240,255,${a})`;
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,TAU); ctx.fill();
+    }
+    ctx.globalCompositeOperation='source-over';
+  }
+
+  /* =================== album art (mini aurora) =================== */
+  const artCv = document.getElementById('art');
+  const ax = artCv.getContext('2d');
+  function drawArt(t){
+    const w=artCv.width,h=artCv.height;
+    const g=ax.createLinearGradient(0,0,w,h);
+    g.addColorStop(0,'#0a1a2e'); g.addColorStop(1,'#06101c');
+    ax.fillStyle=g; ax.fillRect(0,0,w,h);
+    ax.globalCompositeOperation='lighter';
+    const cols=[[111,240,201],[87,214,255],[181,140,255]];
+    for(let i=0;i<3;i++){
+      const [r,gn,b]=cols[i];
+      ax.beginPath();
+      ax.moveTo(0,h);
+      for(let x=0;x<=w;x+=6){
+        const y = h*0.55 + Math.sin(x*0.05 + t*0.9 + i*2)*h*0.16 - i*h*0.12;
+        ax.lineTo(x,y);
+      }
+      ax.lineTo(w,h); ax.closePath();
+      const lg=ax.createLinearGradient(0,h*0.2,0,h);
+      lg.addColorStop(0,`rgba(${r},${gn},${b},0.6)`);
+      lg.addColorStop(1,`rgba(${r},${gn},${b},0)`);
+      ax.fillStyle=lg; ax.fill();
+    }
+    ax.globalCompositeOperation='source-over';
+  }
+
+  /* =================== glass: parallax + drag =================== */
+  const stage = document.getElementById('stage');
+  let pointer = {x:0,y:0};          // -1..1 relative to center
+  window.addEventListener('pointermove', e=>{
+    pointer.x = (e.clientX/window.innerWidth - 0.5)*2;
+    pointer.y = (e.clientY/window.innerHeight - 0.5)*2;
+  });
+
+  const panels = [...document.querySelectorAll('.panel')];
+  const baseT = new WeakMap();      // {dx,dy} user-drag offset
+  panels.forEach(p=>baseT.set(p,{dx:0,dy:0}));
+
+  // drag via grab handle
+  panels.forEach(p=>{
+    const handle = p.querySelector('.grab');
+    let sx,sy,o;
+    const down=e=>{
+      e.preventDefault();
+      const b=baseT.get(p); o={x:b.dx,y:b.dy};
+      sx=e.clientX; sy=e.clientY;
+      p.style.transition='none';
+      p.style.boxShadow='0 36px 80px rgba(0,10,25,.65),0 8px 22px rgba(0,8,20,.4),inset 0 1px 0 var(--glass-hl)';
+      window.addEventListener('pointermove',move);
+      window.addEventListener('pointerup',up);
+    };
+    const move=e=>{
+      const b=baseT.get(p);
+      b.dx=o.x+(e.clientX-sx); b.dy=o.y+(e.clientY-sy);
+    };
+    const up=()=>{
+      p.style.transition=''; p.style.boxShadow='';
+      window.removeEventListener('pointermove',move);
+      window.removeEventListener('pointerup',up);
+    };
+    handle.addEventListener('pointerdown',down);
+  });
+
+  // parallax target eased per-frame
+  const px = new WeakMap();
+  panels.forEach(p=>px.set(p,{x:0,y:0}));
+  // centering offset for each panel must mirror the CSS, and switch on the phone breakpoint,
+  // because parallax/drag overwrite the `transform` property entirely.
+  const phoneMQ = window.matchMedia('(max-width:560px)');
+  function centerFor(p){
+    const phone = phoneMQ.matches;
+    if(p.id==='player') return phone ? 'translateX(-50%)' : 'translateY(-50%)';
+    if(p.id==='wx')     return phone ? 'translateX(-50%)' : '';
+    return ''; // coord (hidden on phone) keeps top/right positioning
+  }
+  function layoutGlass(){
+    for(const p of panels){
+      const depth = parseFloat(p.dataset.px)||20;
+      const cur = px.get(p);
+      const tx = -pointer.x*depth, ty = -pointer.y*depth;
+      cur.x += (tx-cur.x)*0.06; cur.y += (ty-cur.y)*0.06;
+      const b = baseT.get(p);
+      const pre = centerFor(p);
+      p.style.transform = `translate(${b.dx+cur.x}px, ${b.dy+cur.y}px) ${pre}`;
+    }
+  }
+
+  /* =================== player interactions =================== */
+  let playing = true;
+  const playIco = document.getElementById('playIco');
+  const PLAY = 'M8 5v14l11-7z';
+  const PAUSE = 'M6 5h4v14H6zM14 5h4v14h-4z';
+  document.getElementById('play').addEventListener('click', ()=>{
+    playing=!playing;
+    playIco.setAttribute('d', playing?PAUSE:PLAY);
+    eqBars.forEach(b=>b.style.animationPlayState = playing?'running':'paused');
+  });
+  playIco.setAttribute('d', PAUSE); // start in playing state
+
+  const tracks = [
+    {t:'Borealis Drift', a:'Polar Sessions — Northern Lights', tot:'4:58'},
+    {t:'Glacier Pulse',  a:'Aurora Collective — Ice Fields',    tot:'3:41'},
+    {t:'Tundra Bloom',   a:'Nordlys — Midnight Sun',            tot:'5:27'},
+  ];
+  let ti=0;
+  const setTrack=d=>{
+    ti=(ti+d+tracks.length)%tracks.length;
+    document.getElementById('trkTitle').textContent=tracks[ti].t;
+    document.getElementById('trkArtist').textContent=tracks[ti].a;
+    document.getElementById('tTot').textContent=tracks[ti].tot;
+    prog=0.04;
+  };
+  document.getElementById('next').addEventListener('click',()=>setTrack(1));
+  document.getElementById('prev').addEventListener('click',()=>setTrack(-1));
+
+  // equalizer bars
+  const eqEl = document.getElementById('eq');
+  const eqBars=[];
+  for(let i=0;i<28;i++){
+    const b=document.createElement('i');
+    b.style.animationDuration = (0.55+Math.random()*0.9).toFixed(2)+'s';
+    b.style.animationDelay = (-Math.random()*1.2).toFixed(2)+'s';
+    eqEl.appendChild(b); eqBars.push(b);
+  }
+
+  // progress
+  let prog = 0.34;
+  const fill=document.getElementById('fill'), knob=document.getElementById('knob');
+  const progEl=document.getElementById('prog'), tCur=document.getElementById('tCur');
+  const totSec = ()=>{const[m,s]=tracks[ti].tot.split(':').map(Number);return m*60+s;};
+  const fmt=s=>{s=Math.max(0,Math.floor(s));return Math.floor(s/60)+':'+String(s%60).padStart(2,'0');};
+  progEl.addEventListener('pointerdown',e=>{
+    const r=progEl.getBoundingClientRect();
+    prog=Math.min(1,Math.max(0,(e.clientX-r.left)/r.width));
+  });
+
+  /* =================== main loop =================== */
+  // Pre-paint immediately so first frame is the full scene (no loading gate).
+  resize();
+  function paintScene(t,dt,mx){
+    drawSky();
+    drawStars(t);
+    drawAurora(t,mx);
+    drawTundra();
+    drawReflection(t,mx);
+    drawParticles(t,dt);
+  }
+  // initial synchronous paint
+  paintScene(0,0,0);
+  drawArt(0);
+
+  let last=performance.now()/1000, t0=last;
+  function frame(now){
+    requestAnimationFrame(frame);
+    const t=now/1000;
+    let dt=t-last; last=t;
+    if(dt>0.05)dt=0.05;
+    const et=t-t0;
+
+    // slight horizontal sky drift with pointer for depth
+    paintScene(et, dt, pointer.x);
+    drawArt(et);
+
+    // progress advance
+    if(playing){
+      prog += dt/totSec();
+      if(prog>=1){ prog=0; setTrack(1); }
+    }
+    const pct=(prog*100).toFixed(2);
+    fill.style.width=pct+'%';
+    knob.style.left=pct+'%';
+    tCur.textContent=fmt(prog*totSec());
+
+    layoutGlass();
+  }
+  requestAnimationFrame(frame);
+
+  // recompute centering offsets on resize so phone/desktop both place glass correctly
+  window.addEventListener('resize',()=>{ /* CSS handles base position; parallax composes */ });
+})();
+</script>
+</body>
+</html>

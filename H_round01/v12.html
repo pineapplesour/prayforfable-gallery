@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>liquid glass on a city map</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0a0d12;cursor:none}
+  #gl{position:fixed;inset:0;width:100vw;height:100vh;display:block;touch-action:none}
+  #hint{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);
+    font:11px/1.4 "SF Mono",Menlo,monospace;letter-spacing:.18em;color:rgba(255,255,255,.55);
+    text-shadow:0 0 6px rgba(0,0,0,.85);pointer-events:none;transition:opacity 1.2s;text-transform:uppercase;
+    white-space:nowrap}
+  @media (max-width:520px){ #hint{font-size:9px;letter-spacing:.12em} }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="hint">move · hold to press · right-drag to tilt · scroll to pan</div>
+<script>
+'use strict';
+/* ============================================================
+   "liquid glass on a city map" — a heavy glass lens resting on
+   a printed/screen city map, filmed handheld.
+   scene  = canvas2d   (the map)
+   optics = webgl shader (refraction / rim / caustics / cam post)
+   ============================================================ */
+
+const DPR = Math.min(window.devicePixelRatio || 1, 1.75);
+let W = 0, H = 0;
+
+const glCanvas = document.getElementById('gl');
+const gl = glCanvas.getContext('webgl', { antialias:false, preserveDrawingBuffer:false });
+if (!gl) document.body.innerHTML =
+  '<p style="color:#888;font:14px sans-serif;padding:2em">WebGL unavailable.</p>';
+
+/* ------------------------------------------------------------
+   SCENE — a city map drawn in a logical 2200x1500 space, cover
+   -scaled onto the canvas and slightly rotated (filmed table).
+   panX/panY scroll the map under the lens.
+   ------------------------------------------------------------ */
+const scene = document.createElement('canvas');
+const sx = scene.getContext('2d');
+const LW = 2200, LH = 1500;
+let panX = 0, panY = 0;
+const PAN_MAX = 900;
+
+/* --- deterministic PRNG so the map is stable across redraws --- */
+function mkRand(seed){
+  let s = seed >>> 0;
+  return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+}
+
+function rr(c, x, y, w, h, r) {
+  r = Math.min(r, w/2, h/2);
+  c.beginPath();
+  c.moveTo(x+r, y); c.arcTo(x+w, y, x+w, y+h, r); c.arcTo(x+w, y+h, x, y+h, r);
+  c.arcTo(x, y+h, x, y, r); c.arcTo(x, y, x+w, y, r); c.closePath();
+}
+function tw(c, text, x, y, size, color, weight, align, italic) {
+  c.fillStyle = color;
+  c.font = (italic?'italic ':'') + (weight||400) + ' ' + size +
+    'px "Helvetica Neue","Segoe UI",-apple-system,sans-serif';
+  c.textAlign = align || 'left';
+  c.fillText(text, x, y);
+  c.textAlign = 'left';
+}
+
+/* ------------------------------------------------------------
+   Map data is generated once into arrays, then drawn each frame
+   with a pan offset. This keeps the look "real" (consistent grid
+   of blocks, parks, water, roads, labels, pins).
+   ------------------------------------------------------------ */
+let MAP = null;
+function buildMap() {
+  const rnd = mkRand(20260620);
+  const PAD = 380;                  // extra map beyond viewport for panning
+  const MW = LW + PAD, MH = LH + PAD;
+
+  // --- water: a river crossing diagonally + a lake ---
+  const river = [];
+  let ry = MH * 0.18;
+  for (let x = -50; x <= MW + 50; x += 60) {
+    ry += (rnd() - 0.45) * 70;
+    river.push([x, Math.max(40, Math.min(MH - 40, ry + x * 0.16))]);
+  }
+  const lake = { x: MW * 0.74, y: MH * 0.70, rx: 230, ry: 165 };
+
+  // --- parks: a few big green blobs ---
+  const parks = [];
+  for (let i = 0; i < 5; i++) {
+    parks.push({
+      x: 200 + rnd() * (MW - 400),
+      y: 200 + rnd() * (MH - 400),
+      w: 180 + rnd() * 260,
+      h: 150 + rnd() * 220,
+      r: 20 + rnd() * 40
+    });
+  }
+
+  // --- road grid: primary avenues (thick) + secondary streets ---
+  // slightly rotated grid for a "real district" feel
+  const ang = -0.10;
+  const ca = Math.cos(ang), sa = Math.sin(ang);
+  const cx = MW / 2, cy = MH / 2;
+  const toW = (u, v) => [cx + u * ca - v * sa, cy + u * sa + v * ca];
+
+  const verts = [], horiz = [];
+  const span = Math.max(MW, MH);
+  let acc = -span;
+  while (acc < span) {
+    const major = (Math.abs(Math.round(acc / 92)) % 4 === 0);
+    verts.push({ u: acc, major });
+    acc += major ? 92 : 60 + rnd() * 24;
+  }
+  acc = -span;
+  while (acc < span) {
+    const major = (Math.abs(Math.round(acc / 92)) % 4 === 0);
+    horiz.push({ v: acc, major });
+    acc += major ? 92 : 60 + rnd() * 24;
+  }
+
+  // --- a couple of broad diagonal boulevards ---
+  const boulevards = [
+    { a: [MW * 0.05, MH * 0.95], b: [MW * 0.95, MH * 0.12] },
+    { a: [MW * 0.02, MH * 0.40], b: [MW * 0.80, MH * 0.98] },
+  ];
+
+  // --- labels (street names + districts) ---
+  const streetNames = ['BAKER ST','OAK AVE','5TH AVE','MARKET','RIVERSIDE','PINE ST',
+    'KING RD','ELM ST','HARBOR BLVD','CEDAR LN','GRAND AVE','MILL RD','BROAD ST'];
+  const districts = ['OLD TOWN','RIVERSIDE','HARBOR','GREENWICH','MIDTOWN','THE COMMONS'];
+  const labels = [];
+  for (let i = 0; i < 16; i++) {
+    labels.push({
+      x: 120 + rnd() * (MW - 240),
+      y: 120 + rnd() * (MH - 240),
+      t: streetNames[(rnd() * streetNames.length) | 0],
+      rot: (rnd() - 0.5) * 0.5,
+      sz: 13 + rnd() * 3
+    });
+  }
+  const dlabels = [];
+  for (let i = 0; i < 5; i++) {
+    dlabels.push({
+      x: 200 + rnd() * (MW - 400),
+      y: 200 + rnd() * (MH - 400),
+      t: districts[i % districts.length]
+    });
+  }
+
+  // --- POI pins ---
+  const PINCOL = ['#e0533d', '#2f7de0', '#3aa56b', '#e0a23a', '#9b4fd0'];
+  const pins = [];
+  for (let i = 0; i < 9; i++) {
+    pins.push({
+      x: 160 + rnd() * (MW - 320),
+      y: 160 + rnd() * (MH - 320),
+      c: PINCOL[(rnd() * PINCOL.length) | 0]
+    });
+  }
+
+  MAP = { MW, MH, river, lake, parks, verts, horiz, boulevards, toW,
+          labels, dlabels, pins, ang };
+}
+
+/* fluffy organic blob path (for parks/lake) */
+function blobPath(c, cx, cy, rx, ry, seedFn) {
+  const N = 14;
+  c.beginPath();
+  for (let i = 0; i <= N; i++) {
+    const a = (i / N) * Math.PI * 2;
+    const k = 0.86 + 0.16 * Math.sin(a * 3 + seedFn) + 0.08 * Math.cos(a * 5 + seedFn * 1.7);
+    const x = cx + Math.cos(a) * rx * k;
+    const y = cy + Math.sin(a) * ry * k;
+    if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
+  }
+  c.closePath();
+}
+
+function drawMap() {
+  scene.width = W; scene.height = H;
+  const c = sx;
+  if (!MAP) buildMap();
+  const M = MAP;
+
+  // dark table around the map
+  const tg = c.createRadialGradient(W*0.5, H*0.45, H*0.15, W*0.5, H*0.55, H*0.95);
+  tg.addColorStop(0, '#14181e'); tg.addColorStop(1, '#05070a');
+  c.fillStyle = tg; c.fillRect(0, 0, W, H);
+
+  // cover-scale logical map; slight tilt like a map on a desk
+  const sc = Math.max(W / LW, H / LH) * 1.04;
+  c.save();
+  c.translate(W/2, H/2);
+  c.rotate(-0.018);
+  c.scale(sc, sc);
+  c.translate(-LW/2, -LH/2);
+  // pan the map under the lens (the PAD margin lets it scroll)
+  c.translate(-panX, -panY);
+
+  // ---- map base paper ----
+  c.fillStyle = '#eef0ec';                 // warm light map paper
+  c.fillRect(-200, -200, M.MW + 400, M.MH + 400);
+
+  // subtle paper texture (very low-contrast speckle bands)
+  c.save();
+  c.globalAlpha = 0.04;
+  for (let i = 0; i < 60; i++) {
+    c.fillStyle = (i % 2) ? '#000' : '#fff';
+    const yy = (i / 60) * M.MH;
+    c.fillRect(-200, yy, M.MW + 400, 6);
+  }
+  c.restore();
+
+  // ---- city block fill: faint warm blocks behind the streets ----
+  c.fillStyle = '#e3e6df';
+  for (let i = 0; i < M.verts.length - 1; i += 1) {
+    // light wash; the streets (drawn lighter on top) carve the grid
+  }
+  // We instead paint the whole area block-tone and let streets be lighter.
+  c.fillStyle = '#e1e4dc';
+  c.fillRect(-200, -200, M.MW + 400, M.MH + 400);
+
+  // ---- parks ----
+  for (let i = 0; i < M.parks.length; i++) {
+    const p = M.parks[i];
+    const g = c.createLinearGradient(p.x, p.y - p.h/2, p.x, p.y + p.h/2);
+    g.addColorStop(0, '#c3e0b4'); g.addColorStop(1, '#a9d29a');
+    c.fillStyle = g;
+    blobPath(c, p.x, p.y, p.w/2, p.h/2, i * 2.1);
+    c.fill();
+    // tree dots
+    c.fillStyle = 'rgba(120,170,100,0.55)';
+    const rr2 = mkRand(7000 + i);
+    for (let k = 0; k < 26; k++) {
+      const a = rr2() * 6.28, rad = rr2();
+      const px = p.x + Math.cos(a) * rad * p.w * 0.4;
+      const py = p.y + Math.sin(a) * rad * p.h * 0.4;
+      c.beginPath(); c.arc(px, py, 2.4 + rr2() * 2.6, 0, 7); c.fill();
+    }
+  }
+
+  // ---- water (river + lake) ----
+  c.lineJoin = 'round'; c.lineCap = 'round';
+  // river body
+  c.strokeStyle = '#9fc4e8';
+  c.lineWidth = 46;
+  c.beginPath();
+  M.river.forEach((p, i) => i ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1]));
+  c.stroke();
+  c.strokeStyle = '#b6d4ef';      // lighter core
+  c.lineWidth = 30;
+  c.beginPath();
+  M.river.forEach((p, i) => i ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1]));
+  c.stroke();
+  // lake
+  const lg = c.createRadialGradient(M.lake.x - 40, M.lake.y - 30, 20,
+                                    M.lake.x, M.lake.y, M.lake.rx);
+  lg.addColorStop(0, '#bcd9f1'); lg.addColorStop(1, '#9cc2e8');
+  c.fillStyle = lg;
+  blobPath(c, M.lake.x, M.lake.y, M.lake.rx, M.lake.ry, 4.3);
+  c.fill();
+
+  // ---- road grid ----
+  // secondary streets (thin, white)
+  c.strokeStyle = '#ffffff';
+  for (const seg of M.verts) {
+    c.lineWidth = seg.major ? 9 : 4.5;
+    const a = M.toW(seg.u, -3000), b = M.toW(seg.u, 3000);
+    c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+  }
+  for (const seg of M.horiz) {
+    c.lineWidth = seg.major ? 9 : 4.5;
+    const a = M.toW(-3000, seg.v), b = M.toW(3000, seg.v);
+    c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+  }
+  // primary avenues casing (yellow w/ subtle edge) for the major ones
+  for (const seg of M.verts) if (seg.major) {
+    const a = M.toW(seg.u, -3000), b = M.toW(seg.u, 3000);
+    c.strokeStyle = '#f6d98a'; c.lineWidth = 11;
+    c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+    c.strokeStyle = '#fdebb6'; c.lineWidth = 6;
+    c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+  }
+  for (const seg of M.horiz) if (seg.major) {
+    const a = M.toW(-3000, seg.v), b = M.toW(3000, seg.v);
+    c.strokeStyle = '#f6d98a'; c.lineWidth = 11;
+    c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+    c.strokeStyle = '#fdebb6'; c.lineWidth = 6;
+    c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+  }
+
+  // ---- diagonal boulevards (wide cream) ----
+  for (const bl of M.boulevards) {
+    c.strokeStyle = '#f3cf78'; c.lineWidth = 16;
+    c.beginPath(); c.moveTo(bl.a[0], bl.a[1]); c.lineTo(bl.b[0], bl.b[1]); c.stroke();
+    c.strokeStyle = '#fce9af'; c.lineWidth = 9;
+    c.beginPath(); c.moveTo(bl.a[0], bl.a[1]); c.lineTo(bl.b[0], bl.b[1]); c.stroke();
+    // center dashes
+    c.strokeStyle = '#d9b65e'; c.lineWidth = 1.4; c.setLineDash([10, 12]);
+    c.beginPath(); c.moveTo(bl.a[0], bl.a[1]); c.lineTo(bl.b[0], bl.b[1]); c.stroke();
+    c.setLineDash([]);
+  }
+
+  // ---- street labels (rotated, gray) ----
+  for (const l of M.labels) {
+    c.save();
+    c.translate(l.x, l.y); c.rotate(l.rot);
+    tw(c, l.t, 0, 0, l.sz, 'rgba(70,80,92,0.78)', 600, 'center');
+    c.restore();
+  }
+  // district labels (bigger, spaced, faded)
+  for (const d of M.dlabels) {
+    c.save();
+    c.font = '700 30px "Helvetica Neue",sans-serif';
+    c.textAlign = 'center';
+    c.fillStyle = 'rgba(60,70,85,0.28)';
+    const spaced = d.t.split('').join(' ');
+    c.fillText(spaced, d.x, d.y);
+    c.restore();
+  }
+
+  // ---- POI pins (teardrop markers with shadow) ----
+  for (const p of M.pins) {
+    // soft shadow
+    c.fillStyle = 'rgba(0,0,0,0.18)';
+    c.beginPath(); c.ellipse(p.x + 2, p.y + 3, 9, 4, 0, 0, 7); c.fill();
+    // teardrop
+    c.fillStyle = p.c;
+    c.beginPath();
+    c.moveTo(p.x, p.y);
+    c.bezierCurveTo(p.x - 13, p.y - 18, p.x - 9, p.y - 34, p.x, p.y - 34);
+    c.bezierCurveTo(p.x + 9, p.y - 34, p.x + 13, p.y - 18, p.x, p.y);
+    c.fill();
+    // white dot
+    c.fillStyle = '#fff';
+    c.beginPath(); c.arc(p.x, p.y - 24, 5, 0, 7); c.fill();
+  }
+
+  // ---- "you are here" big pin near map center (lands under lens) ----
+  const HX = M.MW * 0.5, HY = M.MH * 0.5;
+  c.fillStyle = 'rgba(0,0,0,0.22)';
+  c.beginPath(); c.ellipse(HX + 3, HY + 4, 14, 6, 0, 0, 7); c.fill();
+  c.fillStyle = '#e0533d';
+  c.beginPath();
+  c.moveTo(HX, HY);
+  c.bezierCurveTo(HX - 22, HY - 30, HX - 15, HY - 58, HX, HY - 58);
+  c.bezierCurveTo(HX + 15, HY - 58, HX + 22, HY - 30, HX, HY);
+  c.fill();
+  c.fillStyle = '#fff';
+  c.beginPath(); c.arc(HX, HY - 40, 9, 0, 7); c.fill();
+  c.fillStyle = '#e0533d';
+  c.beginPath(); c.arc(HX, HY - 40, 4, 0, 7); c.fill();
+
+  // ---- compass rose (top-left of map) ----
+  const NX = M.MW * 0.10, NY = M.MH * 0.12;
+  c.save();
+  c.strokeStyle = 'rgba(60,70,85,0.6)'; c.lineWidth = 2;
+  c.beginPath(); c.arc(NX, NY, 30, 0, 7); c.stroke();
+  c.fillStyle = '#e0533d';
+  c.beginPath(); c.moveTo(NX, NY - 30); c.lineTo(NX - 7, NY); c.lineTo(NX + 7, NY); c.closePath(); c.fill();
+  c.fillStyle = 'rgba(60,70,85,0.7)';
+  c.beginPath(); c.moveTo(NX, NY + 30); c.lineTo(NX - 7, NY); c.lineTo(NX + 7, NY); c.closePath(); c.fill();
+  tw(c, 'N', NX, NY - 38, 16, 'rgba(60,70,85,0.85)', 700, 'center');
+  c.restore();
+
+  // ---- scale bar (bottom-left) ----
+  const BX = M.MW * 0.08, BY = M.MH * 0.90;
+  c.strokeStyle = 'rgba(60,70,85,0.8)'; c.lineWidth = 2;
+  c.beginPath(); c.moveTo(BX, BY); c.lineTo(BX + 120, BY);
+  c.moveTo(BX, BY - 5); c.lineTo(BX, BY + 5);
+  c.moveTo(BX + 60, BY - 4); c.lineTo(BX + 60, BY + 4);
+  c.moveTo(BX + 120, BY - 5); c.lineTo(BX + 120, BY + 5); c.stroke();
+  tw(c, '0', BX, BY + 18, 11, 'rgba(60,70,85,0.8)', 600, 'center');
+  tw(c, '500 m', BX + 120, BY + 18, 11, 'rgba(60,70,85,0.8)', 600, 'center');
+
+  c.restore(); // untilt
+
+  // ---- ambient page light: brighter center, cool falloff edges ----
+  const sg = c.createRadialGradient(W*0.5, H*0.46, H*0.18, W*0.5, H*0.5, H*0.9);
+  sg.addColorStop(0, 'rgba(255,255,255,0.05)');
+  sg.addColorStop(1, 'rgba(0,5,20,0.16)');
+  c.fillStyle = sg; c.fillRect(0, 0, W, H);
+}
+
+/* ------------------------------------------------------------
+   WEBGL — the optics: refraction, smear, rim rings, milky veil,
+   speculars, caustics, then handheld-camera post.
+   (adapted from the reference; tuned for a map surface)
+   ------------------------------------------------------------ */
+const VS = `
+attribute vec2 aP;
+void main(){ gl_Position = vec4(aP, 0.0, 1.0); }`;
+
+const FS = `
+precision highp float;
+uniform sampler2D uScene;
+uniform vec2  uRes, uGlass, uShake, uTilt;
+uniform float uR, uTime, uPress, uBlur, uExpo, uRot;
+
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+
+vec3 scn(vec2 uv){
+  return texture2D(uScene, clamp(uv / uRes, vec2(0.002), vec2(0.998))).rgb;
+}
+/* handheld camera: rotate + slight lens barrel + shake on source coords */
+vec2 cam(vec2 v){
+  vec2 cen = uRes * 0.5;
+  vec2 p = v - cen;
+  float ca = cos(uRot), sa = sin(uRot);
+  p = vec2(ca*p.x - sa*p.y, sa*p.x + ca*p.y);
+  float rr = dot(p, p) / dot(cen, cen);
+  p *= 1.0 + 0.04 * rr;
+  return cen + p + uShake;
+}
+float gband(float x, float c, float w){ float d = (x - c) / w; return exp(-d * d); }
+
+void main(){
+  vec2 fc = gl_FragCoord.xy;
+  vec2 d  = fc - uGlass;
+  /* tilt: at an angle the glass foreshortens into an ellipse */
+  float tA = length(uTilt);
+  vec2 tD = tA > 0.001 ? uTilt / tA : vec2(1.0, 0.0);
+  vec2 pD = vec2(-tD.y, tD.x);
+  float squash = 1.0 - 0.42 * tA;
+  vec2 ds = tD * (dot(d, tD) / squash) + pD * dot(d, pD);
+  float r = length(ds);
+  vec2 dir = r > 0.5 ? ds / r : vec2(1.0, 0.0);
+  vec2 tdir = vec2(-dir.y, dir.x);
+  float x = r / uR;
+
+  float innerX = 0.80;
+  float w    = smoothstep(innerX - 0.05, innerX + 0.03, x);   // rim weight
+  float wOut = smoothstep(1.0, 1.07, x);                      // outside weight
+  float q = clamp(x / innerX, 0.0, 1.0);
+
+  /* refracted source radius: magnified center, compressed at the rim */
+  float magA = mix(0.42, 0.35, uPress);
+  float q5 = q*q*q*q*q;
+  float rsG = uR * (magA * q + (1.06 - magA) * q5);
+  /* tilted glass: asymmetric magnification + prism deviation */
+  float asym = 1.0 + 0.38 * tA * dot(dir, tD);
+  vec2 refr = dir * mix(rsG, uR * 1.07, w) * asym + uTilt * uR * 0.55;
+
+  /* anisotropic blur amounts (source-space px) */
+  float q4 = q*q*q*q;
+  float radial = mix(mix(q4 * uR * 0.13, uR * 0.02, w), 0.0, wOut) + uBlur + 0.7;
+  float tang   = mix(mix(q*q*q * uR * 0.045, uR * 0.18, w), 0.0, wOut) + uBlur + 0.7;
+
+  vec2 srcBase = uGlass + mix(refr, d, wOut);
+  vec3 col = vec3(0.0);
+  #define TAP(rx, ty) col += scn(cam(srcBase + dir * ((rx) * radial) + tdir * ((ty) * tang)));
+  TAP( 0.00,  0.00) TAP( 0.62,  0.25) TAP(-0.58,  0.30) TAP( 0.21, -0.64)
+  TAP(-0.25, -0.61) TAP( 0.45,  0.68) TAP(-0.70, -0.15) TAP( 0.86, -0.18)
+  TAP(-0.41,  0.74) TAP( 0.05,  0.94) TAP(-0.88,  0.35) TAP( 0.33,  0.13)
+  TAP(-0.18,  0.20) TAP( 0.69, -0.55)
+  col /= 14.0;
+
+  float inG = (1.0 - wOut);          // inside glass (incl. rim)
+  float inI = inG * (1.0 - w);       // inner refraction zone only
+
+  /* chromatic aberration, stronger toward the rim and when tilted */
+  float caW = 0.5 * smoothstep(0.25, 1.0, x) * (1.0 + 1.4 * tA) * inG;
+  caW = min(caW, 0.85);
+  if (caW > 0.01) {
+    vec3 cR = scn(cam(uGlass + refr * 0.972));
+    vec3 cB = scn(cam(uGlass + refr * 1.028));
+    col.r = mix(col.r, cR.r, caW);
+    col.b = mix(col.b, cB.b, caW);
+  }
+
+  /* milky glass: desaturate slightly, lift blacks, white veil outward */
+  float lum = dot(col, vec3(0.299, 0.587, 0.114));
+  col = mix(col, vec3(lum), 0.12 * inI);
+  col = mix(col, col * 0.92 + vec3(0.05), inG);
+  float veil = (0.04 + 0.14 * x * x + 0.06 * uPress) * inI;
+  col = mix(col, vec3(0.99, 0.99, 1.0), veil);
+  col += inI * 0.04 * (1.0 - x * x);            // soft center bloom
+
+  /* faint radial caustic streaks */
+  float th = atan(d.y, d.x);
+  float cau = 0.5 * sin(th * 13.0 + 2.0) + 0.5 * sin(th * 29.0 + 0.6) + 0.35 * sin(th * 7.0 - 1.2);
+  col += cau * 0.05 * q4 * inI;
+
+  /* rim: dark glass wall + concentric rings + specular arcs */
+  float rim = w * (1.0 - wOut);
+  col = mix(col, col * 0.34, rim);
+  float bands = gband(x, 0.835, 0.018) * 0.85
+              + gband(x, 0.920, 0.014) * 0.50
+              + gband(x, 0.985, 0.010) * 0.75;
+  float arc = pow(max(cos(th - 2.45), 0.0), 6.0)
+            + 0.7 * pow(max(cos(th + 0.55), 0.0), 10.0)
+            + 0.45 * pow(max(cos(th - 4.30), 0.0), 14.0);
+  col += rim * bands * (0.12 + 0.65 * arc);
+  col *= mix(1.0, 0.5, rim * gband(x, 1.0, 0.012));            // dark outer lip
+  col += inI * 0.15 * gband(x, 0.805, 0.012);                  // bright inner ring
+
+  /* soft window-reflection highlight on the glass, upper-left */
+  vec2 hp = uGlass + vec2(-0.30, 0.40) * uR + uTilt * uR * 0.5;
+  vec2 hd = fc - hp;
+  col += exp(-dot(hd, hd) / (uR * uR * 0.16)) * (0.14 + 0.07 * uPress) * inG;
+  /* tiny secondary sparkle highlight */
+  vec2 hp2 = uGlass + vec2(0.34, -0.22) * uR;
+  vec2 hd2 = fc - hp2;
+  col += exp(-dot(hd2, hd2) / (uR * uR * 0.010)) * 0.5 * inG;
+
+  /* contact shadow hugging the outside of the glass + outer caustic ring */
+  col *= 1.0 - (0.30 - 0.10 * uPress) * gband(x, 1.04, 0.05) * wOut;
+  col += 0.09 * gband(x, 1.11, 0.022) * wOut;                  // bright cast caustic on table
+  col += 0.05 * gband(x, 1.20, 0.05) * wOut;                   // soft outer glow
+
+  /* ---- phone-camera post ---- */
+  col *= uExpo;
+  col *= vec3(0.99, 1.0, 1.025);                               // white balance
+  vec2 vc = (fc - uRes * 0.5) / (uRes * 0.5);
+  col *= 1.0 - 0.30 * pow(dot(vc, vc) * 0.55, 1.4);            // vignette
+  col *= 1.0 + 0.010 * sin(fc.y * 0.07 - uTime * 9.0);         // refresh banding
+  col *= 1.0 + 0.006 * sin(fc.x * 0.21 + fc.y * 0.13 + uTime); // faint moiré
+  float gn = hash(fc + fract(uTime * 7.0) * 113.0);
+  col += (gn - 0.5) * 0.04;                                     // luma grain
+  col.r += (hash(fc.yx + 7.7 + fract(uTime * 5.0) * 51.0) - 0.5) * 0.018;
+  col.b += (hash(fc + 3.1 + fract(uTime * 3.0) * 77.0) - 0.5) * 0.015;
+  col = clamp(col, 0.0, 1.0);
+  col = pow(col, vec3(0.97));                                   // slight cam lift
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+const aP = gl.getAttribLocation(prog, 'aP');
+gl.enableVertexAttribArray(aP);
+gl.vertexAttribPointer(aP, 2, gl.FLOAT, false, 0, 0);
+
+const U = {};
+for (const n of ['uScene','uRes','uGlass','uShake','uTilt','uR','uTime','uPress','uBlur','uExpo','uRot'])
+  U[n] = gl.getUniformLocation(prog, n);
+
+function makeTex(unit) {
+  const t = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0 + unit);
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  return t;
+}
+const sceneTex = makeTex(0);
+gl.uniform1i(U.uScene, 0);
+
+function uploadScene() {
+  gl.activeTexture(gl.TEXTURE0);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, scene);
+}
+
+/* ------------------------------------------------------------ state */
+const mouse = { x: 0, y: 0 };          // CSS px, y-down
+const glass = { x: 0, y: 0 };          // device px, y-up
+const tilt = { x: 0, y: 0 };
+const tiltManual = { x: 0, y: 0 };
+const tiltVel = { x: 0, y: 0 };
+let rightDrag = null;
+let pressTarget = 0, press = 0;
+let needScene = true;
+
+function resize() {
+  W = Math.round(innerWidth * DPR); H = Math.round(innerHeight * DPR);
+  glCanvas.width = W; glCanvas.height = H;
+  gl.viewport(0, 0, W, H);
+  if (!mouse.x) {
+    mouse.x = innerWidth * 0.5; mouse.y = innerHeight * 0.5;
+    glass.x = W * 0.5; glass.y = H * 0.5;
+  }
+  needScene = true;
+}
+addEventListener('resize', resize); resize();
+
+addEventListener('contextmenu', e => e.preventDefault());
+addEventListener('pointermove', e => {
+  mouse.x = e.clientX; mouse.y = e.clientY;
+  if (rightDrag) {
+    tiltManual.x = rightDrag.tx + (e.clientX - rightDrag.x) * 0.0035;
+    tiltManual.y = rightDrag.ty + (rightDrag.y - e.clientY) * 0.0035;
+    const m = Math.hypot(tiltManual.x, tiltManual.y);
+    if (m > 0.5) { tiltManual.x *= 0.5 / m; tiltManual.y *= 0.5 / m; }
+  }
+});
+addEventListener('pointerdown', e => {
+  if (e.button === 2) rightDrag = { x: e.clientX, y: e.clientY, tx: tiltManual.x, ty: tiltManual.y };
+  else pressTarget = 1;
+});
+addEventListener('pointerup', e => {
+  if (e.button === 2) rightDrag = null;
+  else pressTarget = 0;
+});
+addEventListener('wheel', e => {
+  // scroll pans the map; shift+wheel pans horizontally
+  if (e.shiftKey) panX = Math.max(-PAN_MAX, Math.min(PAN_MAX, panX + e.deltaY * 0.7));
+  else            panY = Math.max(-PAN_MAX, Math.min(PAN_MAX, panY + e.deltaY * 0.7));
+  needScene = true;
+}, { passive: true });
+setTimeout(() => { const h = document.getElementById('hint'); if (h) h.style.opacity = '0'; }, 5000);
+
+/* autofocus hunts: every few seconds the camera briefly loses focus */
+let huntT0 = 1800 + Math.random() * 3000;
+function focusHunt(now) {
+  const dt = now - huntT0;
+  if (dt > 900) { huntT0 = now + 2600 + Math.random() * 4800; return 0; }
+  if (dt < 0) return 0;
+  const ph = dt / 900;
+  return Math.sin(ph * Math.PI) * (3.4 + Math.random() * 0.6);
+}
+
+function frame(tms) {
+  const t = tms * 0.001;
+  if (needScene) { drawMap(); uploadScene(); needScene = false; }
+
+  // glass follows the mouse with physical lag + grip tremor
+  const tx = mouse.x * DPR + Math.sin(t * 8.7) * 1.6 * DPR + Math.sin(t * 13.1 + 2.0) * 0.9 * DPR;
+  const ty = (innerHeight - mouse.y) * DPR + Math.cos(t * 9.4 + 1.0) * 1.5 * DPR;
+  const pgx = glass.x, pgy = glass.y;
+  glass.x += (tx - glass.x) * 0.16;
+  glass.y += (ty - glass.y) * 0.16;
+  press += (pressTarget - press) * 0.09;
+
+  // tilt: glass leans against its motion + manual right-drag
+  const vk = -0.010 / DPR;
+  tiltVel.x += ((glass.x - pgx) * vk - tiltVel.x) * 0.18;
+  tiltVel.y += ((glass.y - pgy) * vk - tiltVel.y) * 0.18;
+  if (!rightDrag) { tiltManual.x *= 0.95; tiltManual.y *= 0.95; }
+  let ttx = tiltManual.x + tiltVel.x, tty = tiltManual.y + tiltVel.y;
+  const tm = Math.hypot(ttx, tty);
+  if (tm > 0.55) { ttx *= 0.55 / tm; tty *= 0.55 / tm; }
+  tilt.x += (ttx - tilt.x) * 0.12;
+  tilt.y += (tty - tilt.y) * 0.12;
+
+  const R = Math.min(W, H) * (0.33 + press * 0.022);
+
+  // handheld shake / drift
+  const shx = (Math.sin(t * 1.3) * 3.0 + Math.sin(t * 0.7 + 1.7) * 4.2 + Math.sin(t * 3.1 + 0.5) * 1.3 + Math.sin(t * 7.3) * 0.5) * DPR;
+  const shy = (Math.cos(t * 1.1 + 0.4) * 3.4 + Math.sin(t * 0.5 + 2.6) * 4.6 + Math.cos(t * 2.7 + 1.2) * 1.4 + Math.cos(t * 8.1) * 0.5) * DPR;
+  const rot = 0.0045 * Math.sin(t * 0.45) + 0.002 * Math.sin(t * 1.7 + 1.0);
+
+  // focus breathing + hunts
+  const blur = Math.max(0.0, 0.9 + 0.7 * Math.sin(t * 0.8) + 0.5 * Math.sin(t * 2.3 + 0.7)) * DPR + focusHunt(tms) * DPR;
+
+  // exposure slowly re-metering
+  const expo = 1.0 + 0.045 * Math.sin(t * 0.4) + 0.03 * Math.sin(t * 1.1 + 2.2) - press * 0.05;
+
+  gl.uniform2f(U.uRes, W, H);
+  gl.uniform2f(U.uGlass, glass.x, glass.y);
+  gl.uniform2f(U.uShake, shx, shy);
+  gl.uniform2f(U.uTilt, tilt.x, tilt.y);
+  gl.uniform1f(U.uR, R);
+  gl.uniform1f(U.uTime, t);
+  gl.uniform1f(U.uPress, press);
+  gl.uniform1f(U.uBlur, blur);
+  gl.uniform1f(U.uExpo, expo);
+  gl.uniform1f(U.uRot, rot);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

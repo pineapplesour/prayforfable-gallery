@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>CHAIN — domino cascade</title>
+<style>
+  :root{ --bg:#070512; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:var(--bg);
+    font-family:'Helvetica Neue',Arial,sans-serif; -webkit-tap-highlight-color:transparent; cursor:crosshair; }
+  #stage{ position:fixed; inset:0; display:block; }
+  .hud{ position:fixed; left:18px; top:16px; z-index:10; pointer-events:none;
+    user-select:none; padding:11px 15px 12px; border-radius:11px;
+    background:rgba(7,5,18,0.34); backdrop-filter:blur(3px);
+    -webkit-backdrop-filter:blur(3px);
+    box-shadow:inset 0 0 0 1px rgba(150,140,220,0.10); }
+  .hud h1{ font-size:13px; letter-spacing:.52em; font-weight:700; color:#cfd6ff;
+    text-indent:.52em; opacity:.92; }
+  .hud p{ margin-top:9px; font-size:10.5px; letter-spacing:.22em; color:#9aa1da;
+    font-weight:500; line-height:1.85; opacity:.94; }
+  .hud .k{ color:#ff9ad2; }
+  .credit{ position:fixed; right:20px; bottom:16px; z-index:10; font-size:9px;
+    letter-spacing:.42em; color:#5a5f9a; mix-blend-mode:screen; user-select:none;
+    pointer-events:none; opacity:.7; }
+  .seed{ position:fixed; right:20px; top:20px; z-index:10; font-size:9.5px;
+    letter-spacing:.2em; color:#6b72b4; mix-blend-mode:screen; user-select:none;
+    pointer-events:none; text-align:right; line-height:1.9; opacity:.8; }
+  .seed b{ color:#9fe3ff; font-weight:600; }
+  @media (max-width:520px){
+    .hud h1{ font-size:11px; letter-spacing:.42em; }
+    .hud p{ font-size:9px; letter-spacing:.14em; }
+    .seed{ display:none; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div class="hud">
+  <h1>C H A I N</h1>
+  <p><span class="k">click</span> · 연쇄 점화<br>
+     <span class="k">drag</span> · 도미노 길 그리기<br>
+     <span class="k">space</span> · 자동 가지치기<br>
+     <span class="k">wheel</span> · 시간 휘기</p>
+</div>
+<div class="seed">
+  <span>standing&nbsp;&nbsp;<b id="sCnt">0</b></span><br>
+  <span>fallen&nbsp;&nbsp;&nbsp;&nbsp;<b id="fCnt">0</b></span><br>
+  <span>chains&nbsp;&nbsp;&nbsp;<b id="cCnt">0</b></span>
+</div>
+<div class="credit">DOMINO · CHAIN-REACTION FIELD</div>
+<script>
+(()=>{
+"use strict";
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', { alpha:false });
+let W=0,H=0,DPR=1,CX=0,CY=0, isSmall=false;
+function resize(){
+  DPR = Math.min(2, window.devicePixelRatio||1);
+  W = window.innerWidth; H = window.innerHeight;
+  isSmall = W < 560;
+  cv.width = Math.floor(W*DPR); cv.height = Math.floor(H*DPR);
+  cv.style.width = W+'px'; cv.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  CX = W*0.5; CY = H*0.5;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ---------- math helpers ----------
+const TAU = Math.PI*2;
+const clamp=(v,a,b)=>v<a?a:(v>b?b:v);
+const lerp=(a,b,t)=>a+(b-a)*t;
+const rnd=(a,b)=>a+Math.random()*(b-a);
+const easeOut=t=>1-Math.pow(1-t,3);
+
+// hue cycling palette — cold violet -> magenta -> aqua
+function pal(t){
+  // t in 0..1 ; returns [r,g,b]
+  const a = (t*TAU);
+  const r = 128 + 110*Math.sin(a + 0.0);
+  const g = 96  + 95 *Math.sin(a + 2.4);
+  const b = 170 + 85 *Math.sin(a + 4.3);
+  return [r,g,b];
+}
+
+// ---------- DOMINO model ----------
+// Each domino: position p, facing direction (unit), state:
+//  angle (rad) of tip lean: 0 = upright, +/-PI/2 = flat. sign = fall direction along normal.
+// Falling propagates to the next domino it hits.
+class Domino{
+  constructor(x,y,dir,hue){
+    this.x=x; this.y=y;
+    this.dir=dir;            // facing angle (the row direction)
+    this.hue=hue;            // 0..1 color phase
+    this.angle=0;            // lean angle, 0 upright
+    this.av=0;               // angular velocity
+    this.fallen=false;
+    this.falling=false;
+    this.h = isSmall? rnd(26,34) : rnd(34,46);   // domino height
+    this.w = this.h*0.34;    // thickness
+    this.restAngle = (Math.random()<0.5?1:-1)*0.0;
+    this.glow=0;             // ignition glow 0..1
+    this.settled=false;
+    this.id=0;
+  }
+  topPoint(){
+    // top center of the slab given lean
+    const lean = this.angle;
+    // local up rotated by lean around base, projected on facing dir
+    const fx=Math.cos(this.dir), fy=Math.sin(this.dir);
+    // upright vector tilts toward facing dir as it falls
+    const ux = -Math.sin(this.dir)*Math.cos(lean) + fx*Math.sin(lean);
+    const uy =  Math.cos(this.dir)*Math.cos(lean) + fy*Math.sin(lean);
+    return [this.x+ux*this.h, this.y+uy*this.h];
+  }
+}
+
+// ---------- field ----------
+let dominoes=[];
+let pulses=[];     // light shockwaves
+let sparks=[];     // particles
+let trails=[];     // fading light lines left by falling tops
+let chainCount=0;
+let timeWarp=1, timeWarpTarget=1;
+
+// spatial hash for neighbor queries
+const CELL=58;
+let grid=new Map();
+function gkey(x,y){ return ((x/CELL)|0)+","+((y/CELL)|0); }
+function rebuildGrid(){
+  grid.clear();
+  for(const d of dominoes){
+    if(d.fallen) continue;
+    const k=gkey(d.x,d.y);
+    let a=grid.get(k); if(!a){a=[];grid.set(k,a);} a.push(d);
+  }
+}
+function neighbors(x,y){
+  const out=[];
+  const cx=(x/CELL)|0, cy=(y/CELL)|0;
+  for(let i=-1;i<=1;i++)for(let j=-1;j<=1;j++){
+    const a=grid.get((cx+i)+","+(cy+j));
+    if(a) for(const d of a) out.push(d);
+  }
+  return out;
+}
+
+// ---------- generate the standing field ----------
+let huePhase=0;
+function spawnRow(x0,y0,dir,count,gap){
+  const fx=Math.cos(dir), fy=Math.sin(dir);
+  for(let i=0;i<count;i++){
+    const x=x0+fx*gap*i, y=y0+fy*gap*i;
+    if(x<-40||x>W+40||y<-40||y>H+40) continue;
+    const d=new Domino(x,y,dir+Math.PI/2, (huePhase + i*0.012)%1);
+    dominoes.push(d);
+  }
+  huePhase=(huePhase+0.06)%1;
+}
+
+function seedField(){
+  dominoes.length=0;
+  const gap = isSmall? 18 : 22;
+  // a flowing field of curved domino rows following sine ridges
+  const rows = isSmall? 14 : 20;
+  for(let r=0;r<rows;r++){
+    const baseY = lerp(H*0.10, H*0.92, r/(rows-1));
+    let x=-20;
+    let prevX=x, prevY=baseY;
+    const amp = lerp(28,70,Math.random());
+    const freq = rnd(0.004,0.009);
+    const phase = rnd(0,TAU);
+    const wob = rnd(0.0015,0.004);
+    while(x<W+40){
+      const y = baseY + Math.sin(x*freq+phase)*amp + Math.sin(x*wob+r)*14;
+      const dx=x-prevX, dy=y-prevY;
+      const dir=Math.atan2(dy,dx);
+      const d=new Domino(x,y,dir+Math.PI/2,(huePhase+x*0.0006)%1);
+      dominoes.push(d);
+      prevX=x; prevY=y;
+      x += gap;
+    }
+    huePhase=(huePhase+0.05)%1;
+  }
+  // a couple of diagonal connector ribs to make branching chains
+  for(let k=0;k<(isSmall?3:6);k++){
+    const x0=rnd(W*0.1,W*0.9), y0=rnd(H*0.1,H*0.5);
+    const ang=rnd(0.4,2.7);
+    spawnRow(x0,y0,ang,Math.floor(rnd(20,46)),gap);
+  }
+  let id=0; for(const d of dominoes) d.id=id++;
+}
+seedField();
+
+// ---------- ignition / propagation ----------
+function ignite(x,y, force){
+  // topple nearest standing dominoes around the point, choose direction outward
+  let lit=0;
+  const ns = neighbors(x,y);
+  // if grid empty (e.g. before first build), brute-ish small scan
+  const pool = ns.length? ns : dominoes;
+  for(const d of pool){
+    if(d.fallen||d.falling) continue;
+    const dx=d.x-x, dy=d.y-y;
+    const dist=Math.hypot(dx,dy);
+    if(dist < (isSmall?34:46)){
+      // direction of fall = away from ignition along its facing axis
+      const fx=Math.cos(d.dir), fy=Math.sin(d.dir);
+      const dot = dx*fx+dy*fy;
+      startFall(d, dot>=0?1:-1, force||1);
+      lit++;
+    }
+  }
+  if(lit>0){ chainCount++; }
+  pulses.push({x,y,r:0,max:isSmall?180:300,life:1,hue:huePhase});
+  for(let i=0;i<22;i++){
+    const a=rnd(0,TAU), sp=rnd(0.6,3.4);
+    sparks.push({x,y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,life:1,hue:(huePhase+rnd(-0.1,0.1)+1)%1,sz:rnd(0.7,2.0)});
+  }
+  return lit;
+}
+
+function startFall(d, sign, force){
+  if(d.fallen||d.falling) return;
+  d.falling=true;
+  d.fallSign=sign;
+  d.av = sign*0.012*(0.6+force*0.5);
+  d.glow=1;
+  d.litAt=performance.now();
+}
+
+// when a domino reaches flat, it pushes neighbors in front of its top point
+function tryPropagate(d){
+  const [tx,ty]=d.topPoint();
+  const ns=neighbors(tx,ty);
+  for(const o of ns){
+    if(o===d||o.fallen||o.falling) continue;
+    const dx=o.x-tx, dy=o.y-ty;
+    const dist=Math.hypot(dx,dy);
+    const reach = (d.h*0.92);
+    if(dist<reach){
+      // must be roughly in fall direction
+      const fx=Math.cos(d.dir)*d.fallSign, fy=Math.sin(d.dir)*d.fallSign;
+      const ddx=o.x-d.x, ddy=o.y-d.y;
+      const dot=ddx*fx+ddy*fy;
+      if(dot>-4){
+        const ofx=Math.cos(o.dir), ofy=Math.sin(o.dir);
+        const odot=(o.x-d.x)*ofx+(o.y-d.y)*ofy;
+        startFall(o, odot>=0?1:-1, 1);
+      }
+    }
+  }
+}
+
+// ---------- pointer: drag draws new domino path ----------
+let drawing=false, lastDraw=null, drawHue=0;
+let pointerMoved=false, downPos=null;
+function addDrawDomino(x,y){
+  if(lastDraw){
+    const dx=x-lastDraw.x, dy=y-lastDraw.y;
+    const dist=Math.hypot(dx,dy);
+    if(dist< (isSmall?16:20)) return;
+    const dir=Math.atan2(dy,dx);
+    const d=new Domino(x,y,dir+Math.PI/2,drawHue);
+    d.id=dominoes.length;
+    dominoes.push(d);
+    // gentle spawn pop
+    d.angle=-0.0;
+    lastDraw={x,y};
+    drawHue=(drawHue+0.02)%1;
+  } else {
+    lastDraw={x,y};
+  }
+}
+function pdown(x,y){
+  downPos={x,y}; pointerMoved=false;
+  drawing=true; lastDraw=null; drawHue=(huePhase+Math.random()*0.3)%1;
+  addDrawDomino(x,y);
+}
+function pmove(x,y){
+  if(!drawing) return;
+  if(downPos){ if(Math.hypot(x-downPos.x,y-downPos.y)>6) pointerMoved=true; }
+  addDrawDomino(x,y);
+}
+function pup(x,y){
+  drawing=false;
+  if(!pointerMoved){
+    // a tap = ignite
+    ignite(x,y,1.2);
+  }
+  lastDraw=null;
+}
+cv.addEventListener('mousedown',e=>pdown(e.clientX,e.clientY));
+window.addEventListener('mousemove',e=>{ mx=e.clientX; my=e.clientY; pmove(e.clientX,e.clientY); });
+window.addEventListener('mouseup',e=>pup(e.clientX,e.clientY));
+cv.addEventListener('touchstart',e=>{e.preventDefault();const t=e.touches[0];pdown(t.clientX,t.clientY);},{passive:false});
+cv.addEventListener('touchmove',e=>{e.preventDefault();const t=e.touches[0];mx=t.clientX;my=t.clientY;pmove(t.clientX,t.clientY);},{passive:false});
+cv.addEventListener('touchend',e=>{e.preventDefault();const t=e.changedTouches[0];pup(t.clientX,t.clientY);},{passive:false});
+window.addEventListener('wheel',e=>{
+  timeWarpTarget = clamp(timeWarpTarget - Math.sign(e.deltaY)*0.18, 0.18, 2.4);
+},{passive:true});
+
+let mx=CX,my=CY;
+let autoBranch=false;
+window.addEventListener('keydown',e=>{
+  if(e.code==='Space'){ e.preventDefault(); autoBranch=!autoBranch; }
+  if(e.code==='KeyR'){ seedField(); }
+});
+
+// occasional automatic ignition so it's always alive on first paint
+let nextAuto=performance.now()+1200;
+
+// ---------- render ----------
+let frame=0, last=performance.now(), fps=60;
+function drawDomino(d, glowBoost){
+  const lean=d.angle;
+  const fx=Math.cos(d.dir), fy=Math.sin(d.dir);
+  // base point
+  const bx=d.x, by=d.y;
+  // up vector with lean
+  const ux = -Math.sin(d.dir)*Math.cos(lean) + fx*Math.sin(lean);
+  const uy =  Math.cos(d.dir)*Math.cos(lean) + fy*Math.sin(lean);
+  // side (thickness) vector perpendicular to facing, in screen
+  const sx = Math.cos(d.dir);
+  const sy = Math.sin(d.dir);
+  const hw=d.w*0.5;
+  const h=d.h;
+  // four corners of the slab
+  const tx=bx+ux*h, ty=by+uy*h;
+  const ax=bx - sx*hw, ay=by - sy*hw;
+  const bx2=bx + sx*hw, by2=by + sy*hw;
+  const cx2=tx + sx*hw, cy2=ty + sy*hw;
+  const dx2=tx - sx*hw, dy2=ty - sy*hw;
+
+  const c=pal(d.hue);
+  const fallenK = d.fallen?0.45:1;
+  const lum = 1 - Math.abs(lean)/(Math.PI/2)*0.5;  // dimmer when flat
+  // body gradient
+  const g=ctx.createLinearGradient(bx,by,tx,ty);
+  const lo=`rgba(${c[0]*0.30|0},${c[1]*0.30|0},${c[2]*0.42|0},${0.92*fallenK})`;
+  const hi=`rgba(${c[0]|0},${c[1]|0},${c[2]|0},${0.96*fallenK})`;
+  g.addColorStop(0,lo); g.addColorStop(1,hi);
+  ctx.beginPath();
+  ctx.moveTo(ax,ay); ctx.lineTo(bx2,by2); ctx.lineTo(cx2,cy2); ctx.lineTo(dx2,dy2); ctx.closePath();
+  ctx.fillStyle=g; ctx.fill();
+
+  // bright top edge (the "live" line)
+  const gl = (d.glow*glowBoost);
+  ctx.strokeStyle=`rgba(${Math.min(255,c[0]+90)|0},${Math.min(255,c[1]+90)|0},${255},${0.55*lum+gl*0.5})`;
+  ctx.lineWidth = 1.1 + gl*1.6;
+  ctx.beginPath(); ctx.moveTo(dx2,dy2); ctx.lineTo(cx2,cy2); ctx.stroke();
+
+  if(gl>0.02){
+    ctx.shadowBlur = 14*gl; ctx.shadowColor=`rgba(${c[0]|0},${c[1]|0},255,${gl})`;
+    ctx.beginPath(); ctx.arc(tx,ty,1.6+gl*2.4,0,TAU);
+    ctx.fillStyle=`rgba(${Math.min(255,c[0]+120)|0},${Math.min(255,c[1]+120)|0},255,${gl})`;
+    ctx.fill(); ctx.shadowBlur=0;
+  }
+}
+
+let standCount=0, fallCount=0;
+const sEl=document.getElementById('sCnt'), fEl=document.getElementById('fCnt'), cEl=document.getElementById('cCnt');
+
+function step(dt){
+  timeWarp += (timeWarpTarget-timeWarp)*0.08;
+  const T=dt*timeWarp;
+  rebuildGrid();
+  standCount=0; fallCount=0;
+
+  for(const d of dominoes){
+    if(d.fallen){ fallCount++; if(d.glow>0) d.glow*=0.90; continue; }
+    if(d.falling){
+      // gravity-ish angular accel
+      const g = 0.0009*T;
+      d.av += d.fallSign*g*(1+Math.abs(Math.sin(d.angle))*1.2);
+      d.angle += d.av*T;
+      d.glow = Math.min(1, d.glow*0.965 + 0.02);
+      // leave a light trail from the top while moving fast
+      if(Math.abs(d.av)>0.02 && frame%1===0){
+        const [tx,ty]=d.topPoint();
+        trails.push({x:tx,y:ty,life:1,hue:d.hue});
+      }
+      // hit the floor
+      if(Math.abs(d.angle)>=Math.PI/2){
+        d.angle = d.fallSign*Math.PI/2;
+        d.av=0; d.falling=false; d.fallen=true;
+        tryPropagate(d);
+      } else {
+        // also propagate progressively past 55deg for snappier chains
+        if(Math.abs(d.angle)>1.0) tryPropagate(d);
+      }
+      fallCount++;
+    } else {
+      standCount++;
+      if(d.glow>0) d.glow*=0.92;
+    }
+  }
+
+  // pulses
+  for(let i=pulses.length-1;i>=0;i--){
+    const p=pulses[i];
+    p.r += (p.max-p.r)*0.06*timeWarp + 1.2*timeWarp;
+    p.life -= 0.018*timeWarp;
+    if(p.life<=0||p.r>=p.max-1) pulses.splice(i,1);
+  }
+  // sparks
+  for(let i=sparks.length-1;i>=0;i--){
+    const s=sparks[i];
+    s.x+=s.vx*T; s.y+=s.vy*T; s.vx*=0.97; s.vy*=0.97; s.vy+=0.02*T;
+    s.life-=0.022*timeWarp;
+    if(s.life<=0) sparks.splice(i,1);
+  }
+  // trails
+  for(let i=trails.length-1;i>=0;i--){
+    trails[i].life-=0.05*timeWarp;
+    if(trails[i].life<=0) trails.splice(i,1);
+  }
+  if(trails.length>900) trails.splice(0,trails.length-900);
+
+  // auto ignition keeps it alive
+  const now=performance.now();
+  if(now>nextAuto){
+    const x=rnd(W*0.12,W*0.88), y=rnd(H*0.12,H*0.88);
+    ignite(x,y,1.0);
+    nextAuto = now + rnd(2600,4800);
+  }
+  // auto-branch: when enabled, randomly ignite near active fronts
+  if(autoBranch && frame%14===0 && fallCount>0){
+    // pick a falling domino and ignite slightly ahead
+    let pick=null,seen=0;
+    for(const d of dominoes){ if(d.falling){ if(Math.random()<1/(++seen)) pick=d; } }
+    if(pick){
+      const [tx,ty]=pick.topPoint();
+      ignite(tx+rnd(-20,20),ty+rnd(-20,20),0.7);
+    }
+  }
+}
+
+function render(){
+  // trail fade — translucent dark fill for motion blur
+  ctx.fillStyle='rgba(7,5,18,0.30)';
+  ctx.fillRect(0,0,W,H);
+
+  // subtle vignette / depth glow at center bottom
+  ctx.globalCompositeOperation='screen';
+
+  // light trails
+  for(const t of trails){
+    const c=pal(t.hue);
+    ctx.fillStyle=`rgba(${c[0]|0},${c[1]|0},255,${0.14*t.life})`;
+    ctx.beginPath(); ctx.arc(t.x,t.y,1.4+ (1-t.life)*1.6,0,TAU); ctx.fill();
+  }
+
+  // pulses (shockwaves)
+  for(const p of pulses){
+    const c=pal(p.hue);
+    const a=easeOut(1-p.life)*p.life;
+    ctx.strokeStyle=`rgba(${c[0]|0},${c[1]+30|0},255,${0.5*a})`;
+    ctx.lineWidth=1.5+ (1-p.life)*2;
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,TAU); ctx.stroke();
+    // inner soft ring
+    ctx.strokeStyle=`rgba(255,${c[1]|0},${c[2]+40|0},${0.18*a})`;
+    ctx.lineWidth=6*p.life;
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.r*0.7,0,TAU); ctx.stroke();
+  }
+  ctx.globalCompositeOperation='source-over';
+
+  // dominoes — fallen first (background), then standing/falling on top
+  // glow boost pulses gently with time
+  const gb = 1;
+  for(const d of dominoes){ if(d.fallen) drawDomino(d,gb); }
+  ctx.globalCompositeOperation='screen';
+  for(const d of dominoes){ if(!d.fallen) drawDomino(d,gb); }
+
+  // sparks
+  for(const s of sparks){
+    const c=pal(s.hue);
+    ctx.fillStyle=`rgba(${Math.min(255,c[0]+80)|0},${Math.min(255,c[1]+80)|0},255,${s.life})`;
+    ctx.beginPath(); ctx.arc(s.x,s.y,s.sz*s.life+0.4,0,TAU); ctx.fill();
+  }
+  ctx.globalCompositeOperation='source-over';
+
+  // cursor halo
+  ctx.globalCompositeOperation='screen';
+  const cg=ctx.createRadialGradient(mx,my,0,mx,my,isSmall?40:64);
+  cg.addColorStop(0,'rgba(180,150,255,0.20)');
+  cg.addColorStop(1,'rgba(180,150,255,0)');
+  ctx.fillStyle=cg; ctx.beginPath(); ctx.arc(mx,my,isSmall?40:64,0,TAU); ctx.fill();
+  ctx.globalCompositeOperation='source-over';
+
+  sEl.textContent=standCount; fEl.textContent=fallCount; cEl.textContent=chainCount;
+}
+
+function loop(now){
+  let dt=(now-last)/16.666; last=now;
+  if(dt>3) dt=3;
+  step(dt);
+  render();
+  frame++;
+  requestAnimationFrame(loop);
+}
+// first paint: clear to bg so it's an instant artwork, then kick an opening ignition
+ctx.fillStyle='#070512'; ctx.fillRect(0,0,W,H);
+// opening cascade so first interaction-free frames are already gorgeous
+setTimeout(()=>{ ignite(W*0.5,H*0.42,1.4); }, 60);
+setTimeout(()=>{ ignite(W*0.28,H*0.7,1.1); }, 520);
+setTimeout(()=>{ ignite(W*0.74,H*0.3,1.1); }, 980);
+requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

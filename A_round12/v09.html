@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Equilibrist — a kinetic mobile</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;background:#0b0a09;overflow:hidden;
+    font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;
+    -webkit-tap-highlight-color:transparent;cursor:crosshair;}
+  #stage{position:fixed;inset:0;display:block;touch-action:none}
+  .ui{position:fixed;color:#efe9dc;mix-blend-mode:difference;pointer-events:none;
+      user-select:none;z-index:5}
+  #brand{top:26px;left:30px}
+  #brand .t{font-size:13px;letter-spacing:.42em;font-weight:700;text-transform:uppercase}
+  #brand .s{font-size:10.5px;letter-spacing:.34em;opacity:.62;margin-top:7px}
+  #hint{bottom:24px;left:30px;font-size:10.5px;letter-spacing:.26em;opacity:.55;
+        text-transform:uppercase;line-height:1.9}
+  #wind{bottom:24px;right:30px;font-size:10.5px;letter-spacing:.24em;opacity:.6;
+        text-transform:uppercase;text-align:right}
+  .bar{display:inline-block;width:54px;height:3px;background:rgba(239,233,220,.25);
+       margin-left:9px;vertical-align:middle;border-radius:2px;overflow:hidden}
+  .bar i{display:block;height:100%;width:30%;background:#efe9dc;border-radius:2px;
+         transition:width .25s ease}
+  @media (max-width:560px){
+    #brand{left:20px;top:20px} #brand .t{font-size:11px;letter-spacing:.32em}
+    #brand .s{font-size:9px;letter-spacing:.22em}
+    #hint{left:20px;bottom:18px;font-size:9px;letter-spacing:.18em;line-height:1.95}
+    #wind{right:20px;bottom:18px;font-size:9px}
+    .bar{width:40px}
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div id="brand" class="ui">
+  <div class="t">Equilibrist</div>
+  <div class="s">a balancing act · after Calder</div>
+</div>
+<div id="hint" class="ui">
+  move — a current of air<br>
+  click — set it swinging<br>
+  scroll — raise the wind · dbl-click — recompose
+</div>
+<div id="wind" class="ui">wind<span class="bar"><i id="wbar"></i></span></div>
+
+<script>
+"use strict";
+/* =========================================================================
+   EQUILIBRIST — a kinetic Calder mobile, physically simulated.
+
+   The mobile is a binary tree of rods. Each rod:
+     - hangs from a pivot,
+     - tilts in-plane (theta) as a torsion pendulum toward torque balance,
+     - slowly precesses in azimuth (phi) so it turns in real 3D space.
+   Endpoints sit on a horizontal circle of radius = arm length; we project
+   with a gentle perspective. Leaves carry hand-cut biomorphic shapes in
+   Calder's palette. Wind (ambient breeze + mouse + clicks + scroll) drives
+   torques; gravity restores; light damping lets it settle.
+   ========================================================================= */
+
+const cv  = document.getElementById('stage');
+const ctx = cv.getContext('2d', { alpha:false });
+
+let W=0,H=0,DPR=1, MOB=false;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  MOB = W < 560;
+  cv.width = Math.round(W*DPR); cv.height = Math.round(H*DPR);
+  cv.style.width=W+'px'; cv.style.height=H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  buildBackdrop();
+  layoutRoot();
+  if(ROOT){ resolve(true); fitToView(); }   // refit existing sculpture to new viewport
+}
+window.addEventListener('resize', resize);
+
+/* ---- Calder palette ---- */
+const PAL = {
+  red:'#d8332a', yellow:'#f3b51c', blue:'#1d63b8',
+  black:'#16140f', white:'#efe7d6', orange:'#e2701f',
+};
+const SHAPE_COLORS = [PAL.red,PAL.yellow,PAL.blue,PAL.white,PAL.orange,PAL.black,
+                      PAL.red,PAL.yellow,PAL.blue,PAL.white]; // weight bright primaries
+
+/* ---- deterministic rng ---- */
+function rng(seed){ let s=seed>>>0||1; return ()=>{ s^=s<<13;s^=s>>>17;s^=s<<5; return ((s>>>0)/4294967296);};}
+
+/* ---- hand-cut flat shapes (local unit coords, cached per leaf) ---- */
+function makeBlob(kind, r, seed){
+  const rand = rng(seed);
+  const pts=[];
+  if(kind===0){ // near-disc
+    const n=24;
+    for(let i=0;i<n;i++){const a=i/n*Math.PI*2;
+      const rr=r*(0.9+0.14*Math.sin(a*2+rand()*6)+0.05*rand());
+      pts.push([Math.cos(a)*rr,Math.sin(a)*rr]);}
+  }else if(kind===1){ // leaf / petal
+    const n=22, top=[],bot=[];
+    for(let i=0;i<=n;i++){const t=i/n; const a=t*Math.PI;
+      const w=Math.sin(a)*r*(0.6+0.08*Math.sin(a*3));
+      top.push([(t*2-1)*r*1.2, -w]); bot.push([(t*2-1)*r*1.2, w]);}
+    return top.concat(bot.reverse());
+  }else if(kind===2){ // crescent
+    const n=26, outer=[],inner=[];
+    for(let i=0;i<=n;i++){const a=(-0.9+1.8*i/n);
+      outer.push([Math.cos(a)*r*1.2, Math.sin(a)*r*1.2]);}
+    for(let i=n;i>=0;i--){const a=(-0.9+1.8*i/n);
+      inner.push([Math.cos(a)*r*0.58, Math.sin(a)*r*0.58 + r*0.42]);}
+    return outer.concat(inner);
+  }else{ // amoeba
+    const n=26;
+    for(let i=0;i<n;i++){const a=i/n*Math.PI*2;
+      const rr=r*(0.82+0.3*Math.sin(a+seed*0.7)+0.12*Math.cos(a*3+rand()*3));
+      pts.push([Math.cos(a)*rr*1.08,Math.sin(a)*rr*0.84]);}
+  }
+  return pts;
+}
+
+/* ============================ tree ============================ */
+let ROOT=null, NODES=[], LEAVES=[], idc=0;
+
+class Node{
+  constructor(depth, seed){
+    this.id=idc++; this.depth=depth; this.seed=seed>>>0;
+    this.children=[];
+    this.theta=0; this.thv=0; this.tRest=0;     // in-plane tilt of rod
+    // azimuth oscillates in a cone around broadside so rods read horizontal
+    this.phi0=(Math.random()<0.5?0:Math.PI) + (Math.random()-0.5)*0.5; // broadside, L or R facing
+    this.phi=this.phi0; this.phv=0; this.phiAmp=0.5+Math.random()*0.7;  // swing amplitude (rad)
+  }
+}
+
+function buildMobile(seed, scale){
+  function rec(d, sd){
+    const n=new Node(d, sd);
+    const r2=rng(sd);
+    // keep the tree deep & full: never leaf before depth 2, force branch on one side
+    const leafChance = d<2?0 : d>=6?1 : (0.12 + (d-2)*0.16);
+    if(r2()<leafChance){
+      n.leaf=true;
+      n.kind=(Math.floor(r2()*4))|0;
+      n.r=(14+r2()*18)*scale*(1-d*0.04);
+      n.color=SHAPE_COLORS[Math.floor(r2()*SHAPE_COLORS.length)];
+      n.mass=Math.max(0.5,(n.r*n.r)/240)*(n.color===PAL.black?1.25:1);
+      n.blob=makeBlob(n.kind,n.r,sd);
+      n.drop=(16+r2()*22)*scale;
+      n.spin=(r2()-0.5)*0.9;            // intrinsic slow spin of the shape
+      LEAVES.push(n);
+      return n;
+    }
+    n.leaf=false;
+    const a=rec(d+1,(sd*1103515245+12345)>>>0);
+    const b=rec(d+1,(sd*2654435761+1)>>>0);
+    n.children=[a,b];
+    const ma=mass(a), mb=mass(b);
+    const span=(190-d*20)*scale*(0.85+r2()*0.45);
+    const tot=ma+mb;
+    n.lLeft = span*(mb/tot);           // lever law: heavy side near pivot
+    n.lRight= span*(ma/tot);
+    // longer, varied strings so the sculpture cascades vertically
+    n.dropL=(42+r2()*52)*scale*(1+d*0.05);
+    n.dropR=(42+r2()*52)*scale*(1+d*0.05);
+    n.tRest=(r2()-0.5)*0.05;
+    n.phiRate=(r2()-0.5)*0.006;        // base precession speed
+    n.massCache=ma+mb;
+    return n;
+  }
+  return rec(0, seed);
+}
+function mass(n){ return n.leaf? n.mass : (n.massCache!=null?n.massCache:(mass(n.children[0])+mass(n.children[1]))); }
+
+let sceneScale=1, hangX=0, hangY=0;
+let fitScale=1, fitDX=0, fitDY=0;   // post-build transform to fill the frame
+function layoutRoot(){
+  sceneScale=Math.min(1.2, Math.max(0.55, H/800));
+  hangX=W*0.5;
+  hangY=MOB?H*0.075:H*0.085;
+}
+function rebuild(){
+  layoutRoot();
+  let best=null, bestN=0;
+  for(let attempt=0; attempt<8; attempt++){
+    idc=0; NODES=[]; LEAVES=[];
+    const seed=((Date.now()&0xffffff) ^ (0x51ed3b + attempt*2654435761))>>>0;
+    const root=buildMobile(seed, 1);
+    if(LEAVES.length>bestN){ bestN=LEAVES.length; best={root, nodes:NODES.slice(), leaves:LEAVES.slice()}; }
+    if(LEAVES.length>=16 && LEAVES.length<=44){ best={root, nodes:NODES.slice(), leaves:LEAVES.slice()}; break; }
+  }
+  ROOT=best.root; NODES=best.nodes; LEAVES=best.leaves;
+  // initial life + settle the tilts toward rest so first paint reads balanced
+  for(const n of NODES) if(!n.leaf){
+    n.thv=(Math.random()-0.5)*0.02; n.theta=n.tRest+(Math.random()-0.5)*0.05;
+    n.phi=n.phi0+(Math.random()-0.5)*n.phiAmp*0.7; n.phv=(Math.random()-0.5)*0.01;
+  }
+  // compute a fit transform: run a raw resolve (no sway, identity fit) then measure
+  fitScale=1; fitDX=0; fitDY=0; rootSway=0; rootSwayV=0.004;
+  resolve(true);
+  fitToView();
+}
+
+/* Measure the resolved sculpture's bounds and pick scale/offset so it
+   comfortably fills the viewport, hung from near the top.                 */
+function fitToView(){
+  let minX=1e9,maxX=-1e9,minY=1e9,maxY=-1e9;
+  for(const lf of LEAVES){
+    if(!lf.lp) continue;
+    const r=(lf.r||10)*lf.pscale;
+    minX=Math.min(minX,lf.px-r); maxX=Math.max(maxX,lf.px+r);
+    minY=Math.min(minY,lf.py-r); maxY=Math.max(maxY,lf.py+r);
+  }
+  for(const n of NODES){ if(n.leaf)continue;
+    if(n.lend){minX=Math.min(minX,n.lend.x);maxX=Math.max(maxX,n.lend.x);minY=Math.min(minY,n.lend.y);maxY=Math.max(maxY,n.lend.y);}
+    if(n.rend){minX=Math.min(minX,n.rend.x);maxX=Math.max(maxX,n.rend.x);minY=Math.min(minY,n.rend.y);maxY=Math.max(maxY,n.rend.y);}
+  }
+  if(minX>maxX) return;
+  const bw=maxX-minX, bh=maxY-minY;
+  const marginX=W*(MOB?0.08:0.11), topY=hangY+ (MOB?34:52), botY=H*(MOB?0.93:0.94);
+  const availW=W-2*marginX, availH=botY-topY;
+  fitScale=Math.min(availW/Math.max(1,bw), availH/Math.max(1,bh), 1.8);
+  // center horizontally on the centroid; vertically center within the band
+  const cx=(minX+maxX)/2, cy=(minY+maxY)/2;
+  fitDX = W*0.5 - cx*fitScale;
+  fitDY = (topY+botY)/2 - cy*fitScale;   // vertical centroid -> middle of band
+}
+
+/* ============================ interaction ============================ */
+const mouse={x:0,y:0,px:0,py:0,vx:0,vy:0,inside:false,down:false};
+let windBase=0.20, windPhase=0, gust=0;
+
+function onMove(x,y){
+  mouse.px=mouse.x; mouse.py=mouse.y; mouse.x=x; mouse.y=y;
+  mouse.vx=mouse.x-mouse.px; mouse.vy=mouse.y-mouse.py; mouse.inside=true;
+}
+cv.addEventListener('mousemove',e=>onMove(e.clientX,e.clientY));
+cv.addEventListener('mouseleave',()=>mouse.inside=false);
+cv.addEventListener('touchmove',e=>{if(e.touches[0])onMove(e.touches[0].clientX,e.touches[0].clientY); e.preventDefault();},{passive:false});
+
+function poke(x,y,strength){
+  gust=Math.min(1.5,gust+(strength||0.9));
+  const side=(x-hangX)>0?1:-1;
+  for(const n of NODES) if(!n.leaf){ n.thv += side*0.06*(0.4+Math.random()*0.9); n.phv += (Math.random()-0.5)*0.05; }
+  ripple(x,y);
+}
+cv.addEventListener('mousedown',e=>{mouse.down=true;poke(e.clientX,e.clientY,1.0);});
+window.addEventListener('mouseup',()=>mouse.down=false);
+cv.addEventListener('touchstart',e=>{if(e.touches[0])poke(e.touches[0].clientX,e.touches[0].clientY,1.1);},{passive:true});
+window.addEventListener('wheel',e=>{ windBase=Math.min(1,Math.max(0.04,windBase+(e.deltaY>0?0.06:-0.06))); updateWindBar(); },{passive:true});
+cv.addEventListener('dblclick',()=>{ rebuild(); resolve(); });
+let lastTap=0;
+cv.addEventListener('touchend',()=>{ const t=performance.now(); if(t-lastTap<330){rebuild();resolve();} lastTap=t; });
+
+const wbar=document.getElementById('wbar');
+function updateWindBar(){ wbar.style.width=(8+windBase*92)+'%'; }
+updateWindBar();
+
+const ripples=[];
+function ripple(x,y){ ripples.push({x,y,r:6,a:0.5}); if(ripples.length>14)ripples.shift(); }
+
+/* ============================ simulation ============================ */
+const G=0.0017, DAMP=0.992, SWAY_DAMP=0.993;
+let rootSway=0, rootSwayV=0;
+let tNow=0;
+
+function step(dt){
+  windPhase+=0.012*dt; tNow+=dt; gust*=0.94;
+  let mwind=0; if(mouse.inside) mwind=Math.max(-1,Math.min(1,mouse.vx*0.05));
+  const air=windBase*0.9+gust*0.6;
+  const breeze=(Math.sin(windPhase*0.7)*0.6+Math.sin(windPhase*1.9+1.3)*0.3+Math.sin(windPhase*3.3+2.7)*0.18)*air;
+
+  // whole-mobile sway off the ceiling
+  const swayDrive=breeze*0.010+mwind*0.014+gust*0.012*(mouse.x>hangX?1:-1);
+  rootSwayV += -rootSway*G*4 + swayDrive; rootSwayV*=SWAY_DAMP;
+  rootSway += rootSwayV*dt; rootSway=Math.max(-0.5,Math.min(0.5,rootSway));
+
+  for(const n of NODES){
+    if(n.leaf){ continue; }
+    // torsion pendulum: restore tilt to rest
+    let acc=-(n.theta-n.tRest)*G*(1+1/(1+n.depth));
+    const ph=n.id*1.7;
+    acc+=breeze*0.0010*Math.sin(windPhase*1.4+ph)*(1.6/(1+n.depth*0.6));
+    acc+=mwind*0.0012/(1+n.depth*0.4);
+    acc+=gust*0.0012*Math.sin(windPhase*4+ph)/(1+n.depth*0.3);
+    n.thv+=acc*dt; n.thv*=DAMP; n.theta+=n.thv*dt;
+    const lim=0.6;
+    if(n.theta>lim){n.theta=lim;n.thv*=-0.4;}
+    if(n.theta<-lim){n.theta=-lim;n.thv*=-0.4;}
+    // azimuth: a torsional swing in a cone around broadside (phi0).
+    // wind nudges it; a soft spring pulls it back so rods stay readable.
+    let pacc=(breeze*0.0012+mwind*0.0014+gust*0.0010)*Math.sin(windPhase*0.8+ph)/(1+n.depth*0.25);
+    pacc += -(n.phi-n.phi0)*0.0009;                 // restoring spring to broadside
+    n.phv = n.phv*0.99 + pacc*dt;
+    n.phi += n.phv*dt;
+    const pl=n.phiAmp;                                // clamp swing to the cone
+    if(n.phi> n.phi0+pl){n.phi=n.phi0+pl; n.phv*=-0.4;}
+    if(n.phi< n.phi0-pl){n.phi=n.phi0-pl; n.phv*=-0.4;}
+  }
+
+  for(const r of ripples){ r.r+=2.6*dt; r.a*=0.93; }
+  while(ripples.length && ripples[0].a<0.02) ripples.shift();
+}
+
+/* ============================ projection ============================ */
+/* x,y,z world -> screen. Bounded perspective, then global sway about the
+   ceiling hook so the whole sculpture rocks as one body.                 */
+const sway={cs:1,sn:0};
+const F=900;
+let APPLY_FIT=true;   // disabled during the measurement pass
+function project(x,y,z){
+  const denom=F-z; const s=denom>120? F/denom : F/120; // clamp, never negative
+  let px=hangX+(x-hangX)*s;
+  let py=hangY+(y-hangY)*s;
+  const dx=px-hangX, dy=py-hangY;
+  let sx=hangX+dx*sway.cs-dy*sway.sn;
+  let sy=hangY+dx*sway.sn+dy*sway.cs;
+  if(APPLY_FIT){ sx=sx*fitScale+fitDX; sy=sy*fitScale+fitDY; }
+  return { x:sx, y:sy, s: s*(APPLY_FIT?fitScale:1) };
+}
+
+/* ============================ resolve geometry ============================ */
+function resolve(raw){
+  APPLY_FIT = !raw;
+  sway.cs=Math.cos(rootSway); sway.sn=Math.sin(rootSway);
+  const startY=hangY+(MOB?42:56)*sceneScale;
+
+  function place(n, ox,oy,oz){
+    const sp=project(ox,oy,oz);
+    n.sx=sp.x; n.sy=sp.y; n.sc=Math.max(0.05,sp.s); n.z=oz;
+    if(n.leaf){
+      const p=project(ox, oy+n.drop, oz);
+      n.px=p.x; n.py=p.y; n.pscale=Math.max(0.05,p.s);
+      n.attach=sp; n.lp=p;
+      return;
+    }
+    const ct=Math.cos(n.theta), st=Math.sin(n.theta);
+    const cp=Math.cos(n.phi),   spn=Math.sin(n.phi);
+    // rod lies along a horizontal axis turned by phi (3D), tilted by theta.
+    // left end (negative side), right end (positive side)
+    // horizontal component along screen-x = cos(phi); depth along z = sin(phi)
+    function end(len, sign){
+      const horiz=sign*len*cp*ct;     // screen-x offset
+      const vert =sign*len*st;        // screen-y offset (tilt)
+      const depth=sign*len*spn*0.9;   // z offset, modest -> bounded
+      return {x:ox+horiz, y:oy+vert, z:oz+depth};
+    }
+    const L=end(n.lLeft,-1), R=end(n.lRight,+1);
+    n.lend=project(L.x,L.y,L.z); n.rend=project(R.x,R.y,R.z);
+    n.lendZ=L.z; n.rendZ=R.z;
+    place(n.children[0], L.x, L.y+n.dropL, L.z);
+    place(n.children[1], R.x, R.y+n.dropR, R.z);
+  }
+  place(ROOT, hangX, startY, 0);
+}
+
+/* ============================ rendering ============================ */
+let bg=null;
+function buildBackdrop(){
+  bg=document.createElement('canvas');
+  bg.width=Math.max(2,Math.round(W*DPR)); bg.height=Math.max(2,Math.round(H*DPR));
+  const g=bg.getContext('2d'); g.setTransform(DPR,0,0,DPR,0,0);
+  // deep warm gallery wall
+  const grd=g.createRadialGradient(W*0.5,H*0.30,60, W*0.5,H*0.5,Math.max(W,H)*0.85);
+  grd.addColorStop(0,'#23201a'); grd.addColorStop(0.5,'#16130f'); grd.addColorStop(1,'#070708');
+  g.fillStyle=grd; g.fillRect(0,0,W,H);
+  // a soft spotlight pool where the sculpture hangs — makes primaries glow
+  const spot=g.createRadialGradient(W*0.5,H*0.46,40, W*0.5,H*0.46,Math.max(W,H)*0.55);
+  spot.addColorStop(0,'rgba(120,104,72,0.20)');
+  spot.addColorStop(0.45,'rgba(86,74,52,0.08)');
+  spot.addColorStop(1,'rgba(0,0,0,0)');
+  g.fillStyle=spot; g.fillRect(0,0,W,H);
+  // film grain
+  g.globalAlpha=0.045;
+  for(let i=0;i<1400;i++){ g.fillStyle=Math.random()<0.5?'#000':'#fff'; g.fillRect(Math.random()*W,Math.random()*H,1,1); }
+  g.globalAlpha=1;
+  // floor sheen
+  const fg=g.createLinearGradient(0,H*0.6,0,H);
+  fg.addColorStop(0,'rgba(64,55,40,0)'); fg.addColorStop(1,'rgba(80,66,44,0.14)');
+  g.fillStyle=fg; g.fillRect(0,H*0.6,W,H*0.4);
+  // top vignette so the ceiling fixture reads
+  const tv=g.createLinearGradient(0,0,0,H*0.25);
+  tv.addColorStop(0,'rgba(0,0,0,0.35)'); tv.addColorStop(1,'rgba(0,0,0,0)');
+  g.fillStyle=tv; g.fillRect(0,0,W,H*0.25);
+}
+
+function drawBlob(n){
+  const p=n.lp; if(!p) return;
+  const sc=p.s;
+  // 3D read: shape "turns" -> horizontal squash by |cos(spin angle)|, never 0/neg
+  const ang=windPhase*0.6 + n.id*0.9 + n.phi*0.6;
+  const face=Math.cos(ang);
+  const squash=0.32+0.68*Math.abs(face);
+  ctx.save();
+  ctx.translate(p.x,p.y);
+  ctx.scale(sc*squash, sc);
+  ctx.shadowColor='rgba(0,0,0,0.5)';
+  ctx.shadowBlur=Math.max(0,9*sc); ctx.shadowOffsetX=3*sc; ctx.shadowOffsetY=6*sc;
+  const pts=n.blob;
+  ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
+  for(let i=1;i<pts.length;i++){ const a=pts[i-1],b=pts[i];
+    ctx.quadraticCurveTo(a[0],a[1],(a[0]+b[0])/2,(a[1]+b[1])/2); }
+  ctx.closePath();
+  ctx.fillStyle=n.color; ctx.fill();
+  ctx.shadowColor='transparent';
+  ctx.lineWidth=1.1; ctx.strokeStyle=n.color===PAL.white?'rgba(0,0,0,0.18)':'rgba(0,0,0,0.34)'; ctx.stroke();
+  // sheen
+  const sg=ctx.createLinearGradient(-n.r,-n.r,n.r,n.r);
+  sg.addColorStop(0,'rgba(255,255,255,0.18)'); sg.addColorStop(0.5,'rgba(255,255,255,0)');
+  ctx.fillStyle=sg; ctx.fill();
+  // back-face darkening when edge-on (reads like the painted reverse)
+  if(face<0){ ctx.fillStyle='rgba(0,0,0,'+(0.22*(1-Math.abs(face))).toFixed(3)+')'; ctx.fill(); }
+  ctx.restore();
+}
+
+function line(a,b,w){ ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.lineWidth=Math.max(0.4,w); ctx.stroke(); }
+function dot(x,y,r,c){ if(r<=0)return; ctx.fillStyle=c; ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.fill(); }
+
+function draw(){
+  ctx.drawImage(bg,0,0,W,H);
+
+  // floor shadow of the whole sculpture (soft radial — no costly blur filter)
+  ctx.save();
+  const sx0=hangX+rootSway*120, sy0=H*0.945, sw0=W*0.20, sh0=24;
+  const sg0=ctx.createRadialGradient(sx0,sy0,2, sx0,sy0,sw0);
+  sg0.addColorStop(0,'rgba(0,0,0,0.30)'); sg0.addColorStop(0.6,'rgba(0,0,0,0.12)'); sg0.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=sg0;
+  ctx.save(); ctx.translate(sx0,sy0); ctx.scale(1,sh0/sw0);
+  ctx.beginPath(); ctx.arc(0,0,sw0,0,Math.PI*2); ctx.fill(); ctx.restore();
+  ctx.restore();
+
+  // ceiling fixture + lead wire to root
+  ctx.strokeStyle='rgba(239,231,214,0.5)'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(hangX-26,hangY-5); ctx.lineTo(hangX+26,hangY-5); ctx.stroke();
+  ctx.strokeStyle='rgba(225,219,205,0.6)';
+  line({x:hangX,y:hangY-5},{x:ROOT.sx,y:ROOT.sy},1.4);
+
+  // wires (rods + strings) behind shapes
+  ctx.lineCap='round';
+  (function wires(n){
+    if(n.leaf){
+      ctx.strokeStyle='rgba(225,219,205,0.78)';
+      line(n.attach,n.lp,1.1*n.pscale);
+      dot(n.attach.x,n.attach.y,1.3,'rgba(225,219,205,0.85)');
+      return;
+    }
+    const a=n.lend,b=n.rend;
+    // rod: black wire + faint top sheen
+    ctx.strokeStyle='rgba(18,16,12,0.95)'; line(a,b,(2.6-n.depth*0.25)*n.sc);
+    ctx.strokeStyle='rgba(190,182,158,0.32)'; line({x:a.x,y:a.y-0.8},{x:b.x,y:b.y-0.8},0.7*n.sc);
+    dot(n.sx,n.sy,2.0*n.sc,'rgba(18,16,12,1)');
+    // strings to children
+    ctx.strokeStyle='rgba(225,219,205,0.7)';
+    line(a,{x:n.children[0].sx,y:n.children[0].sy},1.0*n.sc);
+    line(b,{x:n.children[1].sx,y:n.children[1].sy},1.0*n.sc);
+    wires(n.children[0]); wires(n.children[1]);
+  })(ROOT);
+
+  // shapes painted back-to-front by depth
+  LEAVES.sort((p,q)=> (p.z||0)-(q.z||0));
+  for(const lf of LEAVES) drawBlob(lf);
+
+  // air ripples
+  for(const r of ripples){ ctx.strokeStyle=`rgba(239,231,214,${r.a})`; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.arc(r.x,r.y,Math.max(0.5,r.r),0,7); ctx.stroke(); }
+
+  // cursor wind streak
+  if(mouse.inside && (Math.abs(mouse.vx)+Math.abs(mouse.vy))>2){
+    ctx.strokeStyle='rgba(239,231,214,0.10)'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(mouse.px,mouse.py); ctx.lineTo(mouse.x,mouse.y); ctx.stroke();
+  }
+}
+
+/* ============================ loop ============================ */
+let last=performance.now();
+function frame(now){
+  let dt=(now-last)/16.6667; last=now; if(dt>3)dt=3;
+  mouse.vx*=0.6; mouse.vy*=0.6;
+  step(dt); resolve(); draw();
+  requestAnimationFrame(frame);
+}
+
+/* ---- boot: first paint = finished, already-breathing sculpture ---- */
+resize();          // sets dims + backdrop
+rebuild();         // builds tree, settles tilts, computes fit transform
+resolve(); draw(); // paint the finished sculpture immediately
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

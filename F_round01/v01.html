@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>静かな鯉の池</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400&display=swap" rel="stylesheet">
+<style>
+  :root{ --cap: rgba(232,236,228,.62); }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{height:100%;overflow:hidden;background:#2f3a33;}
+  #pond{position:fixed;inset:0;width:100%;height:100%;display:block;cursor:default;touch-action:none;}
+  #caption{
+    position:fixed;left:50%;bottom:26px;transform:translateX(-50%);
+    color:var(--cap);
+    font:300 11px/1.5 "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+    letter-spacing:.34em;
+    text-transform:lowercase;
+    padding:7px 18px;border-radius:99px;
+    background:rgba(20,30,26,.26);
+    backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px);
+    border:1px solid rgba(255,255,255,.05);
+    pointer-events:none;white-space:nowrap;user-select:none;
+    text-shadow:0 1px 2px rgba(0,0,0,.35);
+  }
+  @media (max-width:430px){
+    #caption{font-size:9px;letter-spacing:.26em;bottom:18px;padding:6px 14px;}
+  }
+</style>
+</head>
+<body>
+<canvas id="pond"></canvas>
+<div id="caption">静かな鯉の池 ── ただ、ゆっくりと</div>
+<script>
+'use strict';
+(()=>{
+const TAU=Math.PI*2;
+const cv=document.getElementById('pond');
+const ctx=cv.getContext('2d');
+
+/* ---- layered offscreen buffers ---- */
+const bottomCan=document.createElement('canvas'); const bctx=bottomCan.getContext('2d');
+const grainCan=document.createElement('canvas');  const gctx=grainCan.getContext('2d');
+
+let W=0,H=0,DPR=1;
+let rng=mulberry32(20260620);
+
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+const R=(lo,hi)=>lo+(hi-lo)*rng();
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const lerp=(a,b,t)=>a+(b-a)*t;
+const angDiff=(a,b)=>{let d=a-b;while(d>Math.PI)d-=TAU;while(d<-Math.PI)d+=TAU;return d;};
+
+/* ============================================================
+   POND BOTTOM  — turbid water seen from above, muted palette,
+   soft depth patches, faint suspended sediment, blurred stones
+   ============================================================ */
+function paintBottom(){
+  const w=W,h=H;
+  bottomCan.width=w; bottomCan.height=h;
+  const c=bctx;
+  c.clearRect(0,0,w,h);
+  // base turbid gradient (olive-teal, lighter at center like overhead light through murk)
+  const g=c.createRadialGradient(w*0.46,h*0.40,0,w*0.5,h*0.52,Math.max(w,h)*0.85);
+  g.addColorStop(0.00,'#56685a');
+  g.addColorStop(0.42,'#465a4f');
+  g.addColorStop(0.74,'#39483f');
+  g.addColorStop(1.00,'#2a342d');
+  c.fillStyle=g; c.fillRect(0,0,w,h);
+
+  // large soft depth blobs (darker pockets — silt / deeper water)
+  c.save();
+  c.filter='blur('+Math.round(Math.max(w,h)*0.02)+'px)';
+  const nb=10;
+  for(let i=0;i<nb;i++){
+    const x=R(0,w),y=R(0,h),r=Math.max(w,h)*R(0.10,0.26);
+    const dark=rng()<0.62;
+    const bg=c.createRadialGradient(x,y,0,x,y,r);
+    if(dark){
+      bg.addColorStop(0,'rgba(26,36,28,0.30)');
+      bg.addColorStop(1,'rgba(26,36,28,0)');
+    }else{
+      bg.addColorStop(0,'rgba(108,124,104,0.16)');
+      bg.addColorStop(1,'rgba(108,124,104,0)');
+    }
+    c.fillStyle=bg; c.beginPath(); c.arc(x,y,r,0,TAU); c.fill();
+  }
+  c.restore();
+
+  // faint blurred stones on the floor — give depth + something for fish to drift over
+  c.save();
+  c.filter='blur('+Math.round(Math.max(w,h)*0.006+1)+'px)';
+  const ns=Math.round(w*h/240000)+5;
+  for(let i=0;i<ns;i++){
+    const x=R(0,w),y=R(0,h),r=R(16,54),rot=R(0,TAU);
+    const ry=r*R(0.6,0.92);
+    c.save(); c.translate(x,y); c.rotate(rot);
+    // soft contact shadow
+    c.fillStyle='rgba(18,24,18,0.22)';
+    c.beginPath(); c.ellipse(r*0.12,ry*0.16,r*1.04,ry*1.04,0,0,TAU); c.fill();
+    const li=R(30,46), sat=R(4,12), hue=R(70,100);
+    const sg=c.createRadialGradient(-r*0.3,-ry*0.34,r*0.05,0,0,r*1.1);
+    sg.addColorStop(0,'hsl('+hue+','+sat+'%,'+(li+12)+'%)');
+    sg.addColorStop(0.7,'hsl('+hue+','+sat+'%,'+li+'%)');
+    sg.addColorStop(1,'hsl('+hue+','+(sat+4)+'%,'+(li-12)+'%)');
+    c.fillStyle=sg;
+    c.beginPath(); c.ellipse(0,0,r,ry,0,0,TAU); c.fill();
+    c.restore();
+  }
+  c.restore();
+
+  // suspended sediment specks (very faint, painterly)
+  const np=Math.round(w*h/520);
+  for(let i=0;i<np;i++){
+    const x=R(0,w),y=R(0,h),r=R(0.4,1.9);
+    const light=rng()<0.5;
+    c.fillStyle=light
+      ? 'rgba(206,214,190,'+(rng()*0.05).toFixed(3)+')'
+      : 'rgba(20,28,18,'+(rng()*0.08).toFixed(3)+')';
+    c.beginPath(); c.arc(x,y,r,0,TAU); c.fill();
+  }
+}
+
+/* static monochrome grain overlay (regenerated on resize) */
+function paintGrain(){
+  const gw=Math.max(2,Math.round(W/2)), gh=Math.max(2,Math.round(H/2));
+  grainCan.width=gw; grainCan.height=gh;
+  const img=gctx.createImageData(gw,gh);
+  const d=img.data;
+  for(let i=0;i<d.length;i+=4){
+    const v=200+((rng()*55)|0);
+    d[i]=d[i+1]=d[i+2]=v;
+    d[i+3]=(rng()*12)|0;        // very low alpha — subtle texture
+  }
+  gctx.putImageData(img,0,0);
+}
+
+/* ============================================================
+   FLOATING TRANSLUCENT DISCS  (the "water droplet" discs)
+   slow drifting, soft rim highlight, depth-blurred
+   ============================================================ */
+let discs=[];
+function makeDiscs(){
+  discs=[];
+  const n=Math.round(clamp(W*H/120000,7,16));
+  for(let i=0;i<n;i++){
+    const depth=rng();                 // 0 near surface .. 1 deep
+    discs.push({
+      x:R(0,W), y:R(0,H),
+      r:R(0.018,0.07)*Math.min(W,H)*(1.0-depth*0.35),
+      depth,
+      vx:R(-1,1)*4*(0.4+depth*0.6),
+      vy:R(-1,1)*4*(0.4+depth*0.6),
+      drift:R(0,TAU), driftV:R(0.05,0.16)*(rng()<0.5?-1:1),
+      alpha:lerp(0.30,0.10,depth)
+    });
+  }
+}
+function updateDisc(d,dt){
+  d.drift+=d.driftV*dt;
+  d.x+=(d.vx+Math.cos(d.drift)*2.2)*dt;
+  d.y+=(d.vy+Math.sin(d.drift*0.8)*2.2)*dt;
+  const m=d.r;
+  if(d.x<-m)d.x=W+m; if(d.x>W+m)d.x=-m;
+  if(d.y<-m)d.y=H+m; if(d.y>H+m)d.y=-m;
+}
+function drawDisc(c,d){
+  const blur=d.depth*5.5;
+  c.save();
+  if(blur>0.3)c.filter='blur('+blur.toFixed(1)+'px)';
+  // soft body
+  const bg=c.createRadialGradient(d.x-d.r*0.25,d.y-d.r*0.28,d.r*0.05,d.x,d.y,d.r);
+  bg.addColorStop(0,'rgba(214,226,208,'+(d.alpha*0.9).toFixed(3)+')');
+  bg.addColorStop(0.55,'rgba(150,170,150,'+(d.alpha*0.42).toFixed(3)+')');
+  bg.addColorStop(1,'rgba(120,140,124,0)');
+  c.fillStyle=bg;
+  c.beginPath(); c.arc(d.x,d.y,d.r,0,TAU); c.fill();
+  // rim highlight (the meniscus / surface-tension ring)
+  c.lineWidth=Math.max(0.8,d.r*0.04);
+  c.strokeStyle='rgba(236,244,230,'+(d.alpha*0.9).toFixed(3)+')';
+  c.beginPath(); c.arc(d.x,d.y,d.r*0.93,0,TAU); c.stroke();
+  // tiny inner glint
+  c.fillStyle='rgba(248,252,244,'+(d.alpha*0.85).toFixed(3)+')';
+  c.beginPath(); c.arc(d.x-d.r*0.34,d.y-d.r*0.36,d.r*0.10,0,TAU); c.fill();
+  c.restore();
+}
+
+/* ============================================================
+   KOI  — procedural body, swaying tail/fins, nishikigoi patterns
+   ============================================================ */
+function koiPalette(type){
+  if(type==='kohaku')   return {body:['#fdfaf3','#f3ebdc','#d8cbb2'], fin:'255,250,242',
+      patches:patchSet(3,4,'rgba(214,58,28,0.92)',0.12,0.24)};
+  if(type==='orange')   return {body:['#ffc879','#f59433','#c95e12'], fin:'255,180,90',
+      patches:[]};
+  if(type==='asagi')    return {body:['#9fb0bd','#728698','#3f5364'], fin:'170,186,200',
+      patches:redBelly()};
+  if(type==='showa'){
+    const p=patchSet(2,3,'rgba(206,52,24,0.9)',0.12,0.22)
+      .concat(patchSet(3,4,'rgba(24,26,30,0.86)',0.08,0.18));
+    return {body:['#f7f2e8','#e9dfcd','#cdbfa6'], fin:'245,238,226', patches:p};
+  }
+  if(type==='platinum') return {body:['#ffffff','#f0f1ee','#cdd2cb'], fin:'255,255,255',
+      patches:[]};
+  // tancho: white with single red crown
+  return {body:['#fdfaf3','#efe7d7','#d2c6ad'], fin:'255,248,238',
+      patches:[{s:0.16,o:0,r:0.15,col:'rgba(212,46,22,0.95)'}]};
+}
+function patchSet(min,max,col,rmin,rmax){
+  const n=min+((rng()*(max-min+1))|0); const p=[];
+  for(let i=0;i<n;i++)p.push({s:R(0.08,0.74),o:R(-0.55,0.55),r:R(rmin,rmax),col});
+  return p;
+}
+function redBelly(){const p=[];for(let i=0;i<4;i++)p.push({s:R(0.12,0.7),o:R(0.2,0.7),r:R(0.06,0.12),col:'rgba(196,72,40,0.55)'});return p;}
+
+function makeKoi(type,len,depth){
+  const pal=koiPalette(type);
+  return {
+    type, len, depth,                       // depth 0 near surface .. 1 deep
+    x:R(W*0.12,W*0.88), y:R(H*0.12,H*0.88),
+    a:R(0,TAU),
+    phase:R(0,10), speed:R(14,22), spT:R(16,26),
+    turn:0, changeT:R(0,3), po:R(0,TAU),
+    speedN:0.3,
+    body:pal.body, fin:pal.fin, patches:pal.patches
+  };
+}
+let koi=[];
+
+function updateKoi(f,dt){
+  f.changeT-=dt;
+  if(f.changeT<=0){
+    f.spT=14+R(0,26);
+    if(rng()<0.12)f.spT=44+R(0,30);   // occasional gentle glide-burst
+    f.changeT=2.4+R(0,4.5);
+  }
+  f.turn+=(rng()-0.5)*2.4*dt;
+  f.turn*=Math.exp(-dt*1.3);
+  let ta=f.a+f.turn;
+
+  // gently steer away from edges, back toward center
+  const m=Math.min(W,H)*0.12;
+  if(f.x<m||f.y<m||f.x>W-m||f.y>H-m)
+    ta=Math.atan2(H*0.5-f.y,W*0.5-f.x);
+
+  // soft separation from other koi (keep it serene, not crowded)
+  for(const g of koi){
+    if(g===f)continue;
+    const dx=f.x-g.x,dy=f.y-g.y, d2=dx*dx+dy*dy;
+    const sep=(f.len+g.len)*0.55;
+    if(d2<sep*sep && d2>0.01){ ta=Math.atan2(dy,dx); break; }
+  }
+
+  const da=angDiff(ta,f.a);
+  const mt=0.9*dt;
+  f.a+=clamp(da,-mt,mt);
+  f.speed+=(f.spT-f.speed)*Math.min(1,dt*1.4);
+  f.x+=Math.cos(f.a)*f.speed*dt;
+  f.y+=Math.sin(f.a)*f.speed*dt;
+  f.x=clamp(f.x,-f.len,W+f.len);
+  f.y=clamp(f.y,-f.len,H+f.len);
+  f.speedN=clamp(f.speed/90,0,1);
+  f.phase+=dt*(2.2+f.speed*0.05)*2.0;
+}
+
+function bodyOutline(pts,wfun){
+  const top=[],bot=[];
+  for(let i=0;i<pts.length;i++){
+    const p=pts[i];
+    const pa=pts[Math.max(0,i-1)],pb=pts[Math.min(pts.length-1,i+1)];
+    let dx=pb.x-pa.x,dy=pb.y-pa.y;
+    const l=Math.hypot(dx,dy)||1;dx/=l;dy/=l;
+    const w=wfun(p.s);
+    top.push({x:p.x-dy*w,y:p.y+dx*w});
+    bot.push({x:p.x+dy*w,y:p.y-dx*w});
+  }
+  return {top,bot};
+}
+function tailLobe(c,len,spread,sw){
+  const ty=spread+sw;
+  c.beginPath(); c.moveTo(0,0);
+  c.bezierCurveTo(len*0.30,spread*0.05+sw*0.2,len*0.70,ty*0.6,len,ty);
+  c.bezierCurveTo(len*0.76,ty*0.98,len*0.28,spread*0.55+sw*0.25,0,0);
+  c.closePath(); c.fill();
+}
+function finShape(c,x,y,ang,len,flip){
+  c.save(); c.translate(x,y); c.rotate(ang);
+  if(flip)c.scale(1,-1);
+  c.beginPath(); c.moveTo(0,0);
+  c.quadraticCurveTo(len*0.55,-len*0.12,len,len*0.26);
+  c.quadraticCurveTo(len*0.45,len*0.38,0,0);
+  c.closePath(); c.fill(); c.restore();
+}
+
+function drawKoi(c,f){
+  const L=f.len;
+  // depth dimming + slight desaturation through turbid water
+  const depthA=lerp(1.0,0.5,f.depth);
+  const blur=f.depth*3.6;
+
+  c.save();
+  c.globalAlpha=depthA;
+  if(blur>0.3)c.filter='blur('+blur.toFixed(1)+'px)';
+
+  // ---- soft cast shadow on the floor (offset = parallax for depth) ----
+  c.save();
+  const sx=f.x+Math.cos(f.a)*0+6+f.depth*10, sy=f.y+8+f.depth*12;
+  c.translate(sx,sy); c.rotate(f.a);
+  c.fillStyle='rgba(14,20,14,'+(0.22*(1-f.depth*0.5)).toFixed(3)+')';
+  c.beginPath(); c.ellipse(0,0,L*0.42,L*0.14,0,0,TAU); c.fill();
+  c.restore();
+
+  c.translate(f.x,f.y); c.rotate(f.a);
+
+  const segs=16, pts=[];
+  const amp=L*(0.045+0.06*f.speedN);
+  for(let i=0;i<=segs;i++){
+    const s=i/segs;
+    pts.push({x:L*0.48-s*L*0.96, y:Math.sin(f.phase-s*4.2)*amp*Math.pow(s,1.4), s});
+  }
+  const wmax=L*0.16;
+  const wf=s=>wmax*Math.pow(Math.sin(Math.PI*Math.min(0.10+s*0.90,1)),0.85)*(1-0.55*s)+L*0.02;
+
+  // ---- caudal (tail) ----
+  const tp=pts[segs],tq=pts[segs-1];
+  const tang=Math.atan2(tp.y-tq.y,tp.x-tq.x);
+  c.save(); c.translate(tp.x,tp.y); c.rotate(tang);
+  const tl=L*0.6;
+  const sw=Math.sin(f.phase-5.0)*tl*0.28;
+  const tg=c.createRadialGradient(0,0,tl*0.06,0,0,tl);
+  tg.addColorStop(0,'rgba('+f.fin+',0.82)');
+  tg.addColorStop(0.55,'rgba('+f.fin+',0.42)');
+  tg.addColorStop(1,'rgba('+f.fin+',0)');
+  c.fillStyle=tg;
+  tailLobe(c,tl,tl*0.5,sw);
+  tailLobe(c,tl,-tl*0.5,sw*0.85);
+  tailLobe(c,tl*0.7,tl*0.15,sw*0.7);
+  tailLobe(c,tl*0.7,-tl*0.15,sw*0.6);
+  c.restore();
+
+  // ---- pectoral fins ----
+  const pp=pts[5],wp=wf(pts[5].s);
+  const fl=Math.sin(f.phase*1.1+f.po)*0.22;
+  c.fillStyle='rgba('+f.fin+',0.5)';
+  finShape(c,pp.x,pp.y+wp*0.9,2.3+fl,L*0.26,false);
+  finShape(c,pp.x,pp.y-wp*0.9,-2.3-fl,L*0.26,true);
+
+  // ---- body ----
+  const o=bodyOutline(pts,wf);
+  const path=()=>{
+    c.beginPath();
+    c.moveTo(o.top[0].x,o.top[0].y);
+    for(let i=1;i<o.top.length;i++)c.lineTo(o.top[i].x,o.top[i].y);
+    for(let i=o.bot.length-1;i>=0;i--)c.lineTo(o.bot[i].x,o.bot[i].y);
+    c.quadraticCurveTo(pts[0].x+L*0.17,pts[0].y,o.top[0].x,o.top[0].y);
+    c.closePath();
+  };
+  const bg=c.createRadialGradient(L*0.14,0,L*0.04,L*0.04,0,L*0.6);
+  bg.addColorStop(0,f.body[0]); bg.addColorStop(0.55,f.body[1]); bg.addColorStop(1,f.body[2]);
+  path(); c.fillStyle=bg; c.fill();
+
+  // ---- nishikigoi patches (clipped to body) ----
+  if(f.patches.length){
+    c.save(); path(); c.clip();
+    for(const p of f.patches){
+      const idx=Math.min(segs,Math.round(p.s*segs));
+      const pt=pts[idx], w=wf(p.s);
+      c.beginPath();
+      c.ellipse(pt.x,pt.y+p.o*w,p.r*L,p.r*L*0.78,R(-0.3,0.3),0,TAU);
+      c.fillStyle=p.col; c.fill();
+    }
+    c.restore();
+  }
+
+  // ---- sheen + dorsal line + gill ----
+  c.save(); path(); c.clip();
+  const hg=c.createRadialGradient(L*0.16,-wmax*0.2,0,L*0.10,0,L*0.5);
+  hg.addColorStop(0,'rgba(255,255,255,0.26)'); hg.addColorStop(1,'rgba(255,255,255,0)');
+  c.fillStyle=hg;
+  c.beginPath(); c.ellipse(L*0.10,-wmax*0.1,L*0.46,wmax*0.55,0,0,TAU); c.fill();
+  c.strokeStyle='rgba(50,30,10,0.13)'; c.lineWidth=L*0.016;
+  c.beginPath(); c.moveTo(pts[3].x,pts[3].y);
+  for(let i=4;i<=11;i++)c.lineTo(pts[i].x,pts[i].y);
+  c.stroke();
+  c.strokeStyle='rgba(0,0,0,0.08)'; c.lineWidth=L*0.012;
+  c.beginPath(); c.arc(pts[2].x-L*0.02,pts[2].y,wf(pts[2].s)*0.85,-1.2,1.2); c.stroke();
+  c.restore();
+
+  path(); c.strokeStyle='rgba(30,20,10,0.14)'; c.lineWidth=1; c.stroke();
+
+  // ---- eyes & barbels ----
+  const ep=pts[1], ew=wf(pts[1].s);
+  c.fillStyle='#16110a';
+  c.beginPath(); c.arc(ep.x,ep.y+ew*0.7,L*0.022,0,TAU); c.fill();
+  c.beginPath(); c.arc(ep.x,ep.y-ew*0.7,L*0.022,0,TAU); c.fill();
+  c.fillStyle='rgba(255,255,255,0.5)';
+  c.beginPath(); c.arc(ep.x-L*0.007,ep.y+ew*0.7-L*0.007,L*0.007,0,TAU); c.fill();
+  c.beginPath(); c.arc(ep.x-L*0.007,ep.y-ew*0.7-L*0.007,L*0.007,0,TAU); c.fill();
+
+  c.restore();
+}
+
+/* ============================================================
+   layout
+   ============================================================ */
+function resize(){
+  W=window.innerWidth; H=window.innerHeight;
+  DPR=Math.min(window.devicePixelRatio||1,2);
+  cv.width=Math.round(W*DPR); cv.height=Math.round(H*DPR);
+  cv.style.width=W+'px'; cv.style.height=H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  rng=mulberry32(20260620);
+  paintBottom();
+  paintGrain();
+  makeDiscs();
+  // rescale koi proportional to viewport, keep population
+  const base=Math.min(W,H);
+  for(const f of koi){
+    f.len=f.lenBase*base;
+    f.x=clamp(f.x,40,W-40); f.y=clamp(f.y,40,H-40);
+  }
+}
+
+/* spawn koi (lengths relative to viewport min-dimension) */
+function spawnKoi(){
+  const base=Math.min(W,H);
+  const defs=[
+    ['kohaku', 0.20, 0.15],
+    ['orange', 0.16, 0.50],
+    ['showa',  0.22, 0.70],
+    ['asagi',  0.18, 0.30],
+    ['platinum',0.14,0.85],
+    ['tancho', 0.17, 0.05],
+    ['orange', 0.12, 0.95],
+    ['kohaku', 0.15, 0.60],
+  ];
+  koi=defs.map(([t,lb,dp])=>{
+    const f=makeKoi(t, lb*base, dp);
+    f.lenBase=lb;
+    return f;
+  });
+  // sort so deep koi render first (painter's algorithm)
+  koi.sort((a,b)=>b.depth-a.depth);
+}
+
+/* ============================================================
+   main loop
+   ============================================================ */
+let last=0;
+function frame(ts){
+  requestAnimationFrame(frame);
+  const t=ts/1000;
+  let dt=t-last; last=t;
+  if(!isFinite(dt)||dt<=0)dt=0.016;
+  dt=Math.min(0.05,dt);
+
+  // 1. turbid bottom
+  ctx.globalAlpha=1; ctx.filter='none';
+  ctx.drawImage(bottomCan,0,0,W,H);
+
+  // 2. deep discs (behind koi) — depth>0.55
+  for(const d of discs){ updateDisc(d,dt); if(d.depth>0.55)drawDisc(ctx,d); }
+
+  // 3. koi (deep first)
+  for(const f of koi)updateKoi(f,dt);
+  for(const f of koi)drawKoi(ctx,f);
+
+  // 4. near discs (in front of koi)
+  ctx.filter='none'; ctx.globalAlpha=1;
+  for(const d of discs){ if(d.depth<=0.55)drawDisc(ctx,d); }
+
+  // 5. global turbidity veil — soft depth haze toward edges
+  ctx.save();
+  ctx.filter='none';
+  const veil=ctx.createRadialGradient(W*0.5,H*0.5,Math.min(W,H)*0.2,W*0.5,H*0.5,Math.max(W,H)*0.72);
+  veil.addColorStop(0,'rgba(58,72,62,0)');
+  veil.addColorStop(1,'rgba(34,44,38,0.42)');
+  ctx.fillStyle=veil; ctx.fillRect(0,0,W,H);
+  // gentle teal water tint over everything to unify (turbidity)
+  ctx.globalAlpha=0.10;
+  ctx.fillStyle='#33473e';
+  ctx.fillRect(0,0,W,H);
+  ctx.restore();
+
+  // 6. fine monochrome grain
+  ctx.save();
+  ctx.globalAlpha=0.5;
+  ctx.imageSmoothingEnabled=true;
+  ctx.drawImage(grainCan,0,0,W,H);
+  ctx.restore();
+}
+
+/* ---- init: scene is the first paint, no gate / loader ---- */
+window.addEventListener('resize',resize);
+W=window.innerWidth; H=window.innerHeight;
+DPR=Math.min(window.devicePixelRatio||1,2);
+cv.width=Math.round(W*DPR); cv.height=Math.round(H*DPR);
+cv.style.width=W+'px'; cv.style.height=H+'px';
+ctx.setTransform(DPR,0,0,DPR,0,0);
+paintBottom();
+paintGrain();
+makeDiscs();
+spawnKoi();
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

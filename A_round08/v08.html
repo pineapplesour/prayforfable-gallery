@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>TESLA · 서리와 번개</title>
+<style>
+  :root{
+    --bg0:#03060f;
+    --bg1:#05030d;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:#02030a;}
+  body{
+    font-family: "Helvetica Neue", Helvetica, Arial, "Apple SD Gothic Neo", sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    cursor: crosshair;
+    touch-action: none;
+  }
+  #stage{position:fixed;inset:0;display:block}
+  /* layered canvases: persistent crystal underneath, live discharge on top */
+  canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
+  #crystal{z-index:1}
+  #bolt{z-index:2;mix-blend-mode:screen}
+
+  .ui{
+    position:fixed;z-index:5;color:#9fd8ff;
+    pointer-events:none;user-select:none;
+    text-shadow:0 0 12px rgba(80,160,255,.55), 0 0 2px rgba(0,0,0,.9);
+  }
+  #title{
+    left:34px;top:30px;
+    font-weight:200;letter-spacing:.42em;
+    font-size:13px;
+    opacity:.85;
+  }
+  #title b{font-weight:600;letter-spacing:.5em;display:block;font-size:22px;margin-bottom:6px;
+    background:linear-gradient(90deg,#cfeaff,#5aa0ff 55%,#b98bff);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+    text-shadow:none;filter:drop-shadow(0 0 14px rgba(90,160,255,.6));}
+  #hint{
+    left:34px;bottom:26px;font-size:11px;letter-spacing:.22em;font-weight:300;
+    opacity:.5;line-height:1.9;
+  }
+  #hint .k{color:#bfe3ff;font-weight:500}
+  #meta{
+    right:30px;bottom:26px;font-size:10px;letter-spacing:.3em;font-weight:300;
+    opacity:.42;text-align:right;line-height:1.9;
+  }
+  #charge{
+    right:30px;top:30px;font-size:10px;letter-spacing:.28em;font-weight:300;
+    opacity:.6;text-align:right;
+  }
+  #charge .bar{
+    display:inline-block;width:120px;height:3px;margin-top:8px;
+    background:rgba(120,160,255,.14);border-radius:2px;overflow:hidden;vertical-align:middle;
+  }
+  #charge .fill{display:block;height:100%;width:0%;
+    background:linear-gradient(90deg,#3a7bff,#9ad0ff,#d6b6ff);
+    box-shadow:0 0 12px rgba(120,180,255,.8);transition:width .08s linear}
+  @media (max-width:520px){
+    #title{left:18px;top:18px;font-size:11px;letter-spacing:.3em}
+    #title b{font-size:18px}
+    #hint{left:18px;bottom:18px;font-size:10px;letter-spacing:.14em}
+    #meta{display:none}
+    #charge{right:16px;top:18px}
+    #charge .bar{width:90px}
+  }
+  .flash{position:fixed;inset:0;z-index:3;pointer-events:none;background:radial-gradient(circle at center,rgba(180,210,255,.0),rgba(0,0,0,0));opacity:0}
+</style>
+</head>
+<body>
+  <canvas id="crystal"></canvas>
+  <canvas id="bolt"></canvas>
+  <div class="flash" id="flash"></div>
+
+  <div class="ui" id="title"><b>TESLA</b>서리와 번개 · D L A</div>
+  <div class="ui" id="charge">CHARGE<span class="bar"><span class="fill" id="cfill"></span></span></div>
+  <div class="ui" id="hint">
+    <span class="k">움직임</span> — 끝이 손끝을 쫓는다<br>
+    <span class="k">클릭 / 탭</span> — 대방전 · 서리가 자란다<br>
+    <span class="k">길게 누름</span> — 전하 충전 후 폭발
+  </div>
+  <div class="ui" id="meta">DIFFUSION-LIMITED AGGREGATION<br>STEPPED LEADER · FROST GROWTH</div>
+
+<script>
+(function(){
+"use strict";
+
+// ---------- canvases ----------
+const cCry = document.getElementById('crystal');
+const cBolt = document.getElementById('bolt');
+const xCry = cCry.getContext('2d');
+const xBolt = cBolt.getContext('2d');
+const flash = document.getElementById('flash');
+const cfill = document.getElementById('cfill');
+
+let W=0,H=0,DPR=1,CX=0,CY=0;
+let DIAG=1;
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  for(const c of [cCry,cBolt]){
+    c.width = Math.floor(W*DPR);
+    c.height= Math.floor(H*DPR);
+  }
+  xCry.setTransform(DPR,0,0,DPR,0,0);
+  xBolt.setTransform(DPR,0,0,DPR,0,0);
+  CX = W*0.5; CY = H*0.56;
+  DIAG = Math.hypot(W,H);
+  // paint deep-space gradient base onto crystal layer once after resize
+  paintBase();
+  seedCrystal();
+}
+
+function paintBase(){
+  xCry.setTransform(DPR,0,0,DPR,0,0);
+  const g = xCry.createRadialGradient(CX,CY,0,CX,CY,DIAG*0.7);
+  g.addColorStop(0,'#070b1c');
+  g.addColorStop(0.45,'#04060f');
+  g.addColorStop(1,'#01020a');
+  xCry.fillStyle=g;
+  xCry.fillRect(0,0,W,H);
+  // subtle vignette grain via faint dots
+  xCry.globalAlpha=0.05;
+  for(let i=0;i<140;i++){
+    const x=Math.random()*W, y=Math.random()*H, r=Math.random()*1.1;
+    xCry.fillStyle = Math.random()<.5?'#3a6bcf':'#7b6bff';
+    xCry.beginPath();xCry.arc(x,y,r,0,7);xCry.fill();
+  }
+  xCry.globalAlpha=1;
+}
+
+// ---------- pointer ----------
+const M = {x:0,y:0, has:false, down:false, downT:0};
+function setPointer(px,py){ M.x=px; M.y=py; M.has=true; }
+window.addEventListener('mousemove', e=>setPointer(e.clientX,e.clientY));
+window.addEventListener('mousedown', e=>{ setPointer(e.clientX,e.clientY); M.down=true; M.downT=performance.now(); });
+window.addEventListener('mouseup',   e=>{ if(M.down) releaseStrike(); M.down=false; });
+window.addEventListener('mouseleave',()=>{ M.has=false; M.down=false; });
+window.addEventListener('touchstart',e=>{ const t=e.touches[0]; setPointer(t.clientX,t.clientY); M.down=true; M.downT=performance.now(); e.preventDefault(); },{passive:false});
+window.addEventListener('touchmove', e=>{ const t=e.touches[0]; setPointer(t.clientX,t.clientY); e.preventDefault(); },{passive:false});
+window.addEventListener('touchend',  e=>{ if(M.down) releaseStrike(); M.down=false; e.preventDefault(); },{passive:false});
+
+// ---------- charge meter ----------
+let charge = 0; // 0..1
+
+// ============================================================
+//  DLA / FROST crystal layer (persistent)
+//  We keep a set of "frozen" points. New frost only spawns
+//  at the impact point of strikes and grows by a cheap
+//  diffusion-limited-ish accretion using a spatial grid.
+// ============================================================
+const GRID = 6;            // cell size px
+let gw=0,gh=0,grid=null;   // occupancy grid -> stores nearest frozen point index or -1
+function seedCrystal(){
+  gw = Math.ceil(W/GRID)+2; gh = Math.ceil(H/GRID)+2;
+  grid = new Int32Array(gw*gh).fill(-1);
+  frozen.length = 0;
+  // a base electrode tuft at the central emitter
+  addFrozen(CX,CY,0);
+}
+function gidx(x,y){
+  let gx=(x/GRID)|0, gy=(y/GRID)|0;
+  if(gx<0||gy<0||gx>=gw||gy>=gh) return -1;
+  return gy*gw+gx;
+}
+const frozen = []; // {x,y,gen}
+function addFrozen(x,y,gen){
+  const id=frozen.length;
+  frozen.push({x,y,gen});
+  const gi=gidx(x,y);
+  if(gi>=0 && grid[gi]<0) grid[gi]=id;
+  // draw it as a tiny crystalline shard
+  drawFrost(x,y,gen);
+  return id;
+}
+// neighbours of a frozen seed within radius -> for sticking check
+function nearFrozen(x,y){
+  let gx=(x/GRID)|0, gy=(y/GRID)|0;
+  for(let oy=-1;oy<=1;oy++)for(let ox=-1;ox<=1;ox++){
+    let nx=gx+ox, ny=gy+oy;
+    if(nx<0||ny<0||nx>=gw||ny>=gh)continue;
+    let id=grid[ny*gw+nx];
+    if(id>=0){
+      const f=frozen[id];
+      const dx=f.x-x, dy=f.y-y;
+      if(dx*dx+dy*dy < (GRID*GRID*1.7)) return f;
+    }
+  }
+  return null;
+}
+
+function drawFrost(x,y,gen){
+  // crystalline shard: a short feathered line + sparkle, additive
+  xCry.save();
+  xCry.globalCompositeOperation='lighter';
+  const hue = 195 + (gen%5)*6 - 8 + Math.random()*10;
+  const lum = 60 - Math.min(gen,28)*0.7;
+  xCry.translate(x,y);
+  const a = Math.random()*Math.PI;
+  const len = 3.2 + Math.random()*4.5;
+  xCry.rotate(a);
+  // glow
+  xCry.strokeStyle=`hsla(${hue},90%,${Math.max(38,lum)}%,0.5)`;
+  xCry.lineWidth=1.0;
+  xCry.beginPath();
+  xCry.moveTo(-len,0); xCry.lineTo(len,0);
+  // hexagonal-ish frost arms
+  for(let k=-1;k<=1;k+=2){
+    xCry.moveTo(0,0);
+    xCry.lineTo(Math.cos(1.05)*len*0.7*k, Math.sin(1.05)*len*0.7);
+    xCry.moveTo(0,0);
+    xCry.lineTo(Math.cos(1.05)*len*0.7*k, -Math.sin(1.05)*len*0.7);
+  }
+  xCry.stroke();
+  // bright core dot
+  xCry.fillStyle=`hsla(${hue+6},100%,88%,0.95)`;
+  xCry.beginPath();xCry.arc(0,0,1.2,0,7);xCry.fill();
+  // faint halo so dense accretion reads as luminous ice
+  xCry.fillStyle=`hsla(${hue},95%,70%,0.12)`;
+  xCry.beginPath();xCry.arc(0,0,len*0.9,0,7);xCry.fill();
+  xCry.restore();
+}
+
+// Random-walking accretion particles released from a strike impact.
+// Limited count for performance; they walk until they stick or expire.
+const walkers = [];
+function spawnWalkers(x,y,n,energy){
+  for(let i=0;i<n && walkers.length<MAX_WALKERS;i++){
+    const a=Math.random()*Math.PI*2;
+    const r=4+Math.random()*16;
+    walkers.push({
+      x:x+Math.cos(a)*r, y:y+Math.sin(a)*r,
+      ox:x, oy:y,
+      life: 60+ (energy*90)|0,
+      // slight bias toward the emitter so frost reaches back along the channel
+      bias: Math.random()*0.4
+    });
+  }
+}
+const MAX_WALKERS = 1400;
+function stepWalkers(){
+  for(let i=walkers.length-1;i>=0;i--){
+    const w=walkers[i];
+    // brownian step + tiny drift toward origin seed of this cluster
+    w.x += (Math.random()-0.5)*3.4;
+    w.y += (Math.random()-0.5)*3.4;
+    // drift toward nearest existing structure center (the emitter) gently
+    w.x += (CX-w.x)*0.0009*w.bias;
+    w.y += (CY-w.y)*0.0009*w.bias;
+    w.life--;
+    let dead=false;
+    if(w.x<0||w.y<0||w.x>W||w.y>H||w.life<=0) dead=true;
+    else{
+      const f=nearFrozen(w.x,w.y);
+      if(f){
+        addFrozen(w.x,w.y, f.gen+1);
+        dead=true;
+      }
+    }
+    if(dead){ walkers[i]=walkers[walkers.length-1]; walkers.pop(); }
+  }
+}
+
+// ============================================================
+//  LIGHTNING — stepped-leader bolt from emitter to a target,
+//  recursive midpoint displacement w/ forking. Drawn additive
+//  on the bolt layer which fades each frame for afterglow.
+// ============================================================
+function makeBolt(x1,y1,x2,y2, displace, detail, branches, life, hueShift){
+  const segs=[];
+  function recurse(ax,ay,bx,by,disp,depth){
+    if(disp<detail){
+      segs.push({ax,ay,bx,by,depth});
+      return;
+    }
+    let mx=(ax+bx)*0.5, my=(ay+by)*0.5;
+    // perpendicular displacement
+    const dx=bx-ax, dy=by-ay;
+    const len=Math.hypot(dx,dy)||1;
+    const nx=-dy/len, ny=dx/len;
+    const off=(Math.random()-0.5)*disp;
+    mx+=nx*off; my+=ny*off;
+    recurse(ax,ay,mx,my,disp*0.55,depth);
+    recurse(mx,my,bx,by,disp*0.55,depth);
+    // fork
+    if(branches>0 && depth<3 && Math.random()<0.45){
+      const fl = 0.45+Math.random()*0.55;
+      const fx = mx + (mx-ax)*fl + (Math.random()-0.5)*disp*2;
+      const fy = my + (my-ay)*fl + (Math.random()-0.5)*disp*2;
+      recurse(mx,my,fx,fy,disp*0.5,depth+1);
+    }
+  }
+  recurse(x1,y1,x2,y2,displace,0);
+  return { segs, life, maxLife:life, hueShift:hueShift||0,
+           ex:x2, ey:y2, glow: 1 };
+}
+const bolts=[];
+
+// emit a continuous "feeler" leader toward the cursor (thin, flickery)
+let feelerTimer=0;
+function emitFeeler(){
+  if(!M.has) return;
+  const dx=M.x-CX, dy=M.y-CY;
+  const dist=Math.hypot(dx,dy);
+  if(dist<14) return;
+  const disp = Math.min(dist*0.32, 120);
+  const b = makeBolt(CX,CY, M.x,M.y, disp, 6, 1, 7, (Math.random()*30-15));
+  b.glow = 0.55;
+  bolts.push(b);
+  // a few charge motes ride the leader
+  for(let i=0;i<2;i++) addMote(CX,CY,M.x,M.y);
+}
+
+// big branched strike on click / release
+function bigStrike(tx,ty,power){
+  const dx=tx-CX, dy=ty-CY;
+  const dist=Math.hypot(dx,dy)||1;
+  const disp=Math.min(dist*0.5,200);
+  const nb = 2 + (power*3|0);
+  for(let i=0;i<nb;i++){
+    const jitterX = tx + (Math.random()-0.5)*40*power;
+    const jitterY = ty + (Math.random()-0.5)*40*power;
+    const b=makeBolt(CX,CY, jitterX,jitterY, disp, 4, 1, 16+power*10, (Math.random()*50-25));
+    b.glow = 1.4*Math.min(1.6,0.7+power);
+    bolts.push(b);
+  }
+  // impact ring + frost seeding
+  rings.push({x:tx,y:ty,r:2,max:40+power*60,a:0.9});
+  spawnWalkers(tx,ty, 90+ (power*220|0), 0.6+power);
+  // also seed a frozen point at impact so frost has an anchor there
+  addFrozen(tx,ty, 1);
+  // motes burst
+  for(let i=0;i<24+power*40;i++){
+    const a=Math.random()*7, sp=1+Math.random()*4*power;
+    motes.push({x:tx,y:ty,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,life:30+Math.random()*40,hue:200+Math.random()*60});
+  }
+  // screen flash
+  doFlash(0.35+power*0.4);
+  charge=0; updateCharge();
+}
+
+function releaseStrike(){
+  if(!M.has){ return; }
+  const held = (performance.now()-M.downT)/1000;
+  const power = Math.min(1, 0.25 + held*0.9 + charge*0.8);
+  bigStrike(M.x, M.y, power);
+}
+
+// ---------- charge motes that ride leaders ----------
+const motes=[];
+function addMote(x1,y1,x2,y2){
+  motes.push({
+    x:x1,y:y1,
+    tx:x2,ty:y2,
+    p:0, sp:0.04+Math.random()*0.06,
+    travel:true, life:40, hue:195+Math.random()*55
+  });
+}
+function stepMotes(){
+  for(let i=motes.length-1;i>=0;i--){
+    const m=motes[i];
+    if(m.travel){
+      m.p+=m.sp;
+      m.x = m.x0!==undefined? m.x0+(m.tx-m.x0)*m.p : (m.x);
+      // lerp from emitter
+      if(m.x0===undefined){m.x0=m.x; m.y0=m.y;}
+      m.x = m.x0+(m.tx-m.x0)*m.p;
+      m.y = m.y0+(m.ty-m.y0)*m.p;
+      if(m.p>=1){ m.travel=false; }
+    } else {
+      m.x+=m.vx||0; m.y+=m.vy||0;
+      m.vy=(m.vy||0)+0.02;
+    }
+    m.life--;
+    if(m.life<=0){ motes[i]=motes[motes.length-1]; motes.pop(); }
+  }
+}
+
+// ---------- impact rings ----------
+const rings=[];
+
+// ---------- ambient field particles drifting & cursor-attracted ----------
+const field=[];
+function initField(){
+  field.length=0;
+  const N = (W*H>1200000)? 90 : 130;
+  for(let i=0;i<N;i++){
+    field.push({
+      x:Math.random()*W, y:Math.random()*H,
+      vx:(Math.random()-0.5)*0.3, vy:(Math.random()-0.5)*0.3,
+      r:0.5+Math.random()*1.4,
+      hue:195+Math.random()*60
+    });
+  }
+}
+function stepField(){
+  for(const p of field){
+    // gentle swirl + cursor attraction (electric field around cursor)
+    if(M.has){
+      const dx=M.x-p.x, dy=M.y-p.y;
+      const d2=dx*dx+dy*dy+400;
+      const f= 60/d2;
+      p.vx+=dx*f*0.02; p.vy+=dy*f*0.02;
+    }
+    // pull toward emitter faintly
+    p.vx += (CX-p.x)*0.00002;
+    p.vy += (CY-p.y)*0.00002;
+    p.vx*=0.97; p.vy*=0.97;
+    p.x+=p.vx; p.y+=p.vy;
+    if(p.x<0)p.x+=W; if(p.x>W)p.x-=W;
+    if(p.y<0)p.y+=H; if(p.y>H)p.y-=H;
+  }
+}
+
+// ---------- flash overlay ----------
+let flashA=0;
+function doFlash(a){ flashA=Math.max(flashA,a); }
+
+// ---------- charge UI ----------
+function updateCharge(){
+  cfill.style.width=(charge*100).toFixed(0)+'%';
+}
+
+// ============================================================
+//  RENDER LOOP
+// ============================================================
+let last=performance.now();
+let frame=0;
+function loop(now){
+  const dt=Math.min(50, now-last); last=now; frame++;
+
+  // ---- charging while held ----
+  if(M.down){
+    charge=Math.min(1, charge + dt*0.0007);
+    updateCharge();
+  } else if(charge>0 && !M.down){
+    charge=Math.max(0, charge-dt*0.0006); updateCharge();
+  }
+
+  // ---- bolt layer: fade for afterglow ----
+  xBolt.setTransform(1,0,0,1,0,0);
+  xBolt.globalCompositeOperation='source-over';
+  xBolt.fillStyle='rgba(2,3,10,0.23)';
+  xBolt.fillRect(0,0,cBolt.width,cBolt.height);
+  xBolt.setTransform(DPR,0,0,DPR,0,0);
+  xBolt.globalCompositeOperation='lighter';
+
+  // ---- ambient field on bolt layer (subtle) ----
+  stepField();
+  for(const p of field){
+    xBolt.fillStyle=`hsla(${p.hue},90%,70%,0.5)`;
+    xBolt.beginPath();xBolt.arc(p.x,p.y,p.r,0,7);xBolt.fill();
+  }
+  // faint connection lines between near field particles + cursor (constellation feel)
+  if(M.has){
+    xBolt.lineWidth=0.5;
+    for(const p of field){
+      const dx=p.x-M.x, dy=p.y-M.y, d=dx*dx+dy*dy;
+      if(d<14000){
+        const a=(1-d/14000)*0.25;
+        xBolt.strokeStyle=`hsla(205,95%,72%,${a})`;
+        xBolt.beginPath();xBolt.moveTo(M.x,M.y);xBolt.lineTo(p.x,p.y);xBolt.stroke();
+      }
+    }
+  }
+
+  // ---- emitter core glow ----
+  const pulse = 0.6+0.4*Math.sin(now*0.004);
+  const eg = xBolt.createRadialGradient(CX,CY,0,CX,CY,40+10*pulse);
+  eg.addColorStop(0,`rgba(210,235,255,${0.9})`);
+  eg.addColorStop(0.3,`rgba(120,170,255,${0.5*pulse+0.2})`);
+  eg.addColorStop(1,'rgba(60,90,200,0)');
+  xBolt.fillStyle=eg;
+  xBolt.beginPath();xBolt.arc(CX,CY,40+10*pulse,0,7);xBolt.fill();
+  // charge halo
+  if(charge>0.02){
+    xBolt.strokeStyle=`hsla(${265-charge*60},95%,72%,${0.3+charge*0.5})`;
+    xBolt.lineWidth=1.5+charge*3;
+    xBolt.beginPath();xBolt.arc(CX,CY,30+charge*40,0,7);xBolt.stroke();
+  }
+
+  // ---- feelers toward cursor ----
+  feelerTimer-=dt;
+  if(feelerTimer<=0 && M.has){
+    emitFeeler();
+    feelerTimer = 38 - charge*18; // faster when charged
+  }
+
+  // ---- draw bolts ----
+  for(let i=bolts.length-1;i>=0;i--){
+    const b=bolts[i];
+    const k = b.life/b.maxLife;        // 1->0
+    const baseHue = 205+b.hueShift;
+    // outer glow pass
+    xBolt.lineCap='round';
+    xBolt.lineJoin='round';
+    // pass 1 wide soft
+    xBolt.strokeStyle=`hsla(${baseHue},95%,60%,${0.10*k*b.glow})`;
+    xBolt.lineWidth=8*b.glow;
+    xBolt.beginPath();
+    for(const s of b.segs){ xBolt.moveTo(s.ax,s.ay); xBolt.lineTo(s.bx,s.by); }
+    xBolt.stroke();
+    // pass 2 mid
+    xBolt.strokeStyle=`hsla(${baseHue+8},100%,72%,${0.30*k*b.glow})`;
+    xBolt.lineWidth=3*b.glow;
+    xBolt.beginPath();
+    for(const s of b.segs){ xBolt.moveTo(s.ax,s.ay); xBolt.lineTo(s.bx,s.by); }
+    xBolt.stroke();
+    // pass 3 hot core white
+    xBolt.strokeStyle=`hsla(${baseHue+20},100%,92%,${0.9*k})`;
+    xBolt.lineWidth=1.1;
+    xBolt.beginPath();
+    for(const s of b.segs){ xBolt.moveTo(s.ax,s.ay); xBolt.lineTo(s.bx,s.by); }
+    xBolt.stroke();
+
+    b.life--;
+    if(b.life<=0){ bolts[i]=bolts[bolts.length-1]; bolts.pop(); }
+  }
+
+  // ---- impact rings ----
+  for(let i=rings.length-1;i>=0;i--){
+    const r=rings[i];
+    r.r += (r.max-r.r)*0.12;
+    r.a *= 0.90;
+    xBolt.strokeStyle=`hsla(200,95%,78%,${r.a})`;
+    xBolt.lineWidth=2;
+    xBolt.beginPath();xBolt.arc(r.x,r.y,r.r,0,7);xBolt.stroke();
+    if(r.a<0.03){ rings[i]=rings[rings.length-1]; rings.pop(); }
+  }
+
+  // ---- motes ----
+  stepMotes();
+  for(const m of motes){
+    xBolt.fillStyle=`hsla(${m.hue},100%,80%,0.9)`;
+    xBolt.beginPath();xBolt.arc(m.x,m.y,1.3,0,7);xBolt.fill();
+  }
+
+  // ---- crystal accretion ----
+  // limit work per frame for smoothness
+  stepWalkers(); stepWalkers();
+
+  // cursor electric node on bolt layer
+  if(M.has){
+    const cg=xBolt.createRadialGradient(M.x,M.y,0,M.x,M.y,18);
+    cg.addColorStop(0,'rgba(200,230,255,0.85)');
+    cg.addColorStop(1,'rgba(120,160,255,0)');
+    xBolt.fillStyle=cg;
+    xBolt.beginPath();xBolt.arc(M.x,M.y,18,0,7);xBolt.fill();
+  }
+
+  // ---- flash ----
+  if(flashA>0.001){
+    flash.style.opacity=flashA.toFixed(3);
+    flash.style.background=`radial-gradient(circle at ${(M.has?M.x:CX)/W*100}% ${(M.has?M.y:CY)/H*100}%, rgba(190,215,255,${flashA*0.5}), rgba(2,3,12,0) 60%)`;
+    flashA*=0.86;
+  } else { flash.style.opacity=0; }
+
+  requestAnimationFrame(loop);
+}
+
+// ---------- idle ambient strikes so it's alive without input ----------
+let idleTimer = 2200 + Math.random()*2500;
+let lastInput = performance.now();
+['mousemove','mousedown','touchstart','touchmove'].forEach(ev=>
+  window.addEventListener(ev,()=>{lastInput=performance.now();},{passive:true}));
+setInterval(()=>{
+  const idle = performance.now()-lastInput;
+  if(idle>1800){
+    // ambient self-discharge toward a random point — the sculpture keeps growing
+    const a=Math.random()*Math.PI*2;
+    const rr= DIAG*0.18 + Math.random()*DIAG*0.22;
+    const tx=CX+Math.cos(a)*rr, ty=CY+Math.sin(a)*rr*0.8;
+    const power=0.3+Math.random()*0.4;
+    // temporary aim
+    bigStrike(tx,ty,power);
+  }
+}, 1400);
+
+// ---------- boot ----------
+window.addEventListener('resize', ()=>{ resize(); initField(); });
+resize();
+initField();
+M.x=CX; M.y=CY-DIAG*0.18; // a default aim so first paint already has a leader feel
+M.has=true;
+// pre-fire a couple of bolts so the very first frame is already a finished piece
+bigStrike(CX-W*0.18, CY-H*0.22, 0.6);
+bigStrike(CX+W*0.20, CY-H*0.10, 0.5);
+emitFeeler();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>DATAMOSH — 잔상의 붕괴</title>
+<style>
+  :root{ --ink:#05060a; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ height:100%; background:var(--ink); overflow:hidden; }
+  body{ font-family:"Helvetica Neue",Arial,"Apple SD Gothic Neo","Noto Sans KR",sans-serif; }
+  #gl{ position:fixed; inset:0; width:100vw; height:100vh; display:block;
+       touch-action:none; cursor:crosshair; }
+
+  /* ---- HUD : 작품과 difference 블렌딩으로 함께 글리치 ---- */
+  .hud{ position:fixed; pointer-events:none; mix-blend-mode:difference;
+        color:#fff; letter-spacing:.02em; z-index:5; user-select:none; }
+  #tl{ left:clamp(16px,3.2vw,40px); top:clamp(16px,3vw,36px); }
+  #tl .mark{ font-weight:800; font-size:clamp(20px,3.4vw,40px); line-height:.92;
+        letter-spacing:-.02em; position:relative; display:inline-block;
+        animation:txtjit 5.5s steps(1) infinite; }
+  #tl .mark::before,#tl .mark::after{ content:"DATAMOSH"; position:absolute; left:0; top:0; }
+  #tl .mark::before{ color:#ff2d8a; animation:rgbx 2.6s infinite linear; }
+  #tl .mark::after{ color:#21e6ff; animation:rgbx 2.6s infinite linear reverse; }
+  #tl .sub{ margin-top:9px; font-size:clamp(9px,1.05vw,11.5px); font-weight:600;
+        letter-spacing:.42em; opacity:.85; }
+  #tl .sub b{ font-weight:800; }
+
+  #br{ right:clamp(16px,3.2vw,40px); bottom:clamp(16px,3vw,34px); text-align:right; }
+  #br .no{ font-size:clamp(34px,7vw,82px); font-weight:800; line-height:.82;
+        letter-spacing:-.04em; font-variant-numeric:tabular-nums; }
+  #br .cap{ margin-top:6px; font-size:clamp(8.5px,1vw,11px); letter-spacing:.34em; font-weight:600; opacity:.8; }
+
+  #bl{ left:clamp(16px,3.2vw,40px); bottom:clamp(16px,3vw,34px);
+        font-size:clamp(9px,1.05vw,11.5px); font-weight:600; letter-spacing:.26em; opacity:.82; }
+  #bl span{ display:inline-block; padding:2px 0; }
+  #bl i{ font-style:normal; opacity:.5; padding:0 .55em; }
+
+  #rt{ right:clamp(16px,3.2vw,40px); top:clamp(16px,3vw,36px); text-align:right;
+       font-size:clamp(8.5px,1vw,11px); font-weight:600; letter-spacing:.2em; opacity:.8; }
+  #rt .bar{ display:inline-block; width:84px; height:4px; margin-top:8px; vertical-align:middle;
+        background:rgba(255,255,255,.22); position:relative; overflow:hidden; }
+  #rt .bar i{ position:absolute; inset:0 100% 0 0; background:#fff; }
+
+  @keyframes rgbx{ 0%{transform:translate(0,0)} 92%{transform:translate(0,0)}
+    93%{transform:translate(-2.5px,1px)} 96%{transform:translate(2px,-1px)} 100%{transform:translate(0,0)} }
+  @keyframes txtjit{ 0%,100%{transform:translate(0,0)} 50%{transform:translate(0,0)}
+    50.4%{transform:translate(3px,0) skewX(-9deg)} 51%{transform:translate(-2px,0)} 51.5%{transform:translate(0,0)} }
+  @media (max-width:480px){ #rt{ display:none; } }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+
+<div class="hud" id="tl">
+  <div class="mark">DATAMOSH</div>
+  <div class="sub"><b>P-FRAME</b> &nbsp;DECAY&nbsp;FIELD&nbsp;·&nbsp;v17</div>
+</div>
+<div class="hud" id="rt">FEED&nbsp;//&nbsp;LIVE<br><span class="bar"><i id="ebar"></i></span></div>
+<div class="hud" id="br">
+  <div class="no">17</div>
+  <div class="cap">PRAY&nbsp;FOR&nbsp;FABLE&nbsp;/&nbsp;MAD&nbsp;ROUND&nbsp;01</div>
+</div>
+<div class="hud" id="bl">
+  <span>DRAG&nbsp;흩뜨리기</span><i>/</i><span>SCROLL&nbsp;스크럽</span><i>/</i><span>CLICK&nbsp;I-FRAME&nbsp;붕괴</span>
+</div>
+
+<script>
+'use strict';
+(()=>{
+const cv = document.getElementById('gl');
+const gl = cv.getContext('webgl',{antialias:false,alpha:false,depth:false,
+            premultipliedAlpha:false,preserveDrawingBuffer:false,powerPreference:'high-performance'});
+if(!gl){ document.body.style.background='#000'; return; }
+
+/* ============================ SHADERS ============================ */
+const VERT = `
+attribute vec2 p; varying vec2 uv;
+void main(){ uv = p*0.5+0.5; gl_Position = vec4(p,0.0,1.0); }`;
+
+// shared noise toolkit
+const LIB = `
+precision highp float;
+float hash21(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
+vec2  hash22(vec2 p){ float n=sin(dot(p,vec2(127.1,311.7)));
+                      return fract(vec2(43758.5453*n, 24634.6345*n)); }
+float vnoise(vec2 p){ vec2 i=floor(p),f=fract(p); vec2 u=f*f*(3.0-2.0*f);
+  float a=hash21(i), b=hash21(i+vec2(1.0,0.0)), c=hash21(i+vec2(0.0,1.0)), d=hash21(i+vec2(1.0,1.0));
+  return mix(mix(a,b,u.x),mix(c,d,u.x),u.y); }
+float fbm(vec2 p){ float s=0.0,a=0.5; for(int i=0;i<4;i++){ s+=a*vnoise(p); p=p*2.03+vec2(1.7,9.2); a*=0.5; } return s; }
+vec2  curl(vec2 p){ float e=0.12;
+  float n1=fbm(p+vec2(0.0,e)), n2=fbm(p-vec2(0.0,e));
+  float n3=fbm(p+vec2(e,0.0)), n4=fbm(p-vec2(e,0.0));
+  return vec2(n1-n2, -(n3-n4))/(2.0*e); }
+`;
+
+// ---- SOURCE : the moving "footage" that gets smeared ----
+const SRC_FS = LIB + `
+varying vec2 uv;
+uniform float u_time; uniform vec2 u_res; uniform vec2 u_mouse; uniform float u_scroll;
+vec3 palette(float t){
+  vec3 a=vec3(0.52,0.40,0.50);
+  vec3 b=vec3(0.48,0.46,0.55);
+  vec3 c=vec3(1.0,1.05,0.92);
+  vec3 d=vec3(0.18,0.45,0.80);
+  return a + b*cos(6.28318*(c*t + d));
+}
+void main(){
+  vec2 p=uv; float asp=u_res.x/u_res.y;
+  vec2 q=(p-0.5); q.x*=asp;
+  float t=u_time*0.12 + u_scroll*0.18;
+  vec2 w = vec2(fbm(q*2.0+t), fbm(q*2.0 - t + 5.2));
+  float n = fbm(q*3.0 + w*1.8 + t);
+  vec3 col = palette(n*1.15 + u_scroll*0.12 + length(q)*0.35);
+  // drifting diagonal bands — strong structure to mosh
+  float ang = 0.62 + 0.22*sin(t*0.5);
+  vec2 rp = mat2(cos(ang),-sin(ang),sin(ang),cos(ang))*q;
+  float bars = smoothstep(0.44,0.5, fract(rp.x*5.5 + t*1.4 + fbm(q*2.0)*1.6));
+  col = mix(col, palette(n*1.15+0.55)*1.35, bars*0.5);
+  // concentric pulse anchored to pointer
+  vec2 m=(u_mouse-0.5); m.x*=asp;
+  float d=length(q-m);
+  float ring=smoothstep(0.05,0.0, abs(fract(d*7.0 - t*2.2)-0.5)-0.045);
+  col += palette(0.6+0.2*sin(t))*ring*0.7;
+  // bright macroblocks (compression cells)
+  vec2 g=floor(p*vec2(20.0,12.0));
+  float blk=step(0.93, hash21(g+floor(vec2(t*2.0))));
+  col = mix(col, palette(0.1+hash21(g))*1.4, blk*0.55);
+  col = pow(max(col,0.0), vec3(1.08))*1.05;
+  gl_FragColor=vec4(col,1.0);
+}`;
+
+// ---- SIM : datamosh feedback (advect prev frame along macroblock motion) ----
+const SIM_FS = LIB + `
+varying vec2 uv;
+uniform sampler2D u_prev, u_src;
+uniform float u_time; uniform vec2 u_res;
+uniform vec4 u_mouse;   // xy = pos(0..1), zw = velocity
+uniform float u_scroll, u_burst, u_block;
+void main(){
+  vec2 p=uv; float asp=u_res.x/u_res.y; float t=u_time;
+  vec2 bsz = vec2(u_block)/u_res;            // macroblock size in uv
+  vec2 bId = floor(p/bsz);
+  vec2 bc  = (bId+0.5)*bsz;                   // block center
+  // motion vector sampled per-block -> chunky datamosh smear
+  vec2 fp = vec2(bc.x*asp, bc.y);
+  vec2 flow = curl(fp*3.0 + vec2(0.0, t*0.22));
+  // pointer drag injects directional motion
+  vec2 m=u_mouse.xy, mv=u_mouse.zw;
+  float md = distance(vec2(bc.x*asp,bc.y), vec2(m.x*asp,m.y));
+  float infl = exp(-md*md*6.0);
+  flow += mv*infl*7.0;
+  flow += vec2(sin(u_scroll*0.7), 0.35)*u_scroll*0.04;   // scroll = global scrub
+  float speed = 0.0016 + 0.0048*u_burst + infl*0.004;
+  // corrupt macroblock : grabs from a wrong location (signature glitch)
+  float corr = hash21(bId + floor(vec2(t*3.0)));
+  float corrupt = step(0.985 - u_burst*0.18, corr);
+  vec2  jump = (hash22(bId+floor(t*3.0))-0.5)*0.34*corrupt;
+  vec2 sUv = fract(p - flow*speed + jump);
+  // per-channel desync -> chromatic melt
+  vec2 ca = flow*speed*0.55;
+  float rr = texture2D(u_prev, fract(sUv+ca)).r;
+  float gg = texture2D(u_prev, sUv).g;
+  float bb = texture2D(u_prev, fract(sUv-ca)).b;
+  vec3 prev = vec3(rr,gg,bb);
+  vec3 src  = texture2D(u_src, p).rgb;
+  // keyframe injection : low base (so frames persist & smear), more near pointer / on burst / on bright edges
+  float lum = dot(src, vec3(0.299,0.587,0.114));
+  float inj = 0.045 + infl*0.13 + u_burst*0.11 + smoothstep(0.62,0.95,lum)*0.06;
+  vec3 col = mix(prev, src, clamp(inj,0.0,1.0));
+  col += corrupt*(hash21(p*u_res+floor(t*10.0))-0.5)*0.28;  // block sparkle
+  col *= 0.9975;
+  gl_FragColor = vec4(clamp(col,0.0,1.0),1.0);
+}`;
+
+// ---- DISPLAY : VHS / compression post ----
+const DISP_FS = `
+precision highp float;
+varying vec2 uv;
+uniform sampler2D u_tex; uniform float u_time; uniform vec2 u_res; uniform float u_burst, u_scroll;
+float hash21(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
+void main(){
+  vec2 p=uv; float t=u_time;
+  // horizontal tape-tearing bands
+  float band=floor(p.y*(u_res.y/8.0));
+  float bn=hash21(vec2(band,floor(t*15.0)));
+  float tear=step(0.93-u_burst*0.22,bn)*(hash21(vec2(band,floor(t*7.0)))-0.5);
+  vec2 ut=p; ut.x+=tear*0.08*(0.5+u_burst);
+  // chromatic aberration (radial, blooms on burst)
+  vec2 dir=p-0.5; float amt=0.003+u_burst*0.02+dot(dir,dir)*0.02;
+  float r=texture2D(u_tex,ut+dir*amt).r;
+  float g=texture2D(u_tex,ut).g;
+  float b=texture2D(u_tex,ut-dir*amt).b;
+  vec3 col=vec3(r,g,b);
+  // cheap highlight bloom
+  vec3 gl=texture2D(u_tex,ut+vec2(0.004,0.0)).rgb+texture2D(u_tex,ut-vec2(0.004,0.0)).rgb
+         +texture2D(u_tex,ut+vec2(0.0,0.006)).rgb+texture2D(u_tex,ut-vec2(0.0,0.006)).rgb;
+  col += max(gl*0.25-0.42,0.0)*0.7;
+  col *= 0.9+0.1*sin(p.y*u_res.y*2.0);          // scanlines
+  col = floor(col*22.0)/22.0;                    // posterize / banding
+  col += (hash21(p*u_res+floor(t*24.0))-0.5)*0.045; // grain
+  float vig=smoothstep(1.12,0.32,length((p-0.5)*vec2(1.08,1.2)));
+  col*=vig;
+  col=pow(max(col,0.0),vec3(0.94));
+  gl_FragColor=vec4(col,1.0);
+}`;
+
+/* ============================ GL PLUMBING ============================ */
+function sh(type,src){ const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(s),src); return s; }
+function prog(fs){ const pr=gl.createProgram();
+  gl.attachShader(pr,sh(gl.VERTEX_SHADER,VERT)); gl.attachShader(pr,sh(gl.FRAGMENT_SHADER,fs));
+  gl.bindAttribLocation(pr,0,'p'); gl.linkProgram(pr);
+  if(!gl.getProgramParameter(pr,gl.LINK_STATUS)) console.error(gl.getProgramInfoLog(pr)); return pr; }
+
+const pSrc=prog(SRC_FS), pSim=prog(SIM_FS), pDisp=prog(DISP_FS);
+function loc(pr,names){ const o={}; names.forEach(n=>o[n]=gl.getUniformLocation(pr,n)); return o; }
+const uSrc =loc(pSrc ,['u_time','u_res','u_mouse','u_scroll']);
+const uSim =loc(pSim ,['u_prev','u_src','u_time','u_res','u_mouse','u_scroll','u_burst','u_block']);
+const uDisp=loc(pDisp,['u_tex','u_time','u_res','u_burst','u_scroll']);
+
+const quad=gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER,quad);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 1,-1, -1,1, 1,1]),gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
+
+let W=2,H=2,BLOCK=14;
+function mkTex(w,h){ const t=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,t);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,w,h,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE); return t; }
+function mkFbo(tex){ const f=gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER,f);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,tex,0); return f; }
+
+let texSrc,fboSrc, texA,texB,fboA,fboB;
+function alloc(){
+  [texSrc,texA,texB].forEach(t=>t&&gl.deleteTexture(t));
+  [fboSrc,fboA,fboB].forEach(f=>f&&gl.deleteFramebuffer(f));
+  texSrc=mkTex(W,H); fboSrc=mkFbo(texSrc);
+  texA=mkTex(W,H);   fboA=mkFbo(texA);
+  texB=mkTex(W,H);   fboB=mkFbo(texB);
+  gl.bindFramebuffer(gl.FRAMEBUFFER,fboA); gl.clearColor(0,0,0,1); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.bindFramebuffer(gl.FRAMEBUFFER,fboB); gl.clear(gl.COLOR_BUFFER_BIT);
+}
+function resize(){
+  const mob=Math.min(innerWidth,innerHeight)<560;
+  const q=mob?0.85:0.62, maxW=1100;
+  let w=Math.floor(innerWidth*q), h=Math.floor(innerHeight*q);
+  if(w>maxW){ const s=maxW/w; w=maxW; h=Math.floor(h*s); }
+  W=Math.max(16,w); H=Math.max(16,h);
+  BLOCK=Math.max(7, Math.round(W/86));
+  cv.width=W; cv.height=H;          // CSS stretches to 100vw/100vh (soft chunky upscale)
+  alloc();
+}
+addEventListener('resize',resize,{passive:true});
+
+/* ============================ INTERACTION ============================ */
+let mx=0.5,my=0.5,pmx=0.5,pmy=0.5,velX=0,velY=0,burst=0,scroll=0,scrollV=0;
+let lastMove=-9999, idleT=Math.random()*100;
+function setPtr(x,y){ mx=x/innerWidth; my=1-y/innerHeight; lastMove=tNow; }
+addEventListener('pointermove',e=>{ setPtr(e.clientX,e.clientY); },{passive:true});
+addEventListener('pointerdown',e=>{ setPtr(e.clientX,e.clientY); burst=1.0;
+  scrollV+=(Math.random()-0.5)*0.6; },{passive:true});
+addEventListener('wheel',e=>{ e.preventDefault(); scrollV+=Math.max(-1,Math.min(1,e.deltaY/420));
+  burst=Math.min(1,burst+0.22); lastMove=tNow; },{passive:false});
+// touch drag => scrub + pointer
+let tY=null;
+addEventListener('touchstart',e=>{ if(e.touches[0]){ tY=e.touches[0].clientY;
+  setPtr(e.touches[0].clientX,e.touches[0].clientY); burst=1.0; } },{passive:true});
+addEventListener('touchmove',e=>{ if(e.touches[0]){ const c=e.touches[0];
+  if(tY!=null){ scrollV+=(tY-c.clientY)/innerHeight*1.4; tY=c.clientY; }
+  setPtr(c.clientX,c.clientY); e.preventDefault(); } },{passive:false});
+addEventListener('touchend',()=>{ tY=null; },{passive:true});
+
+const ebar=document.getElementById('ebar');
+
+/* ============================ RENDER ============================ */
+let start=performance.now(), tNow=0, autoB=2.0+Math.random()*3;
+function drawTo(fbo){ gl.bindFramebuffer(gl.FRAMEBUFFER,fbo); gl.viewport(0,0,W,H);
+  gl.drawArrays(gl.TRIANGLE_STRIP,0,4); }
+
+function renderSource(){
+  gl.useProgram(pSrc);
+  gl.uniform1f(uSrc.u_time,tNow); gl.uniform2f(uSrc.u_res,W,H);
+  gl.uniform2f(uSrc.u_mouse,mx,my); gl.uniform1f(uSrc.u_scroll,scroll);
+  drawTo(fboSrc);
+}
+function renderSim(){
+  gl.useProgram(pSim);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,texA); gl.uniform1i(uSim.u_prev,0);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D,texSrc); gl.uniform1i(uSim.u_src,1);
+  gl.uniform1f(uSim.u_time,tNow); gl.uniform2f(uSim.u_res,W,H);
+  gl.uniform4f(uSim.u_mouse,mx,my,velX,velY);
+  gl.uniform1f(uSim.u_scroll,scroll); gl.uniform1f(uSim.u_burst,burst); gl.uniform1f(uSim.u_block,BLOCK);
+  drawTo(fboB);
+  // swap
+  let tt=texA; texA=texB; texB=tt; let tf=fboA; fboA=fboB; fboB=tf;
+}
+
+function step(dt){
+  // smoothed pointer velocity (drag energy)
+  const dx=mx-pmx, dy=my-pmy; pmx=mx; pmy=my;
+  velX=velX*0.82+dx*0.9; velY=velY*0.82+dy*0.9;
+  // idle: autonomous lissajous pointer so the smear keeps breathing
+  if(tNow-lastMove>1.6){ idleT+=dt;
+    const tx=0.5+0.34*Math.sin(idleT*0.31), ty=0.5+0.28*Math.cos(idleT*0.23);
+    mx+=(tx-mx)*0.018; my+=(ty-my)*0.018;
+  }
+  scrollV*=0.9; scroll+=scrollV*0.6;
+  burst*=0.94;
+  autoB-=dt; if(autoB<=0){ burst=Math.max(burst,0.45+Math.random()*0.3);
+    scrollV+=(Math.random()-0.5)*0.4; autoB=3.0+Math.random()*3.5; }
+}
+
+function frame(now){
+  const dt=Math.min(0.05,(now-start)/1000 - tNow);
+  tNow=(now-start)/1000;
+  step(dt>0?dt:0.016);
+  renderSource();
+  renderSim();
+  // present
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null); gl.viewport(0,0,W,H);
+  gl.useProgram(pDisp);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,texA); gl.uniform1i(uDisp.u_tex,0);
+  gl.uniform1f(uDisp.u_time,tNow); gl.uniform2f(uDisp.u_res,W,H);
+  gl.uniform1f(uDisp.u_burst,burst); gl.uniform1f(uDisp.u_scroll,scroll);
+  gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+
+  const e=Math.min(1,burst*0.7+Math.hypot(velX,velY)*7.0+Math.abs(scrollV)*0.6);
+  ebar.style.inset='0 '+((1-e)*100).toFixed(0)+'% 0 0';
+  requestAnimationFrame(frame);
+}
+
+/* seed a full image before first visible paint (no loading gate) */
+resize();
+tNow=0;
+for(let i=0;i<26;i++){ tNow=i*0.05; renderSource(); renderSim(); }
+tNow=0; start=performance.now();
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

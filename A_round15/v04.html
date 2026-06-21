@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Resonance Cavern</title>
+<style>
+  html,body{margin:0;height:100%;background:#04060a;overflow:hidden;cursor:none;
+    font-family:'Helvetica Neue',Arial,sans-serif;-webkit-tap-highlight-color:transparent;touch-action:none;}
+  #c{display:block;width:100vw;height:100vh;}
+  #hint{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);
+    color:rgba(190,215,255,.42);font-size:12px;letter-spacing:3px;
+    pointer-events:none;text-transform:uppercase;font-weight:300;
+    text-shadow:0 0 12px rgba(120,170,255,.4);transition:opacity 1.4s ease;}
+  #title{position:fixed;left:26px;top:22px;pointer-events:none;}
+  #title b{display:block;color:rgba(205,225,255,.86);font-size:15px;letter-spacing:6px;font-weight:400;
+    text-shadow:0 0 18px rgba(120,170,255,.5);}
+  #title span{display:block;color:rgba(150,180,225,.45);font-size:10px;letter-spacing:4px;margin-top:5px;font-weight:300;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="title"><b>RESONANCE&nbsp;CAVERN</b><span>limestone · water · sound</span></div>
+<div id="hint">move&nbsp;the&nbsp;light &nbsp;·&nbsp; click&nbsp;to&nbsp;ping &nbsp;·&nbsp; drag&nbsp;to&nbsp;ripple</div>
+<script>
+(()=>{
+"use strict";
+const cv=document.getElementById('c'), g=cv.getContext('2d',{alpha:false});
+let W=0,H=0,DPR=1;
+const rnd=(a,b)=>a+Math.random()*(b-a);
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const lerp=(a,b,t)=>a+(b-a)*t;
+
+/* ---------- pointer / torch ---------- */
+const torch={x:0,y:0,tx:0,ty:0,active:false,r:0,tr:0};
+let hintEl=document.getElementById('hint'), hintFaded=false;
+
+/* ---------- scene containers ---------- */
+let stals=[];        // stalactites (ceiling) + stalagmites (floor)
+let drops=[];        // falling water drops
+let ripples=[];      // pool ripples
+let sonar=[];        // big click pings
+let motes=[];        // floating dust motes
+let poolY=0;         // water surface y
+let ceilFn=null;     // ceiling silhouette function
+
+/* ---------- audio (lazy) ---------- */
+let AC=null, master=null;
+function initAudio(){
+  if(AC) return;
+  try{
+    AC=new (window.AudioContext||window.webkitAudioContext)();
+    master=AC.createGain(); master.gain.value=0.0; master.connect(AC.destination);
+    master.gain.linearRampToValueAtTime(0.9, AC.currentTime+0.6);
+  }catch(e){AC=null;}
+}
+function ping(freq,dur,vol,type){
+  if(!AC) return;
+  const t=AC.currentTime;
+  const o=AC.createOscillator(), gg=AC.createGain();
+  o.type=type||'sine'; o.frequency.setValueAtTime(freq,t);
+  o.frequency.exponentialRampToValueAtTime(Math.max(40,freq*0.62),t+dur);
+  gg.gain.setValueAtTime(0,t);
+  gg.gain.linearRampToValueAtTime(vol,t+0.012);
+  gg.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  // a touch of cavern echo
+  const dl=AC.createDelay(); dl.delayTime.value=0.17;
+  const fb=AC.createGain(); fb.gain.value=0.32;
+  const wet=AC.createGain(); wet.gain.value=0.5;
+  o.connect(gg); gg.connect(master);
+  gg.connect(dl); dl.connect(fb); fb.connect(dl); dl.connect(wet); wet.connect(master);
+  o.start(t); o.stop(t+dur+0.02);
+}
+
+/* =========================================================
+   BUILD SCENE
+========================================================= */
+function build(){
+  DPR=Math.min(window.devicePixelRatio||1, 2);
+  W=window.innerWidth;
+  H=window.innerHeight;
+  cv.style.width=W+'px'; cv.style.height=H+'px';
+  cv.width=Math.floor(W*DPR); cv.height=Math.floor(H*DPR);
+  g.setTransform(DPR,0,0,DPR,0,0);
+
+  poolY = H*0.82;
+  if(!torch.active){ torch.x=torch.tx=W*0.5; torch.y=torch.ty=H*0.32; }
+
+  // jagged ceiling profile (smooth-ish noise)
+  const segs=18, ceilPts=[];
+  const baseTop=H*0.10;
+  let prev=baseTop;
+  for(let i=0;i<=segs;i++){
+    const v=clamp(prev+rnd(-H*0.035,H*0.035), H*0.02, H*0.18);
+    ceilPts.push(v); prev=lerp(prev,v,0.7);
+  }
+  ceilFn=(x)=>{
+    const fx=clamp(x/W,0,0.99999)*segs, i=Math.floor(fx), t=fx-i;
+    const a=ceilPts[i], b=ceilPts[Math.min(i+1,segs)];
+    const tt=t*t*(3-2*t);
+    return lerp(a,b,tt);
+  };
+
+  // formations
+  stals=[];
+  const area=W*H;
+  const count = clamp(Math.round(W/52), 9, 30);
+
+  // stalactites from ceiling
+  for(let i=0;i<count;i++){
+    const x=rnd(W*0.02,W*0.98);
+    const top=ceilFn(x);
+    const len=rnd(H*0.10,H*0.40)*rnd(0.6,1.1);
+    const wmax=rnd(10,30)*(W<560?0.8:1);
+    stals.push(makeStal(x, top, len, wmax, 'tite'));
+  }
+  // stalagmites from floor
+  const fcount=clamp(Math.round(W/95),4,14);
+  for(let i=0;i<fcount;i++){
+    const x=rnd(W*0.04,W*0.96);
+    const len=rnd(H*0.06,H*0.22);
+    const wmax=rnd(14,40)*(W<560?0.8:1);
+    stals.push(makeStal(x, poolY, len, wmax, 'mite'));
+  }
+
+  // dust motes
+  motes=[];
+  const mc=clamp(Math.round(area/22000),40,150);
+  for(let i=0;i<mc;i++){
+    motes.push({x:rnd(0,W),y:rnd(0,poolY),z:rnd(0.2,1),
+      vx:rnd(-3,3),vy:rnd(-2,8),ph:rnd(0,6.28),sp:rnd(.4,1.2)});
+  }
+}
+
+function makeStal(x, baseY, len, wmax, kind){
+  // generate a tapered spike with limestone banding
+  const dir = kind==='tite' ? 1 : -1;
+  const tipY = baseY + dir*len;
+  // slight horizontal wobble of the central axis
+  const wob = rnd(-0.10,0.10);
+  const hue = rnd(28,46);            // warm limestone
+  const tone = rnd(0.34,0.62);
+  const segs=14;
+  const left=[], right=[];
+  for(let i=0;i<=segs;i++){
+    const t=i/segs;
+    // width profile: fat at base, sharp at tip, with a couple bulges
+    let prof=Math.pow(1-t,1.4);
+    prof += 0.18*Math.sin(t*7+x)*Math.pow(1-t,0.5);
+    prof=clamp(prof,0,1.3);
+    const w=wmax*prof;
+    const cx=x + wob*len*t*dir + Math.sin(t*5+x)*wmax*0.10;
+    const cy=baseY + dir*len*t;
+    left.push([cx-w, cy]); right.push([cx+w, cy]);
+  }
+  const tipX=x+wob*len*dir;
+  return {x,kind,dir,baseY,tipY,tipX,len,wmax,hue,tone,left,right,
+    // dripping state for stalactites
+    drip:{m:0, t:rnd(0,4), interval:rnd(2.2,6.5), swell:0}};
+}
+
+/* =========================================================
+   DROPS & RIPPLES
+========================================================= */
+function spawnDrop(x,y,r){
+  drops.push({x,y,vy:rnd(8,26),r:r||rnd(2.2,4.2),trail:[]});
+}
+function spawnRipple(x,y,strength,colorBoost){
+  ripples.push({x,y,r:1,max:rnd(60,150)*strength,life:1,strength,cb:colorBoost||0});
+  if(ripples.length>60) ripples.shift();
+}
+function spawnSonar(x,y){
+  sonar.push({x,y,r:1,max:Math.hypot(W,H)*0.95,life:1});
+  if(sonar.length>5) sonar.shift();
+}
+
+/* =========================================================
+   UPDATE
+========================================================= */
+let last=performance.now(), tGlobal=0;
+function update(dt){
+  tGlobal+=dt;
+  // torch easing
+  torch.x=lerp(torch.x,torch.tx,1-Math.pow(0.001,dt));
+  torch.y=lerp(torch.y,torch.ty,1-Math.pow(0.001,dt));
+  torch.tr=torch.active?1:0.0;
+  torch.r=lerp(torch.r,torch.tr,1-Math.pow(0.01,dt));
+
+  // drips
+  for(const s of stals){
+    if(s.kind!=='tite') continue;
+    const d=s.drip;
+    d.t+=dt;
+    // proximity to torch speeds dripping
+    const dist=Math.hypot(s.tipX-torch.x, s.tipY-torch.y);
+    const near=clamp(1-dist/(Math.min(W,H)*0.45),0,1);
+    const speed=1+near*2.4;
+    if(d.t > d.interval/speed){
+      d.swell=Math.min(1, d.swell + dt*1.6*speed);
+      if(d.swell>=1){
+        // release
+        spawnDrop(s.tipX, s.tipY+s.wmax*0.2, rnd(2.4,4.0)+s.wmax*0.04);
+        d.swell=0; d.t=0; d.interval=rnd(2.2,6.5);
+      }
+    }
+  }
+
+  // falling drops
+  for(let i=drops.length-1;i>=0;i--){
+    const d=drops[i];
+    d.vy+=1100*dt;           // gravity (px/s^2)
+    d.y+=d.vy*dt;
+    if(d.bounce){
+      d.x+=(d.vx||0)*dt; d.life-=dt;
+      if(d.life<=0||d.y>=poolY){ drops.splice(i,1); }
+      continue;
+    }
+    d.trail.unshift([d.x,d.y]); if(d.trail.length>6) d.trail.pop();
+    if(d.y>=poolY){
+      // splash
+      spawnRipple(d.x,poolY, clamp(d.r/3.2,0.5,1.4), 0.3);
+      // small secondary droplets
+      for(let k=0;k<3;k++){
+        const dd={x:d.x,y:poolY-2,vy:rnd(-60,-20),r:rnd(1,1.8),trail:[],bounce:true,
+                  vx:rnd(-40,40),life:0.6};
+        drops.push(dd);
+      }
+      // audio note scaled by size & position
+      const freq=lerp(520,180,clamp(d.x/W,0,1)) * lerp(1.4,0.8,clamp(d.r/5,0,1));
+      ping(freq,0.9,clamp(d.r/5,0.05,0.18),'sine');
+      drops.splice(i,1); continue;
+    }
+  }
+
+  // ripples
+  for(let i=ripples.length-1;i>=0;i--){
+    const r=ripples[i];
+    r.r+=lerp(40,120,r.strength*0.4)*dt;
+    r.life-=dt*0.62;
+    if(r.life<=0||r.r>r.max){ ripples.splice(i,1); }
+  }
+  // sonar
+  for(let i=sonar.length-1;i>=0;i--){
+    const s=sonar[i];
+    s.r+=560*dt; s.life-=dt*0.42;
+    if(s.life<=0||s.r>s.max) sonar.splice(i,1);
+  }
+
+  // motes
+  for(const m of motes){
+    m.ph+=dt*m.sp;
+    m.x+=(m.vx + Math.sin(m.ph)*6)*dt*m.z;
+    m.y+=(m.vy)*dt*m.z;
+    // gentle pull toward torch when active
+    if(torch.active){
+      const dx=torch.x-m.x, dy=torch.y-m.y, dl=Math.hypot(dx,dy)+1;
+      if(dl<260){ m.x+=dx/dl*22*dt*m.z; m.y+=dy/dl*22*dt*m.z; }
+    }
+    if(m.y>poolY) { m.y=rnd(0,H*0.1); m.x=rnd(0,W); }
+    if(m.x<-10)m.x=W+10; if(m.x>W+10)m.x=-10;
+  }
+}
+
+/* =========================================================
+   RENDER
+========================================================= */
+function lightAt(x,y){
+  // ambient + torch falloff, returns 0..1
+  // gentle cool key-light from upper area so the scene reads even without torch
+  let amb=0.20 + 0.10*clamp(1-y/(H*0.9),0,1);
+  if(torch.r>0.01){
+    const d=Math.hypot(x-torch.x,y-torch.y);
+    const fall=clamp(1-d/(Math.min(W,H)*0.55),0,1);
+    amb+=Math.pow(fall,1.7)*0.95*torch.r;
+  }
+  // sonar sweep illumination
+  for(const s of sonar){
+    const d=Math.abs(Math.hypot(x-s.x,y-s.y)-s.r);
+    if(d<46) amb+=(1-d/46)*0.5*s.life;
+  }
+  return clamp(amb,0,1.25);
+}
+
+function draw(){
+  // ---- background gradient (cavern depth) ----
+  const bg=g.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#070b14');
+  bg.addColorStop(0.45,'#0a0f1c');
+  bg.addColorStop(0.82,'#060912');
+  bg.addColorStop(1,'#03040a');
+  g.fillStyle=bg; g.fillRect(0,0,W,H);
+
+  // ---- deep radial torch glow on the cave air (volumetric) ----
+  if(torch.r>0.01){
+    const rg=g.createRadialGradient(torch.x,torch.y,2,torch.x,torch.y,Math.min(W,H)*0.62);
+    rg.addColorStop(0,`rgba(120,160,255,${0.16*torch.r})`);
+    rg.addColorStop(0.4,`rgba(80,120,210,${0.07*torch.r})`);
+    rg.addColorStop(1,'rgba(0,0,0,0)');
+    g.fillStyle=rg; g.fillRect(0,0,W,H);
+  }
+
+  // ---- sonar rings in the air ----
+  for(const s of sonar){
+    g.strokeStyle=`rgba(150,200,255,${0.5*s.life})`;
+    g.lineWidth=2;
+    g.beginPath(); g.arc(s.x,s.y,s.r,0,6.283); g.stroke();
+    g.strokeStyle=`rgba(110,170,255,${0.22*s.life})`;
+    g.lineWidth=8;
+    g.beginPath(); g.arc(s.x,s.y,s.r,0,6.283); g.stroke();
+  }
+
+  // ---- ceiling rock band ----
+  g.beginPath();
+  g.moveTo(0,0);
+  for(let x=0;x<=W;x+=8) g.lineTo(x,ceilFn(x));
+  g.lineTo(W,0); g.closePath();
+  const cg=g.createLinearGradient(0,0,0,H*0.2);
+  cg.addColorStop(0,'#15110b'); cg.addColorStop(1,'#241b10');
+  g.fillStyle=cg; g.fill();
+  // ceiling shading from torch
+  g.save(); g.clip();
+  paintRockLight(0,0,W,H*0.2);
+  g.restore();
+
+  // ---- floor / pool slab behind water ----
+  g.fillStyle='#050608';
+  g.fillRect(0,poolY,W,H-poolY);
+
+  // ---- formations (back-to-front by base width for depth) ----
+  // draw stalagmites first (behind ripples partially) then stalactites
+  for(const s of stals) if(s.kind==='mite') drawStal(s);
+  for(const s of stals) if(s.kind==='tite') drawStal(s);
+
+  // ---- water pool ----
+  drawPool();
+
+  // ---- falling drops (over pool/air) ----
+  for(const d of drops) drawDrop(d);
+
+  // ---- floating motes ----
+  g.globalCompositeOperation='lighter';
+  for(const m of motes){
+    const l=lightAt(m.x,m.y);
+    const a=clamp((l-0.16)*0.9,0,0.8)*m.z*(0.5+0.5*Math.sin(m.ph));
+    if(a<=0.01) continue;
+    const r=(0.6+m.z*1.6);
+    g.fillStyle=`rgba(170,205,255,${a})`;
+    g.beginPath(); g.arc(m.x,m.y,r,0,6.283); g.fill();
+  }
+  g.globalCompositeOperation='source-over';
+
+  // ---- torch core ----
+  if(torch.r>0.01){
+    g.globalCompositeOperation='lighter';
+    const tg=g.createRadialGradient(torch.x,torch.y,0,torch.x,torch.y,30);
+    tg.addColorStop(0,`rgba(210,228,255,${0.9*torch.r})`);
+    tg.addColorStop(0.5,`rgba(140,180,255,${0.4*torch.r})`);
+    tg.addColorStop(1,'rgba(120,160,255,0)');
+    g.fillStyle=tg; g.beginPath(); g.arc(torch.x,torch.y,30,0,6.283); g.fill();
+    g.fillStyle=`rgba(255,255,255,${0.95*torch.r})`;
+    g.beginPath(); g.arc(torch.x,torch.y,2.4,0,6.283); g.fill();
+    g.globalCompositeOperation='source-over';
+  }
+
+  // ---- vignette ----
+  const vg=g.createRadialGradient(W*0.5,H*0.5,Math.min(W,H)*0.3,W*0.5,H*0.5,Math.max(W,H)*0.75);
+  vg.addColorStop(0,'rgba(0,0,0,0)');
+  vg.addColorStop(1,'rgba(0,0,0,0.62)');
+  g.fillStyle=vg; g.fillRect(0,0,W,H);
+}
+
+function paintRockLight(x0,y0,w,h){
+  // overlay a torch-driven highlight onto a clipped rock region
+  if(torch.r<=0.01) return;
+  g.globalCompositeOperation='soft-light';
+  const rg=g.createRadialGradient(torch.x,torch.y,2,torch.x,torch.y,Math.min(W,H)*0.5);
+  rg.addColorStop(0,`rgba(255,225,170,${0.85*torch.r})`);
+  rg.addColorStop(0.5,`rgba(200,170,120,${0.35*torch.r})`);
+  rg.addColorStop(1,'rgba(0,0,0,0)');
+  g.fillStyle=rg; g.fillRect(x0,y0,w,h);
+  g.globalCompositeOperation='source-over';
+}
+
+function drawStal(s){
+  // build path
+  g.beginPath();
+  g.moveTo(s.left[0][0],s.left[0][1]);
+  for(let i=1;i<s.left.length;i++) g.lineTo(s.left[i][0],s.left[i][1]);
+  for(let i=s.right.length-1;i>=0;i--) g.lineTo(s.right[i][0],s.right[i][1]);
+  g.closePath();
+
+  // base fill gradient along the spike axis
+  const x0=s.x, y0=s.baseY, y1=s.tipY;
+  const grad=g.createLinearGradient(x0,y0,x0,y1);
+  const baseL=lightAt(s.x,(s.baseY+s.tipY)/2);
+  const h=s.hue, t=s.tone;
+  const shade=(mul)=>{
+    const L=clamp(baseL*mul,0,1.2);
+    const r=Math.round(clamp(40+L*150*(0.9+t*0.4),0,255));
+    const gg=Math.round(clamp(32+L*120*(0.8+t*0.3),0,255));
+    const b=Math.round(clamp(26+L*85,0,255));
+    return `rgb(${r},${gg},${b})`;
+  };
+  if(s.kind==='tite'){
+    grad.addColorStop(0,shade(0.55));
+    grad.addColorStop(0.5,shade(1.0));
+    grad.addColorStop(1,shade(1.25));
+  }else{
+    grad.addColorStop(0,shade(1.2));
+    grad.addColorStop(0.6,shade(0.9));
+    grad.addColorStop(1,shade(0.5));
+  }
+  g.fillStyle=grad; g.fill();
+
+  // limestone banding (thin contour lines)
+  g.save(); g.clip();
+
+  // warm torch caress on the spike body (cheap solid overlay, clipped to shape)
+  if(torch.r>0.01){
+    const reach=Math.min(W,H)*0.55;
+    const dMid=Math.hypot(s.x-torch.x,(s.baseY+s.tipY)/2-torch.y);
+    const fall=clamp(1-dMid/reach,0,1);
+    if(fall>0.02){
+      const k=Math.pow(fall,1.6)*0.5*torch.r;
+      g.globalCompositeOperation='lighter';
+      g.fillStyle=`rgba(255,200,132,${k})`;
+      g.fillRect(s.x-s.wmax*1.7,Math.min(s.baseY,s.tipY)-2,s.wmax*3.4,s.len+4);
+      g.globalCompositeOperation='source-over';
+    }
+  }
+
+  g.lineWidth=1;
+  const bands=Math.round(s.len/14);
+  for(let i=1;i<bands;i++){
+    const t2=i/bands;
+    const yy=s.baseY + s.dir*s.len*t2;
+    const a=0.10+0.06*Math.sin(i*1.7+s.x);
+    g.strokeStyle=`rgba(20,12,6,${a})`;
+    g.beginPath(); g.moveTo(s.x-s.wmax*1.4,yy); g.lineTo(s.x+s.wmax*1.4,yy); g.stroke();
+  }
+  // wet sheen highlight near tip on the torch-facing side
+  const ll=lightAt(s.tipX,s.tipY);
+  if(ll>0.3){
+    const side = torch.x<s.x?-1:1;
+    g.strokeStyle=`rgba(220,235,255,${clamp((ll-0.3)*0.5,0,0.4)})`;
+    g.lineWidth=2;
+    g.beginPath();
+    for(let i=0;i<s.left.length;i++){
+      const p=(side<0?s.left:s.right)[i];
+      if(i===0)g.moveTo(p[0],p[1]); else g.lineTo(p[0],p[1]);
+    }
+    g.stroke();
+  }
+  g.restore();
+
+  // edge rim
+  g.strokeStyle=`rgba(10,7,4,0.5)`; g.lineWidth=1; g.stroke();
+
+  // swelling water bead at stalactite tip
+  if(s.kind==='tite' && s.drip.swell>0.04){
+    const sw=s.drip.swell;
+    const bx=s.tipX, by=s.tipY + sw*6;
+    const br=2 + sw*4.5;
+    const l=lightAt(bx,by);
+    g.globalCompositeOperation='lighter';
+    const bg2=g.createRadialGradient(bx-br*0.3,by-br*0.4,0,bx,by,br*1.6);
+    bg2.addColorStop(0,`rgba(220,240,255,${0.5+0.4*l})`);
+    bg2.addColorStop(0.6,`rgba(120,170,255,${0.35})`);
+    bg2.addColorStop(1,'rgba(80,120,200,0)');
+    g.fillStyle=bg2;
+    g.beginPath(); g.ellipse(bx,by,br*0.9,br*1.15,0,0,6.283); g.fill();
+    g.globalCompositeOperation='source-over';
+  }
+}
+
+function drawDrop(d){
+  const l=lightAt(d.x,d.y);
+  // trail
+  for(let i=d.trail.length-1;i>=0;i--){
+    const p=d.trail[i], a=(1-i/d.trail.length)*0.28;
+    g.strokeStyle=`rgba(160,200,255,${a})`;
+    g.lineWidth=d.r*(1-i/d.trail.length);
+    if(i<d.trail.length-1){
+      g.beginPath(); g.moveTo(p[0],p[1]); g.lineTo(d.trail[i+1][0],d.trail[i+1][1]); g.stroke();
+    }
+  }
+  g.globalCompositeOperation='lighter';
+  const rg=g.createRadialGradient(d.x-d.r*0.3,d.y-d.r*0.4,0,d.x,d.y,d.r*1.8);
+  rg.addColorStop(0,`rgba(235,245,255,${0.7+0.3*l})`);
+  rg.addColorStop(0.5,`rgba(130,175,255,0.5)`);
+  rg.addColorStop(1,'rgba(90,130,210,0)');
+  g.fillStyle=rg;
+  g.beginPath(); g.ellipse(d.x,d.y,d.r*0.85,d.r*1.25,0,0,6.283); g.fill();
+  g.globalCompositeOperation='source-over';
+}
+
+function drawPool(){
+  // base water
+  const pg=g.createLinearGradient(0,poolY,0,H);
+  pg.addColorStop(0,'rgba(20,40,80,0.9)');
+  pg.addColorStop(0.4,'rgba(8,20,46,0.96)');
+  pg.addColorStop(1,'rgba(2,6,16,1)');
+  g.fillStyle=pg; g.fillRect(0,poolY,W,H-poolY);
+
+  // reflection of torch glow on water surface
+  if(torch.r>0.01 && torch.y<poolY){
+    g.globalCompositeOperation='lighter';
+    const ry=poolY+(poolY-torch.y)*0.18;
+    const rg=g.createRadialGradient(torch.x,ry,2,torch.x,ry,Math.min(W,H)*0.4);
+    rg.addColorStop(0,`rgba(120,170,255,${0.18*torch.r})`);
+    rg.addColorStop(1,'rgba(0,0,0,0)');
+    g.fillStyle=rg;
+    g.save();
+    g.beginPath(); g.rect(0,poolY,W,H-poolY); g.clip();
+    g.fillRect(0,poolY,W,H-poolY);
+    g.restore();
+    g.globalCompositeOperation='source-over';
+  }
+
+  // ripples on the surface (ellipses, foreshortened)
+  g.save();
+  g.beginPath(); g.rect(0,poolY-2,W,H-poolY+2); g.clip();
+  g.globalCompositeOperation='lighter';
+  for(const r of ripples){
+    const ry=r.r*0.32; // foreshorten vertically
+    const a=clamp(r.life*0.5,0,0.5);
+    const l=lightAt(r.x,poolY);
+    g.strokeStyle=`rgba(${150+l*80|0},${190+l*40|0},255,${a*(0.4+0.6*l)})`;
+    g.lineWidth=clamp(2.4*r.life,0.5,2.6);
+    g.beginPath(); g.ellipse(r.x,poolY+2,r.r,ry,0,0,6.283); g.stroke();
+    if(r.r>14){
+      g.strokeStyle=`rgba(120,160,235,${a*0.4})`;
+      g.beginPath(); g.ellipse(r.x,poolY+2,r.r*0.6,ry*0.6,0,0,6.283); g.stroke();
+    }
+  }
+  g.globalCompositeOperation='source-over';
+  // surface highlight line
+  g.strokeStyle='rgba(120,160,220,0.25)'; g.lineWidth=1;
+  g.beginPath(); g.moveTo(0,poolY); g.lineTo(W,poolY); g.stroke();
+  g.restore();
+}
+
+/* =========================================================
+   LOOP
+========================================================= */
+function frame(now){
+  let dt=(now-last)/1000; last=now;
+  if(dt>0.05) dt=0.05;       // clamp big gaps
+  update(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+
+/* =========================================================
+   INPUT
+========================================================= */
+function setTorch(x,y){
+  torch.tx=x; torch.ty=y; torch.active=true;
+  if(!hintFaded){ hintFaded=true; hintEl.style.opacity='0'; }
+}
+cv.addEventListener('pointermove',e=>{ setTorch(e.clientX,e.clientY); });
+cv.addEventListener('pointerdown',e=>{
+  initAudio();
+  setTorch(e.clientX,e.clientY);
+  spawnSonar(e.clientX,e.clientY);
+  spawnRipple(e.clientX, clamp(e.clientY,poolY-4,poolY), 1.4, 0.6);
+  ping(lerp(330,140,clamp(e.clientX/W,0,1)),1.6,0.18,'triangle');
+  // jiggle nearby drips into release
+  for(const s of stals){
+    if(s.kind!=='tite') continue;
+    if(Math.hypot(s.tipX-e.clientX,s.tipY-e.clientY)<140){
+      s.drip.swell=Math.min(1,s.drip.swell+0.5);
+    }
+  }
+  isDragging=true;
+});
+let isDragging=false;
+cv.addEventListener('pointerup',()=>{isDragging=false;});
+cv.addEventListener('pointerleave',()=>{ torch.active=false; });
+let dragAccum=0;
+cv.addEventListener('pointermove',e=>{
+  if(isDragging){
+    dragAccum++;
+    if(dragAccum%3===0){
+      const y=clamp(e.clientY,poolY-30,poolY);
+      if(e.clientY>poolY-40) spawnRipple(e.clientX,clamp(e.clientY,poolY-2,poolY),0.7,0.3);
+    }
+  }
+});
+// touch: allow audio + prevent scroll
+window.addEventListener('touchstart',()=>initAudio(),{passive:true});
+
+let rt;
+window.addEventListener('resize',()=>{ clearTimeout(rt); rt=setTimeout(build,140); });
+
+/* =========================================================
+   BOOT
+========================================================= */
+build();
+// pre-warm a couple of drips mid-fall and a ripple for an alive first frame
+(function seed(){
+  const tites=stals.filter(s=>s.kind==='tite');
+  for(let i=0;i<Math.min(3,tites.length);i++){
+    const s=tites[(i*7)%tites.length];
+    spawnDrop(s.tipX, lerp(s.tipY, poolY, rnd(0.2,0.7)), rnd(2.5,3.8));
+  }
+  spawnRipple(W*0.5,poolY,1,0.4);
+  spawnRipple(W*0.32,poolY,0.7,0.3);
+})();
+last=performance.now();
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

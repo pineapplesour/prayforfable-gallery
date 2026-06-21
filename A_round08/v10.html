@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>INTERFEROMETER · moiré field</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#04060c; }
+  body { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+         -webkit-user-select:none; user-select:none; -webkit-tap-highlight-color:transparent; }
+  #gl { position:fixed; inset:0; width:100%; height:100%; display:block; touch-action:none; cursor:crosshair; }
+
+  /* ---- HUD ---- */
+  .hud { position:fixed; left:0; top:0; padding:18px 20px; pointer-events:none;
+         mix-blend-mode:screen; z-index:5; }
+  .title { font-size:13px; letter-spacing:.42em; font-weight:600;
+           color:rgba(220,235,255,.92); text-shadow:0 0 18px rgba(90,160,255,.55); }
+  .sub { font-size:9.5px; letter-spacing:.30em; margin-top:7px;
+         color:rgba(150,180,220,.62); }
+  .readout { position:fixed; left:20px; bottom:18px; z-index:5; pointer-events:none;
+             mix-blend-mode:screen; font-size:9.5px; letter-spacing:.16em; line-height:1.85;
+             color:rgba(150,185,225,.72); }
+  .readout b { color:rgba(225,240,255,.95); font-weight:600; }
+  .hint { position:fixed; right:20px; bottom:18px; z-index:5; pointer-events:none;
+          mix-blend-mode:screen; text-align:right; font-size:9px; letter-spacing:.18em;
+          line-height:2.0; color:rgba(135,170,215,.58); }
+  .hint span { color:rgba(210,230,255,.9); }
+  .corner { position:fixed; right:20px; top:18px; z-index:5; pointer-events:none;
+            mix-blend-mode:screen; text-align:right; font-size:9px; letter-spacing:.22em;
+            color:rgba(140,175,220,.5); }
+  @media (max-width:520px){
+    .hud{padding:14px 15px;} .title{font-size:11px; letter-spacing:.30em;}
+    .sub{font-size:8px;} .readout{font-size:8px; bottom:14px; left:15px;}
+    .hint{font-size:7.5px; bottom:14px; right:15px; line-height:1.9;}
+    .corner{font-size:7.5px; right:15px;}
+  }
+  .flash { animation: fl .5s ease-out; }
+  @keyframes fl { from{opacity:1;} to{opacity:.5;} }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+
+<div class="hud">
+  <div class="title">I N T E R F E R O M E T E R</div>
+  <div class="sub">LIVE MOIRÉ · COHERENT WAVE FIELD</div>
+</div>
+<div class="corner" id="corner">∿ Ø·00</div>
+<div class="readout" id="readout">
+  emitters <b id="rE">5</b> &nbsp;·&nbsp; carrier <b id="rC">1.00×</b> &nbsp;·&nbsp; beat <b id="rB">—</b><br>
+  mode <b id="rM">RINGS</b> &nbsp;·&nbsp; fps <b id="rF">—</b>
+</div>
+<div class="hint">
+  <span>drag</span> bend the field &nbsp; / &nbsp; <span>click</span> emit<br>
+  <span>scroll</span> carrier freq &nbsp; / &nbsp; <span>space</span> mode<br>
+  <span>1‑4</span> palette &nbsp; / &nbsp; <span>R</span> reset
+</div>
+
+<script>
+(() => {
+"use strict";
+const cv = document.getElementById('gl');
+const gl = cv.getContext('webgl', {antialias:false, premultipliedAlpha:false,
+            alpha:false, powerPreference:'high-performance', preserveDrawingBuffer:true})
+        || cv.getContext('experimental-webgl');
+
+// ---------- shaders ----------
+const VERT = `
+attribute vec2 p;
+void main(){ gl_Position = vec4(p,0.0,1.0); }
+`;
+
+const MAXE = 9; // max emitters
+const FRAG = `
+precision highp float;
+uniform vec2  uRes;
+uniform float uTime;
+uniform int   uN;          // active emitter count
+uniform vec3  uEm[${MAXE}]; // x,y, phase  (xy in clip-ish 0..1 of min dim)
+uniform float uEmF[${MAXE}];// per-emitter base spatial freq
+uniform vec2  uPtr;        // pointer in same space
+uniform float uPress;      // 0..1 pointer influence (smoothed)
+uniform float uCarrier;    // global carrier scale
+uniform float uMode;       // 0 rings, 1 lines, 2 spiral
+uniform float uPal;        // palette index (smoothly lerped)
+uniform float uBeat;       // beat readout coupling -> subtle global breathe
+
+#define PI 3.14159265359
+#define TAU 6.28318530718
+
+// iridescent palette bank
+vec3 pal(float t, float idx){
+  t = fract(t);
+  // four palettes via cosine gradients (IQ-style)
+  vec3 a,b,c,d;
+  // p0 : deep ocean / cyan-magenta oil
+  vec3 a0=vec3(0.50,0.50,0.55), b0=vec3(0.50,0.48,0.52), c0=vec3(1.0,1.0,1.0), d0=vec3(0.00,0.18,0.55);
+  // p1 : sodium / amber-violet
+  vec3 a1=vec3(0.55,0.42,0.48), b1=vec3(0.50,0.45,0.42), c1=vec3(1.0,0.85,0.7), d1=vec3(0.10,0.42,0.78);
+  // p2 : spectral neon (green-pink-blue)
+  vec3 a2=vec3(0.48,0.50,0.52), b2=vec3(0.55,0.50,0.55), c2=vec3(1.2,1.0,1.0), d2=vec3(0.30,0.15,0.65);
+  // p3 : mono platinum (blue-white)
+  vec3 a3=vec3(0.62,0.66,0.74), b3=vec3(0.36,0.34,0.30), c3=vec3(0.9,1.0,1.1), d3=vec3(0.55,0.62,0.75);
+
+  // blend the two nearest palettes by idx (0..3)
+  float fi = clamp(idx,0.0,3.0);
+  float i0 = floor(fi); float f = fi - i0;
+  // gather as arrays-ish via mixing
+  if(i0<0.5){ a=mix(a0,a1,f); b=mix(b0,b1,f); c=mix(c0,c1,f); d=mix(d0,d1,f);}
+  else if(i0<1.5){ a=mix(a1,a2,f); b=mix(b1,b2,f); c=mix(c1,c2,f); d=mix(d1,d2,f);}
+  else { a=mix(a2,a3,f); b=mix(b2,b3,f); c=mix(c2,c3,f); d=mix(d2,d3,f);}
+  return a + b*cos(TAU*(c*t + d));
+}
+
+void main(){
+  // normalized coords, aspect-correct, origin center
+  vec2 uv = (gl_FragCoord.xy - 0.5*uRes) / min(uRes.x,uRes.y);
+
+  // pointer lens : warp space toward/around pointer (gravitational-ish)
+  vec2 dP = uv - uPtr;
+  float rP = length(dP);
+  float lens = uPress * 0.16 / (rP*rP + 0.020);
+  uv -= normalize(dP + 1e-5) * lens;            // bend coords
+  float swirl = uPress * 0.9 / (rP + 0.18);     // rotational drag
+  float cs = cos(swirl), sn = sin(swirl);
+  uv = mat2(cs,-sn,sn,cs) * uv;
+
+  float field = 0.0;   // accumulated wave amplitude
+  float gp = 0.0;      // accumulated phase for color
+  float wsum = 0.0;
+
+  for(int i=0;i<${MAXE};i++){
+    if(i>=uN) break;
+    vec3 em = uEm[i];
+    vec2 d = uv - em.xy;
+    float r = length(d);
+    float ang = atan(d.y, d.x);
+    float f = uEmF[i] * uCarrier;
+
+    float coord;
+    if(uMode < 0.5){
+      coord = r * f;                                  // concentric rings
+    } else if(uMode < 1.5){
+      // plane waves : direction encoded in phase term
+      float dir = em.z;
+      coord = (uv.x*cos(dir) + uv.y*sin(dir)) * f;    // straight fringes
+    } else {
+      coord = (r * f) + ang * (3.0 + 4.0*sin(em.z));  // spirals
+    }
+    float ph = coord - uTime*(0.6 + 0.25*sin(em.z)) + em.z*3.0;
+    float w  = 1.0 / (0.45 + r*1.1);                  // amplitude falloff
+    field += sin(ph*PI) * w;
+    gp    += ph * w;
+    wsum  += w;
+  }
+  field /= max(wsum, 0.001);
+  gp    /= max(wsum, 0.001);
+
+  // moiré : the interference of the summed field with itself at offset freq
+  float beat = field;
+  // sharpen fringes -> high-contrast moiré bands
+  float bands = 0.5 + 0.5*cos(beat*PI*2.0 + uTime*0.15);
+  float fine  = 0.5 + 0.5*cos(beat*PI*9.0);   // secondary fine grid -> moiré
+  float moire = bands * (0.55 + 0.45*fine);
+
+  // phase-driven iridescent color
+  // compress hue range -> cohesive oil-on-water iridescence (not full rainbow)
+  float hue = gp*0.045 + beat*0.13 + uTime*0.010;
+  vec3 col = pal(hue, uPal);
+
+  // contrast shaping & glow on constructive crests
+  float crest = smoothstep(0.55,0.98, moire);
+  col *= (0.35 + 1.25*moire);
+  col += crest*crest * vec3(0.25,0.42,0.85) * 0.9;     // electric bloom on crests
+
+  // pointer halo
+  col += uPress * 0.10 / (rP*rP*22.0 + 0.10) * vec3(0.4,0.7,1.0);
+
+  // deep vignette
+  float vig = 1.0 - 0.55*dot(uv,uv);
+  col *= clamp(vig,0.0,1.0);
+
+  // subtle global breathe coupled to beat readout
+  col *= 0.92 + 0.08*uBeat;
+
+  // gentle tone curve + dither to kill banding
+  col = pow(max(col,0.0), vec3(0.86));
+  float dither = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898,78.233)))*43758.5453);
+  col += (dither-0.5)/255.0;
+
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+function compile(type, src){
+  const s = gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+
+const quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+const pLoc = gl.getAttribLocation(prog,'p');
+gl.enableVertexAttribArray(pLoc);
+gl.vertexAttribPointer(pLoc, 2, gl.FLOAT, false, 0, 0);
+
+const U = {};
+['uRes','uTime','uN','uEm','uEmF','uPtr','uPress','uCarrier','uMode','uPal','uBeat']
+  .forEach(n => U[n] = gl.getUniformLocation(prog, n));
+
+// ---------- state ----------
+const ST = {
+  emitters: [],     // {x,y,vx,vy,phase,freq,fx}
+  carrier: 1.0,
+  carrierT: 1.0,
+  mode: 0, modeT: 0,
+  pal: 0, palT: 0,
+  ptr: {x:0,y:0}, ptrT:{x:0,y:0},
+  press: 0, pressT: 0,
+  beat: 0,
+};
+const MODES = ['RINGS','LINES','SPIRAL'];
+
+function rnd(a,b){ return a + Math.random()*(b-a); }
+function spawn(x,y){
+  if(ST.emitters.length>=MAXE) ST.emitters.shift();
+  ST.emitters.push({
+    x:x, y:y, vx:rnd(-0.03,0.03), vy:rnd(-0.03,0.03),
+    phase:Math.random(), freq:rnd(7,16), fx:rnd(7,16)
+  });
+}
+function seed(){
+  ST.emitters.length=0;
+  const n=5;
+  for(let i=0;i<n;i++){
+    const a = i/n*Math.PI*2 + 0.3;
+    spawn(Math.cos(a)*0.32, Math.sin(a)*0.32);
+  }
+  ST.emitters[0].x=0; ST.emitters[0].y=0;
+}
+seed();
+
+// ---------- sizing ----------
+let DPR=1, W=0, H=0;
+function resize(){
+  const dpr = Math.min(window.devicePixelRatio||1, 2);
+  // resolution cap: keep total pixels bounded for steady 60fps
+  const cssW = window.innerWidth, cssH = window.innerHeight;
+  const cap = 2200000; // ~2.2M device px target
+  let scale = Math.min(dpr, Math.sqrt(cap/(cssW*cssH)));
+  scale = Math.max(scale, 0.65);
+  DPR = scale;
+  W = Math.round(cssW*scale); H = Math.round(cssH*scale);
+  cv.width=W; cv.height=H;
+  cv.style.width=cssW+'px'; cv.style.height=cssH+'px';
+  gl.viewport(0,0,W,H);
+}
+window.addEventListener('resize', resize); resize();
+
+// ---------- input ----------
+function toField(clientX, clientY){
+  const mn = Math.min(window.innerWidth, window.innerHeight);
+  return {
+    x: (clientX - window.innerWidth/2)/mn,
+    y: -(clientY - window.innerHeight/2)/mn
+  };
+}
+let dragging=false;
+cv.addEventListener('pointerdown', e=>{
+  dragging=true; cv.setPointerCapture(e.pointerId);
+  ST.ptr = ST.ptrT = toField(e.clientX,e.clientY);
+  ST.pressT = 1.0;
+  spawn(ST.ptr.x, ST.ptr.y);
+  flash();
+});
+cv.addEventListener('pointermove', e=>{
+  const f = toField(e.clientX,e.clientY);
+  ST.ptrT = f;
+  if(!dragging){ ST.pressT = 0.42; } // hover bends gently
+});
+window.addEventListener('pointerup', ()=>{ dragging=false; ST.pressT = 0.0; });
+cv.addEventListener('pointerleave', ()=>{ if(!dragging) ST.pressT=0.0; });
+
+cv.addEventListener('wheel', e=>{
+  e.preventDefault();
+  ST.carrierT *= (1 - Math.sign(e.deltaY)*0.06);
+  ST.carrierT = Math.min(Math.max(ST.carrierT, 0.25), 4.5);
+}, {passive:false});
+
+window.addEventListener('keydown', e=>{
+  if(e.code==='Space'){ e.preventDefault(); ST.mode=(ST.mode+1)%3; flash(); }
+  else if(e.key==='r'||e.key==='R'){ seed(); ST.carrierT=1.0; flash(); }
+  else if(e.key>='1'&&e.key<='4'){ ST.pal=parseInt(e.key)-1; flash(); }
+});
+
+// touch: two-finger spread -> carrier
+let pinchD=0;
+cv.addEventListener('touchstart', e=>{
+  if(e.touches.length===2){ pinchD=tdist(e); }
+},{passive:true});
+cv.addEventListener('touchmove', e=>{
+  if(e.touches.length===2){
+    const d=tdist(e);
+    if(pinchD>0){ ST.carrierT *= 1 + (d-pinchD)*0.0025; ST.carrierT=Math.min(Math.max(ST.carrierT,0.25),4.5);}
+    pinchD=d; e.preventDefault?.();
+  }
+},{passive:true});
+function tdist(e){ const a=e.touches[0],b=e.touches[1];
+  return Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY); }
+
+function flash(){
+  const r=document.getElementById('corner');
+  r.classList.remove('flash'); void r.offsetWidth; r.classList.add('flash');
+}
+
+// ---------- HUD ----------
+const rE=document.getElementById('rE'), rC=document.getElementById('rC'),
+      rB=document.getElementById('rB'), rM=document.getElementById('rM'),
+      rF=document.getElementById('rF'), corner=document.getElementById('corner');
+
+// ---------- loop ----------
+const emBuf = new Float32Array(MAXE*3);
+const emFBuf = new Float32Array(MAXE);
+let t0 = performance.now()/1000, last=t0, frames=0, fpsT=0, fps=60;
+const start = t0;
+
+function frame(now){
+  now/=1000;
+  const dt = Math.min(now-last, 0.05); last=now;
+  const T = now - start;
+
+  // smooth state
+  ST.carrier += (ST.carrierT-ST.carrier)*Math.min(1,dt*6);
+  ST.press   += (ST.pressT-ST.press)*Math.min(1,dt*8);
+  ST.ptr.x   += (ST.ptrT.x-ST.ptr.x)*Math.min(1,dt*12);
+  ST.ptr.y   += (ST.ptrT.y-ST.ptr.y)*Math.min(1,dt*12);
+  ST.modeT   += ((ST.mode)-ST.modeT)*Math.min(1,dt*5);
+  ST.palT    += ((ST.pal)-ST.palT)*Math.min(1,dt*4);
+
+  // drift emitters with slow brownian + soft attract to pointer when pressed
+  for(const e of ST.emitters){
+    e.vx += (Math.sin(T*0.7+e.phase*9.0))*0.0006;
+    e.vy += (Math.cos(T*0.6+e.phase*7.0))*0.0006;
+    if(ST.press>0.5){
+      e.vx += (ST.ptr.x-e.x)*0.0015*ST.press;
+      e.vy += (ST.ptr.y-e.y)*0.0015*ST.press;
+    }
+    e.vx*=0.985; e.vy*=0.985;
+    e.x+=e.vx*dt*8; e.y+=e.vy*dt*8;
+    // soft bounds
+    const lim=0.62;
+    if(e.x> lim){e.x=lim; e.vx*=-0.7;} if(e.x<-lim){e.x=-lim; e.vx*=-0.7;}
+    if(e.y> lim){e.y=lim; e.vy*=-0.7;} if(e.y<-lim){e.y=-lim; e.vy*=-0.7;}
+  }
+
+  const n = ST.emitters.length;
+  for(let i=0;i<n;i++){
+    const e=ST.emitters[i];
+    emBuf[i*3]=e.x; emBuf[i*3+1]=e.y; emBuf[i*3+2]=e.phase*6.283;
+    emFBuf[i]=e.freq;
+  }
+
+  // beat readout : variance of emitter freqs * carrier -> a "beat frequency"
+  let fmin=99,fmax=0;
+  for(let i=0;i<n;i++){ fmin=Math.min(fmin,ST.emitters[i].freq); fmax=Math.max(fmax,ST.emitters[i].freq);}
+  const beatHz = Math.abs(fmax-fmin)*ST.carrier*0.6;
+  ST.beat = 0.5+0.5*Math.sin(T*beatHz*0.25);
+
+  // uniforms
+  gl.uniform2f(U.uRes, W, H);
+  gl.uniform1f(U.uTime, T);
+  gl.uniform1i(U.uN, n);
+  gl.uniform3fv(U.uEm, emBuf);
+  gl.uniform1fv(U.uEmF, emFBuf);
+  gl.uniform2f(U.uPtr, ST.ptr.x, ST.ptr.y);
+  gl.uniform1f(U.uPress, ST.press);
+  gl.uniform1f(U.uCarrier, ST.carrier);
+  gl.uniform1f(U.uMode, ST.modeT);
+  gl.uniform1f(U.uPal, ST.palT);
+  gl.uniform1f(U.uBeat, ST.beat);
+
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  // fps
+  frames++; fpsT+=dt;
+  if(fpsT>=0.5){ fps=Math.round(frames/fpsT); frames=0; fpsT=0;
+    rF.textContent=fps; }
+
+  // HUD text (cheap, throttled by rAF)
+  rE.textContent = n;
+  rC.textContent = ST.carrier.toFixed(2)+'×';
+  rB.textContent = beatHz.toFixed(1)+' hz';
+  rM.textContent = MODES[ST.mode];
+  corner.textContent = '∿ '+MODES[ST.mode].slice(0,3)+'·'+('0'+Math.round(ST.carrier*10)).slice(-2);
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// expose minimal state for self-verification
+window.__moire = ST;
+})();
+</script>
+</body>
+</html>

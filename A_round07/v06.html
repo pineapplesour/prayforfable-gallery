@@ -1,0 +1,672 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>PROTEUS — living reaction-diffusion</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#04060a; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; -webkit-tap-highlight-color:transparent; }
+  #c { display:block; position:fixed; inset:0; width:100vw; height:100vh; touch-action:none; cursor:crosshair; }
+
+  /* UI overlay */
+  .ui { position:fixed; left:0; right:0; pointer-events:none; user-select:none; z-index:5; }
+  #top { top:0; padding:18px 22px; display:flex; align-items:flex-start; justify-content:space-between; }
+  .title { display:flex; flex-direction:column; gap:4px; mix-blend-mode:screen; }
+  .title h1 { font-size:13px; font-weight:700; letter-spacing:.42em; color:#cfe6ff; text-transform:uppercase; opacity:.92; }
+  .title .sub { font-size:10px; letter-spacing:.28em; color:#6f8bb0; text-transform:uppercase; }
+  .regime { text-align:right; mix-blend-mode:screen; }
+  .regime .lab { font-size:9px; letter-spacing:.3em; color:#566f93; }
+  .regime .val { font-size:20px; font-weight:700; letter-spacing:.06em; color:#aee3ff;
+                 font-variant-numeric:tabular-nums; line-height:1.05;
+                 text-shadow:0 0 18px rgba(80,180,255,.45); }
+  .regime .coord { font-size:9px; letter-spacing:.18em; color:#4d648a; font-variant-numeric:tabular-nums; margin-top:2px; }
+
+  #bottom { bottom:0; padding:14px 22px 18px; display:flex; align-items:flex-end; justify-content:space-between; gap:10px; }
+  .hint { font-size:10px; letter-spacing:.12em; color:#62799b; line-height:1.7; mix-blend-mode:screen; }
+  .hint b { color:#9fc6f0; font-weight:600; }
+  .fps { font-size:9px; letter-spacing:.2em; color:#3f536f; font-variant-numeric:tabular-nums; }
+
+  /* palette dots */
+  .dots { display:flex; gap:7px; align-items:center; pointer-events:auto; }
+  .dot { width:13px; height:13px; border-radius:50%; cursor:pointer; opacity:.45;
+         border:1px solid rgba(255,255,255,.25); transition:opacity .25s, transform .25s; }
+  .dot:hover { opacity:.9; transform:scale(1.18); }
+  .dot.on { opacity:1; transform:scale(1.12); box-shadow:0 0 10px rgba(255,255,255,.4); }
+
+  .fade { animation:fade 1.4s ease forwards; animation-delay:7s; }
+  @keyframes fade { to { opacity:.18; } }
+
+  @media (max-width:520px){
+    #top { padding:13px 15px; }
+    .title h1 { font-size:11px; letter-spacing:.3em; }
+    .regime .val { font-size:16px; }
+    #bottom { padding:10px 15px 14px; flex-direction:column; align-items:flex-start; }
+    .hint { font-size:9px; }
+  }
+  .flash { position:fixed; left:50%; top:50%; transform:translate(-50%,-50%);
+           font-size:13px; letter-spacing:.3em; color:#bfe2ff; text-transform:uppercase;
+           pointer-events:none; opacity:0; z-index:6; text-shadow:0 0 20px rgba(80,180,255,.6); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="ui" id="top">
+  <div class="title">
+    <h1>P R O T E U S</h1>
+    <div class="sub">reaction · diffusion · life</div>
+  </div>
+  <div class="regime">
+    <div class="lab">REGIME</div>
+    <div class="val" id="regimeName">SOLITONS</div>
+    <div class="coord" id="regimeCoord">f 0.030 · k 0.062</div>
+  </div>
+</div>
+
+<div class="ui" id="bottom">
+  <div class="hint fade">
+    <b>drag</b> to inject life &nbsp;·&nbsp; <b>scroll</b> to morph the species &nbsp;·&nbsp; <b>click</b> a swatch to reskin<br>
+    <b>space</b> reseed &nbsp;·&nbsp; <b>S</b> mirror symmetry &nbsp;·&nbsp; <b>right-drag</b> dissolve
+  </div>
+  <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
+    <div class="dots" id="dots"></div>
+    <div class="fps" id="fps">—</div>
+  </div>
+</div>
+
+<div class="flash" id="flash"></div>
+
+<script>
+"use strict";
+/* ===========================================================================
+   PROTEUS — GPU Gray-Scott reaction-diffusion, rendered as a living organism.
+   Ping-pong float framebuffers simulate two chemicals (U,V). A lighting shader
+   turns the V field into an iridescent, relief-lit metallic surface.
+   =========================================================================== */
+
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl', {antialias:false, depth:false, stencil:false,
+            preserveDrawingBuffer:false, premultipliedAlpha:false, alpha:false});
+
+if(!gl){ document.body.innerHTML='<p style="color:#9fc6f0;font:14px sans-serif;padding:30px">WebGL unavailable.</p>'; throw new Error('no webgl'); }
+
+/* ---- float texture support (with half-float fallback) ---- */
+let floatExt = gl.getExtension('OES_texture_float');
+let halfExt  = gl.getExtension('OES_texture_half_float');
+gl.getExtension('OES_texture_float_linear');
+gl.getExtension('OES_texture_half_float_linear');
+let SIM_TYPE = gl.FLOAT, simTypeOk = false;
+
+/* ===========================  SHADERS  ==================================== */
+const VERT = `
+attribute vec2 a_pos;
+varying vec2 v_uv;
+void main(){ v_uv = a_pos*0.5 + 0.5; gl_Position = vec4(a_pos,0.0,1.0); }`;
+
+/* Gray-Scott update. State packed as: r=U, g=V (we use Laplacian 3x3). */
+const SIM_FRAG = `
+precision highp float;
+varying vec2 v_uv;
+uniform sampler2D u_state;
+uniform vec2  u_texel;     // 1/size
+uniform float u_feed;
+uniform float u_kill;
+uniform float u_dA;
+uniform float u_dB;
+uniform float u_dt;
+// pointer injection
+uniform vec2  u_p;         // pointer in uv
+uniform float u_pStr;      // strength (+ add V, - remove)
+uniform float u_pRad;      // radius
+uniform float u_aspect;
+
+vec2 samp(vec2 uv){ return texture2D(u_state, uv).xy; }
+
+void main(){
+  vec2 t = u_texel;
+  vec2 c = samp(v_uv);
+  // weighted 3x3 Laplacian (Gray-Scott classic weights)
+  vec2 lap = vec2(0.0);
+  lap += samp(v_uv + vec2(-t.x,-t.y))*0.05;
+  lap += samp(v_uv + vec2( 0.0,-t.y))*0.20;
+  lap += samp(v_uv + vec2( t.x,-t.y))*0.05;
+  lap += samp(v_uv + vec2(-t.x, 0.0))*0.20;
+  lap += c*(-1.0);
+  lap += samp(v_uv + vec2( t.x, 0.0))*0.20;
+  lap += samp(v_uv + vec2(-t.x, t.y))*0.05;
+  lap += samp(v_uv + vec2( 0.0, t.y))*0.20;
+  lap += samp(v_uv + vec2( t.x, t.y))*0.05;
+
+  float A = c.x, B = c.y;
+  float reaction = A*B*B;
+  float dA = u_dA*lap.x - reaction + u_feed*(1.0 - A);
+  float dB = u_dB*lap.y + reaction - (u_kill + u_feed)*B;
+
+  A += dA*u_dt;
+  B += dB*u_dt;
+
+  // pointer injection: aspect-corrected gaussian
+  vec2 d = (v_uv - u_p); d.x *= u_aspect;
+  float g = exp(-dot(d,d)/(u_pRad*u_pRad));
+  if(u_pStr > 0.0){ B += u_pStr*g; A -= u_pStr*0.5*g; }
+  else            { B += u_pStr*g; }   // negative -> dissolve
+
+  A = clamp(A,0.0,1.0);
+  B = clamp(B,0.0,1.0);
+  gl_FragColor = vec4(A,B,0.0,1.0);
+}`;
+
+/* Render pass: relief lighting + iridescent palette from V field. */
+const REN_FRAG = `
+precision highp float;
+varying vec2 v_uv;
+uniform sampler2D u_state;
+uniform vec2  u_texel;
+uniform float u_time;
+uniform int   u_pal;
+uniform int   u_sym;     // 0 none, 1 mirror-x, 2 quad-mirror
+uniform float u_aspect;
+uniform vec2  u_res;
+
+vec2 fold(vec2 uv){
+  if(u_sym==1){ uv.x = abs(uv.x-0.5)+0.5; }
+  else if(u_sym==2){ uv = abs(uv-0.5)+0.5; uv = 1.0-uv; uv = abs(uv-0.5)*2.0; }
+  return uv;
+}
+float Vat(vec2 uv){ return texture2D(u_state, clamp(uv,0.0,1.0)).y; }
+
+// palettes -------------------------------------------------------------
+vec3 pal_iris(float v){
+  // deep teal -> cyan -> hot magenta -> gold highlight
+  vec3 a=vec3(0.02,0.05,0.10);
+  vec3 b=vec3(0.05,0.55,0.62);
+  vec3 c=vec3(0.95,0.20,0.55);
+  vec3 d=vec3(1.00,0.92,0.55);
+  vec3 col = mix(a,b, smoothstep(0.10,0.40,v));
+  col = mix(col,c, smoothstep(0.40,0.66,v));
+  col = mix(col,d, smoothstep(0.74,0.92,v));
+  return col;
+}
+vec3 pal_magma(float v){
+  vec3 a=vec3(0.02,0.01,0.05);
+  vec3 b=vec3(0.35,0.05,0.18);
+  vec3 c=vec3(0.95,0.32,0.07);
+  vec3 d=vec3(1.00,0.95,0.72);
+  vec3 col=mix(a,b,smoothstep(0.08,0.36,v));
+  col=mix(col,c,smoothstep(0.36,0.62,v));
+  col=mix(col,d,smoothstep(0.70,0.95,v));
+  return col;
+}
+vec3 pal_jade(float v){
+  vec3 a=vec3(0.01,0.04,0.03);
+  vec3 b=vec3(0.02,0.30,0.22);
+  vec3 c=vec3(0.45,0.85,0.50);
+  vec3 d=vec3(0.92,1.00,0.80);
+  vec3 col=mix(a,b,smoothstep(0.08,0.38,v));
+  col=mix(col,c,smoothstep(0.38,0.66,v));
+  col=mix(col,d,smoothstep(0.74,0.95,v));
+  return col;
+}
+vec3 pal_mono(float v){
+  vec3 a=vec3(0.02,0.03,0.05);
+  vec3 b=vec3(0.18,0.22,0.30);
+  vec3 c=vec3(0.62,0.72,0.86);
+  vec3 d=vec3(0.98,0.99,1.00);
+  vec3 col=mix(a,b,smoothstep(0.06,0.40,v));
+  col=mix(col,c,smoothstep(0.42,0.70,v));
+  col=mix(col,d,smoothstep(0.74,0.96,v));
+  return col;
+}
+vec3 palette(int p, float v){
+  if(p==0) return pal_iris(v);
+  if(p==1) return pal_magma(v);
+  if(p==2) return pal_jade(v);
+  return pal_mono(v);
+}
+
+void main(){
+  vec2 uv = fold(v_uv);
+  float v  = Vat(uv);
+
+  // gradient -> surface normal for relief lighting
+  vec2 t = u_texel;
+  float vx = Vat(uv+vec2(t.x,0.0)) - Vat(uv-vec2(t.x,0.0));
+  float vy = Vat(uv+vec2(0.0,t.y)) - Vat(uv-vec2(0.0,t.y));
+  vec3 n = normalize(vec3(-vx*4.0, -vy*4.0, 0.10));
+
+  // animated key light + cooler fill
+  float ang = u_time*0.25;
+  vec3 L1 = normalize(vec3(cos(ang)*0.6, sin(ang)*0.6, 0.65));
+  vec3 L2 = normalize(vec3(-0.4,-0.5,0.5));
+  float diff1 = max(dot(n,L1),0.0);
+  float diff2 = max(dot(n,L2),0.0)*0.5;
+  vec3 V = vec3(0.0,0.0,1.0);
+  vec3 H = normalize(L1+V);
+  float spec = pow(max(dot(n,H),0.0), 42.0);
+
+  // base color from concentration
+  vec3 base = palette(u_pal, v);
+
+  // iridescent rim from gradient magnitude (thin-film-ish)
+  float gmag = clamp(length(vec2(vx,vy))*9.0, 0.0, 1.0);
+  vec3 iri = 0.5 + 0.5*cos(6.2831*(vec3(0.0,0.33,0.67) + gmag*1.3 + v*0.5 + u_time*0.05));
+
+  vec3 col = base*(0.30 + 0.95*diff1 + diff2);
+  col += iri*gmag*0.45;
+  col += spec*vec3(1.0,0.97,0.9)*1.1;
+
+  // subtle vignette + film grain
+  vec2 q = v_uv-0.5; q.x*=u_aspect;
+  float vig = smoothstep(1.05,0.25,length(q));
+  col *= mix(0.55,1.0,vig);
+  float grain = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898,78.233))+u_time)*43758.5453);
+  col += (grain-0.5)*0.025;
+
+  // gentle filmic tone
+  col = col/(col+vec3(0.85));
+  col = pow(col, vec3(0.92));
+  gl_FragColor = vec4(col,1.0);
+}`;
+
+/* ===========================  GL HELPERS  ================================ */
+function sh(type, src){
+  const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)+'\n'+src);
+  return s;
+}
+function prog(vs,fs){
+  const p=gl.createProgram();
+  gl.attachShader(p,sh(gl.VERTEX_SHADER,vs));
+  gl.attachShader(p,sh(gl.FRAGMENT_SHADER,fs));
+  gl.bindAttribLocation(p,0,'a_pos');
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  return p;
+}
+const simProg = prog(VERT, SIM_FRAG);
+const renProg = prog(VERT, REN_FRAG);
+
+// fullscreen triangle
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
+
+function makeTex(w,h,type){
+  const tx=gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D,tx);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,w,h,0,gl.RGBA,type,null);
+  return tx;
+}
+function makeFBO(tex){
+  const fb=gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER,fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,tex,0);
+  return fb;
+}
+
+/* ---- simulation grid: capped for performance ---- */
+let SIM_W=0, SIM_H=0;
+let texA,texB,fboA,fboB;
+
+function pickSimType(w,h){
+  // probe FLOAT first; fallback half-float; fallback to half regardless
+  function probe(type){
+    const tx=makeTex(4,4,type);
+    const fb=gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER,fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,tx,0);
+    const ok=gl.checkFramebufferStatus(gl.FRAMEBUFFER)===gl.FRAMEBUFFER_COMPLETE;
+    gl.deleteFramebuffer(fb); gl.deleteTexture(tx);
+    return ok;
+  }
+  if(floatExt && probe(gl.FLOAT)) return gl.FLOAT;
+  if(halfExt){
+    const ht = halfExt.HALF_FLOAT_OES;
+    if(probe(ht)) return ht;
+  }
+  return null;
+}
+
+function initSim(){
+  // grid sized to aspect, capped (long side <= ~520 cells)
+  const aspect = canvas.width/canvas.height;
+  const LONG = 480;
+  if(aspect>=1){ SIM_W=LONG; SIM_H=Math.max(160,Math.round(LONG/aspect)); }
+  else        { SIM_H=LONG; SIM_W=Math.max(160,Math.round(LONG*aspect)); }
+
+  if(SIM_TYPE===gl.FLOAT && !simTypeOk){
+    const t=pickSimType(SIM_W,SIM_H);
+    if(t===null){ throw new Error('no renderable float texture'); }
+    SIM_TYPE=t; simTypeOk=true;
+  }
+  if(texA){ gl.deleteTexture(texA); gl.deleteTexture(texB); gl.deleteFramebuffer(fboA); gl.deleteFramebuffer(fboB); }
+  texA=makeTex(SIM_W,SIM_H,SIM_TYPE); fboA=makeFBO(texA);
+  texB=makeTex(SIM_W,SIM_H,SIM_TYPE); fboB=makeFBO(texB);
+  seed();
+}
+
+/* seed the field with U=1, V=0, plus randomized blobs of V */
+function seed(rich){
+  // write seed via a CPU-built texture (small grid -> cheap)
+  // We can't easily upload typed arrays of HALF_FLOAT, so seed via a draw:
+  // draw U=1,V=0 then inject several blobs using the sim shader's pointer.
+  // Simpler: render a clear state, then stamp blobs through repeated injects.
+  for(const fb of [fboA,fboB]){
+    gl.bindFramebuffer(gl.FRAMEBUFFER,fb);
+    gl.viewport(0,0,SIM_W,SIM_H);
+    gl.clearColor(1,0,0,1); gl.clear(gl.COLOR_BUFFER_BIT); // U=1,V=0
+  }
+  // stamp a dense scatter of V blobs so structure fills the WHOLE field fast,
+  // independent of aspect ratio. Grid + jitter guarantees full coverage.
+  const cols=7, rows=Math.max(7, Math.round(7*SIM_H/SIM_W));
+  for(let gy=0; gy<rows; gy++){
+    for(let gx=0; gx<cols; gx++){
+      if(Math.random()<0.32) continue;            // leave gaps for organic feel
+      const px=(gx+0.5)/cols + (Math.random()-0.5)*0.08;
+      const py=(gy+0.5)/rows + (Math.random()-0.5)*0.08;
+      stamp(Math.min(0.99,Math.max(0.01,px)), Math.min(0.99,Math.max(0.01,py)),
+            0.9, 0.018 + Math.random()*0.018);
+    }
+  }
+  // a few extra strong nuclei
+  const extra = rich? 14 : 8;
+  for(let i=0;i<extra;i++){
+    stamp(0.06+0.88*Math.random(), 0.06+0.88*Math.random(), 1.0, 0.025+Math.random()*0.02);
+  }
+  pingFront = true;
+}
+
+/* one-off injection of V into the *current front* buffer (and back, to keep both seeded) */
+let pingFront=true;
+function frontFBO(){ return pingFront? fboA : fboB; }
+function frontTEX(){ return pingFront? texA : texB; }
+
+function stamp(px,py,str,rad){
+  // run a single sim-shader inject pass front->back with dt=0 (no reaction),
+  // but easiest: directly draw additive blobs is awkward; we reuse sim shader
+  // with diffusion off by passing the same texture and only injection.
+  // To avoid complexity we just inject during the normal step via pending list.
+  pending.push({px,py,str,rad});
+}
+const pending=[];
+
+/* ===========================  PARAMETERS  =============================== */
+// Turing-space presets along a scrollable path
+const REGIMES = [
+  {name:'SOLITONS',  f:0.030, k:0.062},
+  {name:'MITOSIS',   f:0.0367,k:0.0649},
+  {name:'CORAL',     f:0.0545,k:0.062},
+  {name:'WORMS',     f:0.058, k:0.065},
+  {name:'MAZE',      f:0.029, k:0.057},
+  {name:'SPOTS',     f:0.022, k:0.051},
+  {name:'PULSES',    f:0.025, k:0.060},
+  {name:'CHAOS',     f:0.026, k:0.054},
+  {name:'FLOWER',    f:0.0620,k:0.0610},
+  {name:'NEBULA',    f:0.018, k:0.051},
+];
+let morph = 2.0;            // start on CORAL — dense, branchy, alive at first paint
+let feed=0.030, kill=0.062;
+const dA=1.0, dB=0.5, dt=1.0;
+const STEPS_PER_FRAME = 14;
+
+let palette=0;
+const PAL_COLORS=['#1fd9c8','#ff7a2d','#7be08a','#aab8d0'];
+let sym=0;
+
+/* ---- compute interpolated feed/kill + regime name from morph ---- */
+function applyMorph(){
+  const N=REGIMES.length;
+  let m=((morph%N)+N)%N;
+  const i0=Math.floor(m), i1=(i0+1)%N, fr=m-i0;
+  const a=REGIMES[i0], b=REGIMES[i1];
+  // smootherstep blend
+  const s=fr*fr*fr*(fr*(fr*6-15)+10);
+  feed=a.f+(b.f-a.f)*s;
+  kill=a.k+(b.k-a.k)*s;
+  const name = (s<0.5? a.name : b.name);
+  regimeName.textContent=name;
+  regimeCoord.textContent='f '+feed.toFixed(3)+' · k '+kill.toFixed(3);
+}
+
+/* ===========================  CANVAS SIZE  ============================== */
+function resize(){
+  const dpr=Math.min(window.devicePixelRatio||1, 1.75);
+  canvas.width = Math.round(innerWidth*dpr);
+  canvas.height= Math.round(innerHeight*dpr);
+  canvas.style.width=innerWidth+'px';
+  canvas.style.height=innerHeight+'px';
+  initSim();
+}
+window.addEventListener('resize', debounce(resize,180));
+function debounce(fn,ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a),ms); }; }
+
+/* ===========================  INTERACTION  ============================= */
+let pointer={x:0.5,y:0.5,down:false,erase:false,active:false};
+let lastInteract=performance.now();
+
+function uvFromEvent(e){
+  const r=canvas.getBoundingClientRect();
+  const cx=(e.clientX-r.left)/r.width;
+  const cy=(e.clientY-r.top)/r.height;
+  return {x:cx, y:1.0-cy};
+}
+canvas.addEventListener('pointerdown',e=>{
+  canvas.setPointerCapture(e.pointerId);
+  const p=uvFromEvent(e);
+  pointer.x=p.x; pointer.y=p.y; pointer.down=true; pointer.active=true;
+  pointer.erase = (e.button===2)|| (e.pointerType==='touch'&&e.shiftKey);
+  lastInteract=performance.now();
+});
+canvas.addEventListener('pointermove',e=>{
+  const p=uvFromEvent(e);
+  pointer.x=p.x; pointer.y=p.y; pointer.active=true;
+  if(pointer.down) lastInteract=performance.now();
+});
+window.addEventListener('pointerup',()=>{ pointer.down=false; });
+canvas.addEventListener('contextmenu',e=>e.preventDefault());
+
+// scroll / wheel morphs species
+canvas.addEventListener('wheel',e=>{
+  e.preventDefault();
+  morph += (e.deltaY>0?1:-1)*0.06;
+  applyMorph();
+  lastInteract=performance.now();
+  flash(regimeName.textContent);
+},{passive:false});
+
+// keyboard
+window.addEventListener('keydown',e=>{
+  if(e.code==='Space'){ e.preventDefault(); seed(true); flash('RESEED'); lastInteract=performance.now(); }
+  else if(e.key==='s'||e.key==='S'){ sym=(sym+1)%3; flash(['SYMMETRY OFF','MIRROR','KALEIDO'][sym]); }
+  else if(e.key>='1'&&e.key<='4'){ setPalette(parseInt(e.key)-1); }
+});
+
+// touch: two-finger vertical drag morphs
+let touchY=null, touchN=0;
+canvas.addEventListener('touchstart',e=>{ touchN=e.touches.length; if(touchN>=2) touchY=e.touches[0].clientY; },{passive:true});
+canvas.addEventListener('touchmove',e=>{
+  if(e.touches.length>=2 && touchY!==null){
+    const dy=e.touches[0].clientY-touchY;
+    if(Math.abs(dy)>26){ morph += dy>0?0.10:-0.10; touchY=e.touches[0].clientY; applyMorph(); flash(regimeName.textContent); lastInteract=performance.now(); }
+  }
+},{passive:true});
+canvas.addEventListener('touchend',()=>{ if(event&&event.touches&&event.touches.length<2) touchY=null; },{passive:true});
+
+/* palette swatches */
+const dotsEl=document.getElementById('dots');
+PAL_COLORS.forEach((c,i)=>{
+  const d=document.createElement('div'); d.className='dot'+(i===0?' on':'');
+  d.style.background=c; d.title='palette '+(i+1);
+  d.addEventListener('click',()=>setPalette(i));
+  dotsEl.appendChild(d);
+});
+function setPalette(i){
+  palette=i;
+  [...dotsEl.children].forEach((d,k)=>d.classList.toggle('on',k===i));
+}
+
+/* flash text */
+const flashEl=document.getElementById('flash');
+let flashT=0;
+function flash(txt){ flashEl.textContent=txt; flashEl.style.opacity='1'; flashT=performance.now(); }
+
+/* ===========================  RENDER LOOP  ============================= */
+// uniform locations
+const SU={
+  state:gl.getUniformLocation(simProg,'u_state'),
+  texel:gl.getUniformLocation(simProg,'u_texel'),
+  feed:gl.getUniformLocation(simProg,'u_feed'),
+  kill:gl.getUniformLocation(simProg,'u_kill'),
+  dA:gl.getUniformLocation(simProg,'u_dA'),
+  dB:gl.getUniformLocation(simProg,'u_dB'),
+  dt:gl.getUniformLocation(simProg,'u_dt'),
+  p:gl.getUniformLocation(simProg,'u_p'),
+  pStr:gl.getUniformLocation(simProg,'u_pStr'),
+  pRad:gl.getUniformLocation(simProg,'u_pRad'),
+  aspect:gl.getUniformLocation(simProg,'u_aspect'),
+};
+const RU={
+  state:gl.getUniformLocation(renProg,'u_state'),
+  texel:gl.getUniformLocation(renProg,'u_texel'),
+  time:gl.getUniformLocation(renProg,'u_time'),
+  pal:gl.getUniformLocation(renProg,'u_pal'),
+  sym:gl.getUniformLocation(renProg,'u_sym'),
+  aspect:gl.getUniformLocation(renProg,'u_aspect'),
+  res:gl.getUniformLocation(renProg,'u_res'),
+};
+
+let frame=0, fpsAcc=0, fpsN=0, lastFps=performance.now();
+const fpsEl=document.getElementById('fps');
+
+function simStep(inject){
+  const src = pingFront? texA : texB;
+  const dst = pingFront? fboB : fboA;
+  gl.bindFramebuffer(gl.FRAMEBUFFER,dst);
+  gl.viewport(0,0,SIM_W,SIM_H);
+  gl.useProgram(simProg);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D,src);
+  gl.uniform1i(SU.state,0);
+  gl.uniform2f(SU.texel,1/SIM_W,1/SIM_H);
+  gl.uniform1f(SU.feed,feed);
+  gl.uniform1f(SU.kill,kill);
+  gl.uniform1f(SU.dA,dA);
+  gl.uniform1f(SU.dB,dB);
+  gl.uniform1f(SU.dt,dt);
+  gl.uniform1f(SU.aspect,SIM_W/SIM_H);
+
+  if(inject){
+    gl.uniform2f(SU.p,inject.px,inject.py);
+    gl.uniform1f(SU.pStr,inject.str);
+    gl.uniform1f(SU.pRad,inject.rad);
+  } else {
+    gl.uniform1f(SU.pStr,0.0);
+    gl.uniform2f(SU.p,-1,-1);
+    gl.uniform1f(SU.pRad,0.01);
+  }
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  pingFront=!pingFront;
+}
+
+let idlePhase=Math.random()*6.28;
+
+function loop(now){
+  // ----- FPS -----
+  fpsN++;
+  if(now-lastFps>500){ lastFps=now; fpsEl.textContent=Math.round(fpsN*1000/( (now-lastFps)+500))+' FPS · '+SIM_W+'×'+SIM_H+(SIM_TYPE===gl.FLOAT?' f32':' f16'); fpsN=0; }
+
+  // ----- gather injections -----
+  // process queued stamps (seed blobs)
+  let injects=[];
+  while(pending.length) injects.push(pending.shift());
+
+  // continuous pointer injection while dragging
+  if(pointer.down){
+    injects.push({px:pointer.x,py:pointer.y, str: pointer.erase? -0.55:0.62, rad:0.045});
+  }
+
+  // idle ambient seeding so the piece is always alive (first paint = art)
+  const idle = (now-lastInteract)>2600;
+  if(idle && frame%26===0){
+    idlePhase+=0.6;
+    injects.push({px:0.5+0.32*Math.cos(idlePhase), py:0.5+0.32*Math.sin(idlePhase*1.3),
+                  str:0.55, rad:0.03});
+  }
+
+  // ----- simulate -----
+  for(let i=0;i<STEPS_PER_FRAME;i++){
+    const inj = injects.length? injects.shift() : null;
+    simStep(inj);
+  }
+  // flush remaining injects on extra steps (rare)
+  while(injects.length){ simStep(injects.shift()); }
+
+  // ----- render to screen -----
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+  gl.viewport(0,0,canvas.width,canvas.height);
+  gl.useProgram(renProg);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, frontTEX());
+  gl.uniform1i(RU.state,0);
+  gl.uniform2f(RU.texel,1/SIM_W,1/SIM_H);
+  gl.uniform1f(RU.time, now*0.001);
+  gl.uniform1i(RU.pal, palette);
+  gl.uniform1i(RU.sym, sym);
+  gl.uniform1f(RU.aspect, canvas.width/canvas.height);
+  gl.uniform2f(RU.res, canvas.width, canvas.height);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+
+  // flash fade
+  if(flashEl.style.opacity==='1' && now-flashT>120){
+    flashEl.style.transition='opacity .9s ease'; flashEl.style.opacity='0';
+  }
+
+  frame++;
+  requestAnimationFrame(loop);
+}
+
+/* ===========================  BOOT  ==================================== */
+applyMorph();
+resize();         // sets up sim + seeds (fills pending[] with dense blobs)
+
+// Warm-up: drive many sim steps on a vigorous growth regime so the very first
+// painted frame is already a fully-formed organism on ANY aspect ratio.
+(function warmup(){
+  const savedFeed=feed, savedKill=kill;
+  feed=0.0545; kill=0.062;                 // CORAL: fast, branchy growth
+  const WARM = 900;
+  for(let i=0;i<WARM;i++){
+    // keep re-seeding a little during the first stretch for density
+    if(i<120 && i%10===0 && pending.length===0){
+      stamp(0.08+0.84*Math.random(), 0.08+0.84*Math.random(), 0.8, 0.02+Math.random()*0.02);
+    }
+    const inj = pending.length? pending.shift() : null;
+    simStep(inj);
+  }
+  feed=savedFeed; kill=savedKill;          // restore the chosen display regime
+  // brief settle into the display regime (short, so it doesn't erode structure)
+  for(let i=0;i<40;i++) simStep(null);
+})();
+
+requestAnimationFrame(loop);
+
+/* expose hooks for verification */
+window.__proteus={
+  state:()=>({SIM_W,SIM_H,type:SIM_TYPE===gl.FLOAT?'f32':'f16',feed,kill,
+              regime:regimeName.textContent,palette,sym,frame}),
+  inject:(x,y,s)=>{ stamp(x,y,s||0.7,0.05); },
+  morph:(d)=>{ morph+=d; applyMorph(); },
+  setPalette, reseed:()=>seed(true),
+};
+</script>
+</body>
+</html>

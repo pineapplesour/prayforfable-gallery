@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>설경 호수 · 리퀴드 글래스</title>
+<style>
+  :root{
+    --ink:#eaf3fb;
+    --ink-rgb:234,243,251;
+    --muted:rgba(234,243,251,.62);
+    --glass:rgba(255,255,255,.07);
+    --glass-strong:rgba(255,255,255,.12);
+    --stroke:rgba(255,255,255,.42);
+    --hi:inset 0 1px 0 rgba(255,255,255,.38), inset 0 -1px 0 rgba(255,255,255,.06);
+    --shadow:0 18px 48px rgba(8,18,30,.46), 0 6px 16px rgba(8,18,30,.30);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;height:100%;overflow:hidden;background:#0a1620;}
+  body{
+    font-family:"Pretendard","Hiragino Kaku Gothic ProN","Yu Gothic","Segoe UI",system-ui,sans-serif;
+    color:var(--ink);
+  }
+  /* ambient nature base */
+  #gl{position:fixed;inset:0;width:100%;height:100%;display:block;cursor:crosshair;touch-action:none;z-index:0;}
+  /* CSS fallback scene (shown only if WebGL2 absent) */
+  #fallback{
+    position:fixed;inset:0;z-index:0;display:none;
+    background:
+      radial-gradient(120% 90% at 50% 8%, #1d3a4c 0%, #14303f 42%, #0d2230 78%, #081722 100%);
+  }
+  #fallback::after{
+    content:"";position:absolute;inset:0;
+    background:
+      radial-gradient(60% 40% at 30% 30%, rgba(120,190,210,.10), transparent 60%),
+      radial-gradient(50% 35% at 75% 65%, rgba(90,150,180,.08), transparent 60%);
+    animation:drift 26s ease-in-out infinite alternate;
+  }
+  @keyframes drift{to{transform:translate(-3%,2%) scale(1.05);}}
+
+  /* floating glass layer */
+  #stage{position:fixed;inset:0;z-index:2;pointer-events:none;}
+  .panel{
+    position:absolute;pointer-events:auto;
+    background:var(--glass);
+    border:1px solid var(--stroke);
+    border-radius:26px;
+    box-shadow:var(--shadow), var(--hi);
+    backdrop-filter:blur(22px) saturate(1.35);
+    -webkit-backdrop-filter:blur(22px) saturate(1.35);
+    will-change:transform;
+    transition:box-shadow .35s ease, transform .12s ease-out;
+  }
+  .panel.lifting{box-shadow:0 34px 70px rgba(6,14,24,.55), var(--hi);}
+  .panel::before{ /* top sheen */
+    content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+    background:linear-gradient(160deg, rgba(255,255,255,.20), rgba(255,255,255,0) 38%);
+    mix-blend-mode:screen;opacity:.8;
+  }
+  .grip{cursor:grab;}
+  .grip:active{cursor:grabbing;}
+
+  /* main todo panel */
+  #todo{width:360px;left:8%;top:50%;transform:translateY(-50%);padding:24px 24px 20px;}
+  .head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:4px;}
+  .title{font-size:21px;font-weight:700;letter-spacing:-.01em;line-height:1.2;}
+  .sub{margin:6px 0 18px;font-size:13px;color:var(--muted);line-height:1.55;}
+  .season-pill{
+    flex:0 0 auto;display:inline-flex;align-items:center;gap:6px;
+    font-size:11px;font-weight:600;letter-spacing:.04em;color:var(--ink);
+    background:var(--glass-strong);border:1px solid var(--stroke);
+    padding:6px 11px;border-radius:999px;white-space:nowrap;box-shadow:var(--hi);
+  }
+  .season-pill .dot{width:7px;height:7px;border-radius:50%;background:#aee3ff;box-shadow:0 0 8px #aee3ff;}
+
+  .progress-wrap{margin:0 0 16px;}
+  .progress-top{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:7px;}
+  .progress-top b{color:var(--ink);font-weight:600;}
+  .bar{height:7px;border-radius:999px;background:rgba(255,255,255,.10);overflow:hidden;box-shadow:inset 0 1px 2px rgba(0,0,0,.25);}
+  .bar > i{display:block;height:100%;width:0;border-radius:999px;
+    background:linear-gradient(90deg,#8fd4ff,#cfeeff);
+    box-shadow:0 0 12px rgba(143,212,255,.6);transition:width .5s cubic-bezier(.2,.8,.2,1);}
+
+  ul.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:9px;}
+  li.item{
+    display:flex;align-items:center;gap:13px;
+    background:rgba(255,255,255,.055);
+    border:1px solid rgba(255,255,255,.16);
+    border-radius:15px;padding:12px 14px;cursor:pointer;
+    transition:background .2s ease, transform .12s ease, border-color .2s ease;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.10);
+  }
+  li.item:hover{background:rgba(255,255,255,.10);transform:translateX(2px);}
+  .box{
+    flex:0 0 auto;width:22px;height:22px;border-radius:7px;
+    border:1.5px solid rgba(255,255,255,.55);
+    display:grid;place-items:center;transition:all .22s ease;
+    background:rgba(255,255,255,.04);
+  }
+  .box svg{width:13px;height:13px;opacity:0;transform:scale(.5);transition:all .22s ease;stroke:#06202e;}
+  .txt{flex:1;font-size:14.5px;line-height:1.35;transition:color .22s ease, opacity .22s ease;}
+  .meta{flex:0 0 auto;font-size:11px;color:var(--muted);}
+  li.item.done .box{background:linear-gradient(135deg,#bfe9ff,#8fd4ff);border-color:transparent;box-shadow:0 0 14px rgba(143,212,255,.55);}
+  li.item.done .box svg{opacity:1;transform:scale(1);}
+  li.item.done .txt{color:var(--muted);opacity:.7;text-decoration:line-through;text-decoration-color:rgba(234,243,251,.4);}
+
+  .add{display:flex;gap:9px;margin-top:15px;}
+  .add input{
+    flex:1;background:rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.20);
+    color:var(--ink);border-radius:13px;padding:11px 13px;font-size:13.5px;outline:none;
+    transition:border-color .2s ease, background .2s ease;
+  }
+  .add input::placeholder{color:rgba(234,243,251,.42);}
+  .add input:focus{border-color:rgba(143,212,255,.7);background:rgba(0,0,0,.10);}
+  .add button{
+    flex:0 0 auto;width:46px;border:1px solid var(--stroke);border-radius:13px;cursor:pointer;
+    background:rgba(255,255,255,.16);color:var(--ink);font-size:20px;font-weight:300;line-height:1;
+    box-shadow:var(--hi);transition:background .2s ease, transform .1s ease;
+  }
+  .add button:hover{background:rgba(255,255,255,.26);}
+  .add button:active{transform:scale(.94);}
+
+  /* clock + weather chip (top-right) */
+  #clock{right:7%;top:11%;padding:18px 22px;border-radius:24px;text-align:right;min-width:178px;}
+  #clock .time{font-size:38px;font-weight:700;letter-spacing:-.02em;line-height:1;font-variant-numeric:tabular-nums;}
+  #clock .date{margin-top:8px;font-size:12.5px;color:var(--muted);letter-spacing:.02em;}
+  #clock .wx{margin-top:13px;display:flex;align-items:center;justify-content:flex-end;gap:8px;font-size:12.5px;color:var(--ink);}
+  #clock .wx .t{font-weight:600;}
+
+  /* stat strip (bottom-right) */
+  #stats{right:7%;bottom:10%;display:flex;gap:11px;background:none;border:none;box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none;}
+  #stats::before{display:none;}
+  .stat{
+    pointer-events:auto;
+    background:var(--glass);border:1px solid var(--stroke);border-radius:18px;
+    box-shadow:var(--shadow), var(--hi);
+    backdrop-filter:blur(20px) saturate(1.3);-webkit-backdrop-filter:blur(20px) saturate(1.3);
+    padding:13px 17px;text-align:center;min-width:78px;will-change:transform;
+  }
+  .stat .n{font-size:24px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums;}
+  .stat .l{margin-top:6px;font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;}
+
+  /* tiny ambient hint */
+  #hint{
+    position:fixed;left:50%;bottom:26px;transform:translateX(-50%);z-index:2;
+    color:rgba(234,243,251,.78);font-size:12px;letter-spacing:.12em;
+    background:rgba(10,28,40,.42);border:1px solid rgba(255,255,255,.14);
+    padding:8px 18px;border-radius:999px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+    pointer-events:none;transition:opacity 1.4s ease;white-space:nowrap;
+  }
+
+  /* responsive: 390 mobile */
+  @media (max-width:560px){
+    #todo{left:50%;top:auto;bottom:14px;transform:translateX(-50%);width:calc(100vw - 28px);max-width:380px;padding:20px 18px 16px;border-radius:24px;}
+    #clock{left:14px;right:auto;top:14px;padding:14px 17px;min-width:0;border-radius:20px;}
+    #clock .time{font-size:30px;}
+    #stats{right:14px;bottom:auto;top:18px;gap:8px;flex-direction:column;}
+    .stat{min-width:62px;padding:10px 12px;}
+    .stat .n{font-size:19px;}
+    .stat .l{font-size:9px;}
+    #hint{display:none;}
+    ul.list{max-height:30vh;overflow-y:auto;}
+  }
+  @media (max-width:560px) and (max-height:720px){
+    ul.list{max-height:24vh;}
+  }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="fallback"></div>
+
+<div id="stage">
+  <!-- main todo glass panel -->
+  <section class="panel" id="todo">
+    <div class="head grip" data-drag>
+      <div>
+        <div class="title">설경 다이어리</div>
+      </div>
+      <span class="season-pill"><span class="dot"></span>WINTER LAKE</span>
+    </div>
+    <p class="sub">호수가 얼기 전, 오늘 끝내고 싶은 것들. 항목을 눌러 체크하세요.</p>
+
+    <div class="progress-wrap">
+      <div class="progress-top"><span>오늘의 진행</span><span><b id="pcount">0</b> / <span id="ptotal">0</span></span></div>
+      <div class="bar"><i id="pbar"></i></div>
+    </div>
+
+    <ul class="list" id="list"></ul>
+
+    <div class="add">
+      <input id="newtask" type="text" placeholder="새 할일 추가…" maxlength="60" autocomplete="off">
+      <button id="addbtn" title="추가">+</button>
+    </div>
+  </section>
+
+  <!-- clock + weather glass chip -->
+  <aside class="panel grip" id="clock" data-drag>
+    <div class="time" id="time">--:--</div>
+    <div class="date" id="date">—</div>
+    <div class="wx"><span>❄ 눈 내림</span><span class="t" id="temp">-3°</span></div>
+  </aside>
+
+  <!-- stat chips -->
+  <div id="stats" class="panel">
+    <div class="stat grip" data-drag><div class="n" id="sDone">0</div><div class="l">완료</div></div>
+    <div class="stat grip" data-drag><div class="n" id="sLeft">0</div><div class="l">남음</div></div>
+    <div class="stat grip" data-drag><div class="n">7.2°C</div><div class="l">수온</div></div>
+  </div>
+</div>
+
+<div id="hint">물 위를 클릭 ─ 물결 · 패널은 드래그로 이동</div>
+
+<script>
+'use strict';
+
+/* ============================================================
+   1) AMBIENT NATURE BASE  ──  WebGL2 snow-lake water sim
+   frangollo-style ripple FBO ping-pong + canvas refraction,
+   re-skinned to a cold snowy winter lake.
+   ============================================================ */
+(()=>{
+const TAU=Math.PI*2;
+const canvas=document.getElementById('gl');
+const fallback=document.getElementById('fallback');
+const hint=document.getElementById('hint');
+const gl=canvas.getContext('webgl2',{antialias:false,alpha:false});
+
+if(!gl){ /* graceful CSS fallback, scene still paints frame 1 */
+  canvas.style.display='none';
+  fallback.style.display='block';
+  return;
+}
+gl.getExtension('EXT_color_buffer_float');
+gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,true);
+
+/* ---------------- shaders ---------------- */
+const VERT=`#version 300 es
+layout(location=0) in vec2 aPos;
+out vec2 vUv;
+void main(){vUv=aPos*0.5+0.5;gl_Position=vec4(aPos,0.,1.);}`;
+
+const SIM_FRAG=`#version 300 es
+precision highp float;
+uniform sampler2D uPrev;
+uniform vec2 uTexel;
+uniform vec4 uDrops[8];
+uniform int uCount;
+in vec2 vUv; out vec4 o;
+void main(){
+  vec2 c=texture(uPrev,vUv).rg;
+  float sum=
+    texture(uPrev,vUv+vec2(uTexel.x,0.)).r+
+    texture(uPrev,vUv-vec2(uTexel.x,0.)).r+
+    texture(uPrev,vUv+vec2(0.,uTexel.y)).r+
+    texture(uPrev,vUv-vec2(0.,uTexel.y)).r;
+  float nh=(sum*0.5-c.g)*0.990;          /* slightly higher damping = slower, calmer */
+  vec2 px=vUv/uTexel;
+  for(int i=0;i<8;i++){
+    if(i>=uCount)break;
+    vec4 d=uDrops[i];
+    float dist=distance(px,d.xy);
+    if(dist<d.z) nh+=d.w*(cos(dist/d.z*3.14159)*0.5+0.5);
+  }
+  vec2 e=min(vUv,1.0-vUv);
+  float edge=smoothstep(0.0,0.05,min(e.x,e.y));
+  nh*=mix(0.86,1.0,edge);
+  o=vec4(nh,c.r,0.,1.);
+}`;
+
+const RENDER_FRAG=`#version 300 es
+precision highp float;
+uniform sampler2D uH;
+uniform sampler2D uBottom;
+uniform sampler2D uFish;
+uniform vec2 uTexel;
+uniform float uT;
+in vec2 vUv; out vec4 o;
+void main(){
+  vec2 d=uTexel*1.5;
+  float h =texture(uH,vUv).r;
+  float hL=texture(uH,vUv-vec2(d.x,0.)).r;
+  float hR=texture(uH,vUv+vec2(d.x,0.)).r;
+  float hB=texture(uH,vUv-vec2(0.,d.y)).r;
+  float hT=texture(uH,vUv+vec2(0.,d.y)).r;
+  vec3 n=normalize(vec3((hL-hR)*6.0,(hB-hT)*6.0,1.0));
+  /* slow large micro-ripple, cold lake never fully still */
+  n.xy+=0.0022*vec2(
+    sin(vUv.x*120.0+uT*0.7)+sin(vUv.y*82.0-uT*0.4),
+    cos(vUv.x*70.0-uT*0.5)+cos(vUv.y*132.0+uT*0.8));
+  n=normalize(n);
+  vec2 off=n.xy*0.040;
+  vec3 bottom=texture(uBottom,vUv+off).rgb;
+  float lap=(hL+hR+hB+hT-4.0*h);
+  /* cold white-blue caustics on snow bottom */
+  float caust=min(max(-lap,0.0)*90.0,0.7);
+  bottom+=vec3(0.82,0.93,1.0)*caust*0.55;
+  bottom*=1.0-min(max(lap,0.0)*70.0,0.30);
+  float sh=texture(uFish,vUv+off+vec2(0.012,-0.016)).a;
+  bottom*=1.0-sh*0.30;
+  /* teal-glacial water tint */
+  vec3 water=vec3(0.07,0.20,0.26);
+  vec3 col=mix(bottom,water,0.34);
+  vec4 fish=texture(uFish,vUv+off*0.45);
+  vec3 fcol=mix(fish.rgb,water,0.08);
+  col=mix(col,fcol,fish.a);
+  /* cool specular sun on water */
+  vec3 L=normalize(vec3(-0.30,0.50,0.80));
+  float spec=pow(max(dot(reflect(vec3(0.,0.,-1.),n),L),0.0),150.0);
+  col+=vec3(0.92,0.97,1.0)*spec*0.95;
+  col+=vec3(0.42,0.55,0.62)*pow(max(dot(n,normalize(vec3(0.2,-0.3,0.9))),0.0),3.0)*0.07;
+  float vg=smoothstep(0.98,0.30,length(vUv-0.5));
+  col*=mix(0.52,1.0,vg);
+  o=vec4(col,1.0);
+}`;
+
+function compile(type,src){
+  const s=gl.createShader(type);
+  gl.shaderSource(s,src);gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+function program(vs,fs){
+  const p=gl.createProgram();
+  gl.attachShader(p,compile(gl.VERTEX_SHADER,vs));
+  gl.attachShader(p,compile(gl.FRAGMENT_SHADER,fs));
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(p));
+  return p;
+}
+const simProg=program(VERT,SIM_FRAG), renProg=program(VERT,RENDER_FRAG);
+const su={
+  prev:gl.getUniformLocation(simProg,'uPrev'),
+  texel:gl.getUniformLocation(simProg,'uTexel'),
+  drops:gl.getUniformLocation(simProg,'uDrops[0]'),
+  count:gl.getUniformLocation(simProg,'uCount')};
+const ru={
+  h:gl.getUniformLocation(renProg,'uH'),
+  bottom:gl.getUniformLocation(renProg,'uBottom'),
+  fish:gl.getUniformLocation(renProg,'uFish'),
+  texel:gl.getUniformLocation(renProg,'uTexel'),
+  t:gl.getUniformLocation(renProg,'uT')};
+
+const quad=gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER,quad);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
+
+/* ---------------- textures / targets ---------------- */
+let cssW=0,cssH=0,dpr=1,fScale=1;
+let simW=0,simH=0,texA=null,texB=null,fboA=null,fboB=null;
+const bCan=document.createElement('canvas'),bctx=bCan.getContext('2d');
+const fCan=document.createElement('canvas'),fctx=fCan.getContext('2d');
+const bottomTex=gl.createTexture(),fishTex=gl.createTexture();
+let fishTexW=0,fishTexH=0;
+
+function texParams(){
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+}
+function makeTarget(w,h){
+  const t=gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D,t);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA16F,w,h,0,gl.RGBA,gl.HALF_FLOAT,null);
+  texParams();
+  const f=gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER,f);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,t,0);
+  gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);
+  return [t,f];
+}
+function createSim(){
+  if(texA){gl.deleteTexture(texA);gl.deleteTexture(texB);gl.deleteFramebuffer(fboA);gl.deleteFramebuffer(fboB);}
+  const scale=Math.min(0.5,768/Math.max(cssW,cssH));
+  simW=Math.max(64,Math.round(cssW*scale));
+  simH=Math.max(64,Math.round(cssH*scale));
+  [texA,fboA]=makeTarget(simW,simH);
+  [texB,fboB]=makeTarget(simW,simH);
+}
+function uploadBottom(){
+  gl.bindTexture(gl.TEXTURE_2D,bottomTex);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,bCan);
+  texParams();
+}
+function uploadFish(){
+  gl.bindTexture(gl.TEXTURE_2D,fishTex);
+  if(fishTexW!==fCan.width||fishTexH!==fCan.height){
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,fCan);
+    texParams();
+    fishTexW=fCan.width;fishTexH=fCan.height;
+  }else{
+    gl.texSubImage2D(gl.TEXTURE_2D,0,0,0,gl.RGBA,gl.UNSIGNED_BYTE,fCan);
+  }
+}
+
+/* ---------------- snowy lake bottom (canvas) ---------------- */
+function paintBottom(){
+  const c=bctx,w=cssW,h=cssH;
+  c.setTransform(fScale,0,0,fScale,0,0);
+  /* deep frozen lake floor: dark teal-blue, paler toward a snowy shore (top) */
+  const g=c.createLinearGradient(0,0,0,h);
+  g.addColorStop(0,'#5d7c87');   /* snow shore showing through shallow edge */
+  g.addColorStop(0.30,'#36545f');
+  g.addColorStop(0.62,'#22414c');
+  g.addColorStop(1,'#142a33');   /* deep cold center */
+  c.fillStyle=g;c.fillRect(0,0,w,h);
+  /* soft snow drifts / pale sediment patches */
+  for(let i=0;i<10;i++){
+    const x=Math.random()*w,y=Math.random()*h*0.8,r=90+Math.random()*220;
+    const ag=c.createRadialGradient(x,y,0,x,y,r);
+    ag.addColorStop(0,'rgba(190,214,224,0.16)');ag.addColorStop(1,'rgba(190,214,224,0)');
+    c.fillStyle=ag;c.beginPath();c.arc(x,y,r,0,TAU);c.fill();
+  }
+  /* dark cold deep pockets */
+  for(let i=0;i<6;i++){
+    const x=Math.random()*w,y=h*0.4+Math.random()*h*0.6,r=110+Math.random()*200;
+    const ag=c.createRadialGradient(x,y,0,x,y,r);
+    ag.addColorStop(0,'rgba(8,22,30,0.30)');ag.addColorStop(1,'rgba(8,22,30,0)');
+    c.fillStyle=ag;c.beginPath();c.arc(x,y,r,0,TAU);c.fill();
+  }
+  /* fine grain / silt sparkle */
+  for(let i=0;i<2200;i++){
+    const x=Math.random()*w,y=Math.random()*h,r=Math.random()*1.6+0.4;
+    c.fillStyle=Math.random()<0.5
+      ?'rgba(210,232,240,'+(Math.random()*0.10).toFixed(3)+')'
+      :'rgba(10,20,26,'+(Math.random()*0.14).toFixed(3)+')';
+    c.beginPath();c.arc(x,y,r,0,TAU);c.fill();
+  }
+  /* submerged stones */
+  const np=Math.max(12,Math.round(w*h/62000));
+  for(let i=0;i<np;i++) drawStone(c,Math.random()*w,Math.random()*h,12+Math.random()*42,Math.random()*TAU);
+}
+function drawStone(c,x,y,r,rot){
+  c.save();c.translate(x,y);c.rotate(rot);
+  const ry=r*(0.6+Math.random()*0.32);
+  c.fillStyle='rgba(0,0,0,0.28)';
+  c.beginPath();c.ellipse(r*0.12,ry*0.2,r*1.02,ry*1.02,0,0,TAU);c.fill();
+  const hue=198+Math.random()*22,sat=8+Math.random()*12,li=30+Math.random()*22;
+  const g=c.createRadialGradient(-r*0.35,-ry*0.4,r*0.08,0,0,r*1.15);
+  g.addColorStop(0,'hsl('+hue+','+sat+'%,'+(li+16)+'%)');
+  g.addColorStop(0.7,'hsl('+hue+','+sat+'%,'+li+'%)');
+  g.addColorStop(1,'hsl('+hue+','+(sat+5)+'%,'+(li-12)+'%)');
+  c.fillStyle=g;
+  c.beginPath();c.ellipse(0,0,r,ry,0,0,TAU);c.fill();
+  c.restore();
+}
+
+/* ---------------- floating things: ice shards, fallen leaves, a drifting duck ---------------- */
+let drifters=[];
+function makeDrifters(){
+  drifters=[];
+  const area=cssW*cssH;
+  const nIce=Math.max(5,Math.round(area/180000));
+  const nLeaf=Math.max(4,Math.round(area/240000));
+  for(let i=0;i<nIce;i++) drifters.push(newDrifter('ice'));
+  for(let i=0;i<nLeaf;i++) drifters.push(newDrifter('leaf'));
+  drifters.push(newDrifter('duck'));
+  if(area>900000) drifters.push(newDrifter('duck'));
+}
+function newDrifter(kind){
+  const r = kind==='duck' ? 30+Math.random()*10
+          : kind==='ice'  ? 16+Math.random()*30
+          : 9+Math.random()*7;
+  return {
+    kind,
+    x:Math.random()*cssW, y:Math.random()*cssH,
+    a:Math.random()*TAU,
+    drift:Math.random()*TAU,
+    spd: kind==='duck' ? 7+Math.random()*5 : 4+Math.random()*5,
+    spin:(Math.random()-0.5)*0.25,
+    r,
+    bob:Math.random()*TAU,
+    tone: kind==='leaf' ? ['#c9772f','#b5602a','#9c5230','#caa14a'][Math.random()*4|0] : null,
+    wakeT:Math.random()*0.4,
+    poly: kind==='ice' ? icePoly() : null
+  };
+}
+function icePoly(){
+  const n=5+(Math.random()*3|0),pts=[];
+  for(let i=0;i<n;i++){
+    const ang=i/n*TAU, rr=0.6+Math.random()*0.55;
+    pts.push([Math.cos(ang)*rr,Math.sin(ang)*rr]);
+  }
+  return pts;
+}
+function updateDrifters(dt,t){
+  for(const d of drifters){
+    d.drift+=(Math.random()-0.5)*0.6*dt;
+    d.a+=d.spin*dt;
+    d.x+=Math.cos(d.drift)*d.spd*dt;
+    d.y+=Math.sin(d.drift)*d.spd*dt;
+    /* wrap softly around edges */
+    const pad=80;
+    if(d.x<-pad)d.x=cssW+pad; if(d.x>cssW+pad)d.x=-pad;
+    if(d.y<-pad)d.y=cssH+pad; if(d.y>cssH+pad)d.y=-pad;
+    /* ducks leave a gentle wake */
+    if(d.kind==='duck'){
+      d.wakeT-=dt;
+      if(d.wakeT<=0){
+        addDrop(d.x-Math.cos(d.drift)*d.r*0.6, d.y-Math.sin(d.drift)*d.r*0.6, 7, 0.05);
+        d.wakeT=0.18+Math.random()*0.12;
+      }
+    }
+  }
+}
+function drawDrifters(t){
+  for(const d of drifters){
+    const bobY=Math.sin(t*0.8+d.bob)*1.6;
+    fctx.save();
+    fctx.translate(d.x, d.y+bobY);
+    fctx.rotate(d.a);
+    if(d.kind==='ice') drawIce(fctx,d);
+    else if(d.kind==='leaf') drawLeaf(fctx,d);
+    else drawDuck(fctx,d,d.drift);
+    fctx.restore();
+  }
+}
+function drawIce(c,d){
+  const R=d.r;
+  c.beginPath();
+  d.poly.forEach((p,i)=>{const x=p[0]*R,y=p[1]*R;i?c.lineTo(x,y):c.moveTo(x,y);});
+  c.closePath();
+  const g=c.createLinearGradient(-R,-R,R,R);
+  g.addColorStop(0,'rgba(228,243,250,0.82)');
+  g.addColorStop(0.5,'rgba(190,222,235,0.62)');
+  g.addColorStop(1,'rgba(150,196,214,0.5)');
+  c.fillStyle=g;c.fill();
+  c.strokeStyle='rgba(255,255,255,0.7)';c.lineWidth=1.2;c.stroke();
+  c.beginPath();
+  d.poly.forEach((p,i)=>{const x=p[0]*R*0.5,y=p[1]*R*0.5;i?c.lineTo(x,y):c.moveTo(x,y);});
+  c.closePath();
+  c.strokeStyle='rgba(255,255,255,0.35)';c.lineWidth=0.8;c.stroke();
+}
+function drawLeaf(c,d){
+  const R=d.r;
+  c.beginPath();
+  c.moveTo(0,-R);
+  c.bezierCurveTo(R*0.9,-R*0.5,R*0.9,R*0.5,0,R);
+  c.bezierCurveTo(-R*0.9,R*0.5,-R*0.9,-R*0.5,0,-R);
+  c.closePath();
+  c.fillStyle=d.tone;c.globalAlpha=0.88;c.fill();c.globalAlpha=1;
+  c.strokeStyle='rgba(60,30,10,0.4)';c.lineWidth=1;
+  c.beginPath();c.moveTo(0,-R);c.lineTo(0,R);c.stroke();
+}
+function drawDuck(c,d,heading){
+  /* simple top-down waterfowl silhouette pointing along heading */
+  const R=d.r;
+  c.save();
+  c.rotate(heading - d.a); /* align body to travel direction independent of spin */
+  /* shadow */
+  c.fillStyle='rgba(0,0,0,0.20)';
+  c.beginPath();c.ellipse(R*0.05,R*0.12,R*0.92,R*0.5,0,0,TAU);c.fill();
+  /* body */
+  const bg=c.createLinearGradient(-R,0,R,0);
+  bg.addColorStop(0,'#3a4750');bg.addColorStop(0.5,'#586872');bg.addColorStop(1,'#43525c');
+  c.fillStyle=bg;
+  c.beginPath();c.ellipse(0,0,R*0.85,R*0.46,0,0,TAU);c.fill();
+  /* tail */
+  c.beginPath();c.moveTo(-R*0.8,0);c.lineTo(-R*1.15,-R*0.16);c.lineTo(-R*1.15,R*0.16);c.closePath();c.fill();
+  /* neck + head forward */
+  c.beginPath();c.ellipse(R*0.78,0,R*0.34,R*0.22,0,0,TAU);
+  c.fillStyle='#2c3942';c.fill();
+  c.beginPath();c.ellipse(R*1.02,0,R*0.20,R*0.16,0,0,TAU);
+  c.fillStyle='#222d35';c.fill();
+  /* bill */
+  c.beginPath();c.moveTo(R*1.18,0);c.lineTo(R*1.38,-R*0.07);c.lineTo(R*1.38,R*0.07);c.closePath();
+  c.fillStyle='#caa24a';c.fill();
+  /* back highlight */
+  c.beginPath();c.ellipse(-R*0.05,-R*0.10,R*0.5,R*0.18,0,0,TAU);
+  c.fillStyle='rgba(210,228,236,0.18)';c.fill();
+  c.restore();
+}
+
+function drawFishCanvas(t){
+  fctx.setTransform(fScale,0,0,fScale,0,0);
+  fctx.clearRect(0,0,cssW,cssH);
+  drawDrifters(t);
+}
+
+/* ---------------- ripples ---------------- */
+const drops=[];
+function addDrop(x,y,r,s){drops.push({x,y,r,s});if(drops.length>24)drops.shift();}
+const dropArr=new Float32Array(32);
+function simulate(){
+  gl.useProgram(simProg);
+  gl.viewport(0,0,simW,simH);
+  gl.uniform2f(su.texel,1/simW,1/simH);
+  for(let step=0;step<2;step++){
+    let n=0;
+    if(step===0){
+      n=Math.min(drops.length,8);
+      for(let j=0;j<n;j++){
+        const d=drops[j];
+        dropArr[j*4]=d.x/cssW*simW;
+        dropArr[j*4+1]=(1-d.y/cssH)*simH;
+        dropArr[j*4+2]=Math.max(2,d.r*simW/cssW);
+        dropArr[j*4+3]=d.s;
+      }
+      drops.splice(0,n);
+    }
+    gl.uniform4fv(su.drops,dropArr);
+    gl.uniform1i(su.count,n);
+    gl.bindFramebuffer(gl.FRAMEBUFFER,fboB);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D,texA);
+    gl.uniform1i(su.prev,0);
+    gl.drawArrays(gl.TRIANGLES,0,3);
+    let tt=texA;texA=texB;texB=tt; tt=fboA;fboA=fboB;fboB=tt;
+  }
+}
+function render(t){
+  gl.useProgram(renProg);
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+  gl.viewport(0,0,canvas.width,canvas.height);
+  gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,texA);gl.uniform1i(ru.h,0);
+  gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D,bottomTex);gl.uniform1i(ru.bottom,1);
+  gl.activeTexture(gl.TEXTURE2);gl.bindTexture(gl.TEXTURE_2D,fishTex);gl.uniform1i(ru.fish,2);
+  gl.uniform2f(ru.texel,1/simW,1/simH);
+  gl.uniform1f(ru.t,t);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+}
+
+/* ---------------- layout / input ---------------- */
+function resize(){
+  cssW=window.innerWidth;cssH=window.innerHeight;
+  dpr=Math.min(window.devicePixelRatio||1,2);
+  canvas.width=Math.round(cssW*dpr);
+  canvas.height=Math.round(cssH*dpr);
+  fScale=Math.min(dpr,1.5);
+  fCan.width=Math.round(cssW*fScale);
+  fCan.height=Math.round(cssH*fScale);
+  fishTexW=0;
+  bCan.width=fCan.width;bCan.height=fCan.height;
+  paintBottom();uploadBottom();createSim();
+  if(!drifters.length) makeDrifters();
+  else for(const d of drifters){d.x=Math.min(cssW,Math.max(0,d.x));d.y=Math.min(cssH,Math.max(0,d.y));}
+}
+window.addEventListener('resize',resize);
+
+canvas.addEventListener('pointerdown',e=>{
+  addDrop(e.clientX,e.clientY,20,1.3);
+  hint.style.opacity=0;
+});
+let lmx=-1,lmy=-1;
+canvas.addEventListener('pointermove',e=>{
+  if(lmx<0){lmx=e.clientX;lmy=e.clientY;return;}
+  const d=Math.hypot(e.clientX-lmx,e.clientY-lmy);
+  if(d>26){addDrop(e.clientX,e.clientY,7,0.06);lmx=e.clientX;lmy=e.clientY;}
+});
+
+/* ---------------- main loop ---------------- */
+resize();
+/* seed a few gentle ambient ripples immediately so frame 1 already has life */
+for(let i=0;i<4;i++) addDrop(Math.random()*cssW,Math.random()*cssH,14,0.5);
+setTimeout(()=>{hint.style.opacity=0;},8500);
+
+let ambT=2.5,last=0;
+function frame(ts){
+  requestAnimationFrame(frame);
+  const t=ts/1000;
+  const dt=Math.min(0.05,Math.max(0.001,t-last));
+  last=t;
+  ambT-=dt;
+  if(ambT<=0){ addDrop(Math.random()*cssW,Math.random()*cssH,7,0.28); ambT=3.5+Math.random()*5; }
+  updateDrifters(dt,t);
+  drawFishCanvas(t);
+  uploadFish();
+  simulate();
+  render(t);
+
+  /* subtle parallax: nudge ripple field origin via mouse handled in glass layer */
+}
+requestAnimationFrame(frame);
+
+/* expose parallax hook for glass layer */
+window.__lake={addDrop:(x,y,r,s)=>addDrop(x,y,r,s)};
+})();
+
+
+/* ============================================================
+   2) FLOATING LIQUID-GLASS UI  ──  todo widget + clock + stats
+   github-glass-badge styling; real interactivity; drag + parallax.
+   ============================================================ */
+(()=>{
+const $=s=>document.querySelector(s);
+const list=$('#list'), pbar=$('#pbar'), pcount=$('#pcount'), ptotal=$('#ptotal');
+const sDone=$('#sDone'), sLeft=$('#sLeft');
+
+let tasks=[
+  {t:'호숫가 산책로 따라 한 바퀴', m:'07:30', done:true},
+  {t:'얼음 두께 확인하고 사진 찍기', m:'오전', done:false},
+  {t:'따뜻한 코코아 끓이기', m:'점심', done:true},
+  {t:'창가에서 책 30분 읽기', m:'오후', done:false},
+  {t:'노을 질 때 호수 스케치', m:'17:00', done:false},
+];
+
+function render(){
+  list.innerHTML='';
+  tasks.forEach((task,i)=>{
+    const li=document.createElement('li');
+    li.className='item'+(task.done?' done':'');
+    li.innerHTML=
+      '<span class="box"><svg viewBox="0 0 24 24" fill="none" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg></span>'+
+      '<span class="txt"></span>'+
+      '<span class="meta"></span>';
+    li.querySelector('.txt').textContent=task.t;
+    li.querySelector('.meta').textContent=task.m||'';
+    li.addEventListener('click',()=>{
+      task.done=!task.done;
+      render();
+      /* ripple under the lake when you complete a task */
+      if(task.done&&window.__lake){
+        const r=li.getBoundingClientRect();
+        window.__lake.addDrop(r.left+r.width/2, r.top+r.height/2, 22, 0.9);
+      }
+    });
+    list.appendChild(li);
+  });
+  const done=tasks.filter(t=>t.done).length, total=tasks.length;
+  pcount.textContent=done; ptotal.textContent=total;
+  pbar.style.width=(total?Math.round(done/total*100):0)+'%';
+  sDone.textContent=done; sLeft.textContent=total-done;
+}
+render();
+
+/* add task */
+const inp=$('#newtask'), addbtn=$('#addbtn');
+function add(){
+  const v=inp.value.trim();
+  if(!v)return;
+  tasks.push({t:v,m:'',done:false});
+  inp.value=''; render();
+  list.scrollTop=list.scrollHeight;
+}
+addbtn.addEventListener('click',add);
+inp.addEventListener('keydown',e=>{if(e.key==='Enter')add();});
+
+/* live clock */
+const timeEl=$('#time'), dateEl=$('#date');
+const wd=['일','월','화','수','목','금','토'];
+function tick(){
+  const d=new Date();
+  const hh=String(d.getHours()).padStart(2,'0');
+  const mm=String(d.getMinutes()).padStart(2,'0');
+  timeEl.textContent=hh+':'+mm;
+  dateEl.textContent=`${d.getMonth()+1}월 ${d.getDate()}일 (${wd[d.getDay()]})`;
+}
+tick(); setInterval(tick,1000);
+
+/* ---- drag panels ---- */
+const panels=document.querySelectorAll('[data-drag]');
+panels.forEach(handle=>{
+  const panel=handle.closest('.panel')||handle.closest('.stat');
+  let sx,sy,ox,oy,dragging=false;
+  /* normalize: capture current visual offset so transforms compose cleanly */
+  function curOffset(){
+    const m=new DOMMatrixReadOnly(getComputedStyle(panel).transform);
+    return {x:m.m41,y:m.m42};
+  }
+  handle.addEventListener('pointerdown',e=>{
+    if(e.target.closest('input,button'))return;
+    dragging=true; panel.classList.add('lifting');
+    panel.setAttribute('data-userpos','1');
+    sx=e.clientX; sy=e.clientY;
+    const o=curOffset(); ox=o.x; oy=o.y;
+    handle.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  handle.addEventListener('pointermove',e=>{
+    if(!dragging)return;
+    const nx=ox+(e.clientX-sx), ny=oy+(e.clientY-sy);
+    panel.style.transform=`translate(${nx}px,${ny}px)`;
+    panel.style.left=panel.style.left||getComputedStyle(panel).left;
+  });
+  const end=()=>{dragging=false;panel.classList.remove('lifting');};
+  handle.addEventListener('pointerup',end);
+  handle.addEventListener('pointercancel',end);
+});
+
+/* ---- subtle mouse parallax for panels that user hasn't dragged ---- */
+const stage=$('#stage');
+let px=0,py=0,tx=0,ty=0;
+window.addEventListener('pointermove',e=>{
+  tx=(e.clientX/window.innerWidth-0.5);
+  ty=(e.clientY/window.innerHeight-0.5);
+});
+const depths=[
+  {el:$('#todo'),  d:10},
+  {el:$('#clock'), d:18},
+  {el:$('#stats'), d:14},
+];
+function parallax(){
+  px+=(tx-px)*0.06; py+=(ty-py)*0.06;
+  depths.forEach(({el,d})=>{
+    if(!el||el.getAttribute('data-userpos'))return;
+    el.style.transform = (el.dataset.baseTransform||'') + ` translate(${(-px*d).toFixed(2)}px, ${(-py*d).toFixed(2)}px)`;
+  });
+  requestAnimationFrame(parallax);
+}
+/* preserve each panel's CSS base transform (e.g. translateY(-50%)) */
+depths.forEach(({el})=>{ if(el) el.dataset.baseTransform=getComputedStyle(el).transform==='none'?'':''; });
+/* keep declared transforms by reading inline-less base from class via a data attr */
+$('#todo')   && ($('#todo').dataset.baseTransform   = window.innerWidth>560 ? 'translateY(-50%)' : 'translateX(-50%)');
+$('#clock')  && ($('#clock').dataset.baseTransform  = '');
+$('#stats')  && ($('#stats').dataset.baseTransform  = '');
+requestAnimationFrame(parallax);
+})();
+</script>
+</body>
+</html>

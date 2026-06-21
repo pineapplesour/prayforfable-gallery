@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>ATTRACTOR ∙ 끌개의 숨결</title>
+<style>
+  :root{ color-scheme: dark; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#04060c; }
+  body{
+    font-family: "SF Pro Display",-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,Arial,sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+    cursor: crosshair;
+  }
+  #stage{ position:fixed; inset:0; }
+  canvas{ position:absolute; inset:0; width:100%; height:100%; display:block; }
+  /* base layer holds the warm vignette glow behind the additive attractor */
+  #bg{ z-index:1; }
+  #fx{ z-index:2; }
+
+  /* ---- UI overlay ---- */
+  .ui{ position:fixed; z-index:10; color:#cfe3ff; pointer-events:none;
+       text-shadow:0 1px 14px rgba(0,0,0,.85); user-select:none; }
+  #title{ left:30px; top:24px; }
+  #title h1{ font-size:15px; font-weight:600; letter-spacing:.46em;
+       color:#eaf2ff; opacity:.92; }
+  #title .sub{ margin-top:7px; font-size:10.5px; letter-spacing:.34em;
+       color:#7f9ec9; opacity:.8; font-weight:500; }
+
+  #read{ right:28px; top:26px; text-align:right; font-variant-numeric:tabular-nums; }
+  #read .k{ font-size:9px; letter-spacing:.28em; color:#5f7da8; }
+  #read .nm{ font-size:13px; letter-spacing:.18em; color:#bfe9ff; margin:2px 0 12px;
+       font-weight:600; transition:color .4s; }
+  #read .row{ font-size:9.5px; letter-spacing:.1em; color:#7c97bf; line-height:1.65; }
+  #read .row b{ color:#a9c9ef; font-weight:600; }
+
+  #hint{ left:50%; bottom:24px; transform:translateX(-50%); text-align:center;
+       font-size:10px; letter-spacing:.26em; color:#6f8cb6; opacity:.0;
+       transition:opacity 1.1s ease; white-space:nowrap; }
+  #hint.on{ opacity:.82; }
+  #hint b{ color:#bcd6f7; font-weight:600; }
+
+  /* preset dock */
+  #dock{ left:50%; top:auto; bottom:60px; transform:translateX(-50%);
+       display:flex; gap:9px; pointer-events:auto; opacity:0; transition:opacity 1.1s ease .3s; }
+  #dock.on{ opacity:1; }
+  .chip{ pointer-events:auto; cursor:pointer; font-family:inherit;
+       font-size:9.5px; letter-spacing:.22em; font-weight:600;
+       color:#8ba9d2; background:rgba(16,26,46,.4); border:1px solid rgba(120,160,220,.2);
+       padding:7px 13px; border-radius:30px; backdrop-filter:blur(7px);
+       transition:all .35s ease; text-transform:uppercase; }
+  .chip:hover{ color:#eaf4ff; border-color:rgba(150,200,255,.55); background:rgba(30,48,80,.6); }
+  .chip.act{ color:#04101e; background:#9fd4ff; border-color:#9fd4ff;
+       box-shadow:0 0 22px rgba(120,190,255,.5); }
+
+  @media (max-width:560px){
+    #title{ left:18px; top:16px; }
+    #title h1{ font-size:12px; letter-spacing:.34em; }
+    #title .sub{ font-size:9px; letter-spacing:.24em; }
+    #read{ right:16px; top:16px; }
+    #read .nm{ font-size:11px; }
+    #read .row{ font-size:8.5px; }
+    #dock{ bottom:74px; gap:6px; flex-wrap:wrap; justify-content:center; max-width:92vw; }
+    .chip{ font-size:8.5px; padding:6px 10px; letter-spacing:.14em; }
+    #hint{ font-size:9px; letter-spacing:.16em; }
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="bg"></canvas>
+  <canvas id="fx"></canvas>
+</div>
+
+<div id="title" class="ui">
+  <h1>ATTRACTOR</h1>
+  <div class="sub">STRANGE&nbsp; ∙ &nbsp;끌개의 숨결</div>
+</div>
+
+<div id="read" class="ui">
+  <div class="k">FORM</div>
+  <div class="nm" id="rName">CLIFFORD</div>
+  <div class="row">a <b id="ra">—</b>&nbsp;&nbsp;b <b id="rb">—</b></div>
+  <div class="row">c <b id="rc">—</b>&nbsp;&nbsp;d <b id="rd">—</b></div>
+  <div class="row" style="margin-top:7px">入子 <b id="rp">0</b></div>
+</div>
+
+<div id="hint" class="ui"><b>드래그</b>로 끌개를 빚고 · <b>클릭</b>으로 충격파 · <b>스크롤</b>로 진폭</div>
+
+<div id="dock" class="ui">
+  <div class="chip act" data-p="0">CLIFFORD</div>
+  <div class="chip" data-p="1">DE&nbsp;JONG</div>
+  <div class="chip" data-p="2">SVENSSON</div>
+  <div class="chip" data-p="3">AURORA</div>
+</div>
+
+<script>
+(()=>{
+"use strict";
+const bg = document.getElementById('bg');
+const fx = document.getElementById('fx');
+const bx = bg.getContext('2d', {alpha:false});
+const cx = fx.getContext('2d', {alpha:true});
+
+let W=0,H=0,DPR=1, CXp=0,CYp=0, SCALE=1;
+const isMobile = ()=> innerWidth < 560;
+const clmp = (v,lo,hi)=> v<lo?lo : v>hi?hi : v;
+
+function resize(){
+  DPR = Math.min(devicePixelRatio||1, isMobile()?2:1.9);
+  W = innerWidth; H = innerHeight;
+  for(const c of [bg,fx]){
+    c.width  = Math.round(W*DPR);
+    c.height = Math.round(H*DPR);
+  }
+  bx.setTransform(DPR,0,0,DPR,0,0);
+  cx.setTransform(DPR,0,0,DPR,0,0);
+  CXp = W*0.5; CYp = H*0.5;
+  SCALE = Math.min(W,H) * (isMobile()? 0.30 : 0.265);
+  paintBG(true);
+}
+
+/* ---------- background : deep field + soft warm aurora glow ---------- */
+function paintBG(full){
+  const g = bx.createRadialGradient(CXp, CYp*0.92, 0, CXp, CYp, Math.max(W,H)*0.8);
+  g.addColorStop(0,   '#0a1428');
+  g.addColorStop(0.45,'#070d1c');
+  g.addColorStop(1,   '#03050b');
+  bx.fillStyle = g; bx.fillRect(0,0,W,H);
+}
+
+/* ---------- attractor definitions ----------
+   each maps (x,y) -> (x',y'), domain roughly [-2,2] */
+const FORMS = {
+  clifford:{ name:'CLIFFORD', fit:1.0,
+    step:(x,y,a,b,c,d)=>[ Math.sin(a*y)+c*Math.cos(a*x),
+                          Math.sin(b*x)+d*Math.cos(b*y) ] },
+  dejong:{ name:'DE JONG', fit:1.05,
+    step:(x,y,a,b,c,d)=>[ Math.sin(a*y)-Math.cos(b*x),
+                          Math.sin(c*x)-Math.cos(d*y) ] },
+  svensson:{ name:'SVENSSON', fit:0.62,
+    step:(x,y,a,b,c,d)=>[ d*Math.sin(a*x)-Math.sin(b*y),
+                          c*Math.cos(a*x)+Math.cos(b*y) ] },
+  aurora:{ name:'AURORA', fit:0.78,
+    step:(x,y,a,b,c,d)=>[ Math.sin(a*y)+c*Math.sin(a*x)*Math.cos(d*x),
+                          Math.cos(b*x)+d*Math.sin(b*y)*Math.cos(c*y) ] }
+};
+
+/* curated parameter sets that yield rich, balanced attractors */
+const PRESETS = [
+  { form:'clifford', a:-1.7,  b: 1.8,  c:-1.9,  d:-0.4 },
+  { form:'dejong',   a: 1.641,b: 1.902,c: 0.316,d: 1.525 },
+  { form:'svensson', a: 1.50, b:-1.80, c: 1.60, d:-2.00 },
+  { form:'aurora',   a: 1.91, b:-1.78, c: 0.92, d: 1.34 }
+];
+
+/* live parameters (smoothly interpolated toward targets) */
+let form = 'clifford';
+let cur = {a:0,b:0,c:0,d:0};
+let tgt = {...PRESETS[0]};
+let amp = 1.0, ampTgt = 1.0;          // scroll amplitude
+let baseHue = 200, hueTgt = 200;       // palette drift
+let fitCur = 1.0;                       // per-form scale, eased on switch
+function applyPreset(i){
+  const p = PRESETS[i];
+  tgt = {a:p.a,b:p.b,c:p.c,d:p.d};
+  form = p.form;
+  hueTgt = [200, 28, 320, 150][i];
+  for(const el of dock.children) el.classList.toggle('act', +el.dataset.p===i);
+}
+cur = {...PRESETS[0]}; // start already settled -> first paint IS the art
+
+/* ---------- particles ----------
+   thousands of points each iterating the map; we render the *current*
+   position cloud each frame with additive blend over a fading trail */
+let N = 0;
+let px, py, ph, pl; // x, y (attractor space), hue offset, lifespan
+function allocParticles(){
+  N = isMobile()? 9000 : 22000;
+  px = new Float32Array(N);
+  py = new Float32Array(N);
+  ph = new Float32Array(N);
+  pl = new Float32Array(N);
+  for(let i=0;i<N;i++) seed(i);
+}
+function seed(i){
+  px[i] = (Math.random()*2-1)*1.4;
+  py[i] = (Math.random()*2-1)*1.4;
+  ph[i] = Math.random();
+  pl[i] = 60 + Math.random()*240;     // re-seed after a while -> keeps motion alive
+}
+
+/* ---------- interaction state ---------- */
+const pointer = { x:0,y:0, has:false, down:false, lx:0,ly:0 };
+let warpField = 0;          // decays; injects swirl when dragging
+const shocks = [];          // {x,y,t,r} in screen space
+let autoT = Math.random()*1000;
+
+/* ---------- colour palette (HSL -> additive RGB) ---------- */
+function hsl2rgb(h,s,l){
+  h=((h%360)+360)%360/360; s=Math.max(0,Math.min(1,s)); l=Math.max(0,Math.min(1,l));
+  if(s===0){const v=l*255;return [v,v,v];}
+  const q = l<0.5 ? l*(1+s) : l+s-l*s, p=2*l-q;
+  const hk=(t)=>{t=(t+1)%1; if(t<1/6)return p+(q-p)*6*t; if(t<0.5)return q;
+    if(t<2/3)return p+(q-p)*(2/3-t)*6; return p;};
+  return [hk(h+1/3)*255, hk(h)*255, hk(h-1/3)*255];
+}
+
+/* ---------- main loop ---------- */
+let lastDraw = performance.now();
+let drewFirst=false;
+
+function frame(now){
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.05, (now-lastDraw)/1000); lastDraw=now;
+  autoT += dt;
+
+  // ease live params toward target
+  const k = 1 - Math.pow(0.0009, dt);
+  cur.a += (tgt.a-cur.a)*k; cur.b += (tgt.b-cur.b)*k;
+  cur.c += (tgt.c-cur.c)*k; cur.d += (tgt.d-cur.d)*k;
+  amp   += (ampTgt-amp)*k*1.4;
+  baseHue += (hueTgt-baseHue)*k;
+  fitCur += (FORMS[form].fit - fitCur)*k*1.2;
+
+  // when not interacting, breathe the parameters subtly so it's alive
+  let A=cur.a, B=cur.b, C=cur.c, D=cur.d;
+  const breath = (Math.sin(autoT*0.18)*0.5 + Math.sin(autoT*0.077+1.3)*0.5);
+
+  // drag warps the params toward the pointer (live, persistent sculpting):
+  // we nudge the *targets* so the form actually re-settles where you pull it.
+  if(pointer.down && pointer.has){
+    const nx=(pointer.x-CXp)/SCALE, ny=(pointer.y-CYp)/SCALE;
+    tgt.a += (nx*0.42)*dt*4.5; tgt.d += (ny*0.42)*dt*4.5;
+    tgt.c += (nx*0.18)*dt*4.5; tgt.b -= (ny*0.18)*dt*4.5;
+    // clamp to the visually interesting band
+    tgt.a=clmp(tgt.a,-2.4,2.4); tgt.b=clmp(tgt.b,-2.4,2.4);
+    tgt.c=clmp(tgt.c,-2.4,2.4); tgt.d=clmp(tgt.d,-2.4,2.4);
+    warpField = Math.min(1, warpField+dt*3);
+  } else {
+    warpField *= Math.pow(0.2, dt);
+  }
+  A=cur.a; B=cur.b; C=cur.c; D=cur.d;
+  A += breath*0.045; D += Math.cos(autoT*0.13)*0.045;
+  A += warpField * Math.sin(autoT*1.7)*0.06;
+  // slow global hue rotation so the palette continuously breathes
+  baseHue += dt*4.0;
+
+  // ----- fade the trail layer -----
+  cx.setTransform(DPR,0,0,DPR,0,0);
+  cx.globalCompositeOperation='source-over';
+  cx.fillStyle = 'rgba(4,7,14,'+ (0.085 + warpField*0.04) +')';
+  cx.fillRect(0,0,W,H);
+
+  // ----- iterate & draw particles additively -----
+  cx.globalCompositeOperation='lighter';
+  const step = FORMS[form].step;
+  const sc = SCALE*amp*fitCur;
+  const cxp=CXp, cyp=CYp;
+  const hueB = baseHue;
+  const speedRamp = 0.6 + warpField*0.9;     // brighter / faster when sculpting
+
+  // shocks: precompute
+  for(let s=shocks.length-1;s>=0;s--){
+    shocks[s].t += dt; shocks[s].r += dt*900;
+    if(shocks[s].t>1.3) shocks.splice(s,1);
+  }
+
+  // We render in batches by hue band to minimize fillStyle churn.
+  // Simpler & fast enough: per-particle color via fillRect of 1px.
+  let drawn=0;
+  for(let i=0;i<N;i++){
+    let x=px[i], y=py[i];
+    // a few sub-iterations per frame -> denser filament, smoother motion
+    let nx,ny;
+    let sx=0,sy=0;
+    const iter = 2;
+    for(let it=0; it<iter; it++){
+      const r = step(x,y,A,B,C,D);
+      nx=r[0]; ny=r[1];
+      x=nx; y=ny;
+    }
+    px[i]=x; py[i]=y;
+
+    // map to screen
+    let X = cxp + x*sc;
+    let Y = cyp + y*sc;
+
+    // shock displacement (ripple outward)
+    for(let s=0;s<shocks.length;s++){
+      const sh=shocks[s];
+      const ddx=X-sh.x, ddy=Y-sh.y;
+      const dist=Math.sqrt(ddx*ddx+ddy*ddy)+0.001;
+      const band = Math.abs(dist - sh.r);
+      if(band < 70){
+        const push = (1-band/70) * (1-sh.t/1.3) * 26;
+        X += ddx/dist*push; Y += ddy/dist*push;
+      }
+    }
+
+    if(X<-4||X>W+4||Y<-4||Y>H+4){ /* still age it */ }
+    else {
+      // chromatic spread driven by radius + position -> filaments shift colour
+      const rad = Math.sqrt(x*x+y*y);
+      const hue = hueB + ph[i]*70 - 20 + (x*22) + rad*40;
+      const lum = 0.5 * speedRamp;
+      // brighter toward the inner core, cooler at the rim
+      const li = Math.min(0.66, 0.30 + lum*0.42 + (1.4-Math.min(rad,1.4))*0.06);
+      const rgb = hsl2rgb(hue, 0.92, li);
+      const al = (0.46*speedRamp);
+      cx.fillStyle = 'rgba('+(rgb[0]|0)+','+(rgb[1]|0)+','+(rgb[2]|0)+','+al.toFixed(3)+')';
+      cx.fillRect(X, Y, 1.2, 1.2);
+      drawn++;
+    }
+
+    // age / reseed to keep the swarm churning and to escape fixed points
+    pl[i]-=1;
+    if(pl[i]<=0 || x*x+y*y>40 || !isFinite(x)){ seed(i); }
+  }
+
+  // ----- pointer aura: a soft attractor "core" that follows the cursor -----
+  if(pointer.has){
+    const g=cx.createRadialGradient(pointer.x,pointer.y,0,pointer.x,pointer.y,90);
+    const arr=hsl2rgb(baseHue+40,0.9,0.6);
+    g.addColorStop(0,'rgba('+(arr[0]|0)+','+(arr[1]|0)+','+(arr[2]|0)+','+(0.10+warpField*0.18)+')');
+    g.addColorStop(1,'rgba(0,0,0,0)');
+    cx.fillStyle=g; cx.fillRect(pointer.x-90,pointer.y-90,180,180);
+  }
+
+  // readout
+  if(now-readClock>120){ readClock=now; updateRead(); }
+
+  drewFirst=true;
+}
+
+let readClock=0;
+const elName=document.getElementById('rName');
+const elA=document.getElementById('ra'),elB=document.getElementById('rb'),
+      elC=document.getElementById('rc'),elD=document.getElementById('rd'),
+      elP=document.getElementById('rp');
+function updateRead(){
+  elName.textContent=FORMS[form].name;
+  const arr=hsl2rgb(baseHue+40,0.7,0.7);
+  elName.style.color='rgb('+(arr[0]|0)+','+(arr[1]|0)+','+(arr[2]|0)+')';
+  elA.textContent=cur.a.toFixed(2); elB.textContent=cur.b.toFixed(2);
+  elC.textContent=cur.c.toFixed(2); elD.textContent=cur.d.toFixed(2);
+  elP.textContent = N.toLocaleString();
+}
+
+/* ---------- events ---------- */
+const dock=document.getElementById('dock');
+dock.addEventListener('click',e=>{
+  const c=e.target.closest('.chip'); if(!c)return;
+  applyPreset(+c.dataset.p);
+  ampTgt = 1.0;
+});
+
+function setPointer(x,y){ pointer.x=x; pointer.y=y; pointer.has=true; }
+addEventListener('pointermove',e=>{ setPointer(e.clientX,e.clientY); },{passive:true});
+addEventListener('pointerdown',e=>{
+  setPointer(e.clientX,e.clientY); pointer.down=true;
+  pointer.lx=e.clientX; pointer.ly=e.clientY;
+  fx.setPointerCapture && fx.setPointerCapture(e.pointerId);
+},{passive:true});
+addEventListener('pointerup',e=>{
+  // a click (small movement) => shockwave
+  const moved = Math.hypot(e.clientX-pointer.lx, e.clientY-pointer.ly);
+  if(moved < 9){ shocks.push({x:e.clientX,y:e.clientY,t:0,r:6}); }
+  pointer.down=false;
+},{passive:true});
+addEventListener('pointerleave',()=>{ pointer.has=false; pointer.down=false; });
+
+addEventListener('wheel',e=>{
+  ampTgt = Math.max(0.55, Math.min(2.0, ampTgt - e.deltaY*0.0011));
+},{passive:true});
+
+// touch pinch -> amplitude
+let pinch0=0, amp0=1;
+addEventListener('touchstart',e=>{
+  if(e.touches.length===2){
+    pinch0=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
+                      e.touches[0].clientY-e.touches[1].clientY);
+    amp0=ampTgt;
+  }
+},{passive:true});
+addEventListener('touchmove',e=>{
+  if(e.touches.length===2){
+    const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
+                       e.touches[0].clientY-e.touches[1].clientY);
+    ampTgt=Math.max(0.55,Math.min(2.0, amp0*(d/(pinch0||1))));
+  }
+},{passive:true});
+
+// keyboard: number keys = presets, space = shock at center
+addEventListener('keydown',e=>{
+  if(e.key>='1'&&e.key<='4') applyPreset(+e.key-1);
+  if(e.key===' '){ shocks.push({x:CXp,y:CYp,t:0,r:6}); e.preventDefault(); }
+});
+
+addEventListener('resize',()=>{ resize(); });
+
+/* ---------- expose for verification ---------- */
+window.__attractor = {
+  state:()=>({form, a:+cur.a.toFixed(3), b:+cur.b.toFixed(3),
+              c:+cur.c.toFixed(3), d:+cur.d.toFixed(3),
+              amp:+amp.toFixed(3), N, shocks:shocks.length, drew:drewFirst,
+              warp:+warpField.toFixed(3)}),
+  preset:(i)=>applyPreset(i),
+  shock:(x,y)=>shocks.push({x:x??CXp,y:y??CYp,t:0,r:6}),
+  drag:(x,y)=>{ setPointer(x,y); pointer.down=true; },
+  release:()=>{ pointer.down=false; },
+  pixels:()=>{ // count lit pixels as a proxy for "the art is on screen"
+    const s=64; const off=document.createElement('canvas'); off.width=s; off.height=s;
+    const o=off.getContext('2d'); o.drawImage(fx,0,0,s,s);
+    const d=o.getImageData(0,0,s,s).data; let lit=0;
+    for(let i=0;i<d.length;i+=4){ if(d[i]+d[i+1]+d[i+2]>40) lit++; }
+    return lit;
+  }
+};
+
+/* ---------- boot : paint first frame synchronously so first paint = art ---------- */
+resize();
+allocParticles();
+applyPreset(0);
+fitCur = FORMS[form].fit;
+// warm the trail buffer with a couple of synchronous iterations so the
+// very first painted frame already shows attractor structure (no blank gate)
+(function warm(){
+  cx.setTransform(DPR,0,0,DPR,0,0);
+  cx.globalCompositeOperation='lighter';
+  const step=FORMS[form].step, sc=SCALE*FORMS[form].fit, A=cur.a,B=cur.b,C=cur.c,D=cur.d;
+  for(let pass=0; pass<40; pass++){
+    for(let i=0;i<N;i++){
+      const r=step(px[i],py[i],A,B,C,D);
+      px[i]=r[0]; py[i]=r[1];
+      if(!isFinite(px[i])||px[i]*px[i]+py[i]*py[i]>40) seed(i);
+      const X=CXp+px[i]*sc, Y=CYp+py[i]*sc;
+      if(X>=0&&X<=W&&Y>=0&&Y<=H){
+        const hue=baseHue+ph[i]*90-30+(px[i]+py[i])*16;
+        const rgb=hsl2rgb(hue,0.85,0.42);
+        cx.fillStyle='rgba('+(rgb[0]|0)+','+(rgb[1]|0)+','+(rgb[2]|0)+',0.4)';
+        cx.fillRect(X,Y,1.15,1.15);
+      }
+    }
+  }
+})();
+requestAnimationFrame(frame);
+
+// reveal hints shortly after load
+setTimeout(()=>{ document.getElementById('hint').classList.add('on');
+                 document.getElementById('dock').classList.add('on'); }, 700);
+setTimeout(()=>{ document.getElementById('hint').classList.remove('on'); }, 8200);
+
+})();
+</script>
+</body>
+</html>

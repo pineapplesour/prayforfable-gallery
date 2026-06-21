@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>접다 — Origami Fold Field</title>
+<style>
+  :root{
+    --ink:#e9eef7;
+  }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#05060b; }
+  body{
+    font-family:"Helvetica Neue",-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
+    color:var(--ink);
+    /* 첫 페인트가 곧 작품: 캔버스 로드 전에도 깊이감 있는 배경 */
+    background:
+      radial-gradient(120% 90% at 50% 18%, #161a2e 0%, #0a0b16 42%, #050609 100%);
+    -webkit-tap-highlight-color:transparent;
+  }
+  #c{ position:fixed; inset:0; display:block; touch-action:none; }
+
+  /* 비네팅 + 미세 광택 */
+  .veil{
+    position:fixed; inset:0; pointer-events:none; z-index:5;
+    background:
+      radial-gradient(130% 100% at 50% 38%, rgba(0,0,0,0) 48%, rgba(0,0,0,0.40) 78%, rgba(0,0,0,0.72) 100%);
+    mix-blend-mode:multiply;
+  }
+  .grain{
+    position:fixed; inset:0; pointer-events:none; z-index:6; opacity:.05;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    mix-blend-mode:overlay;
+  }
+
+  .ui{ position:fixed; z-index:7; pointer-events:none; mix-blend-mode:screen; }
+  .tl{ top:30px; left:34px; }
+  .title{
+    font-weight:200; letter-spacing:.42em; font-size:46px; line-height:1;
+    color:#f3f6ff; text-indent:.42em;
+    text-shadow:0 0 26px rgba(120,150,255,.25);
+  }
+  .sub{
+    margin-top:14px; font-size:11px; letter-spacing:.46em; text-transform:uppercase;
+    color:#9fb0d6; font-weight:400; text-indent:.46em;
+  }
+  .br{ bottom:28px; right:34px; text-align:right; }
+  .hint{
+    font-size:10.5px; letter-spacing:.30em; text-transform:uppercase;
+    color:#8ea0c8; font-weight:400; line-height:2.0;
+  }
+  .hint b{ color:#dfe7fb; font-weight:600; }
+  .tag{
+    position:fixed; z-index:7; bottom:28px; left:34px; pointer-events:none;
+    mix-blend-mode:screen; font-size:10.5px; letter-spacing:.34em;
+    color:#7e8fb8; text-transform:uppercase;
+  }
+  @media (max-width:560px){
+    .tl{ top:22px; left:22px; }
+    .title{ font-size:30px; letter-spacing:.34em; text-indent:.34em; }
+    .sub{ font-size:9px; letter-spacing:.34em; margin-top:10px; }
+    .br{ bottom:20px; right:20px; }
+    .tag{ bottom:20px; left:22px; font-size:9px; }
+    .hint{ font-size:9px; letter-spacing:.22em; line-height:1.9; }
+  }
+</style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div class="veil"></div>
+  <div class="grain"></div>
+
+  <div class="ui tl">
+    <div class="title">접&nbsp;다</div>
+    <div class="sub">Origami&nbsp;·&nbsp;Fold&nbsp;Field</div>
+  </div>
+  <div class="ui br">
+    <div class="hint">
+      <b>스크롤</b> — 접고 펴기<br/>
+      <b>움직임</b> — 종이결에 바람<br/>
+      <b>클릭 · 탭</b> — 접힘의 파동
+    </div>
+  </div>
+  <div class="tag">no.&nbsp;0018&nbsp;/&nbsp;miura&nbsp;weave</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function(){
+  "use strict";
+  if(!window.THREE){ return; }
+
+  var canvas = document.getElementById('c');
+  var W = window.innerWidth, H = window.innerHeight;
+  var isMobile = Math.min(W,H) < 620 || ('ontouchstart' in window && Math.min(W,H) < 820);
+
+  // ---------- 그리드 / 종이 파라미터 ----------
+  var NXV = isMobile ? 92  : 154;   // 가로 정점수 (코러게이션 방향)
+  var NYV = isMobile ? 60  : 98;    // 세로 정점수 (행 방향)
+  var PANEL = isMobile ? 0.135 : 0.118;  // 가로 패널 폭
+  var ROWB  = isMobile ? 0.150 : 0.132;  // 행 간격
+  var KX = 0.108, KY = 0.132;            // 파동 주파수
+
+  // ---------- 렌더러 / 씬 ----------
+  var renderer = new THREE.WebGLRenderer({ canvas:canvas, antialias:true, alpha:true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio||1, 2));
+  renderer.setSize(W, H);
+  renderer.setClearAlpha(0);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.18;
+
+  var scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x070810, 0.034);
+
+  var FOV = isMobile ? 42 : 36;
+  var camera = new THREE.PerspectiveCamera(FOV, W/H, 0.1, 120);
+  camera.position.set(0, 0, 24);
+  camera.lookAt(0,0,0);
+
+  var group = new THREE.Group();
+  scene.add(group);
+
+  // ---------- 조명 ----------
+  var hemi = new THREE.HemisphereLight(0x4a6cff, 0x2a1840, 0.55);
+  scene.add(hemi);
+
+  var key = new THREE.DirectionalLight(0xfff0dc, 1.55);
+  key.position.set(-7, 10, 8);
+  key.castShadow = true;
+  key.shadow.mapSize.set(isMobile?1024:2048, isMobile?1024:2048);
+  key.shadow.bias = -0.0006;
+  key.shadow.normalBias = 0.022;
+  var sc = key.shadow.camera;
+  sc.left=-12; sc.right=12; sc.top=10; sc.bottom=-10; sc.near=0.5; sc.far=46;
+  scene.add(key);
+  scene.add(key.target);
+
+  var rim = new THREE.DirectionalLight(0x4fd6ff, 0.85);
+  rim.position.set(6, -4, -9);
+  scene.add(rim);
+
+  var rim2 = new THREE.DirectionalLight(0xff5fae, 0.45);
+  rim2.position.set(9, 3, -2);
+  scene.add(rim2);
+
+  // ---------- 팔레트 (홀로그래픽 종이) ----------
+  function hexLin(h){ var c=new THREE.Color(h); c.convertSRGBToLinear(); return {r:c.r,g:c.g,b:c.b}; }
+  var STOPS = ['#13a7ff','#6f5cff','#ff4d97','#ffb24d','#34e7c2'].map(hexLin);
+  var NS = STOPS.length;
+  function palette(ph, out){
+    ph = ((ph % 1) + 1) % 1;
+    var f = ph * NS;
+    var i = Math.floor(f);
+    var t = f - i;
+    var a = STOPS[i % NS], b = STOPS[(i+1) % NS];
+    out.r = a.r + (b.r-a.r)*t;
+    out.g = a.g + (b.g-a.g)*t;
+    out.b = a.b + (b.b-a.b)*t;
+  }
+  var tmpCol = {r:1,g:1,b:1};
+
+  // ---------- 지오메트리 ----------
+  var COUNT = NXV * NYV;
+  var positions = new Float32Array(COUNT * 3);
+  var colors    = new Float32Array(COUNT * 3);
+
+  // 인덱스
+  var quads = (NXV-1)*(NYV-1);
+  var index = new Uint32Array(quads * 6);
+  var ii = 0;
+  for(var j=0;j<NYV-1;j++){
+    for(var i=0;i<NXV-1;i++){
+      var a = j*NXV + i;
+      var b = j*NXV + i+1;
+      var c = (j+1)*NXV + i;
+      var d = (j+1)*NXV + i+1;
+      index[ii++]=a; index[ii++]=c; index[ii++]=b;
+      index[ii++]=b; index[ii++]=c; index[ii++]=d;
+    }
+  }
+
+  // 초기 평면 좌표
+  var p=0;
+  for(var jj=0;jj<NYV;jj++){
+    for(var iv=0;iv<NXV;iv++){
+      positions[p]   = (iv-NXV/2)*PANEL;
+      positions[p+1] = (jj-NYV/2)*ROWB;
+      positions[p+2] = 0;
+      colors[p]=0.6; colors[p+1]=0.6; colors[p+2]=0.8;
+      p+=3;
+    }
+  }
+
+  var geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geo.setIndex(new THREE.BufferAttribute(index, 1));
+  geo.computeVertexNormals();
+
+  var mat = new THREE.MeshStandardMaterial({
+    vertexColors:true,
+    side:THREE.DoubleSide,
+    shadowSide:THREE.DoubleSide,
+    flatShading:true,
+    roughness:0.52,
+    metalness:0.10,
+    emissive:0x0a0c18,
+    emissiveIntensity:0.6
+  });
+
+  var mesh = new THREE.Mesh(geo, mat);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  mesh.frustumCulled = false;
+  group.add(mesh);
+
+  // ---------- 떠다니는 종이 먼지 ----------
+  var PN = isMobile ? 280 : 540;
+  var pPos = new Float32Array(PN*3);
+  var pVel = new Float32Array(PN*3);
+  var EXT = 13;
+  for(var k=0;k<PN;k++){
+    pPos[k*3]   = (Math.random()*2-1)*EXT;
+    pPos[k*3+1] = (Math.random()*2-1)*EXT*0.7;
+    pPos[k*3+2] = (Math.random()*2-1)*6 + 2;
+    pVel[k*3]   = (Math.random()*2-1)*0.05;
+    pVel[k*3+1] = (Math.random()*0.5+0.2)*0.05;
+    pVel[k*3+2] = (Math.random()*2-1)*0.03;
+  }
+  var pGeo = new THREE.BufferGeometry();
+  pGeo.setAttribute('position', new THREE.BufferAttribute(pPos,3));
+  var pMat = new THREE.PointsMaterial({
+    size:isMobile?0.05:0.045, color:0x9fc4ff, transparent:true, opacity:0.55,
+    blending:THREE.AdditiveBlending, depthWrite:false, sizeAttenuation:true
+  });
+  var points = new THREE.Points(pGeo, pMat);
+  points.frustumCulled = false;
+  scene.add(points);
+
+  // ---------- 인터랙션 상태 ----------
+  var foldT = 0.55;            // 0..1 (스크롤)
+  var curTheta = 0.25 + foldT*1.18;
+  var hue = 0;
+
+  var pointerNX=0, pointerNY=0;
+  var pu = NXV*0.5, pv = NYV*0.5;
+  var gustS = 0;
+  var lastMove = -10;
+
+  var userRotY = 0;
+  var dragging=false, lastX=0,lastY=0, downX=0,downY=0, downT=0, moved=0;
+
+  var shocks = [];
+  function spawnShock(u,v,amp){
+    shocks.push({u:u, v:v, t0:tt, amp:amp||0.95});
+    if(shocks.length>7) shocks.shift();
+  }
+  var lastAuto = 0, userActed = false;
+
+  function setPointer(cx,cy){
+    var nx = (cx / W)*2 - 1;
+    var ny = (cy / H)*2 - 1;
+    pointerNX = nx; pointerNY = ny;
+    pu = (nx*0.5+0.5)*(NXV-1);
+    pv = ((-ny)*0.5+0.5)*(NYV-1);
+    lastMove = tt;
+  }
+
+  canvas.addEventListener('pointerdown', function(e){
+    dragging=true; lastX=downX=e.clientX; lastY=downY=e.clientY; downT=tt; moved=0;
+    setPointer(e.clientX, e.clientY);
+    try{ canvas.setPointerCapture(e.pointerId); }catch(err){}
+  });
+  canvas.addEventListener('pointermove', function(e){
+    setPointer(e.clientX, e.clientY);
+    if(dragging){
+      var dx = e.clientX-lastX, dy = e.clientY-lastY;
+      moved += Math.abs(dx)+Math.abs(dy);
+      userRotY += dx*0.0032;
+      foldT = Math.max(0, Math.min(1, foldT - dy*0.0016));
+      userActed = true;
+      lastX=e.clientX; lastY=e.clientY;
+    }
+  });
+  function endPointer(e){
+    if(dragging && moved<7 && (tt-downT)<0.45){
+      spawnShock(pu, pv, 1.0); userActed = true;
+    }
+    dragging=false;
+  }
+  canvas.addEventListener('pointerup', endPointer);
+  canvas.addEventListener('pointercancel', function(){ dragging=false; });
+
+  window.addEventListener('wheel', function(e){
+    foldT = Math.max(0, Math.min(1, foldT + e.deltaY*0.0011));
+    userActed = true;
+  }, {passive:true});
+
+  // ---------- 카메라 핏 ----------
+  function fit(){
+    var sheetW = (NXV-1)*PANEL;
+    var sheetH = (NYV-1)*ROWB;
+    var vfov = FOV*Math.PI/180;
+    var aspect = W/H;
+    var distV = (sheetH/2)/Math.tan(vfov/2);
+    var hfov = 2*Math.atan(Math.tan(vfov/2)*aspect);
+    var distH = (sheetW/2)/Math.tan(hfov/2);
+    var dist = Math.max(distV, distH) * (isMobile?1.34:1.22);
+    camera.position.z = dist;
+    camera.lookAt(0,0,0);
+  }
+
+  function resize(){
+    W = window.innerWidth; H = window.innerHeight;
+    renderer.setSize(W,H);
+    camera.aspect = W/H;
+    camera.updateProjectionMatrix();
+    fit();
+  }
+  window.addEventListener('resize', resize);
+  fit();
+
+  // ---------- 애니메이션 ----------
+  var clock = new THREE.Clock();
+  var tt = 0;
+
+  function frame(){
+    requestAnimationFrame(frame);
+    var dt = Math.min(clock.getDelta(), 0.05);
+    tt += dt;
+
+    // 자동 데모 파동 (사용자 개입 전후로 은은하게)
+    if(tt - lastAuto > (userActed?7.5:3.6)){
+      lastAuto = tt;
+      spawnShock(Math.random()*NXV, Math.random()*NYV, userActed?0.5:0.85);
+    }
+
+    // 부드러운 보간
+    var targetTheta = 0.22 + foldT*1.24;
+    curTheta += (targetTheta - curTheta)*Math.min(1, dt*4.0);
+
+    var gTarget = (tt - lastMove < 0.25) ? 0.72 : 0.0;
+    gustS += (gTarget - gustS)*Math.min(1, dt*5.0);
+
+    hue += dt*0.028;
+
+    var sinT = Math.sin(curTheta);
+    var maxAmp = PANEL*3.45*sinT;
+    var zig = PANEL*1.12*sinT;
+    var invAmp = 1/(maxAmp*0.82 + 1e-3);
+    var t07 = tt*0.7, t05 = tt*0.5, t105 = tt*1.05;
+
+    var nShock = shocks.length;
+    var pa = positions, ca = colors;
+    var idx = 0;
+
+    for(var j2=0;j2<NYV;j2++){
+      var vy = (j2-NYV/2)*ROWB;
+      var jn = j2/NYV;
+      var cyKY = j2*KY;
+      for(var i2=0;i2<NXV;i2++){
+        // 높이장 (롤링 웨이브)
+        var hgt = 0.55
+                + 0.32*Math.sin(i2*KX + t07)*Math.cos(cyKY - t05)
+                + 0.16*Math.sin((i2+j2)*0.072 + t105);
+
+        // 커서 바람
+        if(gustS>0.001){
+          var du = i2-pu, dv = j2-pv;
+          hgt += gustS*Math.exp(-(du*du+dv*dv)/320);
+        }
+        // 파동 (확장 링)
+        for(var s=0;s<nShock;s++){
+          var sh = shocks[s];
+          var age = tt - sh.t0;
+          var rad = age*52;
+          var sdu = i2-sh.u, sdv = j2-sh.v;
+          var d = Math.sqrt(sdu*sdu + sdv*sdv);
+          var dd = d - rad;
+          hgt += sh.amp*Math.exp(-dd*dd/40)*Math.exp(-age*1.45);
+        }
+
+        if(hgt<0) hgt=0; else if(hgt>1.75) hgt=1.75;
+
+        var amp = maxAmp*hgt;
+        var odd = i2 & 1;
+        var z = odd ? amp*0.5 : -amp*0.5;
+
+        pa[idx]   = (i2-NXV/2)*PANEL;
+        pa[idx+1] = vy + (odd?zig:0);
+        pa[idx+2] = z;
+
+        // 컬러: 코러게이션 높이 + 행 + 휴 사이클
+        var shade = z*invAmp;
+        palette(hue + 0.5 + shade*0.34 + jn*0.16, tmpCol);
+        // 골/마루 미세 명암 강조
+        var lift = 0.78 + 0.30*(shade*0.5+0.5);
+        ca[idx]   = tmpCol.r*lift;
+        ca[idx+1] = tmpCol.g*lift;
+        ca[idx+2] = tmpCol.b*lift;
+
+        idx += 3;
+      }
+    }
+    geo.attributes.position.needsUpdate = true;
+    geo.attributes.color.needsUpdate = true;
+
+    // 파티클 드리프트
+    for(var q=0;q<PN;q++){
+      var b=q*3;
+      pPos[b]   += pVel[b];
+      pPos[b+1] += pVel[b+1];
+      pPos[b+2] += pVel[b+2];
+      if(pPos[b+1] > EXT*0.8){ pPos[b+1] = -EXT*0.8; pPos[b] = (Math.random()*2-1)*EXT; }
+      if(pPos[b] > EXT){ pPos[b]=-EXT; } else if(pPos[b]<-EXT){ pPos[b]=EXT; }
+    }
+    pGeo.attributes.position.needsUpdate = true;
+
+    // 시점: 은은한 흔들림 + 포인터 패럴랙스
+    var swayY = Math.sin(tt*0.12)*0.30;
+    var swayX = Math.sin(tt*0.17 + 1.3)*0.06;
+    group.rotation.y += ((swayY + pointerNX*0.26 + userRotY) - group.rotation.y)*Math.min(1,dt*2.2);
+    group.rotation.x += ((-0.12 + swayX - pointerNY*0.16) - group.rotation.x)*Math.min(1,dt*2.2);
+
+    renderer.render(scene, camera);
+  }
+  requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

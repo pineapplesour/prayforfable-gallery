@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>KIRIGAMI — paper city that folds</title>
+<style>
+  :root{ color-scheme: dark; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#0a0612; }
+  body{
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+    cursor: crosshair;
+  }
+  #stage{ position:fixed; inset:0; display:block; }
+  .ui{
+    position:fixed; z-index:5; pointer-events:none;
+    color:#f4ecdf; mix-blend-mode:screen;
+    user-select:none; -webkit-user-select:none;
+  }
+  #title{
+    top: clamp(16px,3.2vmin,40px); left: clamp(16px,3.2vmin,44px);
+    font-weight:800; letter-spacing:.42em;
+    font-size: clamp(13px,1.7vmin,20px);
+    text-transform:uppercase;
+    opacity:.92;
+  }
+  #title b{ font-weight:300; opacity:.55; letter-spacing:.3em; }
+  #sub{
+    top: calc(clamp(16px,3.2vmin,40px) + clamp(20px,2.7vmin,34px));
+    left: clamp(16px,3.2vmin,44px);
+    font-weight:300; letter-spacing:.26em;
+    font-size: clamp(9px,1.1vmin,12px);
+    opacity:.5;
+  }
+  #hint{
+    bottom: clamp(14px,2.6vmin,30px); left:50%; transform:translateX(-50%);
+    text-align:center; font-weight:300; letter-spacing:.24em;
+    font-size: clamp(9px,1.1vmin,12px);
+    opacity:.0; transition:opacity 1.4s ease;
+    white-space:nowrap;
+  }
+  #hint.show{ opacity:.46; }
+  #clock{
+    bottom: clamp(14px,2.6vmin,30px); right: clamp(16px,3.2vmin,44px);
+    font-weight:300; letter-spacing:.3em;
+    font-size: clamp(10px,1.3vmin,15px);
+    opacity:.62; font-variant-numeric:tabular-nums;
+  }
+  @media (max-width:520px){
+    #hint{ font-size:9px; letter-spacing:.14em; }
+    #title{ letter-spacing:.3em; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div class="ui" id="title">KIRIGAMI<b> · 紙の街</b></div>
+<div class="ui" id="sub">A PAPER CITY THAT FOLDS</div>
+<div class="ui" id="hint">MOVE to tilt · SCROLL / DRAG to fold · CLICK to ignite</div>
+<div class="ui" id="clock">—</div>
+<script>
+"use strict";
+(function(){
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', { alpha:false });
+const hintEl = document.getElementById('hint');
+const clockEl = document.getElementById('clock');
+
+let W=0,H=0,DPR=1, CX=0, HORIZON=0;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = Math.floor(W*DPR); cv.height = Math.floor(H*DPR);
+  cv.style.width = W+'px'; cv.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  CX = W*0.5;
+  HORIZON = H*0.80;
+  rebuildCity();
+  paperTex = makePaperTexture();
+}
+window.addEventListener('resize', resize);
+
+// ---------- small utils ----------
+const TAU = Math.PI*2;
+const rnd = (a,b)=> a + Math.random()*(b-a);
+const clamp=(v,a,b)=> v<a?a:(v>b?b:v);
+const lerp=(a,b,t)=> a+(b-a)*t;
+const smooth=(t)=> t*t*(3-2*t);
+let seed = 1337;
+function srnd(){ seed = (seed*1664525+1013904223)>>>0; return seed/4294967296; }
+function srange(a,b){ return a + srnd()*(b-a); }
+function hex(h){ const n=parseInt(h.slice(1),16); return [(n>>16)&255,(n>>8)&255,n&255]; }
+function mix(c1,c2,t){ return [Math.round(lerp(c1[0],c2[0],t)),Math.round(lerp(c1[1],c2[1],t)),Math.round(lerp(c1[2],c2[2],t))]; }
+function rgb(c,a){ return a==null? `rgb(${c[0]},${c[1]},${c[2]})` : `rgba(${c[0]},${c[1]},${c[2]},${a})`; }
+
+// ---------- paper grain texture (offscreen, tiled) ----------
+let paperTex=null;
+function makePaperTexture(){
+  const s=160; const t=document.createElement('canvas'); t.width=s; t.height=s;
+  const g=t.getContext('2d');
+  const img=g.createImageData(s,s); const d=img.data;
+  for(let i=0;i<d.length;i+=4){
+    // fibrous low-contrast noise
+    const n = 128 + (Math.random()-0.5)*38 + (Math.random()-0.5)*22;
+    const v = clamp(n,90,170);
+    d[i]=v; d[i+1]=v; d[i+2]=v; d[i+3]=255;
+  }
+  g.putImageData(img,0,0);
+  // subtle fiber streaks
+  g.globalAlpha=0.05;
+  for(let k=0;k<90;k++){
+    g.strokeStyle = Math.random()<0.5?'#fff':'#000';
+    g.beginPath();
+    const y=Math.random()*s; g.moveTo(0,y);
+    g.lineTo(s, y+(Math.random()-0.5)*8);
+    g.stroke();
+  }
+  return t;
+}
+
+// ---------- color palettes by time-of-day ----------
+// keyframes 0..1 around a cycle
+const PAL = [
+  // dawn
+  { sky:['#1a1430','#3a2750','#b6628a','#f0a878'], sun:'#ffd9a8', star:0.15, glow:'#ffcaa0', warm:0.55 },
+  // day
+  { sky:['#1f4a8a','#3f7fc4','#86c0e8','#cfeaf6'], sun:'#fff4d8', star:0.0,  glow:'#ffe9b0', warm:0.18 },
+  // dusk
+  { sky:['#241038','#5a2150','#c23a5e','#f08a3c'], sun:'#ffb060', star:0.25, glow:'#ff9a4d', warm:0.85 },
+  // night
+  { sky:['#05060f','#0c1230','#1a2452','#2a2f66'], sun:'#9fb4ff', star:1.0,  glow:'#79b0ff', warm:0.95 },
+];
+function palAt(t){
+  t = (t%1+1)%1;
+  const f = t*PAL.length; const i=Math.floor(f); const fr=smooth(f-i);
+  const a=PAL[i], b=PAL[(i+1)%PAL.length];
+  const sky = a.sky.map((c,k)=> mix(hex(c),hex(b.sky[k]),fr));
+  return {
+    sky,
+    sun: mix(hex(a.sun),hex(b.sun),fr),
+    star: lerp(a.star,b.star,fr),
+    glow: mix(hex(a.glow),hex(b.glow),fr),
+    warm: lerp(a.warm,b.warm,fr),
+  };
+}
+
+// ---------- city construction (layered kirigami) ----------
+// Several depth layers; each is a row of paper "buildings" cut with windows.
+// Buildings are drawn as folded panels: left/right faces meet at a vertical
+// crease, lit differently to read as 3D pop-up paper.
+let layers=[];
+const LAYER_DEFS = [
+  { depth:0.18, baseTone:'#2a2440', topTone:'#3b3358', n:0.55, hMin:0.10, hMax:0.20, glowP:0.10 },
+  { depth:0.34, baseTone:'#352c52', topTone:'#4a3e70', n:0.5,  hMin:0.16, hMax:0.30, glowP:0.18 },
+  { depth:0.55, baseTone:'#231d3a', topTone:'#352c54', n:0.42, hMin:0.24, hMax:0.46, glowP:0.30 },
+  { depth:0.78, baseTone:'#160f28', topTone:'#241a40', n:0.34, hMin:0.32, hMax:0.62, glowP:0.45 },
+];
+
+function buildBuilding(x, w, h, depthLayer, ld){
+  // crease at ~40% of width -> left face wider
+  const crease = srange(0.34,0.5);
+  const winRows = Math.max(2, Math.floor(h/ (srange(16,24))) );
+  const winCols = Math.max(2, Math.floor(w/ (srange(12,18))) );
+  const wins=[];
+  for(let r=0;r<winRows;r++){
+    for(let c=0;c<winCols;c++){
+      if(srnd()<0.30) continue; // some panels solid (cut paper keeps structure)
+      const lit = srnd()<ld.glowP;
+      wins.push({ r,c, lit, ph: srnd()*TAU, twk: srange(0.4,1.4),
+                  hue: srnd()<0.18?1:0 });
+    }
+  }
+  // a roof feature
+  const roof = srnd();
+  return { x, w, h, crease, winRows, winCols, wins, roof,
+           tone: srange(-0.06,0.06) };
+}
+
+function rebuildCity(){
+  seed = 20260620;
+  layers = LAYER_DEFS.map((ld)=>{
+    const arr=[];
+    const span = W*1.5;
+    let x = -W*0.25;
+    const avgW = W * (0.05 + ld.n*0.06);
+    while(x < span){
+      const w = avgW * srange(0.6,1.5);
+      const h = H * srange(ld.hMin, ld.hMax);
+      arr.push(buildBuilding(x, w, h, ld.depth, ld));
+      x += w + avgW*srange(0.05,0.35);
+    }
+    return { ld, buildings:arr };
+  });
+}
+
+// ---------- interaction state ----------
+const st = {
+  // fold: 0 = flat closed (book shut), 1 = fully popped open
+  fold: 0.0, foldTarget: 1.0, foldVel:0,
+  tiltX:0, tiltY:0,        // smoothed pointer for parallax/light
+  ptx:0.5, pty:0.5,
+  time: 0.62,              // time-of-day cycle position (dusk-ish start)
+  draggingSpine:false,
+  lastX:0,
+  pointerActive:false,
+};
+
+// time auto-advances slowly, pauses a touch when user interacts
+let lastInteract = -10;
+function nowS(){ return performance.now()/1000; }
+
+// ---------- fireworks / light sparks ----------
+const sparks=[];
+function ignite(px,py){
+  const pal = palAt(st.time);
+  const cols = [ pal.glow, pal.sun, hex('#ffe1a0'), hex('#ff7da8'), hex('#9fe0ff') ];
+  const n = 46 + Math.floor(Math.random()*26);
+  const baseHue = cols[Math.floor(Math.random()*cols.length)];
+  for(let i=0;i<n;i++){
+    const a = (i/n)*TAU + rnd(-0.1,0.1);
+    const sp = rnd(1.2,5.4) * (0.7+Math.random());
+    sparks.push({
+      x:px, y:py, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp - rnd(0.3,1.2),
+      life:1, decay: rnd(0.008,0.02),
+      col: Math.random()<0.6? baseHue : (Array.isArray(cols[i%cols.length])?cols[i%cols.length]:hex(cols[i%cols.length])),
+      sz: rnd(1.1,2.6)
+    });
+  }
+}
+function updateSparks(dt){
+  for(let i=sparks.length-1;i>=0;i--){
+    const s=sparks[i];
+    s.vy += 0.045*dt*60;
+    s.vx *= 0.985; s.vy *= 0.985;
+    s.x += s.vx*dt*60; s.y += s.vy*dt*60;
+    s.life -= s.decay*dt*60;
+    if(s.life<=0) sparks.splice(i,1);
+  }
+}
+
+// floating dust / paper motes
+const motes=[];
+function initMotes(){ motes.length=0; for(let i=0;i<60;i++) motes.push({x:Math.random(),y:Math.random(),z:Math.random(),ph:Math.random()*TAU}); }
+
+// ---------- drawing helpers ----------
+function paperFill(ctx, tint, tintA){
+  // base flat tint then overlay tiled grain via pattern (multiply)
+  ctx.fillStyle = tint;
+  ctx.fill();
+  if(paperTex){
+    ctx.save();
+    ctx.clip();
+    ctx.globalCompositeOperation='overlay';
+    ctx.globalAlpha = tintA!=null?tintA:0.32;
+    const p = ctx.createPattern(paperTex,'repeat');
+    ctx.fillStyle=p; ctx.fillRect(-W,-H,W*3,H*3);
+    ctx.restore();
+    ctx.globalCompositeOperation='source-over';
+    ctx.globalAlpha=1;
+  }
+}
+
+// draw one building as two folded faces meeting at crease
+function drawBuilding(b, layerX, baseY, scale, openK, pal, ld, depthShade){
+  const x = (b.x + layerX);
+  const w = b.w;
+  const h = b.h * lerp(0.04, 1, openK); // pop up from flat
+  if(x+w < -40 || x > W+40) return;
+
+  const creaseX = x + w*b.crease;
+  const top = baseY - h;
+
+  // fold geometry: when popped, the crease juts toward viewer.
+  // simulate by skewing the two faces. openK 0..1
+  const jut = lerp(0, w*0.22, openK) * (0.55+depthShade*0.8);
+  const lean = (st.tiltX-0.5) * 26 * (1-ld.depth*0.5); // global lean by pointer
+
+  // base tones tinted by palette warmth + depth
+  let baseC = hex(ld.baseTone);
+  let topC  = hex(ld.topTone);
+  // blend toward sky color with distance (atmospheric)
+  const atmo = ld.depth*0.0 + (1-ld.depth)*0.0;
+  const warmTint = mix(baseC, pal.glow, pal.warm*0.10*ld.depth);
+  baseC = mix(baseC, pal.sky[1], (1-ld.depth)*0.28);
+  topC  = mix(topC,  pal.sky[2], (1-ld.depth)*0.30);
+
+  // ---- shadow cast by this panel onto the layer behind (soft) ----
+  if(openK>0.05){
+    ctx.save();
+    ctx.globalAlpha = 0.18*openK;
+    ctx.fillStyle = '#000';
+    const sh = 10*openK*(1-ld.depth*0.4);
+    ctx.beginPath();
+    ctx.moveTo(x+lean, baseY);
+    ctx.lineTo(x+lean+sh, baseY);
+    ctx.lineTo(creaseX+lean+sh, top+sh*0.4);
+    ctx.lineTo(creaseX+lean, top);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+
+  // ---- LEFT face (in shadow, darker) ----
+  const lf = mix(baseC, [0,0,0], 0.40 - lean*0.0006);
+  const lfTop = mix(topC, [0,0,0], 0.40);
+  ctx.beginPath();
+  ctx.moveTo(x+lean, baseY);
+  ctx.lineTo(x+lean, top + creaseDrop(0));
+  ctx.lineTo(creaseX+lean+jut, top);
+  ctx.lineTo(creaseX+lean+jut, baseY);
+  ctx.closePath();
+  let grd = ctx.createLinearGradient(0, top, 0, baseY);
+  grd.addColorStop(0, rgb(lfTop)); grd.addColorStop(1, rgb(lf));
+  paperFill(ctx, grd, 0.28);
+
+  // ---- RIGHT face (lit, brighter) ----
+  const litAmt = 0.18 + 0.22*clamp((st.tiltX),0,1);
+  const rf = mix(mix(baseC,pal.glow,pal.warm*0.18), [255,255,255], litAmt);
+  const rfTop = mix(mix(topC,pal.glow,pal.warm*0.18), [255,255,255], litAmt);
+  ctx.beginPath();
+  ctx.moveTo(creaseX+lean+jut, baseY);
+  ctx.lineTo(creaseX+lean+jut, top);
+  ctx.lineTo(x+w+lean, top + creaseDrop(1));
+  ctx.lineTo(x+w+lean, baseY);
+  ctx.closePath();
+  grd = ctx.createLinearGradient(0, top, 0, baseY);
+  grd.addColorStop(0, rgb(rfTop)); grd.addColorStop(1, rgb(rf));
+  paperFill(ctx, grd, 0.28);
+
+  // crease highlight line (the folded edge catching the light)
+  ctx.strokeStyle = rgb(mix(rfTop,[255,255,255],0.55), 0.75*openK);
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.moveTo(creaseX+lean+jut, top);
+  ctx.lineTo(creaseX+lean+jut, baseY);
+  ctx.stroke();
+  // soft contact shadow at the base of the fold valley
+  ctx.strokeStyle = rgb([0,0,0], 0.30*openK);
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(creaseX+lean+jut+1.2, top);
+  ctx.lineTo(creaseX+lean+jut+1.2, baseY);
+  ctx.stroke();
+
+  // roof crown cut
+  drawRoof(b, x+lean, w, top, creaseX+lean+jut, jut, topC);
+
+  // ---- windows (cut-outs that glow) ----
+  drawWindows(b, x, lean, w, top, baseY, creaseX+jut, openK, pal, ld, lf, rf);
+}
+
+function creaseDrop(side){ return 0; }
+
+function drawRoof(b, x, w, top, cx, jut, topC){
+  const r=b.roof;
+  ctx.save();
+  if(r<0.25){
+    // antenna
+    ctx.strokeStyle=rgb(mix(topC,[255,255,255],0.3),0.7);
+    ctx.lineWidth=1.3;
+    ctx.beginPath(); ctx.moveTo(cx, top); ctx.lineTo(cx, top-12-(b.h*0.06)); ctx.stroke();
+    ctx.fillStyle=rgb([255,150,140],0.8);
+    ctx.beginPath(); ctx.arc(cx, top-12-(b.h*0.06), 1.6,0,TAU); ctx.fill();
+  } else if(r<0.5){
+    // stepped notch (kirigami cut)
+    ctx.fillStyle=rgb(mix(topC,[0,0,0],0.15));
+    const nw=w*0.22, nh=8;
+    ctx.fillRect(cx-nw*0.5, top-nh, nw, nh);
+  } else if(r<0.7){
+    // small pop tab
+    ctx.fillStyle=rgb(mix(topC,[255,255,255],0.18));
+    ctx.beginPath();
+    ctx.moveTo(x+w*0.3, top); ctx.lineTo(x+w*0.5, top-10); ctx.lineTo(x+w*0.7, top);
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawWindows(b, x, lean, w, top, baseY, creaseX, openK, pal, ld, lf, rf){
+  if(openK<0.25) return;
+  const h = baseY - top;
+  const padX = w*0.10, padY = h*0.10;
+  const gx = (w-2*padX)/b.winCols;
+  const gy = (h-2*padY)/b.winRows;
+  const ww = gx*0.55, wh = gy*0.5;
+  const litBase = pal.glow;
+  const warmW = hex('#ffd28a');
+  const t = nowS();
+  for(const win of b.wins){
+    const wx = x+lean + padX + win.c*gx + (gx-ww)/2;
+    const wy = top + padY + win.r*gy + (gy-wh)/2;
+    const onCreaseSide = (wx > creaseX+lean); // approx
+    if(win.lit){
+      const flick = 0.7 + 0.3*Math.sin(t*win.twk + win.ph);
+      const a = (0.55+0.4*pal.warm)*flick*openK;
+      const c = win.hue? hex('#ff9ec6') : (Math.random()<0? warmW : litBase);
+      // glow halo
+      ctx.save();
+      ctx.globalCompositeOperation='screen';
+      const r = Math.max(ww,wh)*2.2;
+      const g = ctx.createRadialGradient(wx+ww/2, wy+wh/2, 0, wx+ww/2, wy+wh/2, r);
+      g.addColorStop(0, rgb(c, 0.5*a));
+      g.addColorStop(1, rgb(c, 0));
+      ctx.fillStyle=g;
+      ctx.fillRect(wx-r, wy-r, r*2, r*2);
+      ctx.restore();
+      ctx.fillStyle = rgb(mix(c,[255,255,255],0.4), Math.min(1,a+0.15));
+      ctx.fillRect(wx, wy, ww, wh);
+    } else {
+      // dark cut window: show the layer/sky behind faintly (paper hole)
+      ctx.fillStyle = rgb(mix(onCreaseSide?rf:lf,[0,0,0],0.42), 0.85);
+      ctx.fillRect(wx, wy, ww, wh);
+    }
+  }
+}
+
+// ---------- reflection (water-ish foreground paper) ----------
+function drawForeground(baseY, pal){
+  // a thin "water" strip below the city using paper, with vertical reflection smear
+  const y0 = baseY;
+  const grd = ctx.createLinearGradient(0,y0,0,H);
+  grd.addColorStop(0, rgb(mix(pal.sky[1],[0,0,0],0.35), 1));
+  grd.addColorStop(1, rgb(mix(pal.sky[0],[0,0,0],0.55), 1));
+  ctx.fillStyle=grd;
+  ctx.fillRect(0,y0,W,H-y0);
+  // shimmering reflected light lines
+  ctx.save();
+  ctx.globalCompositeOperation='screen';
+  const t=nowS();
+  for(let i=0;i<26;i++){
+    const yy = y0 + (i/26)*(H-y0);
+    const a = (1-(i/26))*0.10*(0.5+0.5*Math.sin(t*1.3+i));
+    ctx.fillStyle=rgb(pal.glow, a);
+    const off = Math.sin(t*0.8+i*0.5)*W*0.02;
+    ctx.fillRect(CX-W*0.5+off, yy, W, 1.4);
+  }
+  ctx.restore();
+}
+
+// ---------- sky ----------
+function drawSky(pal){
+  const g = ctx.createLinearGradient(0,0,0,HORIZON*1.05);
+  g.addColorStop(0, rgb(pal.sky[0]));
+  g.addColorStop(0.45, rgb(pal.sky[1]));
+  g.addColorStop(0.78, rgb(pal.sky[2]));
+  g.addColorStop(1, rgb(pal.sky[3]));
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,HORIZON*1.05);
+
+  // sun/moon
+  const sunX = CX + (st.tiltX-0.5)*W*0.18;
+  const sunProg = (st.time%1+1)%1;
+  const sunY = HORIZON*0.32 + Math.sin(sunProg*TAU - Math.PI*0.5)*0;
+  const sy = lerp(HORIZON*0.62, HORIZON*0.10, Math.abs(Math.sin(sunProg*Math.PI)));
+  ctx.save();
+  ctx.globalCompositeOperation='screen';
+  const sr = Math.min(W,H)*0.16;
+  const sg = ctx.createRadialGradient(sunX, sy, 0, sunX, sy, sr);
+  sg.addColorStop(0, rgb(pal.sun, 0.95));
+  sg.addColorStop(0.25, rgb(pal.sun, 0.5));
+  sg.addColorStop(1, rgb(pal.sun, 0));
+  ctx.fillStyle=sg; ctx.fillRect(sunX-sr, sy-sr, sr*2, sr*2);
+  // disc
+  ctx.fillStyle=rgb(mix(pal.sun,[255,255,255],0.3), 0.9);
+  ctx.beginPath(); ctx.arc(sunX, sy, sr*0.16, 0, TAU); ctx.fill();
+  ctx.restore();
+
+  // stars
+  if(pal.star>0.02){
+    ctx.save();
+    seed=999;
+    const t=nowS();
+    for(let i=0;i<140;i++){
+      const sx=srnd()*W, syy=srnd()*HORIZON*0.8;
+      const tw=0.4+0.6*Math.sin(t*srange(0.5,2)+i);
+      ctx.fillStyle=rgb([255,255,255], pal.star*tw*0.8*(0.3+0.7*srnd()));
+      const s=srange(0.5,1.6);
+      ctx.fillRect(sx,syy,s,s);
+    }
+    ctx.restore();
+  }
+  // drifting paper clouds (cut-paper style)
+  drawClouds(pal);
+}
+
+let clouds=null;
+function drawClouds(pal){
+  if(!clouds){ seed=4242; clouds=[]; for(let i=0;i<6;i++){ clouds.push({x:srnd(), y:srange(0.06,0.34), s:srange(0.7,1.6), sp:srange(0.004,0.012)});} }
+  const t=nowS();
+  ctx.save();
+  ctx.globalAlpha=0.5;
+  for(const c of clouds){
+    let cx = ((c.x + t*c.sp)%1.3-0.15)*W + (st.tiltX-0.5)*-30;
+    const cy = c.y*HORIZON;
+    const s = c.s* Math.min(W,H)*0.06;
+    const col = mix(hex('#ffffff'), pal.sky[2], 0.55);
+    ctx.fillStyle=rgb(col, 0.5);
+    // overlapping flat lobes -> paper cloud
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, s*1.6, s*0.5, 0,0,TAU);
+    ctx.ellipse(cx-s, cy+s*0.1, s, s*0.4, 0,0,TAU);
+    ctx.ellipse(cx+s, cy+s*0.12, s*0.9, s*0.4, 0,0,TAU);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ---------- the central spine / book gutter ----------
+function drawSpine(baseY, pal){
+  // a vertical valley fold down the middle, suggesting open-book pages.
+  ctx.save();
+  const grd=ctx.createLinearGradient(CX-30,0,CX+30,0);
+  grd.addColorStop(0, rgb(mix(pal.sky[0],[0,0,0],0.0),0));
+  grd.addColorStop(0.5, rgb([0,0,0], 0.22*st.fold));
+  grd.addColorStop(1, rgb(mix(pal.sky[0],[0,0,0],0.0),0));
+  ctx.fillStyle=grd;
+  ctx.fillRect(CX-30,0,60,baseY);
+  ctx.restore();
+}
+
+// ---------- master draw ----------
+function draw(dt){
+  const pal = palAt(st.time);
+
+  drawSky(pal);
+
+  // global parallax base: city sits on a baseY that lifts with fold (pop-up)
+  // pointer tilt shifts horizon slightly for parallax depth
+  const tiltLift = (st.tiltY-0.5)* -18;
+  const baseY = HORIZON + tiltLift;
+
+  drawSpine(baseY, pal);
+
+  // draw far -> near
+  for(let li=0; li<layers.length; li++){
+    const L = layers[li];
+    const ld = L.ld;
+    // parallax: nearer layers move more with pointer
+    const par = (st.tiltX-0.5) * (40 + ld.depth*120);
+    const layerX = -par;
+    const layerY = baseY + (1-ld.depth)*0; // all share baseline (kirigami rows)
+    // openK per layer: nearer pops a touch later for cascade
+    const openK = clamp((st.fold - (1-ld.depth)*0.12)/ (1-(1-ld.depth)*0.12), 0,1);
+    const depthShade = ld.depth;
+    // each row baseline staggered to read as receding ground
+    const rowBase = baseY - (1-ld.depth)*H*0.0;
+    for(const b of L.buildings){
+      drawBuilding(b, layerX, rowBase, 1, smooth(openK), pal, ld, depthShade);
+    }
+  }
+
+  drawForeground(baseY, pal);
+
+  // motes
+  ctx.save();
+  ctx.globalCompositeOperation='screen';
+  const t=nowS();
+  for(const m of motes){
+    const mx = (m.x + Math.sin(t*0.1+m.ph)*0.02)*W + (st.tiltX-0.5)*(40*m.z);
+    const my = (m.y + (t*0.01*(0.3+m.z))%1)*baseY;
+    const a = 0.10+0.18*m.z*(0.5+0.5*Math.sin(t+m.ph));
+    ctx.fillStyle=rgb(pal.glow, a);
+    const s=0.6+m.z*1.8;
+    ctx.fillRect(mx%W, my%baseY, s,s);
+  }
+  ctx.restore();
+
+  // sparks
+  ctx.save();
+  ctx.globalCompositeOperation='screen';
+  for(const s of sparks){
+    const c = Array.isArray(s.col)?s.col:hex('#ffffff');
+    ctx.globalAlpha = clamp(s.life,0,1);
+    const r=s.sz*2.4;
+    const g=ctx.createRadialGradient(s.x,s.y,0,s.x,s.y,r);
+    g.addColorStop(0, rgb(c,0.9)); g.addColorStop(1, rgb(c,0));
+    ctx.fillStyle=g; ctx.fillRect(s.x-r,s.y-r,r*2,r*2);
+  }
+  ctx.globalAlpha=1;
+  ctx.restore();
+
+  // gentle vignette for cohesion
+  const vg=ctx.createRadialGradient(CX,H*0.5,H*0.3,CX,H*0.5,H*0.85);
+  vg.addColorStop(0,'rgba(0,0,0,0)');
+  vg.addColorStop(1,'rgba(0,0,0,0.42)');
+  ctx.fillStyle=vg; ctx.fillRect(0,0,W,H);
+
+  // film grain shimmer (very subtle, paper feel) using paperTex
+  if(paperTex){
+    ctx.save();
+    ctx.globalCompositeOperation='overlay';
+    ctx.globalAlpha=0.05;
+    const p=ctx.createPattern(paperTex,'repeat');
+    ctx.fillStyle=p;
+    const ox = (t*8)%160, oy=(t*5)%160;
+    ctx.translate(-ox,-oy);
+    ctx.fillRect(0,0,W+160,H+160);
+    ctx.restore();
+  }
+}
+
+// ---------- update / loop ----------
+let last=performance.now();
+function tick(now){
+  let dt=(now-last)/1000; last=now; if(dt>0.05) dt=0.05;
+
+  // smooth pointer
+  st.tiltX += (st.ptx - st.tiltX)*Math.min(1,dt*6);
+  st.tiltY += (st.pty - st.tiltY)*Math.min(1,dt*6);
+
+  // spring the fold toward target
+  const k=70, damp=12;
+  const a = (st.foldTarget - st.fold)*k - st.foldVel*damp;
+  st.foldVel += a*dt;
+  st.fold += st.foldVel*dt;
+  st.fold = clamp(st.fold, 0, 1.05);
+
+  // advance time-of-day unless recently interacting with time
+  st.time += dt * 0.012;
+
+  updateSparks(dt);
+
+  draw(dt);
+
+  // clock readout
+  const tp=(st.time%1+1)%1;
+  const hh = Math.floor(((tp*24)+6)%24);
+  const mm = Math.floor((((tp*24)+6)%1)*60);
+  const lbl = tp<0.25?'DAWN':tp<0.5?'DAY':tp<0.75?'DUSK':'NIGHT';
+  clockEl.textContent = lbl+'  '+String(hh).padStart(2,'0')+':'+String(mm).padStart(2,'0');
+
+  requestAnimationFrame(tick);
+}
+
+// ---------- events ----------
+function pointerMove(x,y){
+  st.ptx = clamp(x/W,0,1);
+  st.pty = clamp(y/H,0,1);
+  st.pointerActive=true;
+  lastInteract = nowS();
+}
+cv.addEventListener('mousemove', e=> pointerMove(e.clientX, e.clientY));
+cv.addEventListener('mousedown', e=>{
+  // near spine => grab to fold; else ignite
+  if(Math.abs(e.clientX-CX) < W*0.10){
+    st.draggingSpine=true; st.lastX=e.clientX;
+  } else {
+    ignite(e.clientX, e.clientY);
+  }
+  lastInteract=nowS();
+});
+window.addEventListener('mouseup', ()=> st.draggingSpine=false);
+window.addEventListener('mousemove', e=>{
+  if(st.draggingSpine){
+    const d=(e.clientX-st.lastX); st.lastX=e.clientX;
+    // pull outward from center opens
+    const dir = e.clientX>CX?1:-1;
+    st.foldTarget = clamp(st.foldTarget + d*dir*0.004*0, 0,1);
+    // simpler: map distance from center to fold
+    st.foldTarget = clamp(Math.abs(e.clientX-CX)/(W*0.42),0,1);
+  }
+});
+
+cv.addEventListener('wheel', e=>{
+  e.preventDefault();
+  st.foldTarget = clamp(st.foldTarget - e.deltaY*0.0012, 0, 1);
+  lastInteract=nowS();
+}, {passive:false});
+
+// touch
+let touchFoldStart=0, touchStartY=0;
+cv.addEventListener('touchstart', e=>{
+  const t=e.touches[0];
+  pointerMove(t.clientX,t.clientY);
+  if(Math.abs(t.clientX-CX) < W*0.16){
+    st.draggingSpine=true;
+  } else {
+    ignite(t.clientX,t.clientY);
+  }
+  touchStartY=t.clientY; touchFoldStart=st.foldTarget;
+  lastInteract=nowS();
+}, {passive:true});
+cv.addEventListener('touchmove', e=>{
+  e.preventDefault();
+  const t=e.touches[0];
+  pointerMove(t.clientX,t.clientY);
+  if(st.draggingSpine){
+    st.foldTarget = clamp(Math.abs(t.clientX-CX)/(W*0.42),0,1);
+  } else {
+    const dy=(touchStartY - t.clientY);
+    st.foldTarget = clamp(touchFoldStart + dy*0.002, 0,1);
+  }
+  lastInteract=nowS();
+}, {passive:false});
+cv.addEventListener('touchend', ()=> st.draggingSpine=false);
+
+// keyboard: space toggles fold, [ ] time
+window.addEventListener('keydown', e=>{
+  if(e.code==='Space'){ e.preventDefault(); st.foldTarget = st.foldTarget>0.5?0:1; }
+  if(e.key==='[') st.time -= 0.05;
+  if(e.key===']') st.time += 0.05;
+});
+
+// device orientation (mobile tilt) -> parallax
+window.addEventListener('deviceorientation', e=>{
+  if(e.gamma==null) return;
+  st.ptx = clamp(0.5 + (e.gamma/45)*0.5, 0,1);
+  st.pty = clamp(0.5 + (e.beta-40)/45*0.5, 0,1);
+}, true);
+
+// ---------- intro: auto pop-open + hint ----------
+function start(){
+  resize();
+  initMotes();
+  // start closed, then pop open dramatically (first paint already shows folded book = a piece)
+  st.fold=0.0; st.foldVel=0; st.foldTarget=1.0;
+  st.ptx=0.5; st.pty=0.42; st.tiltX=0.5; st.tiltY=0.42;
+  // a celebratory ignition after it pops
+  setTimeout(()=>{ ignite(CX, HORIZON-H*0.34); }, 1300);
+  setTimeout(()=>{ ignite(CX-W*0.22, HORIZON-H*0.24); ignite(CX+W*0.24, HORIZON-H*0.30);}, 1900);
+  setTimeout(()=> hintEl.classList.add('show'), 2400);
+  setTimeout(()=> hintEl.classList.remove('show'), 9000);
+  requestAnimationFrame(tick);
+}
+start();
+})();
+</script>
+</body>
+</html>

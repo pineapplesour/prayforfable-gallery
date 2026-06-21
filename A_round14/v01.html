@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>AURORA TRANSIT — Living Globe of Flight</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body {
+    width:100%; height:100%;
+    background:#02040b;
+    overflow:hidden;
+    font-family:"SF Mono","JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+    cursor:grab;
+    -webkit-tap-highlight-color:transparent;
+    touch-action:none;
+    color:#cfe6ff;
+  }
+  body.dragging { cursor:grabbing; }
+  #stage { position:fixed; inset:0; }
+  canvas { display:block; position:absolute; inset:0; width:100%; height:100%; }
+  #gl   { z-index:1; }
+  #fx   { z-index:2; pointer-events:none; }
+  /* ---- HUD ---- */
+  .hud { position:fixed; z-index:5; pointer-events:none; user-select:none;
+         text-shadow:0 0 12px rgba(0,0,0,.9); }
+  #title { top:26px; left:30px; }
+  #title h1 { font-size:13px; letter-spacing:.55em; font-weight:600;
+              color:#eaf4ff; }
+  #title h1 span { color:#39d6ff; }
+  #title p  { margin-top:9px; font-size:10px; letter-spacing:.32em;
+              color:#5e7da3; }
+  #stats { bottom:24px; left:30px; font-size:10px; letter-spacing:.18em;
+           line-height:1.85; color:#6f90b8; }
+  #stats b { color:#39d6ff; font-weight:600; }
+  #legend { top:26px; right:30px; text-align:right; font-size:9.5px;
+            letter-spacing:.2em; line-height:1.9; color:#6f90b8; }
+  #legend .k { display:inline-block; min-width:64px; color:#9fc2e8; }
+  #fps { position:fixed; z-index:5; bottom:24px; right:30px; font-size:10px;
+         letter-spacing:.18em; color:#3a567a; pointer-events:none; }
+  #fps b { color:#39d6ff; }
+  .vig { position:fixed; inset:0; z-index:3; pointer-events:none;
+         background:radial-gradient(ellipse at 50% 46%, transparent 38%, rgba(2,4,11,.55) 86%, #02040b 100%); }
+  @media (max-width:520px){
+    #title{top:16px;left:16px;} #title h1{font-size:11px;letter-spacing:.4em;}
+    #title p{font-size:8.5px;letter-spacing:.2em;}
+    #stats{left:16px;bottom:16px;font-size:8.5px;}
+    #legend{top:16px;right:16px;font-size:8px;}
+    #fps{right:16px;bottom:16px;}
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="gl"></canvas>
+  <canvas id="fx"></canvas>
+</div>
+<div class="vig"></div>
+<div id="title" class="hud">
+  <h1>AURORA <span>// TRANSIT</span></h1>
+  <p>LIVE GREAT-CIRCLE ROUTING ENGINE</p>
+</div>
+<div id="legend" class="hud">
+  <div><span class="k">DRAG</span> rotate</div>
+  <div><span class="k">SCROLL</span> zoom</div>
+  <div><span class="k">CLICK</span> launch burst</div>
+  <div><span class="k">HOVER</span> reveal hub</div>
+</div>
+<div id="stats" class="hud">
+  <div>ACTIVE ROUTES &nbsp; <b id="s_routes">0</b></div>
+  <div>HUB NODES &nbsp;&nbsp;&nbsp;&nbsp; <b id="s_hubs">0</b></div>
+  <div>IN TRANSIT &nbsp;&nbsp;&nbsp; <b id="s_air">0</b></div>
+</div>
+<div id="fps" class="hud">RENDER <b id="s_fps">--</b> FPS</div>
+
+<script>
+"use strict";
+/* ============================================================================
+   AURORA // TRANSIT
+   Raw WebGL2 dot-matrix Earth (procedural continents) + great-circle flight
+   arcs rendered as glowing travelling pulses on a 2D overlay.
+   Single file, no libraries. Hand-rolled math, shaders, projection.
+============================================================================ */
+
+const glCanvas = document.getElementById('gl');
+const fxCanvas = document.getElementById('fx');
+const gl  = glCanvas.getContext('webgl2', {antialias:true, alpha:true, premultipliedAlpha:false});
+const ctx = fxCanvas.getContext('2d');
+
+let DPR = Math.min(window.devicePixelRatio||1, 2);
+let W=0, H=0, CX=0, CY=0, R=0;   // css pixel viewport + globe screen radius
+
+/* ---------- vec / mat helpers ---------- */
+function mul3(a,b){ // 3x3 row-major * 3x3
+  const o=new Float32Array(9);
+  for(let r=0;r<3;r++)for(let c=0;c<3;c++){
+    o[r*3+c]=a[r*3]*b[c]+a[r*3+1]*b[3+c]+a[r*3+2]*b[6+c];
+  } return o;
+}
+function rotX(a){const c=Math.cos(a),s=Math.sin(a);return new Float32Array([1,0,0, 0,c,-s, 0,s,c]);}
+function rotY(a){const c=Math.cos(a),s=Math.sin(a);return new Float32Array([c,0,s, 0,1,0, -s,0,c]);}
+
+/* lat/lon (deg) -> unit sphere xyz (y up) */
+function ll2v(lat,lon){
+  const a=lat*Math.PI/180, b=lon*Math.PI/180;
+  const ca=Math.cos(a);
+  return [ca*Math.cos(b), Math.sin(a), ca*Math.sin(b)];
+}
+
+/* ============================================================================
+   1. PROCEDURAL CONTINENT MASK
+   A small hand-tuned set of lat/lon ellipse blobs approximating landmasses.
+   Used (a) to colour the globe dots and (b) to scatter realistic hub cities.
+============================================================================ */
+// [centLat, centLon, halfLatSpan, halfLonSpan, rot(rad)]  rough continents
+const LAND = [
+  // North America
+  [54,-100,26,34,-0.35],[40,-95,14,22,0.0],[63,-150,12,18,0],[18,-100,8,9,0.2],
+  // South America
+  [-12,-58,26,15,0.25],[-38,-65,12,7,0.1],
+  // Greenland
+  [72,-42,9,13,0],
+  // Europe
+  [50,15,12,22,0.0],[60,20,9,18,0],[42,5,7,14,0],
+  // Africa
+  [8,20,20,20,0.0],[-12,24,18,14,0.0],[30,5,8,18,0],
+  // Asia
+  [55,90,18,52,0.0],[30,105,16,30,0.0],[22,78,11,12,0.1],[62,135,12,30,0],
+  // SE Asia / Indonesia
+  [0,115,7,18,0.0],[12,103,8,7,0],
+  // Australia
+  [-25,134,12,18,0.0],
+  // Japan / islands
+  [37,138,9,4,0.4],[ -42,172,6,4,0.5],
+];
+function inLand(lat,lon){
+  let best=0;
+  for(const L of LAND){
+    let dlat=lat-L[0];
+    let dlon=lon-L[1];
+    if(dlon>180)dlon-=360; if(dlon<-180)dlon+=360;
+    const c=Math.cos(L[4]), s=Math.sin(L[4]);
+    const u=( dlat*c + dlon*s)/L[2];
+    const v=(-dlat*s + dlon*c)/L[3];
+    const d=u*u+v*v;
+    if(d<1){ const f=1-Math.sqrt(d); if(f>best)best=f; }
+  }
+  return best; // 0 = ocean, ->1 deep interior
+}
+
+/* ============================================================================
+   2. GLOBE GEOMETRY — fibonacci sphere of dots, land dots emphasised
+============================================================================ */
+const N_DOTS = (window.innerWidth<520) ? 9000 : 22000;
+let dotPos, dotData; // attrs
+function buildGlobe(){
+  const pos=new Float32Array(N_DOTS*3);
+  const dat=new Float32Array(N_DOTS*3); // land, size, jitter-seed
+  const gold=Math.PI*(3-Math.sqrt(5));
+  let li=0;
+  for(let i=0;i<N_DOTS;i++){
+    const y=1-(i/(N_DOTS-1))*2;
+    const r=Math.sqrt(1-y*y);
+    const th=gold*i;
+    const x=Math.cos(th)*r, z=Math.sin(th)*r;
+    const lat=Math.asin(y)*180/Math.PI;
+    const lon=Math.atan2(z,x)*180/Math.PI;
+    const land=inLand(lat,lon);
+    pos[i*3]=x; pos[i*3+1]=y; pos[i*3+2]=z;
+    dat[i*3]=land;
+    dat[i*3+1]= land>0 ? (1.5+land*1.3) : 1.0;
+    dat[i*3+2]= (Math.sin(i*12.9898)*43758.5453)%1;
+    if(land>0)li++;
+  }
+  dotPos=pos; dotData=dat;
+}
+buildGlobe();
+
+/* ============================================================================
+   3. HUB CITIES — scattered on land, weighted to real-ish coords + extras
+============================================================================ */
+const SEED_HUBS = [
+  ["SEL",37.5,127.0],["TYO",35.7,139.7],["BJS",39.9,116.4],["HKG",22.3,114.2],
+  ["SIN",1.35,103.8],["DXB",25.3,55.4],["DEL",28.6,77.2],["IST",41.0,28.9],
+  ["LON",51.5,-0.12],["PAR",48.9,2.35],["FRA",50.1,8.68],["MOS",55.7,37.6],
+  ["NYC",40.7,-74.0],["LAX",34.0,-118.2],["CHI",41.9,-87.6],["MEX",19.4,-99.1],
+  ["GRU",-23.5,-46.6],["BUE",-34.6,-58.4],["JNB",-26.2,28.0],["CAI",30.0,31.2],
+  ["SYD",-33.9,151.2],["AKL",-36.8,174.8],["YVR",49.3,-123.1],["SFO",37.6,-122.4],
+  ["BKK",13.7,100.5],["KUL",3.1,101.7],["CPT",-33.9,18.4],["NBO",-1.3,36.8],
+];
+let HUBS=[]; // {name,lat,lon,v(unit),size,pulse}
+function buildHubs(){
+  HUBS=[];
+  for(const h of SEED_HUBS){
+    HUBS.push({name:h[0],lat:h[1],lon:h[2],v:ll2v(h[1],h[2]),
+               size:0.7+Math.random()*0.8, pulse:Math.random()*6.28});
+  }
+  // sprinkle extra anonymous nodes on land for density
+  let added=0, tries=0;
+  while(added<26 && tries<4000){
+    tries++;
+    const lat=(Math.random()*150-75);
+    const lon=(Math.random()*360-180);
+    if(inLand(lat,lon)>0.25){
+      HUBS.push({name:"",lat,lon,v:ll2v(lat,lon),size:0.35+Math.random()*0.4,pulse:Math.random()*6.28});
+      added++;
+    }
+  }
+}
+buildHubs();
+
+/* ============================================================================
+   4. FLIGHT ROUTES — great-circle arcs between named hubs, travelling pulses
+============================================================================ */
+function slerp(a,b,t){
+  let d=a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+  d=Math.max(-1,Math.min(1,d));
+  const o=Math.acos(d);
+  if(o<1e-4) return a.slice();
+  const so=Math.sin(o);
+  const k0=Math.sin((1-t)*o)/so, k1=Math.sin(t*o)/so;
+  return [a[0]*k0+b[0]*k1, a[1]*k0+b[1]*k1, a[2]*k0+b[2]*k1];
+}
+function angBetween(a,b){let d=a[0]*b[0]+a[1]*b[1]+a[2]*b[2];return Math.acos(Math.max(-1,Math.min(1,d)));}
+
+const ROUTE_HUES = [192, 280, 320, 168, 46]; // cyan, violet, magenta, teal, amber
+let ROUTES=[];
+function makeRoute(ai,bi,hue){
+  const a=HUBS[ai], b=HUBS[bi];
+  return {
+    ai,bi, hue: hue!==undefined?hue:ROUTE_HUES[(Math.random()*ROUTE_HUES.length)|0],
+    arc: angBetween(a.v,b.v),
+    t: Math.random(),
+    speed: 0.06+Math.random()*0.10,
+    width: 0.6+Math.random()*0.9,
+    born: performance.now(),
+    life: 0, // ramps to 1
+  };
+}
+const NAMED = SEED_HUBS.length;
+function buildRoutes(){
+  ROUTES=[];
+  const used=new Set();
+  let n = (window.innerWidth<520)?26:46;
+  while(ROUTES.length<n){
+    const ai=(Math.random()*NAMED)|0;
+    let bi=(Math.random()*NAMED)|0;
+    if(bi===ai)continue;
+    const key=Math.min(ai,bi)+"-"+Math.max(ai,bi);
+    if(used.has(key))continue;
+    if(angBetween(HUBS[ai].v,HUBS[bi].v)<0.25)continue; // skip too-short
+    used.add(key);
+    ROUTES.push(makeRoute(ai,bi));
+  }
+}
+buildRoutes();
+
+/* burst routes (spawned on click from a random hub to many) */
+let BURSTS=[];
+
+/* ============================================================================
+   5. WEBGL — globe dots shader
+============================================================================ */
+const VERT=`#version 300 es
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aDat; // land, size, seed
+uniform mat3 uRot;
+uniform float uR;     // globe radius in device px
+uniform vec2  uC;     // center device px
+uniform vec2  uRes;   // device resolution
+uniform float uTime;
+uniform float uZoom;
+out float vLand;
+out float vFront;
+out float vSeed;
+out float vTwk;
+void main(){
+  vec3 p = uRot * aPos;
+  // perspective-ish: scale by depth a touch
+  float depth = p.z;            // -1 back .. +1 front
+  float persp = 1.0 + depth*0.16*uZoom;
+  vec2 scr = uC + vec2(p.x, -p.y) * uR * persp;
+  // to clip
+  vec2 cl = (scr / uRes) * 2.0 - 1.0;
+  gl_Position = vec4(cl.x, -cl.y, 0.0, 1.0);
+  float front = smoothstep(-0.25, 0.15, depth);
+  vFront = front;
+  vLand  = aDat.x;
+  vSeed  = aDat.z;
+  float twk = 0.6+0.4*sin(uTime*1.4 + aDat.z*40.0);
+  vTwk = twk;
+  float base = aDat.y * (uR/300.0) * (0.95+0.5*uZoom);
+  gl_PointSize = clamp(base * (0.6+0.75*front) * (aDat.x>0.0? (1.0+0.4*twk):0.95), 1.4, 11.0);
+}`;
+const FRAG=`#version 300 es
+precision highp float;
+in float vLand; in float vFront; in float vSeed; in float vTwk;
+out vec4 o;
+void main(){
+  vec2 d = gl_PointCoord - 0.5;
+  float r = length(d);
+  if(r>0.5) discard;
+  float core = smoothstep(0.5,0.0,r);
+  // ocean: dim deep-blue grid feel; land: bright cyan/teal
+  vec3 ocean = vec3(0.07,0.22,0.46);
+  vec3 land  = mix(vec3(0.16,0.70,0.92), vec3(0.45,1.0,0.95), vLand*0.7);
+  vec3 col = (vLand>0.0)? land : ocean;
+  float a = core * (vLand>0.0 ? (0.85+0.35*vTwk) : 0.50);
+  a *= (0.40 + 0.60*vFront);
+  // subtle rim brighten for land
+  col += vec3(0.06,0.16,0.22)*vFront*vLand;
+  o = vec4(col, a);
+}`;
+
+function compile(type,src){
+  const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw gl.getShaderInfoLog(s);
+  return s;
+}
+const prog=gl.createProgram();
+gl.attachShader(prog,compile(gl.VERTEX_SHADER,VERT));
+gl.attachShader(prog,compile(gl.FRAGMENT_SHADER,FRAG));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog,gl.LINK_STATUS)) throw gl.getProgramInfoLog(prog);
+
+const vao=gl.createVertexArray(); gl.bindVertexArray(vao);
+const bPos=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,bPos);
+gl.bufferData(gl.ARRAY_BUFFER,dotPos,gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,3,gl.FLOAT,false,0,0);
+const bDat=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,bDat);
+gl.bufferData(gl.ARRAY_BUFFER,dotData,gl.STATIC_DRAW);
+gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1,3,gl.FLOAT,false,0,0);
+gl.bindVertexArray(null);
+
+const U={
+  rot:gl.getUniformLocation(prog,'uRot'),
+  R:gl.getUniformLocation(prog,'uR'),
+  C:gl.getUniformLocation(prog,'uC'),
+  res:gl.getUniformLocation(prog,'uRes'),
+  time:gl.getUniformLocation(prog,'uTime'),
+  zoom:gl.getUniformLocation(prog,'uZoom'),
+};
+
+/* ============================================================================
+   6. INTERACTION STATE
+============================================================================ */
+const state={
+  rotX:0.32, rotY:0.6,         // current
+  velX:0, velY:0,              // angular velocity (inertia)
+  zoom:1.0, zoomTarget:1.0,
+  dragging:false, px:0, py:0, moved:false,
+  auto:true,
+  hoverHub:-1,
+  warp:0,                     // 0..1 transient on click
+};
+
+function setSize(){
+  W=window.innerWidth; H=window.innerHeight;
+  DPR=Math.min(window.devicePixelRatio||1,2);
+  glCanvas.width=W*DPR; glCanvas.height=H*DPR;
+  fxCanvas.width=W*DPR; fxCanvas.height=H*DPR;
+  glCanvas.style.width=fxCanvas.style.width=W+'px';
+  glCanvas.style.height=fxCanvas.style.height=H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  CX=W*0.5; CY=H*0.47;
+  R=Math.min(W,H)*0.36;
+  gl.viewport(0,0,glCanvas.width,glCanvas.height);
+}
+setSize();
+window.addEventListener('resize',setSize);
+
+/* pointer */
+function ptr(e){const t=e.touches?e.touches[0]:e; return {x:t.clientX,y:t.clientY};}
+function down(e){
+  const p=ptr(e); state.dragging=true; state.moved=false;
+  state.px=p.x; state.py=p.y; state.auto=false;
+  state.velX=0; state.velY=0;
+  document.body.classList.add('dragging');
+}
+function move(e){
+  const p=ptr(e);
+  if(state.dragging){
+    const dx=(p.x-state.px), dy=(p.y-state.py);
+    if(Math.abs(dx)+Math.abs(dy)>3) state.moved=true;
+    state.rotY += dx*0.005;
+    state.rotX += dy*0.005;
+    state.rotX = Math.max(-1.45,Math.min(1.45,state.rotX));
+    state.velY = dx*0.005; state.velX = dy*0.005;
+    state.px=p.x; state.py=p.y;
+  } else {
+    pickHover(p.x,p.y);
+  }
+}
+function up(e){
+  if(state.dragging && !state.moved){ launchBurst(); }
+  state.dragging=false;
+  document.body.classList.remove('dragging');
+}
+glCanvas.addEventListener('mousedown',down);
+window.addEventListener('mousemove',move);
+window.addEventListener('mouseup',up);
+glCanvas.addEventListener('touchstart',e=>{e.preventDefault();down(e);},{passive:false});
+window.addEventListener('touchmove',e=>{e.preventDefault();move(e);},{passive:false});
+window.addEventListener('touchend',up);
+glCanvas.addEventListener('wheel',e=>{
+  e.preventDefault();
+  state.zoomTarget *= (e.deltaY>0? 0.92:1.08);
+  state.zoomTarget = Math.max(0.62, Math.min(2.6, state.zoomTarget));
+},{passive:false});
+
+/* current rotation matrix + projection of a unit vec to screen */
+let ROT;
+function project(v){
+  const x=ROT[0]*v[0]+ROT[1]*v[1]+ROT[2]*v[2];
+  const y=ROT[3]*v[0]+ROT[4]*v[1]+ROT[5]*v[2];
+  const z=ROT[6]*v[0]+ROT[7]*v[1]+ROT[8]*v[2];
+  const persp=1.0+z*0.16*state.zoom;
+  return {x:CX+x*R*persp, y:CY-y*R*persp, z:z};
+}
+
+function pickHover(mx,my){
+  let best=-1, bd=18;
+  for(let i=0;i<NAMED;i++){
+    const p=project(HUBS[i].v);
+    if(p.z<-0.1)continue;
+    const d=Math.hypot(p.x-mx,p.y-my);
+    if(d<bd){bd=d;best=i;}
+  }
+  state.hoverHub=best;
+}
+
+/* click burst: pick the hub nearest screen center-front, fan routes out */
+function launchBurst(){
+  state.warp=1.0;
+  // choose origin: hovered hub, else most front-facing named hub
+  let oi=state.hoverHub;
+  if(oi<0){
+    let bz=-2;
+    for(let i=0;i<NAMED;i++){const p=project(HUBS[i].v);if(p.z>bz){bz=p.z;oi=i;}}
+  }
+  const targets=[];
+  for(let i=0;i<NAMED;i++) if(i!==oi) targets.push(i);
+  // shuffle, take ~10
+  for(let i=targets.length-1;i>0;i--){const j=(Math.random()*(i+1))|0;[targets[i],targets[j]]=[targets[j],targets[i]];}
+  const k=Math.min(11,targets.length);
+  const hue=ROUTE_HUES[(Math.random()*ROUTE_HUES.length)|0];
+  for(let i=0;i<k;i++){
+    BURSTS.push({ai:oi,bi:targets[i],hue,
+      arc:angBetween(HUBS[oi].v,HUBS[targets[i]].v),
+      t:0, speed:0.5+Math.random()*0.3, width:1.0+Math.random()*0.8,
+      born:performance.now(), life:0, burst:true, delay:i*0.04});
+  }
+}
+
+/* ============================================================================
+   7. DRAW FLIGHT ARCS on 2D overlay
+   For each route draw the great-circle path (segments), the head glow that
+   travels along it, and a trailing comet. Front/back depth fades visibility.
+============================================================================ */
+function arcAltitude(t){ return Math.sin(t*Math.PI); } // 0..1 bow
+
+function drawRoute(rt, now){
+  const A=HUBS[rt.ai].v, B=HUBS[rt.bi].v;
+  const segs=rt.burst?40:34;
+  const liftK = 0.10 + rt.arc*0.10;     // higher arcs for longer routes
+  // build screen pts
+  const pts=new Array(segs+1);
+  let anyFront=false;
+  for(let s=0;s<=segs;s++){
+    const t=s/segs;
+    let v=slerp(A,B,t);
+    const lift=1.0 + arcAltitude(t)*liftK;
+    v=[v[0]*lift,v[1]*lift,v[2]*lift];
+    const p=project(v);
+    pts[s]={x:p.x,y:p.y,z:p.z};
+    if(p.z>-0.05)anyFront=true;
+  }
+  if(!anyFront)return false;
+
+  const hue=rt.hue;
+  const life=rt.life;
+  // base faint line
+  ctx.lineCap='round'; ctx.lineJoin='round';
+  for(let s=0;s<segs;s++){
+    const p0=pts[s],p1=pts[s+1];
+    const zf=Math.max(0,(p0.z+p1.z)*0.5);     // front weight
+    const fr=smooth(-0.15,0.2,(p0.z+p1.z)*0.5);
+    if(fr<=0.01)continue;
+    const a=0.06*fr*life;
+    ctx.strokeStyle=`hsla(${hue},90%,68%,${a})`;
+    ctx.lineWidth=(0.7+zf*0.9)*rt.width;
+    ctx.beginPath(); ctx.moveTo(p0.x,p0.y); ctx.lineTo(p1.x,p1.y); ctx.stroke();
+  }
+  // travelling comet head
+  const head=rt.t;
+  const tailLen=rt.burst?0.26:0.20;
+  const seg0=Math.max(0,Math.floor((head-tailLen)*segs));
+  const seg1=Math.min(segs,Math.ceil(head*segs));
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  for(let s=seg0;s<seg1;s++){
+    const p0=pts[s],p1=pts[s+1]; if(!p1)break;
+    const tmid=(s+0.5)/segs;
+    const along=1-(head-tmid)/tailLen;      // 1 at head, 0 at tail
+    if(along<0)continue;
+    const fr=smooth(-0.15,0.2,(p0.z+p1.z)*0.5);
+    const zf=Math.max(0,(p0.z+p1.z)*0.5);
+    const a=along*along*fr*life*0.9;
+    ctx.strokeStyle=`hsla(${hue},95%,${62+along*16}%,${a})`;
+    ctx.lineWidth=(0.8+along*2.4*(0.6+zf))*rt.width;
+    ctx.shadowColor=`hsla(${hue},95%,70%,${a})`;
+    ctx.shadowBlur=along*14*rt.width;
+    ctx.beginPath(); ctx.moveTo(p0.x,p0.y); ctx.lineTo(p1.x,p1.y); ctx.stroke();
+  }
+  ctx.restore();
+  return true;
+}
+
+function smooth(e0,e1,x){const t=Math.max(0,Math.min(1,(x-e0)/(e1-e0)));return t*t*(3-2*t);}
+
+/* draw hubs + labels */
+function drawHubs(now){
+  ctx.save();
+  for(let i=0;i<HUBS.length;i++){
+    const h=HUBS[i]; const p=project(h.v);
+    const fr=smooth(-0.1,0.25,p.z);
+    if(fr<=0.01)continue;
+    const named=i<NAMED;
+    const pulse=0.5+0.5*Math.sin(now*0.002*1.6+h.pulse);
+    const baseR=(named?2.0:1.2)*h.size*(0.8+0.5*state.zoom);
+    const hov=(i===state.hoverHub);
+    // glow ring
+    ctx.globalCompositeOperation='lighter';
+    const gr=baseR*(2.6+pulse*1.4)*(hov?1.8:1);
+    const g=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,gr);
+    const col= named? "57,214,255" : "120,180,230";
+    g.addColorStop(0,`rgba(${col},${(0.28+0.3*pulse)*fr})`);
+    g.addColorStop(1,`rgba(${col},0)`);
+    ctx.fillStyle=g;
+    ctx.beginPath(); ctx.arc(p.x,p.y,gr,0,6.283); ctx.fill();
+    // core
+    ctx.fillStyle=`rgba(220,245,255,${(0.6+0.4*pulse)*fr})`;
+    ctx.beginPath(); ctx.arc(p.x,p.y,baseR*(hov?1.5:1),0,6.283); ctx.fill();
+    ctx.globalCompositeOperation='source-over';
+    // label
+    if(named && (hov || fr>0.45)){
+      ctx.font=`${hov?11:9}px "SF Mono",monospace`;
+      ctx.fillStyle=`rgba(${hov?'170,235,255':'150,195,235'},${hov?0.95:(0.35+0.4*fr)})`;
+      ctx.fillText(h.name, p.x+baseR*1.6+2, p.y+3);
+      if(hov){
+        ctx.strokeStyle='rgba(57,214,255,0.5)';
+        ctx.lineWidth=1; ctx.beginPath();
+        ctx.arc(p.x,p.y,baseR*1.5+6,0,6.283); ctx.stroke();
+      }
+    }
+  }
+  ctx.restore();
+}
+
+/* atmosphere glow on overlay (drawn behind via separate pass) */
+function drawAtmosphere(){
+  const rr=R*(1.0+0.05*state.zoom);
+  const g=ctx.createRadialGradient(CX,CY,rr*0.72,CX,CY,rr*1.32);
+  g.addColorStop(0,'rgba(40,120,200,0)');
+  g.addColorStop(0.55,'rgba(46,150,230,0.10)');
+  g.addColorStop(0.78,'rgba(80,200,255,0.16)');
+  g.addColorStop(1,'rgba(10,30,70,0)');
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  ctx.fillStyle=g;
+  ctx.beginPath(); ctx.arc(CX,CY,rr*1.32,0,6.283); ctx.fill();
+  ctx.restore();
+}
+
+/* starfield (static, parallax with rotation) — drawn once to offscreen */
+let starCanvas=document.createElement('canvas');
+let starReady=false;
+function buildStars(){
+  starCanvas.width=W*DPR; starCanvas.height=H*DPR;
+  const sc=starCanvas.getContext('2d');
+  sc.setTransform(DPR,0,0,DPR,0,0);
+  sc.clearRect(0,0,W,H);
+  const n=Math.floor(W*H/5500);
+  for(let i=0;i<n;i++){
+    const x=Math.random()*W, y=Math.random()*H;
+    const r=Math.random()*1.1+0.2;
+    const a=Math.random()*0.5+0.08;
+    const h=Math.random()<0.2? 200: (Math.random()<0.5?210:220);
+    sc.fillStyle=`hsla(${h},60%,85%,${a})`;
+    sc.beginPath(); sc.arc(x,y,r,0,6.283); sc.fill();
+  }
+  starReady=true;
+}
+buildStars();
+window.addEventListener('resize',buildStars);
+
+/* ============================================================================
+   8. MAIN LOOP
+============================================================================ */
+let last=performance.now(), fpsAcc=0, fpsN=0, fpsShown=0, fpsTimer=0;
+const elFps=document.getElementById('s_fps');
+const elRoutes=document.getElementById('s_routes');
+const elHubs=document.getElementById('s_hubs');
+const elAir=document.getElementById('s_air');
+elRoutes.textContent=ROUTES.length;
+elHubs.textContent=NAMED;
+
+function frame(now){
+  const dt=Math.min(0.05,(now-last)/1000); last=now;
+
+  /* --- rotation update --- */
+  if(state.auto && !state.dragging){
+    state.rotY += dt*0.07;
+  }
+  if(!state.dragging){
+    state.rotY += state.velX*0?0:0;        // (noop guard)
+    state.rotY += state.velY;
+    state.rotX += state.velX;
+    state.rotX=Math.max(-1.45,Math.min(1.45,state.rotX));
+    state.velX*=0.94; state.velY*=0.94;
+    if(Math.abs(state.velX)<1e-4)state.velX=0;
+    if(Math.abs(state.velY)<1e-4)state.velY=0;
+    // resume auto-spin after idle
+    if(!state.auto && Math.abs(state.velX)<1e-3 && Math.abs(state.velY)<1e-3){
+      state._idle=(state._idle||0)+dt;
+      if(state._idle>2.2) state.auto=true;
+    } else state._idle=0;
+  }
+  state.zoom += (state.zoomTarget-state.zoom)*Math.min(1,dt*8);
+  state.warp *= Math.pow(0.0008,dt); // decay fast
+  if(state.warp<0.002)state.warp=0;
+
+  ROT = mul3(rotX(state.rotX), rotY(state.rotY));
+
+  /* --- WebGL globe --- */
+  gl.clearColor(0,0,0,0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE);   // additive
+  gl.useProgram(prog);
+  gl.bindVertexArray(vao);
+  gl.uniformMatrix3fv(U.rot,false,ROT);
+  gl.uniform1f(U.R,R*DPR);
+  gl.uniform2f(U.C,CX*DPR,CY*DPR);
+  gl.uniform2f(U.res,glCanvas.width,glCanvas.height);
+  gl.uniform1f(U.time,now*0.001);
+  gl.uniform1f(U.zoom,state.zoom);
+  gl.drawArrays(gl.POINTS,0,N_DOTS);
+  gl.bindVertexArray(null);
+
+  /* --- 2D overlay --- */
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.clearRect(0,0,W,H);
+  // stars (subtle drift with rotation)
+  if(starReady){
+    ctx.save(); ctx.globalAlpha=0.9;
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.drawImage(starCanvas,0,0);
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    ctx.restore();
+  }
+  drawAtmosphere();
+
+  // routes
+  let air=0;
+  for(const rt of ROUTES){
+    rt.life=Math.min(1,rt.life+dt*0.7);
+    rt.t+=dt*rt.speed*(0.8+state.warp*2.5);
+    if(rt.t>1){ // recycle: respawn between two new hubs
+      const idx=ROUTES.indexOf(rt);
+      ROUTES[idx]=makeRoute((Math.random()*NAMED)|0, pickFar((Math.random()*NAMED)|0));
+      continue;
+    }
+    if(drawRoute(rt,now)) air++;
+  }
+  // bursts
+  for(let i=BURSTS.length-1;i>=0;i--){
+    const b=BURSTS[i];
+    if(b.delay>0){b.delay-=dt; continue;}
+    b.life=Math.min(1,b.life+dt*2.2);
+    b.t+=dt*b.speed;
+    if(b.t>1.15){BURSTS.splice(i,1);continue;}
+    if(b.t<=1.0){ if(drawRoute(b,now)) air++; }
+    else { /* fade tail */ b.life-=dt*1.5; if(b.life>0) drawRoute(b,now); }
+  }
+
+  drawHubs(now);
+
+  // warp flash ring
+  if(state.warp>0.01){
+    ctx.save(); ctx.globalCompositeOperation='lighter';
+    const wr=R*(1+ (1-state.warp)*1.4);
+    ctx.strokeStyle=`rgba(120,220,255,${state.warp*0.5})`;
+    ctx.lineWidth=2*state.warp;
+    ctx.beginPath(); ctx.arc(CX,CY,wr,0,6.283); ctx.stroke();
+    ctx.restore();
+  }
+
+  elAir.textContent=air;
+
+  /* --- fps --- */
+  fpsAcc+=dt; fpsN++; fpsTimer+=dt;
+  if(fpsTimer>=0.5){ fpsShown=Math.round(fpsN/fpsAcc); fpsAcc=0;fpsN=0;fpsTimer=0;
+    elFps.textContent=fpsShown; }
+
+  requestAnimationFrame(frame);
+}
+function pickFar(ai){
+  let bi=(Math.random()*NAMED)|0, tries=0;
+  while((bi===ai||angBetween(HUBS[ai].v,HUBS[bi].v)<0.25)&&tries<10){bi=(Math.random()*NAMED)|0;tries++;}
+  return bi;
+}
+requestAnimationFrame(frame);
+
+/* expose a little for verification */
+window.__AURORA={state, routes:()=>ROUTES.length, hubs:NAMED, bursts:()=>BURSTS.length,
+  launch:launchBurst, fps:()=>fpsShown};
+</script>
+</body>
+</html>

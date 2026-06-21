@@ -1,0 +1,965 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>NEON ALLEY // 486 DITHER VENDOR</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<style>
+  :root{
+    /* curated 486 night-alley palette : cool base + warm neon */
+    --ink:#0a0710;
+    --night:#120c1e;
+    --night2:#1a1230;
+    --plum:#241640;
+    --line:#3a2660;
+    --steel:#3a4a6e;
+    --cyan:#39c6d6;
+    --teal:#2f8f9d;
+    --magenta:#d6418f;
+    --pink:#f06aa8;
+    --amber:#f0a83c;
+    --gold:#f6cf6a;
+    --cream:#f4e6c6;
+    --lcd:#7be0c0;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:
+      radial-gradient(120% 90% at 50% 0%, #1a1230 0%, #120c1e 45%, #07050d 100%);
+    color:var(--cream);
+    font-family:'VT323',monospace;
+    display:flex;align-items:center;justify-content:center;
+    min-height:100vh;
+    padding:18px;
+    overflow-x:hidden;
+    -webkit-font-smoothing:none;
+    image-rendering:pixelated;
+  }
+  /* ===== window chrome ===== */
+  .machine{
+    width:100%;
+    max-width:1180px;
+    background:linear-gradient(180deg,#1a1230,#120c1e);
+    border:2px solid #3a2660;
+    border-radius:8px;
+    box-shadow:
+      0 0 0 2px #07050d,
+      0 22px 60px rgba(0,0,0,.7),
+      inset 0 0 0 1px rgba(57,198,214,.06);
+    overflow:hidden;
+  }
+  .titlebar{
+    display:flex;align-items:center;gap:10px;
+    padding:7px 12px;
+    background:linear-gradient(180deg,#241640,#170f29);
+    border-bottom:2px solid #07050d;
+    font-family:'Press Start 2P',monospace;
+    font-size:9px;
+    letter-spacing:1px;
+    color:var(--cyan);
+    text-shadow:0 1px 0 #07050d;
+  }
+  .dots{display:flex;gap:6px}
+  .dot{width:11px;height:11px;border-radius:50%;border:1px solid #07050d}
+  .dot.r{background:#d6418f}.dot.y{background:#f0a83c}.dot.g{background:#39c6d6}
+  .titlebar .tname{flex:0 0 auto}
+  .titlebar .tmid{
+    flex:1;text-align:center;color:#6a5aa0;font-size:8px;
+    overflow:hidden;white-space:nowrap;text-overflow:ellipsis;
+  }
+  .titlebar .tright{
+    flex:0 0 auto;color:#5a4a86;font-size:8px;
+    display:flex;gap:8px;
+  }
+  .titlebar .tright b{color:#39c6d6;font-weight:400}
+
+  /* ===== body grid ===== */
+  .stage{
+    display:grid;
+    grid-template-columns:1fr 278px;
+    gap:0;
+  }
+  /* scene window */
+  .scene-wrap{
+    position:relative;
+    background:var(--ink);
+    border-right:2px solid #07050d;
+    padding:12px;
+  }
+  .scene-frame{
+    position:relative;
+    border:2px solid #07050d;
+    box-shadow:inset 0 0 0 1px #3a2660;
+    background:#000;
+    overflow:hidden;
+    aspect-ratio:16/10;
+  }
+  #scene{
+    display:block;width:100%;height:100%;
+    image-rendering:pixelated;
+  }
+  /* scanlines + crt vignette on top of canvas */
+  .crt{
+    position:absolute;inset:0;pointer-events:none;
+    background:
+      repeating-linear-gradient(0deg, rgba(0,0,0,.24) 0 1px, rgba(0,0,0,0) 1px 3px);
+    mix-blend-mode:multiply;
+  }
+  .crt::after{
+    content:"";position:absolute;inset:0;
+    background:radial-gradient(120% 120% at 50% 42%, rgba(0,0,0,0) 52%, rgba(0,0,0,.6) 100%);
+  }
+  /* HUD overlay on scene */
+  .hud{
+    position:absolute;left:14px;right:14px;top:14px;
+    display:flex;justify-content:space-between;align-items:flex-start;
+    pointer-events:none;font-family:'Press Start 2P',monospace;
+    font-size:8px;color:var(--cream);text-shadow:1px 1px 0 #07050d;
+  }
+  .hud .tag{
+    background:rgba(10,7,16,.72);
+    border:1px solid #3a2660;
+    padding:5px 7px;line-height:1.8;
+  }
+  .hud .tag .lo{color:#8a7ac0}
+  .hud .tag .hi{color:#39c6d6}
+  .hud .tag .tl{color:#f0a83c}
+  /* dispense flash */
+  .vend{
+    position:absolute;left:50%;top:44%;transform:translate(-50%,-50%) scale(.6);
+    font-family:'Press Start 2P',monospace;font-size:16px;color:var(--gold);
+    text-shadow:2px 2px 0 #07050d,0 0 14px rgba(246,207,106,.7);
+    opacity:0;pointer-events:none;transition:opacity .08s;
+    letter-spacing:2px;
+  }
+  .vend.on{opacity:1;animation:bz .12s steps(2) infinite}
+  @keyframes bz{0%{transform:translate(-50%,-50%) scale(1) rotate(-2deg)}100%{transform:translate(-50%,-50%) scale(1.08) rotate(2deg)}}
+  /* got-it banner */
+  .got{
+    position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+    background:rgba(10,7,16,.94);border:2px solid #39c6d6;
+    padding:14px 18px;text-align:center;display:none;z-index:5;
+    box-shadow:0 0 0 2px #07050d,0 0 24px rgba(57,198,214,.4);
+  }
+  .got.on{display:block;animation:pop .18s steps(3)}
+  @keyframes pop{from{transform:translate(-50%,-50%) scale(.7)}to{transform:translate(-50%,-50%) scale(1)}}
+  .got canvas{image-rendering:pixelated;width:120px;height:120px;display:block;margin:0 auto 8px;border:1px solid #3a2660;background:#0a0710}
+  .got h3{font-family:'Press Start 2P',monospace;font-size:12px;color:var(--gold);margin-bottom:6px}
+  .got p{font-size:18px;color:var(--cream);line-height:1.05}
+  .got .pr{color:var(--cyan)}
+  .got small{display:block;margin-top:8px;font-size:14px;color:#8a7ac0}
+
+  /* ===== control panel ===== */
+  .panel{
+    background:linear-gradient(180deg,#170f29,#120c1e);
+    padding:12px;display:flex;flex-direction:column;gap:10px;
+  }
+  .pwin{
+    border:2px solid #07050d;
+    box-shadow:inset 0 0 0 1px #3a2660;
+    background:#160f2a;
+  }
+  .pwin .ph{
+    font-family:'Press Start 2P',monospace;font-size:8px;
+    color:#39c6d6;background:linear-gradient(180deg,#241640,#170f29);
+    padding:6px 8px;border-bottom:2px solid #07050d;
+    letter-spacing:1px;display:flex;justify-content:space-between;align-items:center;
+  }
+  .pwin .ph span{color:#6a5aa0}
+  .pwin .pb{padding:9px 10px}
+  /* readout rows */
+  .row{display:flex;justify-content:space-between;align-items:center;
+    font-size:17px;line-height:1.5;color:#8a7ac0}
+  .row b{color:var(--cream);font-weight:400}
+  .row .tl{color:#f0a83c}
+  .row .cy{color:#39c6d6}
+  /* LCD price/credit display */
+  .lcd{
+    font-family:'Press Start 2P',monospace;
+    background:#06140f;border:1px solid #1f5e4e;
+    color:var(--lcd);text-shadow:0 0 6px rgba(123,224,192,.5);
+    padding:8px 10px;font-size:13px;letter-spacing:1px;
+    display:flex;justify-content:space-between;align-items:center;
+    box-shadow:inset 0 0 8px rgba(0,0,0,.6);
+  }
+  .lcd .cd{color:var(--gold);text-shadow:0 0 6px rgba(246,207,106,.5)}
+  /* product slot grid */
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:2px}
+  .slot{
+    position:relative;cursor:pointer;
+    border:2px solid #2a1c4a;background:#0e0a1c;
+    padding:5px 4px 4px;text-align:center;
+    transition:transform .04s,border-color .08s;
+  }
+  .slot canvas{image-rendering:pixelated;width:100%;height:auto;display:block;margin:0 auto 3px;background:#0a0710}
+  .slot .code{font-family:'Press Start 2P',monospace;font-size:7px;color:#6a5aa0}
+  .slot .pr{font-size:13px;color:var(--gold);line-height:1}
+  .slot:hover{border-color:#39c6d6}
+  .slot.sel{border-color:#f0a83c;box-shadow:0 0 0 1px #f0a83c inset,0 0 10px rgba(240,168,60,.4)}
+  .slot.sold{opacity:.4;cursor:not-allowed}
+  .slot.sold::after{content:"SOLD";position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-family:'Press Start 2P',monospace;font-size:8px;color:#d6418f}
+  /* keypad / coin buttons */
+  .btns{display:flex;gap:6px;margin-top:4px}
+  button{
+    flex:1;font-family:'Press Start 2P',monospace;font-size:9px;
+    color:#07050d;background:linear-gradient(180deg,#f0a83c,#c87a1f);
+    border:2px solid #07050d;padding:11px 4px;cursor:pointer;
+    box-shadow:inset -2px -2px 0 rgba(0,0,0,.25),inset 2px 2px 0 rgba(255,255,255,.3);
+    letter-spacing:1px;
+    transition:transform .04s;
+  }
+  button:active{transform:translate(1px,1px);box-shadow:inset 2px 2px 0 rgba(0,0,0,.3)}
+  button.alt{background:linear-gradient(180deg,#39c6d6,#1f7e8e);color:#04201d}
+  button.coin{background:linear-gradient(180deg,#f6cf6a,#c89a2f);font-size:11px;padding:10px 2px}
+  button:disabled{filter:grayscale(.6) brightness(.6);cursor:not-allowed}
+  /* palette strip */
+  .pal{display:flex;height:14px;border:1px solid #07050d}
+  .pal i{flex:1}
+  /* log */
+  .log{font-size:14px;line-height:1.55;color:#7a6ab0;max-height:74px;overflow:hidden}
+  .log b{color:#39c6d6}
+  .log .hot{color:#f0a83c}
+  .log .ok{color:#7be0c0}
+
+  /* ===== footer ticker ===== */
+  .ticker{
+    background:#07050d;border-top:2px solid #3a2660;
+    overflow:hidden;white-space:nowrap;
+    font-family:'Press Start 2P',monospace;font-size:8px;color:#6a5aa0;
+    padding:7px 0;letter-spacing:1px;
+  }
+  .ticker span{display:inline-block;padding-left:100%;animation:tk 28s linear infinite}
+  .ticker b{color:#39c6d6}.ticker em{color:#f0a83c;font-style:normal}
+  @keyframes tk{from{transform:translateX(0)}to{transform:translateX(-100%)}}
+
+  /* ===== responsive ===== */
+  @media (max-width:760px){
+    body{padding:8px;align-items:flex-start}
+    .stage{grid-template-columns:1fr}
+    .scene-wrap{border-right:none;border-bottom:2px solid #07050d}
+    .panel{flex-direction:column}
+    .titlebar .tmid{display:none}
+    .scene-frame{aspect-ratio:5/4}
+    .hud{font-size:7px}
+    .grid{grid-template-columns:repeat(3,1fr)}
+  }
+</style>
+</head>
+<body>
+  <div class="machine">
+    <div class="titlebar">
+      <div class="dots"><i class="dot r"></i><i class="dot y"></i><i class="dot g"></i></div>
+      <div class="tname">NEON_ALLEY.EXE</div>
+      <div class="tmid">// 486 DITHER VENDOR &nbsp; RENDER 8x8 BAYER &nbsp; PAL.NIGHT14</div>
+      <div class="tright"><span>MEM <b>0639K</b></span><span>VGA <b>320x200</b></span><span>_ &#9633; &#10005;</span></div>
+    </div>
+
+    <div class="stage">
+      <!-- scene -->
+      <div class="scene-wrap">
+        <div class="scene-frame">
+          <canvas id="scene" width="320" height="200"></canvas>
+          <div class="crt"></div>
+          <div class="hud">
+            <div class="tag">
+              <div><span class="lo">ALLEY</span> <span id="hZone">DOKKABI ST.</span></div>
+              <div><span class="lo">TEMP</span> <span class="hi" id="hTemp">04&deg;C</span></div>
+              <div><span class="lo">TIME</span> <span class="tl" id="hTime">23:48</span></div>
+            </div>
+            <div class="tag" style="text-align:right">
+              <div><span class="lo">VENDS</span> <span class="hi" id="hVends">00</span></div>
+              <div><span class="lo">STOCK</span> <span class="hi" id="hStock">36</span></div>
+              <div><span class="lo">STATE</span> <span class="tl" id="hState">READY</span></div>
+            </div>
+          </div>
+          <div class="vend" id="vendFx">&gt; DROP &lt;</div>
+          <div class="got" id="gotBox">
+            <h3 id="gTitle">DISPENSED</h3>
+            <canvas id="prodCv" width="48" height="48"></canvas>
+            <p id="gName">COSMIC COLA</p>
+            <p class="pr" id="gPrice">&#8361;1200</p>
+            <small id="gHint">[ ENTER / SELECT to continue ]</small>
+          </div>
+        </div>
+      </div>
+
+      <!-- control panel -->
+      <div class="panel">
+        <div class="pwin">
+          <div class="ph">CREDIT <span id="phCredit">COIN-OP</span></div>
+          <div class="pb">
+            <div class="lcd"><span>CREDIT</span><span class="cd" id="lcdCredit">&#8361;0000</span></div>
+            <div class="btns">
+              <button class="coin" id="c100">+100</button>
+              <button class="coin" id="c500">+500</button>
+              <button class="coin" id="c1000">+1K</button>
+            </div>
+            <div class="btns">
+              <button class="alt" id="btnVend">VEND</button>
+              <button id="btnRefund">REFUND</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="pwin">
+          <div class="ph">DISPLAY <span id="phDisp">SELECT</span></div>
+          <div class="pb">
+            <div class="lcd"><span id="lcdSel">--</span><span class="cd" id="lcdSelPr">&#8361;----</span></div>
+            <div class="grid" id="grid"></div>
+          </div>
+        </div>
+
+        <div class="pwin">
+          <div class="ph">PALETTE <span>NIGHT 14</span></div>
+          <div class="pb">
+            <div class="pal" id="palStrip"></div>
+            <div class="row" style="margin-top:7px"><span>DITHER</span><b>BAYER 8x8</b></div>
+            <div class="row"><span>QUANT</span><b class="cy">14 COL</b></div>
+          </div>
+        </div>
+
+        <div class="pwin" style="flex:1">
+          <div class="ph">LOG <span id="phLog">&gt;_</span></div>
+          <div class="pb"><div class="log" id="log"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="ticker"><span id="tkSpan">
+      <b>NEON ALLEY</b> &nbsp;//&nbsp; 486 DITHER VENDOR &nbsp;//&nbsp; DROP <em>COINS</em> &#8594; PICK A <b>SLOT</b> &#8594; HIT <em>VEND</em> &nbsp;//&nbsp; WATCH THE COIN FALL &amp; THE CAN DROP &nbsp;//&nbsp; REAL ORDERED DITHERING, NO FAKE FILTERS &nbsp;//&nbsp; NIGHT 14-COLOR QUANTIZE &nbsp;//&nbsp; <b>STAY WARM OUT THERE</b> &nbsp;//&nbsp;
+    </span></div>
+  </div>
+
+<script>
+"use strict";
+/* =========================================================
+   NEON ALLEY — 486 dither vending machine
+   Real Bayer 8x8 ordered dithering + curated 14-color night
+   palette quantize. The whole alley scene is rendered into a
+   320x200 truecolor float buffer, then every pixel gets the
+   bayer threshold offset added and is snapped to the nearest
+   palette color. No CSS blur tricks — per-pixel ordered dither.
+   The dithered alley is the FIRST paint; no intro / loading gate.
+   ========================================================= */
+
+/* ---- curated 14-color NIGHT palette (RGB) : cool base + warm neon ---- */
+const PALETTE = [
+  [10,7,16],     // 0 ink
+  [18,12,30],    // 1 night
+  [26,18,48],    // 2 night2
+  [36,24,72],    // 3 plum
+  [58,38,96],    // 4 line/purple
+  [58,74,110],   // 5 steel blue
+  [47,143,157],  // 6 teal
+  [57,198,214],  // 7 cyan
+  [123,224,192], // 8 mint/lcd
+  [214,65,143],  // 9 magenta
+  [240,106,168], // 10 pink
+  [240,168,60],  // 11 amber
+  [246,207,106], // 12 gold
+  [244,230,198], // 13 cream
+];
+(function(){
+  const s=document.getElementById('palStrip');
+  PALETTE.forEach(c=>{const i=document.createElement('i');i.style.background=`rgb(${c[0]},${c[1]},${c[2]})`;s.appendChild(i);});
+})();
+
+/* ---- Bayer 8x8 ordered dither matrix (0..63) -> normalized -0.5..0.5 ---- */
+const BAYER8=[
+  0,32,8,40,2,34,10,42, 48,16,56,24,50,18,58,26,
+  12,44,4,36,14,46,6,38, 60,28,52,20,62,30,54,22,
+  3,35,11,43,1,33,9,41, 51,19,59,27,49,17,57,25,
+  15,47,7,39,13,45,5,37, 63,31,55,23,61,29,53,21
+];
+const BN=64;
+const bthr=new Float32Array(64);
+for(let i=0;i<64;i++) bthr[i]=(BAYER8[i]+0.5)/BN-0.5; // -0.5..0.5
+
+function nearest(r,g,b){
+  let bi=0,bd=1e9;
+  for(let i=0;i<PALETTE.length;i++){
+    const p=PALETTE[i];
+    const dr=r-p[0],dg=g-p[1],db=b-p[2];
+    const d=dr*dr+dg*dg+db*db;
+    if(d<bd){bd=d;bi=i;}
+  }
+  return PALETTE[bi];
+}
+
+/* ---- math helpers ---- */
+function lerp(a,b,t){return a+(b-a)*t;}
+function mix(c1,c2,t){return [lerp(c1[0],c2[0],t),lerp(c1[1],c2[1],t),lerp(c1[2],c2[2],t)];}
+function sampleStops(stops,t){
+  t=Math.max(0,Math.min(0.9999,t));
+  const f=t*(stops.length-1);
+  const i=Math.floor(f);
+  return mix(stops[i],stops[i+1],f-i);
+}
+// cheap hash noise for window lights / brick speckle
+function hash2(x,y){ let h=(x*374761393+y*668265263)>>>0; h=(h^(h>>13))*1274126177>>>0; return ((h^(h>>16))>>>0)/4294967295; }
+
+/* =========================================================
+   SCENE BUFFER
+   ========================================================= */
+const W=320,H=200;
+const cv=document.getElementById('scene');
+const ctx=cv.getContext('2d',{alpha:false});
+const img=ctx.createImageData(W,H);
+const buf=new Float32Array(W*H*3); // source truecolor
+
+// night sky stops (top -> low)
+const SKY=[
+  [14,10,30],   // deep night top
+  [26,18,52],   // upper plum
+  [52,30,78],   // city glow plum
+  [90,52,96],   // low magenta haze
+];
+// wet ground stops (near building base -> bottom)
+const GROUND=[
+  [22,16,40],   // base shadow
+  [30,24,58],   // wet asphalt
+  [18,14,34],   // foreground dark
+];
+
+let T=0;
+const horizon=0.62; // building base / ground line fraction
+
+/* low-level buffer writes (truecolor) */
+function px(x,y,c,a){
+  if(x<0||y<0||x>=W||y>=H)return;
+  if(a===undefined)a=1;
+  const i=(y*W+x)*3;
+  buf[i]=lerp(buf[i],c[0],a);
+  buf[i+1]=lerp(buf[i+1],c[1],a);
+  buf[i+2]=lerp(buf[i+2],c[2],a);
+}
+function rect(x0,y0,w,h,c,a){ for(let y=y0;y<y0+h;y++)for(let x=x0;x<x0+w;x++)px(x,y,c,a===undefined?1:a); }
+function vline(x,y0,y1,c,a){ if(y1<y0){const t=y0;y0=y1;y1=t;} for(let y=y0;y<=y1;y++)px(x,y,c,a===undefined?1:a); }
+function hline(x0,x1,y,c,a){ if(x1<x0){const t=x0;x0=x1;x1=t;} for(let x=x0;x<=x1;x++)px(x,y,c,a===undefined?1:a); }
+function disc(cx,cy,r,c,a){ for(let y=-r;y<=r;y++)for(let x=-r;x<=r;x++){ if(x*x+y*y<=r*r)px(cx+x,cy+y,c,a===undefined?1:a); } }
+function glow(cx,cy,rad,c,strength){
+  for(let y=-rad;y<=rad;y++)for(let x=-rad;x<=rad;x++){
+    const d=Math.sqrt(x*x+y*y); if(d>rad)continue;
+    px(cx+x,cy+y,c,(1-d/rad)*strength);
+  }
+}
+
+/* ---- vending machine geometry (in 320x200 buffer coords) ---- */
+const MX=118, MY=46, MW=84, MH=120;          // machine box
+const GLASS_X=MX+8, GLASS_Y=MY+22, GLASS_W=50, GLASS_H=64; // product window
+const COLS=3, ROWS=3;
+const SLOT_W=Math.floor(GLASS_W/COLS), SLOT_H=Math.floor(GLASS_H/ROWS);
+
+/* drop animation state (scene side) */
+let coinAnim=null;  // {t}
+let canAnim=null;   // {t, color, slot}
+let flicker=0;
+
+function renderScene(){
+  const gy=(H*horizon)|0;
+
+  // ---------- SKY ----------
+  for(let y=0;y<gy;y++){
+    const ty=y/gy;
+    const row=y*W*3;
+    for(let x=0;x<W;x++){
+      let col=sampleStops(SKY,ty);
+      // soft city glow rising from horizon center-left
+      const gx=W*0.40;
+      const dgx=(x-gx)/W, dgy=(gy-y)/gy;
+      const cityGlow=Math.max(0,1-Math.hypot(dgx*1.4,dgy*1.1))*0.5;
+      col=mix(col,[120,60,100],cityGlow*(0.5+0.2*Math.sin(T*0.3)));
+      const i=row+x*3; buf[i]=col[0];buf[i+1]=col[1];buf[i+2]=col[2];
+    }
+  }
+  // ---------- GROUND (wet asphalt) ----------
+  for(let y=gy;y<H;y++){
+    const ty=(y-gy)/(H-gy);
+    const row=y*W*3;
+    for(let x=0;x<W;x++){
+      let col=sampleStops(GROUND,ty);
+      // subtle reflective sheen streaks
+      const sheen=Math.sin(x*0.05 + Math.sin(y*0.3)*0.6)*0.5+0.5;
+      col=mix(col,[40,46,74], sheen*0.10*(1-ty*0.5));
+      const i=row+x*3; buf[i]=col[0];buf[i+1]=col[1];buf[i+2]=col[2];
+    }
+  }
+
+  drawBuildings(gy);
+  drawNeonSigns();
+  // ambient glow the machine casts into the dark alley (it is the light source)
+  glow(MX+MW/2, MY+MH*0.45, 78, [57,198,214], 0.10*(0.94+0.06*Math.sin(T*1.3)));
+  glow(MX+MW/2, MY+30, 40, [246,207,106], 0.06);
+  drawPuddleReflections(gy);
+  drawMachine();
+
+  // street lamp glow top-left
+  glow(40,28,46,[246,207,106],0.16*(0.9+0.1*Math.sin(T*1.7)));
+  disc(40,18,2,[246,207,106],1);
+  vline(40,20,gy,[26,18,40],0.7); // lamp post
+
+  // drifting steam wisps near ground
+  for(let s=0;s<3;s++){
+    const sx=(70+s*90 + Math.sin(T*0.6+s)*10)|0;
+    for(let k=0;k<10;k++){
+      const yy=H-6-k*4; const xx=sx+Math.round(Math.sin(T*1.2+k*0.5+s)*3);
+      px(xx,yy,[80,90,120],0.04+0.012*k);
+      px(xx+1,yy,[80,90,120],0.02+0.008*k);
+    }
+  }
+}
+
+/* ---------- backdrop buildings ---------- */
+function drawBuildings(gy){
+  // a row of dark towers behind the machine, lit windows
+  const towers=[
+    {x:0,w:54,h:78,c:[22,16,42]},
+    {x:54,w:40,h:104,c:[18,13,36]},
+    {x:212,w:48,h:96,c:[20,14,40]},
+    {x:260,w:60,h:120,c:[16,11,32]},
+  ];
+  for(const t of towers){
+    const baseY=gy, topY=gy-t.h;
+    rect(t.x, topY, t.w, t.h, t.c, 1);
+    // edge highlight (cool)
+    vline(t.x, topY, baseY, [46,40,84], 0.5);
+    // windows grid
+    for(let wy=topY+5; wy<baseY-3; wy+=7){
+      for(let wx=t.x+3; wx<t.x+t.w-3; wx+=6){
+        const on=hash2(wx,wy)>0.62;
+        if(on){
+          const warm=hash2(wx+1,wy)>0.5;
+          const c= warm? [240,168,60] : [57,198,214];
+          rect(wx,wy,2,3,c, 0.55+0.25*hash2(wx,wy+3));
+        } else {
+          rect(wx,wy,2,3,[28,20,52],0.6);
+        }
+      }
+    }
+  }
+}
+
+/* ---------- neon signs on walls ---------- */
+function drawNeonSigns(){
+  const fl=0.7+0.3*((Math.sin(T*5.3)>(-0.85))?1:0); // occasional flicker
+  // vertical magenta sign far left building
+  const sx=14;
+  glow(sx+2,52,18,[214,65,143],0.18*fl);
+  const word=[1,1,1,0,1,0,1,1,1,0,1,1]; // pseudo strokes
+  for(let i=0;i<10;i++){ rect(sx, 40+i*4, 4, 2, [240,106,168], (word[i%word.length]?0.95:0.4)*fl); }
+  // horizontal cyan sign right building
+  const cx2=232;
+  glow(cx2+18,40,20,[57,198,214],0.16*(0.7+0.3*Math.sin(T*2.1)));
+  for(let i=0;i<7;i++){ rect(cx2+i*5, 36, 3, 7, [57,198,214], 0.85+0.1*Math.sin(T*3+i)); }
+  rect(cx2,46,34,2,[47,143,157],0.5);
+  // tiny amber kanji-ish blinks
+  for(let i=0;i<4;i++){ const bx=270+i*7; const on=Math.sin(T*4+i)>0; rect(bx,58,4,4,[240,168,60], on?0.9:0.2); }
+}
+
+/* ---------- puddle reflections of neon ---------- */
+function drawPuddleReflections(gy){
+  for(let y=gy+2;y<H;y+=1){
+    const ty=(y-gy)/(H-gy);
+    // reflect machine glow & neon as broken vertical streaks (dither sparkle)
+    const ref=Math.sin(y*0.5 - T*1.4)*0.5+0.5;
+    // machine light reflection column under the machine
+    const mxr=MX+MW/2;
+    for(let x=MX-6;x<MX+MW+6;x++){
+      const shimmer=Math.sin(x*0.5 + y*0.3 - T*1.1);
+      if(shimmer>0.4 && ref>0.4){
+        const m=(shimmer-0.4)*ref*(1-ty*0.6);
+        px(x,y, [57,198,214], 0.18*m);
+        if(((x+y)&3)===0) px(x,y,[246,207,106],0.1*m);
+      }
+    }
+    // magenta neon reflection left
+    for(let x=8;x<40;x++){
+      if(Math.sin(x*0.6+y*0.4-T)>0.6 && ref>0.5) px(x,y,[214,65,143],0.12*(1-ty*0.7));
+    }
+  }
+}
+
+/* ---------- the vending machine ---------- */
+function drawMachine(){
+  // cabinet body (cool steel with warm interior glow)
+  rect(MX-3,MY-3,MW+6,MH+6,[10,7,16],1);           // outer dark frame
+  rect(MX,MY,MW,MH,[40,30,72],1);                   // body plum-steel
+  // left/top highlight, right/bottom shadow (bevel)
+  vline(MX,MY,MY+MH,[78,64,128],0.8); hline(MX,MX+MW-1,MY,[78,64,128],0.8);
+  vline(MX+MW-1,MY,MY+MH,[16,11,28],1); hline(MX,MX+MW-1,MY+MH-1,[16,11,28],1);
+
+  // top marquee header (lit cyan)
+  rect(MX+4,MY+4,MW-8,12,[14,30,40],1);
+  glow(MX+MW/2,MY+10,22,[57,198,214],0.10);
+  // marquee text strokes (DRINKS)
+  const mtxt=[3,1,3,1,1,3]; let tx=MX+8;
+  for(const s of mtxt){ rect(tx,MY+7,s,6,[57,198,214],0.9); tx+=s+2; }
+
+  // product glass window
+  rect(GLASS_X-2,GLASS_Y-2,GLASS_W+4,GLASS_H+4,[10,7,16],1);
+  rect(GLASS_X,GLASS_Y,GLASS_W,GLASS_H,[20,30,40],1); // dark interior
+  glow(GLASS_X+GLASS_W/2,GLASS_Y+GLASS_H/2,40,[57,198,214],0.05);
+
+  // shelf products grid
+  for(let r=0;r<ROWS;r++){
+    // shelf line
+    hline(GLASS_X, GLASS_X+GLASS_W-1, GLASS_Y+(r+1)*SLOT_H-1, [12,18,26],0.9);
+    for(let c=0;c<COLS;c++){
+      const idx=r*COLS+c;
+      const prod=PRODUCTS[idx];
+      const cx0=GLASS_X+c*SLOT_W+ (SLOT_W>>1);
+      const cy0=GLASS_Y+r*SLOT_H+ (SLOT_H>>1);
+      drawCan(cx0,cy0, prod, idx===selIdx, STOCK[idx]<=0);
+    }
+  }
+  // glass reflection diagonal sheen
+  for(let i=0;i<GLASS_H;i+=3){
+    const gx=GLASS_X+ ((i+ (T*6)%GLASS_W) % GLASS_W);
+    px((gx)|0, GLASS_Y+i, [180,210,230], 0.06);
+    px((gx+1)|0, GLASS_Y+i, [180,210,230], 0.05);
+  }
+
+  // selection panel (right of glass): numeric LCD + buttons
+  const px0=GLASS_X+GLASS_W+4;
+  rect(px0,GLASS_Y,MX+MW-4-px0,GLASS_H,[20,16,36],1);
+  // LCD
+  rect(px0+2,GLASS_Y+3,MX+MW-8-px0,9,[6,20,15],1);
+  // selected code on LCD (two chars)
+  if(selIdx>=0){ drawTinyCode(px0+3,GLASS_Y+5, PRODUCTS[selIdx].code, [123,224,192]); }
+  // keypad buttons (cool with one amber)
+  let by=GLASS_Y+16;
+  for(let k=0;k<6;k++){
+    const kx=px0+2+(k%2)*10, ky=by+Math.floor(k/2)*9;
+    const lit= (k===selIdx%6);
+    rect(kx,ky,8,7, lit?[240,168,60]:[58,74,110], 1);
+    vline(kx,ky,ky+6,[100,120,160],0.5);
+  }
+
+  // coin slot (top right of panel)
+  rect(px0+3,GLASS_Y+GLASS_H-8,12,2,[10,7,16],1);
+  rect(px0+7,GLASS_Y+GLASS_H-9,3,1,[246,207,106],0.8);
+
+  // dispense tray (bottom)
+  const trayY=MY+MH-16;
+  rect(MX+6,trayY,MW-12,12,[10,7,16],1);
+  rect(MX+8,trayY+2,MW-16,8,[18,14,30],1);
+  hline(MX+8,MX+MW-9,trayY+2,[58,74,110],0.6);
+
+  // ---- coin drop animation (falls into slot) ----
+  if(coinAnim){
+    coinAnim.t+=0.06;
+    const cx=GLASS_X+GLASS_W+9;
+    const startY=GLASS_Y+GLASS_H-9;
+    const yy=startY + coinAnim.t*30;
+    if(coinAnim.t<1){
+      disc(cx, yy|0, 2, [246,207,106], 1);
+      glow(cx,yy|0,5,[246,207,106],0.3);
+    } else coinAnim=null;
+  }
+
+  // ---- can drop animation (falls behind glass into tray) ----
+  if(canAnim){
+    canAnim.t+=0.045;
+    const slot=canAnim.slot;
+    const sc=slot%COLS, sr=(slot/COLS)|0;
+    const startX=GLASS_X+sc*SLOT_W+(SLOT_W>>1);
+    const startY=GLASS_Y+sr*SLOT_H+(SLOT_H>>1);
+    const endY=trayY+5;
+    const tt=Math.min(1,canAnim.t);
+    const ease=tt*tt; // accelerate (gravity)
+    const yy=lerp(startY,endY,ease);
+    const xx=lerp(startX, MX+MW/2, ease);
+    drawCanSprite(xx|0, yy|0, canAnim.prod, false);
+    if(canAnim.t>=1.2){ canAnim=null; }
+  }
+}
+
+/* draw a small can/bottle in the glass shelf */
+function drawCan(cx,cy,prod,selected,sold){
+  drawCanSprite(cx,cy,prod,sold);
+  if(selected && (flicker&1)){
+    // selection bracket
+    const w=6,h=9;
+    hline(cx-w,cx-w+1,cy-h,[240,168,60],1); vline(cx-w,cy-h,cy-h+1,[240,168,60],1);
+    hline(cx+w-1,cx+w,cy-h,[240,168,60],1); vline(cx+w,cy-h,cy-h+1,[240,168,60],1);
+    hline(cx-w,cx-w+1,cy+h,[240,168,60],1); vline(cx-w,cy+h-1,cy+h,[240,168,60],1);
+    hline(cx+w-1,cx+w,cy+h,[240,168,60],1); vline(cx+w,cy+h-1,cy+h,[240,168,60],1);
+  }
+}
+function drawCanSprite(cx,cy,prod,dim){
+  const a=dim?0.3:1;
+  const body=prod.color, hi=prod.hi, dk=prod.dk;
+  if(prod.shape==='bottle'){
+    // bottle: narrow neck + body
+    rect(cx-1,cy-9,2,3,[40,46,74],a);      // cap
+    rect(cx-2,cy-6,4,2,body,a);            // shoulder
+    rect(cx-3,cy-4,6,11,body,a);           // body
+    vline(cx-3,cy-4,cy+6,hi,0.6*a);        // highlight
+    vline(cx+2,cy-4,cy+6,dk,0.8*a);        // shadow
+    rect(cx-2,cy-1,4,4,[244,230,198],0.85*a); // label
+  } else {
+    // can: cylinder
+    rect(cx-3,cy-8,6,16,body,a);
+    rect(cx-3,cy-8,6,2,[210,214,224],0.7*a); // top rim
+    rect(cx-3,cy+6,6,2,dk,a);                // bottom rim
+    vline(cx-3,cy-8,cy+8,hi,0.6*a);          // left highlight
+    vline(cx+2,cy-8,cy+8,dk,0.8*a);          // right shadow
+    rect(cx-3,cy-2,6,5,[244,230,198],0.8*a); // label band
+    px(cx-1,cy,prod.dot,a); px(cx,cy,prod.dot,a); // logo dot
+  }
+}
+/* tiny 2-char code on LCD */
+function drawTinyCode(x,y,code,c){
+  // just render colored bars per char as a stylized LCD readout
+  for(let i=0;i<code.length;i++){
+    const cx=x+i*5;
+    rect(cx,y,3,1,c,0.9); rect(cx,y+1,1,2,c,0.9); rect(cx+2,y+1,1,2,c,0.9); rect(cx,y+3,3,1,c,0.9);
+  }
+}
+
+/* ---- THE DITHER PASS ---- */
+const DITHER_STRENGTH=44;
+function ditherToScreen(){
+  const d=img.data;
+  for(let y=0;y<H;y++){
+    for(let x=0;x<W;x++){
+      const si=(y*W+x)*3;
+      const t=bthr[(y&7)*8+(x&7)]*DITHER_STRENGTH;
+      const p=nearest(buf[si]+t,buf[si+1]+t,buf[si+2]+t);
+      const di=(y*W+x)*4;
+      d[di]=p[0];d[di+1]=p[1];d[di+2]=p[2];d[di+3]=255;
+    }
+  }
+  ctx.putImageData(img,0,0);
+}
+
+/* =========================================================
+   PRODUCT CATALOG (9 slots, 3x3)
+   ========================================================= */
+const PRODUCTS=[
+  {code:"A1",name:"COSMIC COLA",   price:1200, shape:'can',    color:[214,65,143], hi:[240,106,168], dk:[120,30,80],  dot:[246,207,106]},
+  {code:"A2",name:"CYAN FIZZ",     price:1100, shape:'can',    color:[57,198,214], hi:[123,224,192], dk:[31,110,120], dot:[244,230,198]},
+  {code:"A3",name:"AMBER BREW",    price:1500, shape:'bottle', color:[240,168,60], hi:[246,207,106], dk:[150,90,20],  dot:[120,60,20]},
+  {code:"B1",name:"NEON TEA",      price:900,  shape:'bottle', color:[123,224,192], hi:[180,240,220], dk:[40,120,100], dot:[20,80,60]},
+  {code:"B2",name:"PLUM SODA",     price:1300, shape:'can',    color:[150,80,180], hi:[200,140,220], dk:[80,40,110], dot:[246,207,106]},
+  {code:"B3",name:"GOLD MILK",     price:1400, shape:'bottle', color:[246,207,106], hi:[252,230,160], dk:[170,130,40], dot:[120,60,20]},
+  {code:"C1",name:"MINT BOLT",     price:1000, shape:'can',    color:[57,198,214], hi:[123,224,192], dk:[31,110,120], dot:[214,65,143]},
+  {code:"C2",name:"RUBY POP",      price:1200, shape:'can',    color:[240,106,168], hi:[252,160,200], dk:[150,40,90], dot:[246,207,106]},
+  {code:"C3",name:"VOID WATER",    price:800,  shape:'bottle', color:[58,74,110],  hi:[100,120,160], dk:[26,36,60],  dot:[57,198,214]},
+];
+const STOCK=PRODUCTS.map(()=>4);
+let selIdx=-1;
+
+/* ---- build the panel slot grid (separately dithered mini-canvases) ---- */
+function makeSlotSprite(prod){
+  const w=24,h=28;
+  const fb=new Float32Array(w*h*3);
+  for(let i=0;i<w*h;i++){fb[i*3]=14;fb[i*3+1]=10;fb[i*3+2]=24;}
+  const setF=(x,y,c,a)=>{if(x<0||y<0||x>=w||y>=h)return;if(a===undefined)a=1;const i=(y*w+x)*3;fb[i]=lerp(fb[i],c[0],a);fb[i+1]=lerp(fb[i+1],c[1],a);fb[i+2]=lerp(fb[i+2],c[2],a);};
+  const cx=12,cy=15;
+  // reuse a scaled-up sprite drawer inline
+  const body=prod.color,hi=prod.hi,dk=prod.dk;
+  if(prod.shape==='bottle'){
+    for(let y=-4;y<=2;y++)for(let x=-1;x<=1;x++) setF(cx+x,cy+y-7,[40,46,74]); // neck/cap
+    for(let y=-6;y<=11;y++)for(let x=-5;x<=5;x++){ if(Math.abs(x)<=4){ let c= (x<=-3)?hi:(x>=3?dk:body); setF(cx+x,cy+y,c);} }
+    for(let y=-1;y<=6;y++)for(let x=-3;x<=3;x++) setF(cx+x,cy+y,[244,230,198],0.9);
+  } else {
+    for(let y=-12;y<=12;y++)for(let x=-5;x<=5;x++){ let c=(x<=-3)?hi:(x>=3?dk:body); setF(cx+x,cy+y,c); }
+    for(let x=-5;x<=5;x++){setF(cx+x,cy-12,[210,214,224]);setF(cx+x,cy+12,dk);}
+    for(let y=-3;y<=4;y++)for(let x=-5;x<=5;x++) setF(cx+x,cy+y,[244,230,198],0.9);
+    setF(cx-1,cy,prod.dot);setF(cx,cy,prod.dot);setF(cx+1,cy,prod.dot);
+  }
+  return ditherSprite(fb,w,h);
+}
+function makeBigSprite(prod){
+  const w=48,h=48;
+  const fb=new Float32Array(w*h*3);
+  for(let i=0;i<w*h;i++){fb[i*3]=10;fb[i*3+1]=7;fb[i*3+2]=16;}
+  const setF=(x,y,c,a)=>{if(x<0||y<0||x>=w||y>=h)return;if(a===undefined)a=1;const i=(y*w+x)*3;fb[i]=lerp(fb[i],c[0],a);fb[i+1]=lerp(fb[i+1],c[1],a);fb[i+2]=lerp(fb[i+2],c[2],a);};
+  const cx=24,cy=24;
+  const body=prod.color,hi=prod.hi,dk=prod.dk;
+  // glow halo
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){const d=Math.hypot(x-cx,y-cy);if(d<22)setF(x,y,body,(1-d/22)*0.18);}
+  if(prod.shape==='bottle'){
+    for(let y=-10;y<=-4;y++)for(let x=-2;x<=2;x++) setF(cx+x,cy+y-8,[40,46,74]);
+    for(let y=-12;y<=20;y++)for(let x=-9;x<=9;x++){ if(Math.abs(x)<=8){ let c=(x<=-6)?hi:(x>=6?dk:body); setF(cx+x,cy+y,c);} }
+    for(let y=-2;y<=12;y++)for(let x=-6;x<=6;x++) setF(cx+x,cy+y,[244,230,198],0.92);
+  } else {
+    for(let y=-20;y<=20;y++)for(let x=-9;x<=9;x++){ let c=(x<=-6)?hi:(x>=6?dk:body); setF(cx+x,cy+y,c); }
+    for(let x=-9;x<=9;x++){setF(cx+x,cy-20,[210,214,224]);setF(cx+x,cy-19,[210,214,224]);setF(cx+x,cy+20,dk);}
+    for(let y=-5;y<=7;y++)for(let x=-9;x<=9;x++) setF(cx+x,cy+y,[244,230,198],0.92);
+    for(let y=-2;y<=2;y++)for(let x=-2;x<=2;x++) if(x*x+y*y<=4) setF(cx+x,cy+y,prod.dot);
+  }
+  return ditherSprite(fb,w,h);
+}
+function ditherSprite(fb,w,h){
+  const c=document.createElement('canvas'); c.width=w;c.height=h;
+  const cc=c.getContext('2d'); const im=cc.createImageData(w,h); const d=im.data;
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+    const si=(y*w+x)*3;
+    const t=bthr[(y&7)*8+(x&7)]*DITHER_STRENGTH;
+    const p=nearest(fb[si]+t,fb[si+1]+t,fb[si+2]+t);
+    const di=(y*w+x)*4; d[di]=p[0];d[di+1]=p[1];d[di+2]=p[2];d[di+3]=255;
+  }
+  cc.putImageData(im,0,0); return c;
+}
+
+/* render the right-panel slot grid */
+const gridEl=document.getElementById('grid');
+function buildGrid(){
+  gridEl.innerHTML='';
+  PRODUCTS.forEach((p,i)=>{
+    const slot=document.createElement('div');
+    slot.className='slot'+(i===selIdx?' sel':'')+(STOCK[i]<=0?' sold':'');
+    slot.dataset.i=i;
+    const spr=makeSlotSprite(p);
+    spr.style.width='28px'; spr.style.height='34px';
+    slot.appendChild(spr);
+    const code=document.createElement('div'); code.className='code'; code.textContent=p.code; slot.appendChild(code);
+    const pr=document.createElement('div'); pr.className='pr'; pr.innerHTML='&#8361;'+p.price; slot.appendChild(pr);
+    slot.addEventListener('click',()=>selectSlot(i));
+    gridEl.appendChild(slot);
+  });
+}
+
+/* =========================================================
+   GAME / VEND STATE
+   ========================================================= */
+const el=id=>document.getElementById(id);
+const G={ credit:0, vends:0, state:"READY" };
+
+function won(n){return '&#8361;'+String(n).padStart(4,'0');}
+function log(msg){
+  const l=el('log'); const line=document.createElement('div'); line.innerHTML=msg;
+  l.insertBefore(line,l.firstChild); while(l.childNodes.length>6)l.removeChild(l.lastChild);
+}
+log('<b>></b> NEON ALLEY VENDOR ONLINE');
+log('<b>></b> 14-COL NIGHT PALETTE LOCKED');
+log('<b>></b> DROP <span class="hot">COINS</span> &middot; PICK A SLOT');
+
+function setState(s){ G.state=s; el('hState').textContent=s; }
+function updateCredit(){ el('lcdCredit').innerHTML=won(G.credit); }
+function totalStock(){ return STOCK.reduce((a,b)=>a+b,0); }
+function updateStock(){ el('hStock').textContent=String(totalStock()).padStart(2,'0'); }
+
+function addCoin(v){
+  G.credit+=v; updateCredit();
+  coinAnim={t:0};
+  log('<b>></b> inserted <span class="hot">&#8361;'+v+'</span> &middot; credit &#8361;'+G.credit);
+}
+
+function selectSlot(i){
+  if(STOCK[i]<=0){ log('<b>></b> '+PRODUCTS[i].code+' is <span class="hot">SOLD OUT</span>'); return; }
+  selIdx=i;
+  el('lcdSel').textContent=PRODUCTS[i].code+' '+PRODUCTS[i].name;
+  el('lcdSelPr').innerHTML='&#8361;'+PRODUCTS[i].price;
+  // refresh grid selection class
+  [...gridEl.children].forEach((c,k)=>c.classList.toggle('sel',k===i));
+  log('<b>></b> selected <span class="ok">'+PRODUCTS[i].code+'</span> '+PRODUCTS[i].name);
+}
+
+let busy=false;
+function vend(){
+  if(busy)return;
+  if(selIdx<0){ log('<b>></b> pick a slot first'); flashState('PICK SLOT'); return; }
+  const p=PRODUCTS[selIdx];
+  if(STOCK[selIdx]<=0){ log('<b>></b> SOLD OUT'); return; }
+  if(G.credit<p.price){ log('<b>></b> need <span class="hot">&#8361;'+(p.price-G.credit)+'</span> more'); flashState('LOW CREDIT'); return; }
+  busy=true;
+  setState("VENDING");
+  el('vendFx').classList.add('on');
+  G.credit-=p.price; updateCredit();
+  STOCK[selIdx]--; updateStock();
+  log('<b>></b> vending <span class="ok">'+p.name+'</span> ...');
+  // kick animations
+  coinAnim={t:0};
+  setTimeout(()=>{ canAnim={t:0,slot:selIdx,prod:p}; }, 500);
+  // finish -> banner
+  setTimeout(()=>{
+    el('vendFx').classList.remove('on');
+    G.vends++; el('hVends').textContent=String(G.vends).padStart(2,'0');
+    showGot(p);
+    // refresh grid (sold-out state)
+    [...gridEl.children].forEach((c,k)=>{ c.classList.toggle('sold',STOCK[k]<=0); if(STOCK[k]<=0)c.classList.remove('sel'); });
+    log('<b>></b> <span class="ok">DISPENSED</span> '+p.name+' &middot; change &#8361;'+G.credit);
+    setState("READY");
+    busy=false;
+  }, 1500);
+}
+function flashState(msg){
+  const prev=el('hState').textContent; el('hState').textContent=msg;
+  setTimeout(()=>{ if(G.state!=="VENDING") el('hState').textContent=G.state; },900);
+}
+
+function refund(){
+  if(busy)return;
+  if(G.credit<=0){ log('<b>></b> no credit to refund'); return; }
+  log('<b>></b> refunded <span class="hot">&#8361;'+G.credit+'</span>');
+  coinAnim={t:0};
+  G.credit=0; updateCredit();
+}
+
+/* ---- got-it banner ---- */
+function showGot(p){
+  const big=makeBigSprite(p);
+  const dst=el('prodCv'); const dc=dst.getContext('2d');
+  dc.clearRect(0,0,48,48); dc.drawImage(big,0,0);
+  el('gName').textContent=p.name;
+  el('gPrice').innerHTML='&#8361;'+p.price;
+  el('gTitle').textContent= p.price>=1400?'★ PREMIUM ★':'DISPENSED';
+  el('gotBox').classList.add('on');
+}
+function dismissGot(){ el('gotBox').classList.remove('on'); }
+
+/* =========================================================
+   INPUT
+   ========================================================= */
+el('c100').addEventListener('click',()=>{dismissGot();addCoin(100);});
+el('c500').addEventListener('click',()=>{dismissGot();addCoin(500);});
+el('c1000').addEventListener('click',()=>{dismissGot();addCoin(1000);});
+el('btnVend').addEventListener('click',()=>{ if(el('gotBox').classList.contains('on')){dismissGot();return;} vend(); });
+el('btnRefund').addEventListener('click',refund);
+
+window.addEventListener('keydown',e=>{
+  if(e.key==='1'){dismissGot();addCoin(100);}
+  else if(e.key==='2'){dismissGot();addCoin(500);}
+  else if(e.key==='3'){dismissGot();addCoin(1000);}
+  else if(e.code==='Enter'||e.code==='Space'){ e.preventDefault(); if(el('gotBox').classList.contains('on')){dismissGot();}else vend(); }
+  else if(e.code==='KeyR'){ refund(); }
+  else if(/^[a-cA-C]$/.test(e.key)){
+    // a/b/c row hotkeys cycle within row? simpler: select first available
+  }
+});
+
+/* =========================================================
+   MAIN LOOP — dithered alley is the first paint, no gate
+   ========================================================= */
+let clock=0;
+function tick(){
+  T+=0.05; clock++; flicker++;
+  renderScene();
+  ditherToScreen();
+  requestAnimationFrame(tick);
+}
+
+/* HUD clock + temp drift */
+setInterval(()=>{
+  const base=23*60+48+Math.floor(clock/120);
+  const hh=String(Math.floor(base/60)%24).padStart(2,'0');
+  const mm=String(base%60).padStart(2,'0');
+  el('hTime').textContent=hh+':'+mm;
+  if(clock%600===0){ const temps=['04°C','03°C','05°C','02°C']; el('hTemp').textContent=temps[(Math.random()*temps.length)|0]; }
+},1000);
+
+/* init */
+buildGrid();
+updateCredit(); updateStock();
+selectSlot(0); // start with a sensible selection
+tick();
+</script>
+</body>
+</html>

@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>FOAM — coarsening · surface tension</title>
+<style>
+  :root { color-scheme: dark; }
+  html,body{
+    margin:0; padding:0; height:100%; width:100%;
+    background:#05070c; overflow:hidden;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    -webkit-tap-highlight-color: transparent;
+    cursor: crosshair;
+  }
+  canvas{ position:fixed; inset:0; width:100%; height:100%; display:block; }
+  #lines{ mix-blend-mode:screen; }
+  .hud{
+    position:fixed; z-index:10; pointer-events:none;
+    color:#d4ecff; text-transform:uppercase; letter-spacing:.18em;
+    text-shadow:0 0 12px rgba(120,200,255,.35); user-select:none;
+  }
+  #title{
+    left:clamp(14px,3.2vw,46px); top:clamp(14px,3vh,40px);
+    font-size:clamp(10px,1.05vw,13px); line-height:1.55; font-weight:600;
+  }
+  #title b{ display:block; font-size:clamp(18px,2.7vw,34px); letter-spacing:.04em;
+    color:#fff; text-shadow:0 0 24px rgba(150,210,255,.55); margin:.12em 0; }
+  #title span{ color:#7fb6e8; }
+  #meta{
+    right:clamp(14px,3.2vw,46px); top:clamp(14px,3vh,40px); text-align:right;
+    font-size:clamp(9px,.95vw,12px); line-height:1.95; opacity:.92;
+  }
+  #meta .v{ color:#aef0ff; }
+  #hint{
+    left:50%; bottom:clamp(12px,3vh,28px); transform:translateX(-50%);
+    text-align:center; font-size:clamp(8.5px,.9vw,11px); opacity:.6;
+    line-height:1.7; max-width:92vw;
+  }
+  #hint kbd{ color:#ffd9a8; font:inherit; }
+  #st{ left:clamp(14px,3.2vw,46px); bottom:clamp(52px,9vh,84px); }
+  #st .lab{ font-size:clamp(8px,.85vw,10.5px); opacity:.72; margin-bottom:7px; }
+  #stbar{ width:clamp(120px,15vw,210px); height:5px; border-radius:4px;
+    background:rgba(120,170,220,.16); overflow:hidden; }
+  #stfill{ height:100%; width:50%;
+    background:linear-gradient(90deg,#2b6cff,#39e6ff,#c9ffe0,#ffd9a8,#ff96d6);
+    box-shadow:0 0 14px rgba(120,220,255,.6); transition:width .1s linear; }
+  @media (max-width:520px){ #meta{ display:none; } #title b{ font-size:23px; } }
+</style>
+</head>
+<body>
+<canvas id="field"></canvas>
+<canvas id="lines"></canvas>
+
+<div id="title" class="hud">
+  FOAM<span>·</span>COARSENING
+  <b>SURFACE&nbsp;TENSION</b>
+  von&nbsp;Neumann–Mullins&nbsp;<span>·</span>&nbsp;thin-film&nbsp;iridescence
+</div>
+<div id="meta" class="hud">
+  bubbles&nbsp;<span class="v" id="mCount">—</span><br>
+  mean&nbsp;side&nbsp;<span class="v" id="mSide">—</span><br>
+  pop / s&nbsp;<span class="v" id="mPop">—</span><br>
+  fps&nbsp;<span class="v" id="mFps">—</span>
+</div>
+<div id="st" class="hud">
+  <div class="lab">surface tension&nbsp;&nbsp;σ</div>
+  <div id="stbar"><div id="stfill"></div></div>
+</div>
+<div id="hint" class="hud">
+  move to stir<kbd> · </kbd>click to blow a bubble<kbd> · </kbd>hold to pop<kbd> · </kbd>scroll = surface&nbsp;tension<kbd> · </kbd>double-click to froth
+</div>
+
+<script>
+(()=>{
+"use strict";
+const fieldC=document.getElementById('field');
+const lineC =document.getElementById('lines');
+const fx=fieldC.getContext('2d',{alpha:false});
+const lx=lineC.getContext('2d');
+
+let W=0,H=0,DPR=1,FDPR=1;
+function resize(){
+  W=window.innerWidth; H=window.innerHeight;
+  DPR=Math.min(window.devicePixelRatio||1,2);
+  // FIELD is soft/organic -> render at <=1px ratio to slash fill-rate.
+  // Lower it further on very large canvases to protect 60fps.
+  const area=W*H;
+  FDPR = area>1600000 ? 0.72 : area>900000 ? 0.85 : 1.0;
+  fieldC.width=Math.round(W*FDPR); fieldC.height=Math.round(H*FDPR);
+  lineC.width =Math.round(W*DPR);  lineC.height =Math.round(H*DPR);
+  fx.setTransform(FDPR,0,0,FDPR,0,0);
+  lx.setTransform(DPR,0,0,DPR,0,0);
+}
+window.addEventListener('resize',()=>{ resize(); seedFoam(); },{passive:true});
+
+const rnd=(a,b)=>a+Math.random()*(b-a);
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const TAU=Math.PI*2;
+let _t0=performance.now();
+const now=()=>(performance.now()-_t0)/1000;
+
+/* ---------- iridescent palette ----------
+   Map film thickness (nm) -> pearly soap color. We sample a hand-tuned
+   gradient (teal→cyan→pearl→gold→rose→violet) and keep it pastel + luminous,
+   NOT saturated primaries. Cached LUT for speed. */
+const LUT_N=512;
+const LUT=new Uint8Array(LUT_N*3);
+(function buildLUT(){
+  // control stops along thin-film interference, soap-bubble palette
+  const stops=[
+    [0.00, 22, 30, 60],    // thin / near-black blue
+    [0.08, 60, 120,180],   // deep teal
+    [0.20, 90, 220,225],   // cyan
+    [0.34, 200,255,235],   // pearl green-white
+    [0.46, 255,236,180],   // pale gold
+    [0.58, 255,180,160],   // peach
+    [0.68, 255,150,205],   // rose
+    [0.80, 200,160,255],   // violet
+    [0.90, 120,180,255],   // periwinkle
+    [1.00, 80, 140,220],   // back to blue (wrap)
+  ];
+  for(let i=0;i<LUT_N;i++){
+    const t=i/(LUT_N-1);
+    let a=stops[0], b=stops[stops.length-1];
+    for(let s=0;s<stops.length-1;s++){ if(t>=stops[s][0]&&t<=stops[s+1][0]){a=stops[s];b=stops[s+1];break;} }
+    const f=(t-a[0])/Math.max(1e-6,(b[0]-a[0]));
+    LUT[i*3  ]=a[1]+(b[1]-a[1])*f;
+    LUT[i*3+1]=a[2]+(b[2]-a[2])*f;
+    LUT[i*3+2]=a[3]+(b[3]-a[3])*f;
+  }
+})();
+// thickness 120..820 nm + phase -> [r,g,b]
+function filmColor(thNm, phase){
+  let t=(thNm-120)/700 + phase*0.0; // base position
+  t=t*1.6 + phase*0.16;             // phase shimmer
+  t=t-Math.floor(t);                // wrap 0..1
+  const idx=clamp(t*(LUT_N-1)|0,0,LUT_N-1)*3;
+  return [LUT[idx],LUT[idx+1],LUT[idx+2]];
+}
+
+/* ---------- foam model ---------- */
+let bubbles=[];
+let sigma=0.55;
+let popAcc=0, popRate=0;
+
+const a2r=a=>Math.sqrt(a/Math.PI);
+function makeBubble(x,y,a){
+  return { x,y, vx:rnd(-3,3),vy:rnd(-3,3),
+    a, r:a2r(a), w:0,
+    th:rnd(180,760), thv:rnd(-0.3,0.3),
+    ph:rnd(0,TAU), n:6, born:now() };
+}
+// shared cell-count policy: larger cells on small screens so phones get a
+// calmer, more legible foam instead of a dense wire mesh.
+function cellCount(){
+  const div = Math.min(W,H)<560 ? 13000 : 12000;
+  return clamp(Math.round((W*H)/div),52,190);
+}
+function seedFoam(){
+  bubbles.length=0;
+  const count=cellCount();
+  // viewport-relative cell area so phones & desktops get proportional foam
+  const aUnit=(W*H)/count;             // mean cell area target
+  let tries=0;
+  while(bubbles.length<count && tries<count*40){
+    tries++;
+    const x=rnd(20,W-20), y=rnd(20,H-20);
+    const a=aUnit*rnd(0.35,1.3);
+    const rr=a2r(a)*0.5;
+    let ok=true;
+    for(const b of bubbles){
+      const dx=b.x-x,dy=b.y-y;
+      const md=rr+a2r(b.a)*0.5;
+      if(dx*dx+dy*dy<md*md){ok=false;break;}
+    }
+    if(ok){
+      const bb=makeBubble(x,y,a);
+      // spread thickness across the full interference range up-front so warm
+      // (gold/rose/violet) and cool (teal/cyan) films coexist immediately.
+      bb.th=120+700*((bubbles.length*0.61803)%1);
+      bb.ph=rnd(0,TAU);
+      bubbles.push(bb);
+    }
+  }
+}
+
+/* spatial grid for neighbours */
+let grid=null,GC=0,GR=0,CELL=120;
+function buildGrid(){
+  CELL=clamp(Math.sqrt((W*H)/Math.max(1,bubbles.length))*1.35,60,240);
+  GC=Math.max(1,Math.ceil(W/CELL)); GR=Math.max(1,Math.ceil(H/CELL));
+  grid=new Array(GC*GR); for(let i=0;i<grid.length;i++) grid[i]=[];
+  for(let i=0;i<bubbles.length;i++){
+    const b=bubbles[i];
+    const cx=clamp(Math.floor(b.x/CELL),0,GC-1);
+    const cy=clamp(Math.floor(b.y/CELL),0,GR-1);
+    grid[cy*GC+cx].push(i);
+  }
+}
+const tmpN=[];
+function neighborsOf(i){
+  tmpN.length=0;
+  const b=bubbles[i];
+  const cx=clamp(Math.floor(b.x/CELL),0,GC-1);
+  const cy=clamp(Math.floor(b.y/CELL),0,GR-1);
+  for(let oy=-1;oy<=1;oy++)for(let ox=-1;ox<=1;ox++){
+    const gx=cx+ox,gy=cy+oy;
+    if(gx<0||gy<0||gx>=GC||gy>=GR)continue;
+    const arr=grid[gy*GC+gx];
+    for(let k=0;k<arr.length;k++){ const v=arr[k]; if(v!==i && v<bubbles.length) tmpN.push(v); }
+  }
+}
+
+/* ---------- interaction ---------- */
+const mouse={x:-1e4,y:-1e4,px:-1e4,py:-1e4,vx:0,vy:0,down:false,downT:0,active:false};
+function setMouse(x,y){
+  mouse.vx=x-mouse.x; mouse.vy=y-mouse.y;
+  if(!mouse.active){ mouse.vx=0; mouse.vy=0; }
+  mouse.px=mouse.x; mouse.py=mouse.y; mouse.x=x; mouse.y=y; mouse.active=true;
+}
+const mspeed=()=>Math.hypot(mouse.vx,mouse.vy);
+lineC.addEventListener('pointermove',e=>setMouse(e.clientX,e.clientY),{passive:true});
+lineC.addEventListener('pointerdown',e=>{
+  mouse.down=true; mouse.downT=now(); setMouse(e.clientX,e.clientY);
+  try{lineC.setPointerCapture(e.pointerId);}catch(_){}
+},{passive:true});
+lineC.addEventListener('pointerup',e=>{
+  if(now()-mouse.downT<0.18) blowBubble(e.clientX,e.clientY);
+  mouse.down=false;
+},{passive:true});
+lineC.addEventListener('pointerleave',()=>{mouse.active=false;mouse.down=false;});
+lineC.addEventListener('dblclick',e=>froth(e.clientX,e.clientY));
+window.addEventListener('wheel',e=>{ sigma=clamp(sigma-e.deltaY*0.0009,0.05,1); e.preventDefault(); },{passive:false});
+lineC.addEventListener('touchstart',e=>{ if(e.touches.length>1)e.preventDefault(); },{passive:false});
+
+function blowBubble(x,y){
+  const aUnit=(W*H)/cellCount();
+  const b=makeBubble(x+rnd(-5,5),y+rnd(-5,5),aUnit*rnd(0.25,0.5));
+  b.th=rnd(280,760);
+  for(const o of bubbles){
+    const dx=o.x-x,dy=o.y-y,d2=dx*dx+dy*dy;
+    if(d2<9000){ const f=40/(Math.sqrt(d2)+8); o.vx+=dx*f*0.04; o.vy+=dy*f*0.04; }
+  }
+  bubbles.push(b); ripple(x,y,0.6);
+}
+function froth(x,y){
+  for(let k=0;k<8;k++){ const a=rnd(0,TAU),r=rnd(0,64); blowBubble(x+Math.cos(a)*r,y+Math.sin(a)*r); }
+  ripple(x,y,1.2);
+}
+const ripples=[];
+function ripple(x,y,s){ ripples.push({x,y,r:0,a:s}); }
+function popBubble(i){
+  const b=bubbles[i];
+  ripple(b.x,b.y,clamp(b.r/40,0.4,1.4));
+  neighborsOf(i);
+  if(tmpN.length){ const share=b.a/tmpN.length; for(const j of tmpN) bubbles[j].a+=share*0.9; }
+  bubbles[i]=bubbles[bubbles.length-1]; bubbles.pop();
+  popAcc++;
+}
+
+/* ---------- simulation ---------- */
+function step(dt){
+  buildGrid();
+  const K=4200*(0.25+sigma*1.5)*dt;
+  const popThresh=560;
+  let toPop=-1, toPopA=1e18;
+
+  for(let i=0;i<bubbles.length;i++){
+    const b=bubbles[i];
+    neighborsOf(i);
+    let near=0; const infl=(b.r+CELL)*1.1;
+    for(const j of tmpN){
+      const o=bubbles[j];
+      if(Math.hypot(o.x-b.x,o.y-b.y)<infl) near++;
+    }
+    // calibrate so typical packed cell -> ~6 sides
+    b.n=clamp(3.2+near*0.55,3,12);
+    b.a+=K*(b.n-6);
+    if(b.a<popThresh && b.a<toPopA){ toPopA=b.a; toPop=i; }
+    if(b.a>30000) b.a=30000;
+    b.r=a2r(b.a); b.w=b.r*b.r;
+
+    b.th+=b.thv*dt*60 - sigma*5*dt;
+    if(b.th<120){b.th=120;b.thv=Math.abs(b.thv);}
+    if(b.th>820){b.th=820;b.thv=-Math.abs(b.thv);}
+    b.ph+=dt*0.12*(0.4+sigma);
+  }
+  // pop AFTER neighbour pass, then rebuild grid so later loops use valid indices
+  if(toPop>=0 && bubbles.length>38){ popBubble(toPop); buildGrid(); }
+
+  // packing repulsion + mouse
+  for(let i=0;i<bubbles.length;i++){
+    const b=bubbles[i];
+    neighborsOf(i);
+    for(const j of tmpN){
+      if(j<=i)continue;
+      const o=bubbles[j];
+      const dx=o.x-b.x,dy=o.y-b.y,d=Math.hypot(dx,dy)||0.001;
+      const rest=(b.r+o.r)*0.9;
+      if(d<rest){ const p=(rest-d)/d*0.5,fx2=dx*p,fy2=dy*p; b.vx-=fx2;b.vy-=fy2;o.vx+=fx2;o.vy+=fy2; }
+    }
+    if(mouse.active){
+      const dx=b.x-mouse.x,dy=b.y-mouse.y,d2=dx*dx+dy*dy;
+      const R=mouse.down?180:140;
+      if(d2<R*R){
+        const d=Math.sqrt(d2)+0.01,f=(R-d)/R;
+        b.vx+=(mouse.vx*0.18+(-dy/d)*f*1.1)*f;
+        b.vy+=(mouse.vy*0.18+( dx/d)*f*1.1)*f;
+        b.th+=f*mspeed()*1.6; b.ph+=f*0.07;
+      }
+    }
+  }
+  // hold to pop under cursor
+  if(mouse.down && now()-mouse.downT>0.18 && bubbles.length>38){
+    let best=-1,bd=46*46;
+    for(let i=0;i<bubbles.length;i++){
+      const dx=bubbles[i].x-mouse.x,dy=bubbles[i].y-mouse.y,d2=dx*dx+dy*dy;
+      if(d2<bd){bd=d2;best=i;}
+    }
+    if(best>=0){ popBubble(best); buildGrid(); }  // rebuild so render's grid is valid
+  }
+  // integrate
+  const damp=Math.pow(0.86,dt*60);
+  for(const b of bubbles){
+    b.vx*=damp;b.vy*=damp;
+    b.x+=b.vx*dt*12;b.y+=b.vy*dt*12;
+    if(b.x<6){b.x=6;b.vx*=-0.5;} if(b.x>W-6){b.x=W-6;b.vx*=-0.5;}
+    if(b.y<6){b.y=6;b.vy*=-0.5;} if(b.y>H-6){b.y=H-6;b.vy*=-0.5;}
+  }
+  // maintain population
+  const minPop=Math.round(cellCount()*0.88);
+  if(bubbles.length<minPop && bubbles.length>2){
+    const aUnit=(W*H)/cellCount();
+    const a=bubbles[(Math.random()*bubbles.length)|0];
+    bubbles.push(makeBubble(a.x+rnd(-40,40),a.y+rnd(-40,40),aUnit*rnd(0.2,0.4)));
+  }
+}
+
+/* ---------- rendering ----------
+   FIELD layer is built from two cached grayscale sprites blitted per bubble:
+     · FILL sprite  : soft luminous dome (drawn 'lighter', tinted per cell)
+     · SEAM sprite  : dome-bright→edge-dark mask (drawn 'multiply') that carves
+                      crisp Plateau-border valleys between merged films.
+   Caching the gradients as sprites makes it a GPU drawImage blit each frame
+   instead of rebuilding gradients — fast enough for 60fps with ~100 cells. */
+const SPR=128, SPC=SPR/2;
+const fillSpr=document.createElement('canvas'); fillSpr.width=fillSpr.height=SPR;
+const seamSpr=document.createElement('canvas'); seamSpr.width=seamSpr.height=SPR;
+(function buildSprites(){
+  const fc=fillSpr.getContext('2d');
+  let g=fc.createRadialGradient(SPC-SPR*0.16,SPC-SPR*0.2,SPR*0.02, SPC,SPC,SPC);
+  g.addColorStop(0.0,'rgba(255,255,255,0.82)');
+  g.addColorStop(0.38,'rgba(255,255,255,0.52)');
+  g.addColorStop(0.70,'rgba(255,255,255,0.30)');
+  g.addColorStop(0.90,'rgba(255,255,255,0.08)');
+  g.addColorStop(1.0,'rgba(255,255,255,0)');
+  fc.fillStyle=g; fc.beginPath(); fc.arc(SPC,SPC,SPC,0,TAU); fc.fill();
+
+  const sc=seamSpr.getContext('2d');
+  sc.fillStyle='#ffffff'; sc.fillRect(0,0,SPR,SPR); // multiply identity outside disc
+  g=sc.createRadialGradient(SPC,SPC,SPC*0.78, SPC,SPC,SPC*0.99);
+  g.addColorStop(0,'rgba(255,255,255,1)');
+  g.addColorStop(0.65,'rgba(150,168,200,1)');
+  g.addColorStop(1,'rgba(34,46,72,1)');
+  sc.fillStyle=g; sc.beginPath(); sc.arc(SPC,SPC,SPC*0.99,0,TAU); sc.fill();
+})();
+
+function renderField(){
+  const bg=fx.createLinearGradient(0,0,W,H);
+  bg.addColorStop(0,'#06080f'); bg.addColorStop(0.5,'#080b16'); bg.addColorStop(1,'#05070d');
+  fx.fillStyle=bg; fx.fillRect(0,0,W,H);
+
+  // FILL pass — additive luminous domes, tinted via a temp colored sprite is
+  // costly, so instead we draw the white fill sprite then overlay the film
+  // color with a clipped 'source-atop' tint. Cheaper: draw colored disc with
+  // the cached alpha sprite using globalAlpha + a small offscreen tint buffer.
+  fx.globalCompositeOperation='lighter';
+  // small/dense foams over-accumulate to white under additive blend; damp the
+  // fill alpha when the typical cell is small so colors stay rich on phones.
+  const aScale=clamp(Math.min(W,H)/520,0.80,1.0);
+  for(const b of bubbles){
+    const r=b.r*1.34; if(r<2) continue;
+    const c=filmColor(b.th,b.ph);
+    // tint by drawing the fill sprite into the colored path: emulate by setting
+    // fillStyle color then using the sprite as alpha through 'destination-in'
+    // is per-bubble offscreen = slow. Use direct gradient ONLY for color, but
+    // keep it single-stop-cheap: a 3-stop gradient is fine; the real cost was
+    // the multiply pass which is now a sprite blit.
+    const c2=filmColor(b.th+150,b.ph+0.9);
+    const g=fx.createRadialGradient(b.x-r*0.16,b.y-r*0.2,r*0.04,b.x,b.y,r);
+    g.addColorStop(0.0,`rgba(${c[0]},${c[1]},${c[2]},${0.66*aScale})`);
+    g.addColorStop(0.5,`rgba(${c[0]},${c[1]},${c[2]},${0.40*aScale})`);
+    g.addColorStop(0.85,`rgba(${c2[0]},${c2[1]},${c2[2]},${0.15*aScale})`);
+    g.addColorStop(1.0,`rgba(${c2[0]},${c2[1]},${c2[2]},0.0)`);
+    fx.fillStyle=g; fx.beginPath(); fx.arc(b.x,b.y,r,0,TAU); fx.fill();
+  }
+
+  // SEAM pass — cached sprite blit (multiply) carves the Plateau borders.
+  fx.globalCompositeOperation='multiply';
+  for(const b of bubbles){
+    const d=b.r*2.08; if(d<6) continue;
+    fx.drawImage(seamSpr, b.x-d/2, b.y-d/2, d, d);
+  }
+  fx.globalCompositeOperation='source-over';
+}
+
+/* LINES layer (screen blend): glowing Plateau borders between touching
+   bubbles, triple-junction glints, specular highlight, ripples, cursor. */
+function renderLines(){
+  lx.clearRect(0,0,W,H);
+  lx.globalCompositeOperation='lighter';
+  lx.lineCap='round';
+
+  for(let i=0;i<bubbles.length;i++){
+    const b=bubbles[i];
+    // specular highlight (top-left), thin-film tinted
+    const c=filmColor(b.th+200,b.ph+0.4);
+    const hx=b.x-b.r*0.34,hy=b.y-b.r*0.36;
+    const hg=lx.createRadialGradient(hx,hy,0,hx,hy,b.r*0.55);
+    const ha=clamp(0.10+b.r/220*0.12,0.05,0.26);
+    hg.addColorStop(0,`rgba(255,255,255,${ha})`);
+    hg.addColorStop(0.4,`rgba(${c[0]},${c[1]},${c[2]},${ha*0.6})`);
+    hg.addColorStop(1,'rgba(0,0,0,0)');
+    lx.fillStyle=hg; lx.beginPath(); lx.arc(hx,hy,b.r*0.55,0,TAU); lx.fill();
+
+    // borders to touching neighbours
+    neighborsOf(i);
+    for(const j of tmpN){
+      if(j<=i)continue;
+      const o=bubbles[j];
+      const dx=o.x-b.x,dy=o.y-b.y,d=Math.hypot(dx,dy);
+      if(d<1||d>(b.r+o.r)*1.04) continue;
+      const t=(d*d+b.w-o.w)/(2*d*d);
+      const cx=b.x+dx*t,cy=b.y+dy*t;
+      const ov=clamp((b.r+o.r)-d,0,Math.min(b.r,o.r));
+      const inside=(b.r*b.r)-(d*t)*(d*t);
+      const half=clamp(Math.sqrt(Math.max(1,inside)),3,Math.min(b.r,o.r)*1.05);
+      const nx=-dy/d,ny=dx/d;
+      // scale stroke/glint with cell size so small foams don't turn into a
+      // bright wire mesh; smaller cells -> dimmer, thinner borders.
+      const sz=clamp(Math.min(b.r,o.r)/34,0.45,1.0);
+      const inten=clamp((0.07+ov/52*0.45)*sz,0.03,0.6);
+      lx.strokeStyle=`rgba(190,238,255,${inten})`;
+      lx.lineWidth=clamp((0.8+ov*0.04)*sz,0.5,2.4);
+      lx.beginPath(); lx.moveTo(cx-nx*half,cy-ny*half); lx.lineTo(cx+nx*half,cy+ny*half); lx.stroke();
+      vertexGlow(cx-nx*half,cy-ny*half,inten*sz, 4+2*sz);
+      vertexGlow(cx+nx*half,cy+ny*half,inten*sz, 4+2*sz);
+    }
+  }
+
+  for(let i=ripples.length-1;i>=0;i--){
+    const rp=ripples[i];
+    rp.r+=(1-rp.r/Math.max(W,H))*9+4; rp.a*=0.93;
+    if(rp.a<0.02){ ripples.splice(i,1); continue; }
+    lx.strokeStyle=`rgba(170,230,255,${rp.a*0.5})`; lx.lineWidth=1.4;
+    lx.beginPath(); lx.arc(rp.x,rp.y,rp.r,0,TAU); lx.stroke();
+    lx.strokeStyle=`rgba(255,210,150,${rp.a*0.28})`;
+    lx.beginPath(); lx.arc(rp.x,rp.y,rp.r*0.62,0,TAU); lx.stroke();
+  }
+
+  if(mouse.active){
+    const R=mouse.down?30:17;
+    const g=lx.createRadialGradient(mouse.x,mouse.y,0,mouse.x,mouse.y,R*2.2);
+    g.addColorStop(0,'rgba(200,240,255,0.5)'); g.addColorStop(1,'rgba(200,240,255,0)');
+    lx.fillStyle=g; lx.beginPath(); lx.arc(mouse.x,mouse.y,R*2.2,0,TAU); lx.fill();
+  }
+  lx.globalCompositeOperation='source-over';
+}
+function vertexGlow(x,y,inten,rad){
+  const a=clamp(inten*0.9,0.03,0.8); const r=rad||5;
+  const g=lx.createRadialGradient(x,y,0,x,y,r);
+  g.addColorStop(0,`rgba(240,252,255,${a})`); g.addColorStop(1,'rgba(240,252,255,0)');
+  lx.fillStyle=g; lx.beginPath(); lx.arc(x,y,r,0,TAU); lx.fill();
+}
+
+/* ---------- HUD ---------- */
+const el={count:document.getElementById('mCount'),side:document.getElementById('mSide'),
+  pop:document.getElementById('mPop'),fps:document.getElementById('mFps'),stfill:document.getElementById('stfill')};
+function updateHUD(fps){
+  el.count.textContent=bubbles.length;
+  let s=0; for(const b of bubbles) s+=b.n;
+  el.side.textContent=(bubbles.length?s/bubbles.length:0).toFixed(2);
+  el.pop.textContent=popRate.toFixed(1);
+  el.fps.textContent=Math.round(fps);
+  el.stfill.style.width=(sigma*100).toFixed(0)+'%';
+}
+
+/* ---------- main loop ---------- */
+let last=performance.now(),fps=60,secT=0;
+function frame(t){
+  let dt=(t-last)/1000; last=t; if(dt>0.05)dt=0.05;
+  fps=fps*0.9+(1/Math.max(dt,1e-4))*0.1;
+  step(dt); renderField(); renderLines();
+  // decay mouse velocity so stir fades when still
+  mouse.vx*=0.6; mouse.vy*=0.6;
+  secT+=dt; if(secT>=1){ popRate=popAcc/secT; popAcc=0; secT=0; }
+  updateHUD(fps);
+  requestAnimationFrame(frame);
+}
+
+/* ambient idle stir */
+let ambT=0;
+setInterval(()=>{
+  if(!mouse.active || now()-mouse.downT>2){
+    ambT+=0.6;
+    const cx=W*(0.5+0.4*Math.sin(ambT*0.31)), cy=H*(0.5+0.35*Math.cos(ambT*0.23));
+    for(const b of bubbles){
+      const dx=b.x-cx,dy=b.y-cy,d2=dx*dx+dy*dy;
+      if(d2<22000){ const d=Math.sqrt(d2)+1,f=(150-d)/150; b.vx+=(-dy/d)*f*0.4; b.vy+=(dx/d)*f*0.4; }
+    }
+  }
+},90);
+
+resize(); seedFoam(); requestAnimationFrame(frame);
+window.__foam={count:()=>bubbles.length,sigma:()=>sigma,blow:blowBubble,froth:froth,
+  meanSide:()=>{let s=0;for(const b of bubbles)s+=b.n;return bubbles.length?s/bubbles.length:0;}};
+})();
+</script>
+</body>
+</html>

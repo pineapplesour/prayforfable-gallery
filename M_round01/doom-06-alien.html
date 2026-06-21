@@ -1,0 +1,771 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>VISCERA // 모선 침투</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#05080a;
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#05080a;}
+  #view{
+    margin:0;font:13px/13px ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    color:#9fe6b0;background:#05080a;white-space:pre;letter-spacing:0;
+    user-select:none;cursor:crosshair;text-shadow:0 0 2px rgba(60,255,140,.18);
+  }
+  /* HUD */
+  #hud{position:fixed;left:0;right:0;bottom:0;z-index:6;pointer-events:none;
+    font:12px/1.4 ui-monospace,Menlo,monospace;color:#bff5c8;}
+  #bar{display:flex;gap:14px;align-items:center;flex-wrap:wrap;
+    background:linear-gradient(0deg,#04110b,#06160d);border-top:1px solid #15402a;
+    padding:6px 12px;}
+  .stat{white-space:nowrap;}
+  .stat b{color:#7dffb0;}
+  .lab{color:#4f9a6c;}
+  #wpn{color:#ffd27d;}
+  #wpn.lo{color:#ff8a6a;}
+  #keys span{opacity:.25;}
+  #keys span.on{opacity:1;}
+  #msg{position:fixed;left:0;right:0;top:14px;z-index:6;text-align:center;
+    color:#eafff0;font:14px/1.5 ui-monospace,Menlo,monospace;
+    text-shadow:0 0 6px rgba(0,255,120,.5);pointer-events:none;transition:opacity .4s;}
+  #credit{position:fixed;right:8px;bottom:42px;z-index:6;
+    font:10px/1.3 ui-monospace,Menlo,monospace;color:#3a6b50;text-align:right;pointer-events:none;}
+  /* overlays */
+  .ovl{position:fixed;inset:0;z-index:10;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;text-align:center;padding:24px;
+    background:rgba(4,12,9,.93);color:#bff5c8;transition:opacity .8s ease;}
+  .ovl h1{font:600 40px/1 ui-monospace,Menlo,monospace;letter-spacing:10px;margin:0 0 6px;
+    color:#7dffb0;text-shadow:0 0 14px rgba(0,255,120,.5);}
+  .ovl h2{font:600 24px/1.2 ui-monospace,Menlo,monospace;letter-spacing:4px;color:#ffd27d;}
+  .ovl p{max-width:520px;font:13px/1.9 ui-monospace,Menlo,monospace;color:#9bd6ad;margin:6px 0;}
+  .ovl .keys{margin-top:16px;color:#5fa97e;font-size:12px;}
+  .ovl .go{margin-top:20px;color:#7dffb0;font-size:13px;animation:bl 1.1s steps(2) infinite;}
+  .ovl .cr{margin-top:22px;color:#3a6b50;font-size:10px;}
+  @keyframes bl{50%{opacity:.25;}}
+  .hidden{opacity:0!important;pointer-events:none!important;}
+  /* touch */
+  #touch{position:fixed;inset:0;z-index:5;display:none;}
+  .tbtn{position:fixed;width:62px;height:62px;border-radius:50%;
+    background:rgba(20,60,40,.4);border:1px solid #2c7a52;color:#bff5c8;
+    font:14px/62px ui-monospace,Menlo,monospace;text-align:center;
+    z-index:7;user-select:none;touch-action:none;}
+  #look{position:fixed;left:0;top:0;width:60%;height:100%;z-index:5;touch-action:none;}
+  body.touch #touch,body.touch .tbtn{display:block;}
+</style>
+</head>
+<body>
+<div id="wrap"><pre id="view"></pre></div>
+
+<div id="msg"></div>
+<div id="credit">DOOM (id Software)에서 영감 — © id Software.<br>오리지널 구현: VISCERA</div>
+
+<div id="hud">
+  <div id="bar">
+    <span class="stat"><span class="lab">체력</span> <b id="hp">100</b></span>
+    <span class="stat"><span class="lab">방어구</span> <b id="ar">0</b></span>
+    <span class="stat"><span class="lab">무기</span> <b id="wpn">발톱</b></span>
+    <span class="stat"><span class="lab">탄</span> <b id="ammo">∞</b></span>
+    <span class="stat" id="keys"><span class="lab">열쇠</span> <span id="kr" style="color:#ff6a6a">◆</span> <span id="kb" style="color:#6aa8ff">◆</span></span>
+    <span class="stat"><span class="lab">처치</span> <b id="kills">0</b></span>
+  </div>
+</div>
+
+<!-- 터치 UI -->
+<div id="touch">
+  <div id="look"></div>
+  <div class="tbtn" id="tF" style="left:18px;bottom:140px;">▲</div>
+  <div class="tbtn" id="tB" style="left:18px;bottom:60px;">▼</div>
+  <div class="tbtn" id="tL" style="left:96px;bottom:60px;">◀</div>
+  <div class="tbtn" id="tR" style="left:174px;bottom:60px;">▶</div>
+  <div class="tbtn" id="tFire" style="right:24px;bottom:80px;width:78px;height:78px;line-height:78px;background:rgba(120,40,40,.45);border-color:#a05050;">발사</div>
+  <div class="tbtn" id="tSwap" style="right:34px;bottom:172px;font-size:11px;line-height:62px;">무기</div>
+</div>
+
+<!-- 인트로 -->
+<div class="ovl" id="intro">
+  <h1>VISCERA</h1>
+  <p>표류하던 외계 모선 <b style="color:#ffd27d">엔테로스</b>의 격벽이 열렸다.<br>
+  내부는 살아있는 금속 — 벽이 글자로 숨 쉬는 통로다.</p>
+  <p>네 임무: 모선 심부의 <b style="color:#ff8a6a">탈출 포드</b>까지 살아서 도달하라.<br>
+  도중의 군체를 정리하고, 두 색의 열쇠로 봉인된 격벽을 열어라.</p>
+  <p class="keys">WASD 이동 · 마우스 조준(클릭=잠금) · 좌클릭/Space 발사 · 1·2·3 또는 Q 무기교체 · TAB 지도</p>
+  <p class="go">아무 키나 눌러 침투</p>
+  <p class="cr">DOOM (id Software)에서 영감 — © id Software. 오리지널 구현.</p>
+</div>
+
+<!-- 사망 -->
+<div class="ovl hidden" id="dead">
+  <h2 style="color:#ff6a6a">숙주 사망</h2>
+  <p id="deadtxt"></p>
+  <p class="go" id="retry">아무 키나 눌러 재침투</p>
+  <p class="cr">DOOM (id Software)에서 영감 — © id Software. 오리지널 구현.</p>
+</div>
+
+<!-- 승리 -->
+<div class="ovl hidden" id="win">
+  <h2 style="color:#7dffb0">탈출 성공</h2>
+  <p id="wintxt"></p>
+  <p class="go" id="again">아무 키나 눌러 다시 침투</p>
+  <p class="cr">DOOM (id Software)에서 영감 — © id Software. 오리지널 구현.</p>
+</div>
+
+<script>
+(() => {
+"use strict";
+
+/* ============================================================
+   VISCERA — 외계 모선 내부 1인칭 아스키 레이캐스터
+   DOOM(id Software)에서 영감받은 오리지널 구현.
+   레이캐스트 DDA 렌더는 "2_내부.html"의 기법을 계승·발전.
+   ============================================================ */
+
+// ---------- 소스 채집: 이 문서 자체가 벽의 텍스처 자재 ----------
+const RAW = document.documentElement.outerHTML;
+const SRC = RAW.replace(/[^\x21-\x7E]/g,"") || "VISCERA0123456789ABCDEFenteros";
+
+// ---------- 레벨: 손으로 설계한 모선 평면도 ----------
+// 0 빈공간 / 1 일반격벽 / 2 적색열쇠문(잠김) / 3 청색열쇠문(잠김) / 4 출구포드
+// 5 시크릿벽(부수면 통로) / 6 코어격벽(다른 텍스처)
+// 손으로 설계 + 게이팅 검증(flood-fill)된 모선 평면도.
+// 출구는 BLUE문·RED문 둘 다 통과해야만 도달 가능(검증: none=불가, blue=불가, blue+red=가능).
+// 시크릿벽(5) 파괴 시 좌하단 은신처(메가스피어) 개방.
+const LV = [
+"1111111111111111111111111",
+"1000000000000000000060001", // 6 = 코어 장식
+"1000001000000000000000001",
+"1001000110000000001100001",
+"1000000000011100000001001",
+"1001100010011100100000001",
+"1000000000011100000000001",
+"1000000000011100111111111",
+"1111111113111111111111111", // 3 = 청색 열쇠문 (상↔하 유일 통로)
+"1000000000000000000000001",
+"1000110000011000000000001",
+"1000000110000000000010001",
+"1001000000000100110000001",
+"1000001000100000000001001",
+"1010000000000000000100001",
+"1000000000000000000000001",
+"1115111111111111111211111", // 5 = 시크릿벽, 2 = 적색 열쇠문 (하↔출구)
+"1000000001111111000000001",
+"1000100001111111001100001",
+"1000010001111111000001001",
+"1001000001111111010000001",
+"1000001001111111000010001",
+"1000000001111111000000401", // 4 = 탈출 포드
+"1111111111111111111111111",
+"1111111111111111111111111",
+].map(r=>{ r=(r+"1111111111111111111111111").slice(0,25); return r; });
+
+const MH = LV.length, MW = LV[0].length;
+const grid = LV.map(r => r.split("").map(c => +c));
+function cell(x,y){ if(x<0||y<0||x>=MW||y>=MH) return 1; return grid[y|0][x|0]; }
+function solid(x,y){ const c=cell(x,y); return c===1||c===5||c===6||c===2||c===3||c===4 ? c : 0; }
+
+// 적/픽업/오브젝트 초기 배치 (셀 중심 좌표)
+function freshEntities(){
+  // 좌표는 flood-fill로 검증된 개방셀에만 배치됨(벽 박힘 없음).
+  return [
+    // 적: t=종류(0 군체병/1 포자수/2 강체)
+    // -- 상층(스폰 구역) --
+    {k:"enemy",t:0,hp:30,x:23.5,y:5.5},
+    {k:"enemy",t:1,hp:55,x:1.5,y:3.5},
+    {k:"enemy",t:0,hp:30,x:12.5,y:1.5},
+    {k:"enemy",t:1,hp:55,x:8.5,y:7.5},
+    // -- 하층(청색문 너머) --
+    {k:"enemy",t:0,hp:30,x:23.5,y:14.5},
+    {k:"enemy",t:2,hp:120,x:1.5,y:9.5},
+    {k:"enemy",t:1,hp:55,x:11.5,y:15.5},
+    {k:"enemy",t:0,hp:30,x:16.5,y:9.5},
+    {k:"enemy",t:1,hp:55,x:8.5,y:9.5},
+    // -- 출구 구역(적색문 너머) --
+    {k:"enemy",t:2,hp:120,x:23.5,y:21.5},
+    {k:"enemy",t:1,hp:55,x:16.5,y:17.5},
+    // 픽업: p=종류
+    {k:"pick",p:"med",x:23.5,y:4.5},
+    {k:"pick",p:"ammo",x:1.5,y:7.5},
+    {k:"pick",p:"arm",x:11.5,y:1.5},
+    {k:"pick",p:"med",x:22.5,y:15.5},
+    {k:"pick",p:"ammo",x:1.5,y:10.5},
+    {k:"pick",p:"shell",x:12.5,y:9.5},
+    {k:"pick",p:"arm",x:7.5,y:15.5},
+    {k:"pick",p:"med",x:23.5,y:21.5},
+    {k:"pick",p:"kblu",x:23.5,y:6.5},   // 청색 열쇠 — 상층(스폰서 도달)
+    {k:"pick",p:"kred",x:23.5,y:15.5},  // 적색 열쇠 — 하층(청색문 너머)
+    {k:"pick",p:"mega",x:8.5,y:22.5},   // 시크릿 메가스피어
+    {k:"pick",p:"shell",x:7.5,y:22.5},  // 시크릿 보너스
+  ];
+}
+
+// ---------- 무기 정의 (오리지널 이름) ----------
+const WEAPONS = [
+  {name:"발톱",     id:"claw",  melee:true,  dmg:34, rof:0.34, spread:0,    pellets:1, ammo:null, range:1.4, knock:0},
+  {name:"펄스총",   id:"pulse", melee:false, dmg:13, rof:0.10, spread:0.03, pellets:1, ammo:"cell", use:1, range:22},
+  {name:"담즙포",   id:"bile",  melee:false, dmg:60, rof:0.85, spread:0.10, pellets:7, ammo:"shell",use:1, range:11, splash:true},
+];
+
+// ---------- 상태 ----------
+let S;
+function resetState(){
+  S = {
+    px:1.5, py:1.5, dir:0.7,
+    hp:100, armor:0, kred:false, kblu:false,
+    cell:60, shell:0, // 탄약 풀
+    wpn:0, owned:[true,true,true], // 시작 무기 전부 보유(둠풍, 탄약으로 게이팅)
+    fireCD:0, kills:0, dead:false, won:false, started:false,
+    flash:0, hurt:0, ents:freshEntities(), parts:[], shots:[],
+    secretOpen:false,
+  };
+}
+resetState();
+
+// ---------- 화면 ----------
+const view = document.getElementById("view");
+let W=110, H=46, CW=7.8, CH=13;
+function fit(){
+  const probe=document.createElement("span");
+  probe.style.cssText="position:absolute;visibility:hidden;font:13px/13px ui-monospace,Menlo,Consolas,monospace;white-space:pre";
+  probe.textContent="M".repeat(120); document.body.appendChild(probe);
+  CW=probe.getBoundingClientRect().width/120||7.8; probe.remove();
+  W=Math.max(54,Math.min(190,Math.floor(innerWidth/CW)-1));
+  H=Math.max(28,Math.min(80,Math.floor((innerHeight-40)/CH)));
+  if(W%2) W--;
+}
+fit(); addEventListener("resize",fit);
+
+// 벽 텍스처 문자 (모선 = 유기 금속)
+const HULL = "▓▒░#@&%$8BHKMNWX";
+function wallChar(ct, ix, iy, tx, ty, d, side){
+  if(d>15) return "·"; if(d>10.5) return ":";
+  // 코어 격벽
+  if(ct===6){ const g="◢◣▚▞╳╬◍◉"; const s=((ix*92821)^(iy*68917)^((tx*16)|0))>>>0; return g[(s+((ty*9)|0))%g.length]; }
+  // 열쇠문
+  if(ct===2){ return ((iy+(ty*6|0))&1)?"▌":"█"; }
+  if(ct===3){ return ((ix+(ty*6|0))&1)?"▐":"█"; }
+  if(ct===4){ const e="◈◇◆⬡⬢"; return e[((tx*5|0)+(ty*5|0))%e.length]; }
+  if(ct===5){ return "▒"; }
+  // 일반 유기 격벽: 소스 텍스처 + 깊이 단계
+  const seed=((ix*73856093)^(iy*19349663))>>>0;
+  const idx=(seed + ((tx*13)|0)*131 + ((ty*17)|0)*37) % SRC.length;
+  const ch=SRC[idx];
+  if(d>6){ return /[a-z0-9]/i.test(ch)? ch.toLowerCase() : "."; }
+  if(d>3.5){ const j=(seed+((tx*9)|0))%HULL.length; return /[a-z0-9]/i.test(ch)?ch:HULL[8+(j%8)]; }
+  return ch;
+}
+const FLOOR=" .,'`:".split("");
+const CEIL =" .`'".split("");
+
+// 스프라이트 글리프 (적/픽업) — 거리 ramp
+const ENEMY_GLYPH = [
+  // t0 군체병
+  {near:"ÆÄ@øÖ", mid:"&%@", far:"o", col:"#ff8a6a"},
+  // t1 포자수
+  {near:"§¶ψΨ", mid:"§¶", far:"*", col:"#caff7d"},
+  // t2 강체
+  {near:"████▛▜", mid:"▓▓", far:"#", col:"#ff5a4a"},
+];
+
+// ---------- z-buffer ----------
+let zbuf = new Float32Array(W);
+
+// ---------- 렌더 ----------
+let frameBuf=[], colorRuns=[]; // 우린 단색 pre라 색은 HUD로만; 본문은 단색
+function render(){
+  if(zbuf.length!==W) zbuf=new Float32Array(W);
+  const horizon=(H/2 + Math.sin(performance.now()/900)*0.6)|0;
+  const cols=new Array(W);
+  // --- 벽 캐스팅 (DDA) ---
+  for(let x=0;x<W;x++){
+    const cam=(2*x)/W-1;
+    const rdx=Math.cos(S.dir)+Math.cos(S.dir+Math.PI/2)*0.66*cam;
+    const rdy=Math.sin(S.dir)+Math.sin(S.dir+Math.PI/2)*0.66*cam;
+    let mx=S.px|0,my=S.py|0;
+    const ddx=Math.abs(1/(rdx||1e-9)),ddy=Math.abs(1/(rdy||1e-9));
+    let sx,sy,sdx,sdy,side=0;
+    if(rdx<0){sx=-1;sdx=(S.px-mx)*ddx;}else{sx=1;sdx=(mx+1-S.px)*ddx;}
+    if(rdy<0){sy=-1;sdy=(S.py-my)*ddy;}else{sy=1;sdy=(my+1-S.py)*ddy;}
+    let hit=0,ct=0,g=0;
+    while(!hit&&g++<80){
+      if(sdx<sdy){sdx+=ddx;mx+=sx;side=0;}else{sdy+=ddy;my+=sy;side=1;}
+      ct=cell(mx,my);
+      if(ct){ if(ct===5&&S.secretOpen) {ct=0;} else hit=1; }
+    }
+    const dist=Math.max(0.05, side===0? sdx-ddx : sdy-ddy);
+    zbuf[x]=dist;
+    const lh=Math.min(H*4,(H/dist)|0);
+    const ds=Math.max(0,horizon-(lh>>1));
+    const de=Math.min(H-1,horizon+(lh>>1));
+    let wallX=side===0? S.py+dist*rdy : S.px+dist*rdx; wallX-=wallX|0;
+    cols[x]={ds,de,mx,my,wallX,dist,lh,side,ct};
+  }
+  // --- 배경(천장/바닥) + 벽 합성 ---
+  const out=new Array(H);
+  for(let y=0;y<H;y++){
+    let row="";
+    for(let x=0;x<W;x++){
+      const c=cols[x];
+      if(y<c.ds){ // 천장
+        const cd=(horizon-y)/Math.max(1,horizon);
+        row+=CEIL[Math.min(CEIL.length-1,(cd*CEIL.length)|0)]||" ";
+      } else if(y>c.de){ // 바닥
+        const fd=(y-horizon)/Math.max(1,H-horizon);
+        row+=FLOOR[Math.min(FLOOR.length-1,((1-fd)*FLOOR.length)|0)]||" ";
+      } else {
+        const ty=c.lh>0? (y-(horizon-c.lh/2))/c.lh : 0;
+        row+=wallChar(c.ct,c.mx,c.my,c.wallX,Math.abs(ty%1),c.dist+(c.side?1.0:0),c.side);
+      }
+    }
+    out[y]=row.split("");
+  }
+  // --- 스프라이트(적/픽업/투사체) 빌보드 ---
+  const sprites=[];
+  for(const e of S.ents){
+    if(e.dead) continue;
+    const dx=e.x-S.px, dy=e.y-S.py;
+    sprites.push({e,d:dx*dx+dy*dy,dx,dy});
+  }
+  for(const sh of S.shots){ sprites.push({e:sh,d:(sh.x-S.px)**2+(sh.y-S.py)**2,dx:sh.x-S.px,dy:sh.y-S.py,proj:true}); }
+  sprites.sort((a,b)=>b.d-a.d);
+  const cosd=Math.cos(S.dir),sind=Math.sin(S.dir);
+  for(const sp of sprites){
+    const {e,dx,dy}=sp;
+    // 카메라 공간 변환
+    const invDet=1/(0.66*Math.cos(S.dir+Math.PI/2)*Math.sin(S.dir)-Math.cos(S.dir)*0.66*Math.sin(S.dir+Math.PI/2));
+    const tx=invDet*(Math.sin(S.dir)*dx - Math.cos(S.dir)*dy);
+    const tyv=invDet*(-0.66*Math.sin(S.dir+Math.PI/2)*dx + 0.66*Math.cos(S.dir+Math.PI/2)*dy);
+    if(tyv<=0.15) continue;
+    const sx=((W/2)*(1+tx/tyv))|0;
+    const dist=tyv;
+    let size=Math.min(H*3,(H/dist)|0);
+    let glyphSet, ch, isPick=false, isProj=sp.proj;
+    if(isProj){ size=Math.max(2,(size*0.4)|0); }
+    else if(e.k==="pick"){ isPick=true; size=Math.max(2,(size*0.55)|0); }
+    else { sizeClampEnemy(); }
+    function sizeClampEnemy(){ size=Math.max(2,Math.min(H*2,(size)|0)); }
+    const sh2=Math.max(1,(size*(isPick?0.6:0.95))|0);
+    const horizon2=horizon + (isPick? (sh2>>1) : 0); // 픽업은 바닥쪽
+    const top=Math.max(0,(horizon2-(sh2>>1)+(isProj?0:0)))|0;
+    const bot=Math.min(H-1,top+sh2)|0;
+    const left=Math.max(0,(sx-(size>>1))|0);
+    const right=Math.min(W-1,(sx+(size>>1))|0);
+    // 글리프 선택
+    let body="@", fill;
+    if(isProj){ body = e.kind==="bile"? "◍":"●"; fill=body; }
+    else if(isPick){
+      const m={med:"✚",arm:"▣",ammo:"⊞",shell:"◙",kred:"◆",kblu:"◆",mega:"✸"};
+      fill=m[e.p]||"◆";
+    } else {
+      const G=ENEMY_GLYPH[e.t];
+      const set = dist<3? G.near : dist<7? G.mid : G.far;
+      fill=set;
+      // 피격 플래시
+      if(e.hurtT && performance.now()-e.hurtT<120) fill="*"+set;
+    }
+    for(let x=left;x<=right;x++){
+      if(x<0||x>=W) continue;
+      if(dist>=zbuf[x]) continue; // 벽 뒤
+      // 모양: 가운데 채우고 거리별 픽셀화
+      const fy0=top, fy1=bot;
+      for(let y=fy0;y<=fy1;y++){
+        if(y<0||y>=H) continue;
+        // 실루엣: 타원형
+        const nx=(x-sx)/Math.max(1,(right-left)/2);
+        const ny=(y-(top+bot)/2)/Math.max(1,(bot-top)/2);
+        if(nx*nx+ny*ny>1.05) continue;
+        let g;
+        if(isProj) g=fill;
+        else {
+          const fi=( (x*7+y*13) >>> 0 ) % fill.length;
+          g=fill[fi];
+          if(g==="*"){ g="*"; }
+        }
+        out[y][x]=g;
+      }
+    }
+    // 데미지 숫자/이펙트 생략(텍스트 단색)
+    sp._screen={sx,top,bot,dist,size}; // AI 무관, 디버그용
+  }
+  // --- 무기 뷰모델 (화면 하단 가운데) ---
+  drawWeapon(out,horizon);
+  // --- 조준점 ---
+  const cxp=(W/2)|0, cyp=(H/2)|0;
+  if(out[cyp]){ out[cyp][cxp-1]=out[cyp][cxp-1]===" "?"-":out[cyp][cxp-1];
+    out[cyp][cxp+1]=out[cyp][cxp+1]===" "?"-":out[cyp][cxp+1]; }
+  if(out[cyp-1]) out[cyp-1][cxp]=out[cyp-1][cxp]===" "?"|":out[cyp-1][cxp];
+  if(out[cyp+1]) out[cyp+1][cxp]=out[cyp+1][cxp]===" "?"|":out[cyp+1][cxp];
+  // --- 피격/발사 풀스크린 플래시 ---
+  if(S.hurt>0){ overlayBorder(out,"▓"); }
+  // --- 미니맵 ---
+  if(showMap) drawMap(out);
+  view.textContent=out.map(r=>r.join("")).join("\n");
+}
+
+function drawWeapon(out,horizon){
+  const wpn=WEAPONS[S.wpn];
+  const bob=Math.sin(performance.now()/180)* (S.moving?1.6:0.5);
+  const kick = S.fireKick>0? S.fireKick : 0;
+  const baseY=H-1-Math.round(kick*3);
+  const cx=(W/2)|0;
+  // 각 무기 아스키 (하단 중앙에서 위로)
+  let art;
+  if(wpn.id==="claw"){
+    art=[
+      "      \\\\  //      ",
+      "   \\\\__\\\\//__//   ",
+      "    >==[][]==<    ",
+      "      \\\\||//      ",
+    ];
+  } else if(wpn.id==="pulse"){
+    art=[
+      "        __        ",
+      "    ___|##|___    ",
+      "   [::pulse::]>"+(kick?"≈≈":"  "),
+      "   '--------'    ",
+    ];
+  } else {
+    art=[
+      "       ____       ",
+      "   ___/BILE\\___   ",
+      "  |::::::::::::|"+(kick?"◍":" "),
+      "  \\__O______O__/  ",
+    ];
+  }
+  for(let i=0;i<art.length;i++){
+    const s=art[i];
+    const y=baseY-(art.length-1-i)+Math.round(bob);
+    const startX=cx-(s.length>>1);
+    for(let j=0;j<s.length;j++){
+      const ch=s[j]; if(ch===" ") continue;
+      const xx=startX+j, yy=y;
+      if(yy>=0&&yy<H&&xx>=0&&xx<W) out[yy][xx]=ch;
+    }
+  }
+}
+
+function overlayBorder(out,ch){
+  const t=Math.min(1,S.hurt);
+  const th=Math.max(1,(2+t*3)|0);
+  for(let y=0;y<H;y++) for(let x=0;x<W;x++){
+    if(y<th||y>=H-th||x<th||x>=W-th){
+      if((x+y)%2===0) out[y][x]=ch;
+    }
+  }
+}
+
+// ---------- 미니맵 ----------
+let showMap=false;
+function drawMap(out){
+  const scale=1, ox=1, oy=1;
+  for(let y=0;y<MH;y++){
+    for(let x=0;x<MW;x++){
+      const yy=oy+y, xx=ox+x;
+      if(yy<0||yy>=H||xx<0||xx>=W) continue;
+      const c=cell(x,y);
+      let g;
+      if(c===0) g="·";
+      else if(c===4) g="E";
+      else if(c===2) g="R";
+      else if(c===3) g="B";
+      else if(c===6) g="C";
+      else if(c===5) g=S.secretOpen?"·":"#";
+      else g="#";
+      out[yy][xx]=g;
+    }
+  }
+  // 적
+  for(const e of S.ents){ if(e.dead) continue; const xx=ox+(e.x|0),yy=oy+(e.y|0);
+    if(yy>=0&&yy<H&&xx>=0&&xx<W && e.k==="enemy") out[yy][xx]="e"; }
+  // 플레이어
+  const pxm=ox+(S.px|0),pym=oy+(S.py|0);
+  if(pym>=0&&pym<H&&pxm>=0&&pxm<W) out[pym][pxm]="@";
+}
+
+// ---------- 이동/충돌 ----------
+function tryMove(nx,ny){
+  const m=0.22;
+  const cxp=nx+Math.sign(nx-S.px)*m, cyp=ny+Math.sign(ny-S.py)*m;
+  if(walkable(cxp, S.py)) S.px=nx;
+  if(walkable(S.px, cyp)) S.py=ny;
+}
+function walkable(x,y){
+  const c=solid(x,y);
+  if(c===0) return true;
+  if(c===2 && S.kred) return true;  // 적 열쇠 보유시 통과(문 열림)
+  if(c===3 && S.kblu) return true;
+  if(c===5 && S.secretOpen) return true;
+  return false;
+}
+
+// ---------- 전투 ----------
+function fire(){
+  if(S.fireCD>0||S.dead||S.won) return;
+  const wpn=WEAPONS[S.wpn];
+  // 탄약 확인
+  if(wpn.ammo){
+    const have = wpn.ammo==="cell"? S.cell : S.shell;
+    if(have< (wpn.use||1)){ flashMsg("탄약 없음 — 다른 무기로 (1/2/3)"); S.fireCD=0.25; return; }
+  }
+  S.fireCD=wpn.rof; S.fireKick=1; S.flash=0.08;
+  if(wpn.ammo){ if(wpn.ammo==="cell") S.cell-=wpn.use; else S.shell-=wpn.use; }
+  if(wpn.melee){
+    // 근접: 전방 부채꼴
+    let best=null,bd=1e9;
+    for(const e of S.ents){ if(e.dead||e.k!=="enemy") continue;
+      const dx=e.x-S.px,dy=e.y-S.py,dist=Math.hypot(dx,dy);
+      if(dist>wpn.range) continue;
+      const ang=Math.atan2(dy,dx), da=Math.abs(angDiff(ang,S.dir));
+      if(da<0.6 && dist<bd){bd=dist;best=e;}
+    }
+    if(best){ hurtEnemy(best,wpn.dmg); }
+    // 시크릿 벽 파괴(근접으로 5 셀 타격)
+    meleeSecret();
+  } else {
+    for(let p=0;p<wpn.pellets;p++){
+      const a=S.dir + (Math.random()-0.5)*wpn.spread*2;
+      castShot(a,wpn);
+    }
+    if(wpn.id==="bile"){
+      // 투사체 1발(시각용) — 즉시 히트스캔이지만 둠 로켓 느낌 위해 짧은 트레일
+      S.shots.push({k:"shot",kind:"bile",x:S.px+Math.cos(S.dir)*0.4,y:S.py+Math.sin(S.dir)*0.4,
+        vx:Math.cos(S.dir)*10,vy:Math.sin(S.dir)*10,life:0.7});
+    }
+  }
+}
+function castShot(a,wpn){
+  // 히트스캔 DDA — 벽 또는 적
+  const rdx=Math.cos(a),rdy=Math.sin(a);
+  let x=S.px,y=S.py;
+  const step=0.06; let traveled=0;
+  while(traveled<wpn.range){
+    x+=rdx*step; y+=rdy*step; traveled+=step;
+    if(solid(x,y)){ if(wpn.splash) splashAt(x,y,wpn.dmg*0.6,1.6); return; }
+    // 적 충돌
+    for(const e of S.ents){ if(e.dead||e.k!=="enemy") continue;
+      const dx=e.x-x,dy=e.y-y; if(dx*dx+dy*dy < 0.16){ // 0.4 반경
+        hurtEnemy(e,wpn.dmg);
+        if(wpn.splash) splashAt(e.x,e.y,wpn.dmg*0.6,1.6);
+        return;
+      }
+    }
+  }
+}
+function splashAt(x,y,dmg,r){
+  for(const e of S.ents){ if(e.dead||e.k!=="enemy") continue;
+    const dd=Math.hypot(e.x-x,e.y-y); if(dd<r){ hurtEnemy(e,dmg*(1-dd/r)); }
+  }
+}
+function meleeSecret(){
+  // 전방 1.2칸 셀이 시크릿(5)이면 개방
+  const fx=S.px+Math.cos(S.dir)*1.0, fy=S.py+Math.sin(S.dir)*1.0;
+  if(cell(fx,fy)===5 && !S.secretOpen){ S.secretOpen=true; flashMsg("시크릿! 격벽이 무너졌다 — 숨겨진 통로 발견"); }
+}
+function hurtEnemy(e,dmg){
+  e.hp-=dmg; e.hurtT=performance.now();
+  if(e.hp<=0){ e.dead=true; S.kills++; flashMsg(["군체병 처치","포자수 분해","강체 격파"][e.t]); }
+}
+function angDiff(a,b){ let d=a-b; while(d>Math.PI)d-=2*Math.PI; while(d<-Math.PI)d+=2*Math.PI; return d; }
+
+// ---------- 적 AI ----------
+function los(ax,ay,bx,by){ // line of sight (벽 차단)
+  const dx=bx-ax,dy=by-ay,dist=Math.hypot(dx,dy),st=0.1,n=dist/st;
+  for(let i=1;i<n;i++){ const x=ax+dx*(i/n),y=ay+dy*(i/n); if(solid(x,y)) return false; }
+  return true;
+}
+function updateAI(dt){
+  for(const e of S.ents){
+    if(e.dead||e.k!=="enemy") continue;
+    const dx=S.px-e.x, dy=S.py-e.y, dist=Math.hypot(dx,dy);
+    const spd=[1.3,0.9,1.7][e.t]*dt;
+    const see=dist<11 && los(e.x,e.y,S.px,S.py);
+    e.atkCD=(e.atkCD||0)-dt;
+    if(see){
+      e.awake=true; e.tx=S.px; e.ty=S.py;
+    }
+    if(e.awake){
+      const tgx=e.tx??S.px, tgy=e.ty??S.py;
+      const ddx=tgx-e.x, ddy=tgy-e.y, dd=Math.hypot(ddx,ddy)||1;
+      if(dist>0.9){ // 접근
+        const nx=e.x+ddx/dd*spd, ny=e.y+ddy/dd*spd;
+        if(!solid(nx,e.y)) e.x=nx;
+        if(!solid(e.x,ny)) e.y=ny;
+      }
+      // 공격
+      if(see && e.atkCD<=0){
+        if(e.t===1){ // 포자수: 원거리 포자
+          if(dist<9){ e.atkCD=1.6; spawnSpore(e); }
+        } else { // 근접류
+          if(dist<1.3){ e.atkCD= e.t===2?1.3:0.9; damagePlayer(e.t===2?18:9); }
+        }
+      }
+    }
+  }
+}
+function spawnSpore(e){
+  const a=Math.atan2(S.py-e.y,S.px-e.x);
+  S.shots.push({k:"shot",kind:"spore",hostile:true,x:e.x,y:e.y,
+    vx:Math.cos(a)*4.5,vy:Math.sin(a)*4.5,life:3,dmg:12});
+}
+function updateShots(dt){
+  for(const sh of S.shots){
+    sh.life-=dt; if(sh.life<=0){sh.gone=true;continue;}
+    const nx=sh.x+sh.vx*dt, ny=sh.y+sh.vy*dt;
+    if(solid(nx,ny)){ sh.gone=true; continue; }
+    sh.x=nx; sh.y=ny;
+    if(sh.hostile){
+      if(Math.hypot(sh.x-S.px,sh.y-S.py)<0.4){ damagePlayer(sh.dmg||10); sh.gone=true; }
+    }
+  }
+  S.shots=S.shots.filter(s=>!s.gone);
+}
+
+// ---------- 플레이어 피해/픽업 ----------
+function damagePlayer(dmg){
+  if(S.dead||S.won) return;
+  let d=dmg;
+  if(S.armor>0){ const ab=Math.min(S.armor, Math.floor(d*0.5)); S.armor-=ab; d-=ab; }
+  S.hp-=d; S.hurt=0.5;
+  if(S.hp<=0){ S.hp=0; S.dead=true; showDead(); }
+}
+function checkPickups(){
+  for(const e of S.ents){
+    if(e.dead||e.k!=="pick") continue;
+    if(Math.hypot(e.x-S.px,e.y-S.py)<0.5){
+      let took=true;
+      switch(e.p){
+        case"med": if(S.hp>=100){took=false;break;} S.hp=Math.min(100,S.hp+30); flashMsg("의료 키트 +30 체력"); break;
+        case"arm": S.armor=Math.min(150,S.armor+40); flashMsg("생체 장갑 +40 방어구"); break;
+        case"ammo":S.cell+=40; flashMsg("펄스 셀 +40"); break;
+        case"shell":S.shell+=8; flashMsg("담즙 캡슐 +8"); break;
+        case"kred": S.kred=true; flashMsg("적색 열쇠 획득 — 적색 격벽 개방됨"); break;
+        case"kblu": S.kblu=true; flashMsg("청색 열쇠 획득 — 청색 격벽 개방됨"); break;
+        case"mega": S.hp=200; S.armor=150; flashMsg("★ 메가스피어! 체력200·방어구150 ★"); break;
+      }
+      if(took) e.dead=true;
+    }
+  }
+}
+function checkExit(){
+  // 탈출 포드(셀 22,22). 인접 셀에서 0.9칸 이내 접근하면 트리거.
+  if(Math.hypot(S.px-22.5, S.py-22.5)<1.1){
+    if(!S.won){ S.won=true; showWin(); }
+  }
+}
+
+// ---------- 메시지/HUD ----------
+const msgEl=document.getElementById("msg");
+let msgT=0;
+function flashMsg(t){ msgEl.textContent=t; msgEl.style.opacity="1"; msgT=performance.now(); }
+function updateHUD(){
+  document.getElementById("hp").textContent=S.hp|0;
+  document.getElementById("ar").textContent=S.armor|0;
+  const w=WEAPONS[S.wpn];
+  const we=document.getElementById("wpn"); we.textContent=w.name;
+  const am=document.getElementById("ammo");
+  if(!w.ammo){ am.textContent="∞"; we.className=""; }
+  else { const v=w.ammo==="cell"?S.cell:S.shell; am.textContent=v; we.className=v<=0?"lo":""; }
+  document.getElementById("kr").style.opacity=S.kred?1:.22;
+  document.getElementById("kb").style.opacity=S.kblu?1:.22;
+  document.getElementById("kills").textContent=S.kills;
+  if(msgT && performance.now()-msgT>2200){ msgEl.style.opacity="0"; msgT=0; }
+}
+
+// ---------- 오버레이 ----------
+const introEl=document.getElementById("intro");
+const deadEl=document.getElementById("dead");
+const winEl=document.getElementById("win");
+function showDead(){ document.getElementById("deadtxt").innerHTML=
+  `엔테로스의 군체가 숙주를 회수했다.<br>처치 ${S.kills} · 도달 깊이 (${S.px.toFixed(0)}, ${S.py.toFixed(0)})`;
+  deadEl.classList.remove("hidden"); exitPointer(); }
+function showWin(){ document.getElementById("wintxt").innerHTML=
+  `탈출 포드 가동. 엔테로스가 등 뒤에서 무너진다.<br>총 처치 ${S.kills} · 생존 체력 ${S.hp|0}<br><br>모선은 침묵으로 돌아갔다.`;
+  winEl.classList.remove("hidden"); exitPointer(); }
+
+// ---------- 입력 ----------
+const keys={};
+let mouseLocked=false;
+function startGame(){
+  if(S.started) return; S.started=true;
+  introEl.classList.add("hidden");
+  flashMsg("침투 개시 — 탈출 포드(E)를 찾아라");
+}
+function restart(){
+  resetState(); S.started=true;
+  deadEl.classList.add("hidden"); winEl.classList.add("hidden");
+  flashMsg("재침투");
+}
+addEventListener("keydown",e=>{
+  const k=e.key.toLowerCase();
+  if(!S.started){ startGame(); return; }
+  if(S.dead){ restart(); return; }
+  if(S.won){ restart(); return; }
+  keys[k]=true;
+  if(k==="1"){S.wpn=0;} if(k==="2"){S.wpn=1;} if(k==="3"){S.wpn=2;}
+  if(k==="q"){ S.wpn=(S.wpn+1)%3; }
+  if(k==="tab"){ showMap=!showMap; e.preventDefault(); }
+  if(k===" "){ fire(); e.preventDefault(); }
+  if(["arrowup","arrowdown","arrowleft","arrowright","tab"," "].includes(k)) e.preventDefault();
+});
+addEventListener("keyup",e=>{ keys[e.key.toLowerCase()]=false; });
+
+// 마우스
+view.addEventListener("click",()=>{ if(S.started&&!S.dead&&!S.won){ if(!mouseLocked) view.requestPointerLock?.(); else fire(); } });
+document.addEventListener("pointerlockchange",()=>{ mouseLocked=document.pointerLockElement===view; });
+addEventListener("mousemove",e=>{ if(mouseLocked){ S.dir+=e.movementX*0.0025; } });
+addEventListener("mousedown",e=>{ if(mouseLocked&&e.button===0) fire(); });
+function exitPointer(){ if(document.pointerLockElement) document.exitPointerLock?.(); }
+
+// 터치
+const isTouch = matchMedia("(pointer:coarse)").matches || ("ontouchstart" in window);
+if(isTouch) document.body.classList.add("touch");
+function bindHold(id,key){ const el=document.getElementById(id); if(!el)return;
+  const on=e=>{e.preventDefault(); if(!S.started){startGame();return;} if(S.dead||S.won){restart();return;} keys[key]=true;};
+  const off=e=>{e&&e.preventDefault(); keys[key]=false;};
+  el.addEventListener("touchstart",on,{passive:false});
+  el.addEventListener("touchend",off,{passive:false});
+  el.addEventListener("touchcancel",off,{passive:false});
+}
+bindHold("tF","w"); bindHold("tB","s"); bindHold("tL","a"); bindHold("tR","d");
+{ const f=document.getElementById("tFire");
+  f.addEventListener("touchstart",e=>{e.preventDefault(); if(!S.started){startGame();return;} if(S.dead||S.won){restart();return;} fire();},{passive:false});
+  const sw=document.getElementById("tSwap");
+  sw.addEventListener("touchstart",e=>{e.preventDefault(); if(S.started&&!S.dead&&!S.won) S.wpn=(S.wpn+1)%3;},{passive:false});
+}
+// 터치 조준(좌측 영역 드래그)
+{ const look=document.getElementById("look"); let lx=null;
+  look.addEventListener("touchstart",e=>{ if(!S.started){startGame();} else if(S.dead||S.won){restart();} if(e.touches&&e.touches[0]) lx=e.touches[0].clientX;},{passive:true});
+  look.addEventListener("touchmove",e=>{ if(lx!=null && e.touches&&e.touches[0]){ S.dir+=(e.touches[0].clientX-lx)*0.006; lx=e.touches[0].clientX; }},{passive:true});
+  look.addEventListener("touchend",()=>{lx=null;});
+}
+
+// ---------- 루프 ----------
+let lastT=performance.now(), acc=0;
+function loop(t){
+  const dt=Math.min(0.05,(t-lastT)/1000); lastT=t;
+  if(S.started&&!S.dead&&!S.won){
+    const rs=2.6*dt, ms=2.9*dt;
+    if(keys["arrowleft"]) S.dir-=rs;
+    if(keys["arrowright"]) S.dir+=rs;
+    const fx=Math.cos(S.dir),fy=Math.sin(S.dir);
+    S.moving=false;
+    if(keys["w"]||keys["arrowup"]){ tryMove(S.px+fx*ms,S.py+fy*ms); S.moving=true; }
+    if(keys["s"]||keys["arrowdown"]){ tryMove(S.px-fx*ms,S.py-fy*ms); S.moving=true; }
+    if(keys["a"]){ tryMove(S.px+fy*ms,S.py-fx*ms); S.moving=true; }
+    if(keys["d"]){ tryMove(S.px-fy*ms,S.py+fx*ms); S.moving=true; }
+    updateAI(dt); updateShots(dt); checkPickups(); checkExit();
+    if(S.fireCD>0) S.fireCD-=dt;
+    if(S.fireKick>0) S.fireKick-=dt*4;
+    if(S.hurt>0) S.hurt-=dt*1.8;
+    if(S.flash>0) S.flash-=dt;
+  }
+  acc+=dt;
+  if(acc>1/32){ acc=0; render(); updateHUD(); }
+  requestAnimationFrame(loop);
+}
+render(); updateHUD();
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

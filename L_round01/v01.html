@@ -1,0 +1,947 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>폐허가 된 대저택</title>
+<style>
+  :root{
+    --paper:#e9e1cd; --ink:#2a2620; --dim:#6f6552; --line:#cdbfa0;
+    --bar:#221e18; --barink:#e9e1cd;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; overflow:hidden; background:var(--paper); color:var(--ink);
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Cascadia Mono",monospace; }
+
+  /* ---- 3D 뷰 ---- */
+  #view{
+    margin:0; position:absolute; inset:0 0 var(--statush,40px) 0;
+    font:13px/13px ui-monospace,Menlo,Consolas,monospace;
+    color:var(--ink); white-space:pre; overflow:hidden;
+    letter-spacing:0; user-select:none; cursor:crosshair; background:var(--paper);
+  }
+  /* 빛바랜 비네트 */
+  #vig{ position:absolute; inset:0 0 var(--statush,40px) 0; pointer-events:none; z-index:2;
+    background:radial-gradient(120% 120% at 50% 46%, rgba(233,225,205,0) 38%, rgba(74,66,52,.28) 100%);
+    mix-blend-mode:multiply; }
+  /* 조준 레티클 */
+  #retic{ position:absolute; left:50%; top:calc(50% - var(--statush,40px)/2); transform:translate(-50%,-50%);
+    z-index:3; pointer-events:none; font:14px/14px ui-monospace,Menlo,monospace; color:var(--ink);
+    text-shadow:0 0 2px var(--paper); transition:color .15s; }
+  #retic.on{ color:#7a3d23; }
+
+  /* ---- 하단 상태바 ---- */
+  #status{ position:fixed; left:0; right:0; bottom:0; height:var(--statush,40px);
+    background:var(--bar); color:var(--barink);
+    font:12px/var(--statush,40px) ui-monospace,Menlo,monospace;
+    padding:0 14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; z-index:5; }
+  #status b{ color:#d8b27a; font-weight:600; }
+
+  /* ---- 우상단 HUD ---- */
+  #hud{ position:fixed; right:10px; top:10px; z-index:6; text-align:right;
+    font:11px/1.55 ui-monospace,Menlo,monospace; color:var(--dim);
+    background:rgba(233,225,205,.66); border:1px solid var(--line);
+    padding:7px 10px; border-radius:3px; max-width:46vw; }
+  #hud .rm{ color:var(--ink); font-size:13px; letter-spacing:2px; font-weight:600; }
+  #hud .inv{ margin-top:4px; color:#5a4a2e; white-space:normal; }
+  #hud .obj{ margin-top:3px; color:#7a3d23; white-space:normal; }
+
+  /* ---- 상호작용 패널 ---- */
+  #panel{ position:fixed; left:50%; bottom:calc(var(--statush,40px) + 14px); transform:translateX(-50%);
+    z-index:8; max-width:min(620px,92vw); width:max-content;
+    background:rgba(34,30,24,.93); color:var(--paper);
+    border:1px solid #6a5c40; border-radius:5px; padding:13px 17px;
+    font:13px/1.7 ui-monospace,Menlo,monospace; opacity:0; pointer-events:none;
+    transition:opacity .25s; box-shadow:0 8px 30px rgba(0,0,0,.4); }
+  #panel.show{ opacity:1; }
+  #panel .pt{ color:#e3c389; letter-spacing:2px; font-weight:600; margin-bottom:5px; font-size:14px; }
+  #panel .pa{ color:#9fdc9f; margin-top:6px; font-size:12px; }
+
+  /* ---- 인트로 / 엔딩 ---- */
+  #intro,#ending{ position:fixed; inset:0; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; text-align:center;
+    background:rgba(233,225,205,.97); z-index:20; padding:26px;
+    font-family:"Noto Serif KR",ui-serif,Georgia,serif; color:var(--ink);
+    transition:opacity 1.1s ease; }
+  #intro h1{ font-size:clamp(30px,6vw,46px); font-weight:600; letter-spacing:.32em; margin:0 0 8px; text-indent:.32em; }
+  #intro .sub{ font-size:12px; letter-spacing:.5em; color:var(--dim); margin-bottom:22px; text-indent:.5em; }
+  #intro p,#ending p{ font-size:clamp(13px,1.5vw,15px); line-height:2.05; max-width:480px; margin:5px 0; }
+  #intro .art{ font-family:ui-monospace,Menlo,monospace; white-space:pre; font-size:clamp(7px,1.35vw,11px);
+    line-height:1.05; color:#5d5340; margin:8px 0 18px; opacity:.92; }
+  #intro .keys{ font-family:ui-monospace,Menlo,monospace; font-size:12px; color:var(--dim); margin-top:18px; line-height:1.9; }
+  #intro .go{ margin-top:20px; font-family:ui-monospace,Menlo,monospace; font-size:13px; letter-spacing:.2em;
+    border:1px solid var(--ink); color:var(--ink); background:transparent; padding:9px 22px; border-radius:3px;
+    cursor:pointer; transition:.2s; }
+  #intro .go:hover,#intro .go:active{ background:var(--ink); color:var(--paper); }
+  #ending{ opacity:0; pointer-events:none; background:rgba(28,24,18,.97); color:var(--paper);
+    font-family:"Noto Serif KR",ui-serif,Georgia,serif; }
+  #ending h2{ font-size:clamp(22px,4vw,30px); font-weight:600; letter-spacing:.28em; margin:0 0 14px; color:#e3c389; }
+  #ending .art{ font-family:ui-monospace,Menlo,monospace; white-space:pre; font-size:clamp(7px,1.3vw,11px);
+    line-height:1.05; color:#c9a86a; margin:10px 0; }
+  #ending .go{ margin-top:22px; font:13px/1 ui-monospace,Menlo,monospace; letter-spacing:.2em;
+    border:1px solid var(--paper); color:var(--paper); background:transparent; padding:9px 22px; border-radius:3px; cursor:pointer; }
+  #ending .go:hover{ background:var(--paper); color:#1c1812; }
+  .hidden{ opacity:0 !important; pointer-events:none !important; }
+
+  /* ---- 모바일 컨트롤 ---- */
+  #touch{ position:fixed; inset:0 0 var(--statush,40px) 0; z-index:7; display:none; pointer-events:none; }
+  #touch .pad{ position:absolute; pointer-events:auto; }
+  #touch .btn{ position:absolute; pointer-events:auto;
+    width:54px; height:54px; border-radius:50%; border:1px solid rgba(42,38,32,.5);
+    background:rgba(233,225,205,.5); color:var(--ink);
+    font:600 13px/54px ui-monospace,Menlo,monospace; text-align:center; user-select:none;
+    backdrop-filter:blur(1px); }
+  #touch .btn:active{ background:rgba(42,38,32,.85); color:var(--paper); }
+  #t-fwd{ left:50%; transform:translateX(-50%); bottom:118px; }
+  #t-bwd{ left:50%; transform:translateX(-50%); bottom:14px; }
+  #t-strafeL{ left:14px; bottom:66px; }
+  #t-strafeR{ right:14px; bottom:66px; }
+  #t-turnL{ left:78px; bottom:66px; }
+  #t-turnR{ right:78px; bottom:66px; }
+  #t-act{ right:14px; bottom:140px; width:64px; height:64px; line-height:64px; font-size:12px;
+    background:rgba(122,61,35,.55); color:var(--paper); border-color:rgba(122,61,35,.7); }
+  body.mobile #touch{ display:block; }
+  body.mobile #hud{ font-size:10px; padding:5px 7px; }
+</style>
+</head>
+<body>
+<pre id="view"></pre>
+<div id="vig"></div>
+<div id="retic">+</div>
+
+<div id="hud">
+  <div class="rm" id="hud-room">— —</div>
+  <div class="inv" id="hud-inv">소지품: 없음</div>
+  <div class="obj" id="hud-obj"></div>
+</div>
+
+<div id="status">불러오는 중…</div>
+
+<div id="panel"><div class="pt" id="panel-t"></div><div class="pb" id="panel-b"></div><div class="pa" id="panel-a"></div></div>
+
+<div id="touch">
+  <div class="btn" id="t-fwd">▲</div>
+  <div class="btn" id="t-bwd">▼</div>
+  <div class="btn" id="t-strafeL">◀<small>측</small></div>
+  <div class="btn" id="t-strafeR"><small>측</small>▶</div>
+  <div class="btn" id="t-turnL">↺</div>
+  <div class="btn" id="t-turnR">↻</div>
+  <div class="btn" id="t-act">살핌<br>E</div>
+</div>
+
+<div id="intro">
+  <h1>폐허가 된 대저택</h1>
+  <div class="sub">A B A N D O N E D &nbsp; M A N O R</div>
+  <pre class="art">        .-~~~-.        ___        .-~~~-.
+       /  ___  \  __ /   \ __  /  ___  \
+      |  |[ ]|  ||..||[X]||..|| |[ ]|  |
+   ___|__|___|__||__||___||__||_|___|__|___
+  /                                        \
+ |   ▓  ▓   ▓  ▓ ░░ ▓  ▓   ▓  ▓  ▓  ▓  ▓    |
+ |__________________________________________|
+        |  먼지와 침묵이 가득한 옛 저택  |</pre>
+  <p>문은 오래전에 열린 채로 굳었다. 안에서는 바람도 멈춰 있다.</p>
+  <p>방마다 누군가 두고 간 물건들이 3D 그림자로 서 있다.<br>잠긴 안방 너머, 이 집의 <b>심장</b>이 아직 뛰고 있다는 소문.</p>
+  <p class="keys">W A S D · ←→ 이동/회전 &nbsp;|&nbsp; ↑↓ 전후진<br>E (또는 클릭) 살펴보기 · 줍기 · 작동 &nbsp;|&nbsp; 모바일: 화면 버튼</p>
+  <button class="go" id="go">대문을 넘는다</button>
+</div>
+
+<div id="ending">
+  <h2 id="ending-h">심장</h2>
+  <pre class="art" id="ending-art"></pre>
+  <p id="ending-text"></p>
+  <button class="go" id="restart">다시 처음부터</button>
+</div>
+
+<script>
+(() => {
+"use strict";
+
+/* ============================================================
+   폐허가 된 대저택 — 1인칭 3D 아스키 탐험
+   레이캐스트 벽 + 빌보드 스프라이트(가구/기계/생물) + 방 전환 + 상호작용
+   ============================================================ */
+
+const view = document.getElementById("view");
+const statusEl = document.getElementById("status");
+const retic = document.getElementById("retic");
+const hudRoom = document.getElementById("hud-room");
+const hudInv  = document.getElementById("hud-inv");
+const hudObj  = document.getElementById("hud-obj");
+const panel = document.getElementById("panel");
+const panelT = document.getElementById("panel-t");
+const panelB = document.getElementById("panel-b");
+const panelA = document.getElementById("panel-a");
+
+/* ---------- 벽 텍스처: 빛바랜 결, 거리에 따라 흐려짐 ---------- */
+const SHADE = "█▓▒░·:. ";              // 가까움→멀음
+const FLOOR = "▒░·,'`. ".split("");    // 바닥(가까움→지평선)
+function shadeWall(d, side, base){
+  // d:거리, side:벽면, base:방별 거칠기(0~1)
+  let s = d/2.0 + (side?0.9:0) - base*1.2;
+  let i = Math.max(0, Math.min(SHADE.length-1, Math.round(s)));
+  return SHADE[i];
+}
+
+/* ---------- 스프라이트(3D처럼 보이는 아스키 사물) ---------- */
+/* 각 스프라이트는 여러 줄의 아스키 아트. 월드에 빌보드로 배치되어
+   거리/각도에 따라 크기 조절되어 그려진다. */
+const SPR = {
+  hearth: [
+    "  _________________  ",
+    " /                 \\ ",
+    "|  ___   ___   ___  |",
+    "| |   | |   | |   | |",
+    "| |___| |___| |___| |",
+    "|___________________|",
+    "|  ((  ~  ))   .'.   |",
+    "|   )) ^ ((   ( * )  |",
+    "|  ((  |  ))   `.'   |",
+    "|___((_|_))_________|",
+    " |  ash   |   ash  | ",
+    " '----------------' "
+  ],
+  piano: [
+    "    _______________   ",
+    "   /||||||||||||||/|   ",
+    "  /______________/ |   ",
+    "  |  .--------.  | |   ",
+    "  | /  GRAND  / | |   ",
+    "  |/________ /  |/    ",
+    "  |__________|__|     ",
+    "  |##|##|##|##|##|    ",
+    "  |  |  |  |  |  |    ",
+    "  /==\\        /==\\   "
+  ],
+  chandelier: [
+    "      __|__      ",
+    "   .-'  |  '-.   ",
+    "  /   .-|-.   \\  ",
+    " (   (  *  )   ) ",
+    "  \\ * \\_|_/ * /  ",
+    "   '. /|||\\ .'   ",
+    "    `* * * *`    ",
+    "     ` . ' `     "
+  ],
+  bookshelf: [
+    " _______________ ",
+    "|=|I|H|=|l|I|=|H| ",
+    "| |_|_| |_|_| |_| ",
+    "|=|H|I|=|=|l|H|=| ",
+    "| |_|_|_| |_|_| | ",
+    "|I|=|l|H|=|I|=|l| ",
+    "|_|_|_|_|_|_|_|_| ",
+    "|=|H|=|I|l|=|H|=| ",
+    "'---------------' "
+  ],
+  statue: [
+    "    .-\"\"-.     ",
+    "   /  .-. \\    ",
+    "  |  (o o) |   ",
+    "   \\  `-' /    ",
+    "   .'-...-'.   ",
+    "  / /|   |\\ \\  ",
+    " ( ( |   | ) ) ",
+    "  \\ \\|   |/ /  ",
+    "   |  | |  |   ",
+    "   |__| |__|   ",
+    "  [=========]  "
+  ],
+  clock: [
+    "   _________   ",
+    "  /  _____  \\  ",
+    " |  /XII  \\ |  ",
+    " | |IX  III| |  ",
+    " |  \\__VI_/ |  ",
+    " |    ||    |  ",
+    " |   (  )   |  ",
+    " |    ||    |  ",
+    " |   _||_   |  ",
+    " |__/____\\__| "
+  ],
+  fountain: [
+    "     . : .      ",
+    "    : ~*~ :     ",
+    "   ( ~~~~~ )    ",
+    "  __\\_____/__   ",
+    " /  ~~~~~~~  \\  ",
+    "( ~~~~~~~~~~~ ) ",
+    " \\___________/ ",
+    "  |  |   |  |   ",
+    "  '--'   '--'   "
+  ],
+  vines: [
+    "  \\ |  , |  /  ",
+    " , \\| /,\\| ,/  ",
+    "  \\ |/  \\|/ ,  ",
+    " , Y ,  Y , \\  ",
+    "  /|\\  /|\\  |  ",
+    " / | \\/ | \\ |  ",
+    "   |    |   ,  "
+  ],
+  machine: [
+    "  .===========.   ",
+    "  | [O]   [O] |   ",
+    "  |  _______  |   ",
+    "  | |#:#:#:#| |   ",
+    "  | |#:#:#:#| |   ",
+    "  |==========| |  ",
+    "  |  () || () | | ",
+    "  |__||____||__|/ ",
+    "   /__\\    /__\\   "
+  ],
+  rat: [
+    "   ___        ",
+    "  (o o)~~~~~   ",
+    "  ( = )    >   ",
+    "  /   \\        ",
+    "  ^^ ^^        "
+  ],
+  ghost: [
+    "   .-~~~-.     ",
+    "  /  . .  \\    ",
+    " |  (o o)  |   ",
+    " |    ^    |   ",
+    "  \\  '-'  /    ",
+    "  /\\/^\\/\\/\\    ",
+    "  ` ` ` ` `    "
+  ],
+  door: [
+    " .---------. ",
+    " |#=======#| ",
+    " ||   |   || ",
+    " ||   o   || ",
+    " ||   |   || ",
+    " |#=======#| ",
+    " |____|____| "
+  ],
+  key: [
+    "  __         ",
+    " /  \\___     ",
+    "( () )==[]== ",
+    " \\__/   |||  "
+  ],
+  lever: [
+    "   O      ",
+    "   |      ",
+    "   |      ",
+    "  _|_     ",
+    " |###|    ",
+    " |___|    "
+  ],
+  heart: [
+    "   .-~^~-. .-~^~-.   ",
+    "  /  ()   V   ()  \\  ",
+    " |   .-~~~~~~~-.   | ",
+    " |  ( ~ B E A T ~) | ",
+    "  \\  '-~~~~~~~-'  /  ",
+    "   \\    /|\\      /   ",
+    "    \\  / | \\    /    ",
+    "     '-..|..-'      ",
+    "        \\|/         "
+  ]
+};
+
+/* ---------- 방 정의 ----------
+   map: 문자열 행 배열. '#'=벽, ' '=바닥, 'A'..='문(이동)', 숫자/기호=벽 텍스처 변화 X(단순화)
+   doors: {ch:{to:roomId, sx,sy,sdir}} — 그 문 타일을 밟으면 to방 (sx,sy) sdir 로 이동
+   objs: 배치된 사물 {x,y,spr,name,id, action} */
+const ROOMS = {
+  hall: {
+    name:"현관 홀",
+    base:0.15,
+    desc:"먼지가 쌓인 대리석 바닥. 천장의 샹들리에가 위태롭게 흔들린다.",
+    map:[
+      "###########",
+      "#         #",
+      "#         #",
+      "#         #",
+      "####   ####",
+      "#         #",
+      "#         A",   // A: 오른쪽 → 도서관
+      "#         #",
+      "B    C    #",   // B: 왼쪽 → 응접실, C: 위쪽 묘사용
+      "#         #",
+      "###########"
+    ],
+    objs:[
+      {x:5.5,y:2.4, spr:"chandelier", name:"부서진 샹들리에", lift:0.9, h:0.95,
+        text:"수백 개의 크리스털 중 셋만 남아 천장에 매달려 있다. 손대면 가루처럼 떨어질 듯하다."},
+      {x:2.3,y:3.2, spr:"clock", name:"멈춘 대형 괘종시계",
+        text:"바늘이 3시 47분에 멈췄다. 추를 당기자… 한 번, 둔탁하게 울리고 다시 멈춘다.",
+        action:{type:"info", once:true, after:"시계 속에서 작은 무언가가 굴러 떨어졌다 — 황동 열쇠.",
+                give:"brass_key"}},
+      {x:7.6,y:3.0, spr:"statue", name:"눈을 가린 석상",
+        text:"대리석 천사가 두 손으로 제 눈을 가리고 있다. 보고 싶지 않은 무엇을 본 자세."},
+      {x:5.5,y:8.5, spr:"door", name:"잠긴 안방 문(심장)", id:"heartdoor",
+        text:"무거운 떡갈나무 문. 황동 자물쇠가 걸려 있다. 안에서 희미한 박동이 들린다.",
+        action:{type:"locked", need:"brass_key",
+                lockedMsg:"자물쇠가 잠겨 있다. 어딘가에 황동 열쇠가 있을 것이다.",
+                openMsg:"황동 열쇠가 부드럽게 돌아간다. 문 너머로 붉은 빛이 새어 나온다…",
+                to:"heart"}}
+    ]
+  },
+
+  library: {
+    name:"도서관",
+    base:0.05,
+    desc:"천장까지 닿는 책장들. 곰팡이와 종이 냄새. 책등의 글자는 모두 지워졌다.",
+    map:[
+      "###########",
+      "#         #",
+      "#         #",
+      "A         #",   // A: 왼쪽 → 현관 홀
+      "#         #",
+      "#         #",
+      "#         #",
+      "#    D    #",   // D: 아래 → 온실
+      "###########"
+    ],
+    objs:[
+      {x:2.4,y:2.0, spr:"bookshelf", name:"무너진 책장",
+        text:"책들이 폭포처럼 쏟아져 있다. 펼쳐진 한 권: 「…집은 자신을 읽는 자를 기억한다」."},
+      {x:8.4,y:2.2, spr:"bookshelf", name:"비밀 책장",
+        text:"한 권만 색이 다르다. 당겨보니 책장 전체가 끼익— 살짝 돌아간다.",
+        action:{type:"info", once:true, after:"책장 뒤 빈 공간에서 차가운 쇳조각을 찾았다 — 톱니바퀴.",
+                give:"gear"}},
+      {x:5.5,y:4.5, spr:"ghost", name:"읽고 있던 누군가", id:"reader", lift:0.35,
+        text:"의자에 앉은 형체. 책을 든 채 굳어 있다. 가까이 가자 천천히 고개를 든다… 그리고 사라진다."},
+      {x:8.3,y:5.6, spr:"rat", name:"책을 갉는 쥐", h:0.45,
+        text:"종이를 갉던 쥐가 너를 빤히 본다. 도망치며 어둠 속 구멍으로 사라진다."}
+    ]
+  },
+
+  parlor: {
+    name:"응접실",
+    base:0.2,
+    desc:"빛바랜 벽지와 무도회의 잔향. 피아노가 홀로 남아 음을 기다린다.",
+    map:[
+      "###########",
+      "#         #",
+      "#         #",
+      "#         #",
+      "#         A",   // A: 오른쪽 → 현관 홀
+      "#         #",
+      "#         #",
+      "###########"
+    ],
+    objs:[
+      {x:3.0,y:2.6, spr:"piano", name:"그랜드 피아노",
+        text:"건반을 누르자 어긋난 화음이 방을 채운다. 잠시, 누군가 함께 치는 듯한 착각.",
+        action:{type:"info", note:true}},
+      {x:7.8,y:2.4, spr:"hearth", name:"꺼진 벽난로",
+        text:"오래 식은 재. 안쪽을 더듬자 그을린 종이쪽지: 「추는 3시 47분에 멈췄다」.",
+        action:{type:"info", once:true, after:"벽난로 재 속에서 성냥갑을 주웠다.", give:"matches"}},
+      {x:5.5,y:5.4, spr:"statue", name:"춤추다 멈춘 한 쌍",
+        text:"먼지로 굳은 두 무용수. 손을 맞잡은 자세 그대로 영원히 멈춰 있다."}
+    ]
+  },
+
+  conservatory: {
+    name:"온실",
+    base:0.0,
+    desc:"깨진 유리 천장으로 빛이 든다. 식물들이 집을 안에서부터 삼키는 중.",
+    map:[
+      "###########",
+      "#         #",
+      "#         #",
+      "#         #",
+      "#         #",
+      "#         #",
+      "#    D    #",   // D: 위 → 도서관
+      "###########"
+    ],
+    objs:[
+      {x:2.6,y:2.2, spr:"vines", name:"벽을 삼킨 덩굴",
+        text:"덩굴이 석벽 틈마다 손가락을 박았다. 집과 숲의 경계가 사라지는 중."},
+      {x:8.2,y:2.6, spr:"vines", name:"매달린 넝쿨",
+        text:"천장에서 늘어진 넝쿨이 커튼처럼 흔들린다. 헤치자 차가운 금속이 만져진다.",
+        action:{type:"info", once:true, after:"넝쿨 뒤 화분 받침에서 두 번째 톱니바퀴를 찾았다.", give:"gear2"}},
+      {x:5.5,y:3.6, spr:"fountain", name:"마른 분수",
+        text:"이끼 낀 분수. 바닥에 동전 대신 빗물에 닳은 작은 메모: 「지하에 심장의 동력이 있다」."},
+      {x:8.0,y:5.0, spr:"machine", name:"녹슨 양수기", id:"pump",
+        text:"분수로 물을 올리던 기계. 톱니 자리 두 곳이 비어 있다.",
+        action:{type:"machine", need:["gear","gear2"],
+                failMsg:"빈 톱니 자리가 둘. 어딘가에 톱니바퀴 두 개가 있어야 한다.",
+                okMsg:"톱니 두 개를 끼우고 손잡이를 돌리자, 집 깊은 곳에서 둔중한 가동음이 울린다.",
+                flag:"power"}}
+    ]
+  },
+
+  heart: {
+    name:"심장의 방",
+    base:0.1,
+    desc:"붉게 박동하는 빛. 집의 가장 깊은 곳, 모든 방이 여기로 이어져 있었다.",
+    map:[
+      "#########",
+      "#       #",
+      "#       #",
+      "#       #",
+      "#       #",
+      "#   A   #",   // A: 아래(들어온 곳) → 현관 홀 (되돌아가기)
+      "#########"
+    ],
+    objs:[
+      {x:4.0,y:2.4, spr:"heart", name:"집의 심장", id:"theheart", lift:0.5, h:1.0,
+        text:"벽도 바닥도 천장도 아닌 것이 박동한다. 이 집이 무너지지 않은 단 하나의 이유.",
+        action:{type:"finale"}}
+    ]
+  }
+};
+
+/* 문 연결: ch(맵 글자) → 목적지 */
+const DOORS = {
+  hall:    { A:{to:"library", x:1.6,y:3.5,dir:0},      B:{to:"parlor", x:8.4,y:4.5,dir:Math.PI} },
+  library: { A:{to:"hall",    x:8.4,y:6.5,dir:Math.PI},D:{to:"conservatory", x:5.5,y:1.6,dir:Math.PI/2} },
+  parlor:  { A:{to:"hall",    x:1.6,y:8.5,dir:0} },
+  conservatory:{ D:{to:"library", x:5.5,y:6.4,dir:-Math.PI/2} },
+  heart:   { A:{to:"hall",    x:5.5,y:6.5,dir:-Math.PI/2} }
+};
+
+/* ---------- 상태 ---------- */
+let cur = "hall";
+let px=5.5, py=9.2, dir=-Math.PI/2;     // 현관 홀, 위를 바라봄
+const inv = {};                          // 소지품 set
+const flags = {};                        // 전역 플래그(power 등)
+const objState = {};                     // 사물별 상태(열림/획득 등)
+let entered=false, finished=false;
+const keys = {};
+
+/* map 접근 헬퍼 */
+function room(){ return ROOMS[cur]; }
+function cell(mx,my){
+  const m = room().map;
+  if(my<0||my>=m.length) return "#";
+  const r = m[my];
+  if(mx<0||mx>=r.length) return "#";
+  return r[mx];
+}
+function isWall(mx,my){
+  const c = cell(mx,my);
+  return c==="#";
+}
+function doorAt(mx,my){
+  const c = cell(mx,my);
+  const d = DOORS[cur];
+  if(d && d[c]) return d[c];
+  return null;
+}
+
+/* ---------- 화면 크기 ---------- */
+let W=120, H=44, CW=7.8, CH=13;
+function fit(){
+  const probe=document.createElement("span");
+  probe.style.cssText="position:absolute;visibility:hidden;font:13px/13px ui-monospace,Menlo,Consolas,monospace;white-space:pre";
+  probe.textContent="M".repeat(100);
+  document.body.appendChild(probe);
+  CW=probe.getBoundingClientRect().width/100 || 7.8;
+  probe.remove();
+  const sh = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--statush'))||40;
+  W=Math.max(48, Math.min(260, Math.floor(innerWidth/CW)-1));
+  H=Math.max(20, Math.floor((innerHeight - sh)/CH));
+}
+fit();
+addEventListener("resize", fit);
+
+/* 모바일 감지 */
+const isMobile = matchMedia("(pointer:coarse)").matches || innerWidth<560;
+if(isMobile){
+  document.body.classList.add("mobile");
+  document.documentElement.style.setProperty("--statush","40px");
+}
+
+/* ---------- 레이캐스트 + 스프라이트 렌더 ---------- */
+/* 표준 카메라 평면 모델. planeLen 으로 시야각, 모노폭 비율(2:1) 보정. */
+const PLANE = 0.66;          // 카메라 평면 길이(시야각)
+const ASPECT = 0.5;          // 글자 가로:세로 ≈ 0.5 → 세로 투영을 그만큼 압축
+let zbuf = new Float32Array(512);
+
+let curFocus=null;
+
+function render(){
+  if(W>zbuf.length) zbuf=new Float32Array(W+8);
+  const m = room().map;
+  const rb = room().base;
+  const horizon = Math.round(H*0.50);
+  const cols = new Array(W);
+
+  // 카메라 기저: 방향(dirX,dirY) + 평면(planeX,planeY)
+  const dirX=Math.cos(dir), dirY=Math.sin(dir);
+  const planeX=Math.cos(dir+Math.PI/2)*PLANE, planeY=Math.sin(dir+Math.PI/2)*PLANE;
+
+  // 1) 벽 DDA
+  for(let x=0;x<W;x++){
+    const cam=(2*x)/W-1;
+    const rdx=dirX+planeX*cam;
+    const rdy=dirY+planeY*cam;
+    let mx=px|0,my=py|0;
+    const ddx=Math.abs(1/(rdx||1e-9)), ddy=Math.abs(1/(rdy||1e-9));
+    let sx,sy,sdx,sdy,side=0;
+    if(rdx<0){sx=-1;sdx=(px-mx)*ddx;}else{sx=1;sdx=(mx+1-px)*ddx;}
+    if(rdy<0){sy=-1;sdy=(py-my)*ddy;}else{sy=1;sdy=(my+1-py)*ddy;}
+    let hit=0,guard=0;
+    while(!hit && guard++<96){
+      if(sdx<sdy){sdx+=ddx;mx+=sx;side=0;}else{sdy+=ddy;my+=sy;side=1;}
+      if(mx<0||my<0||my>=m.length||mx>=m[0].length){hit=1;break;}
+      if(isWall(mx,my)) hit=1;
+    }
+    // 수직 거리(어안 보정)
+    let pdist = side===0 ? (mx-px+(1-sx)/2)/(rdx||1e-9) : (my-py+(1-sy)/2)/(rdy||1e-9);
+    pdist=Math.max(0.08, pdist);
+    // 벽면 좌표(텍스처용)
+    let wall = side===0 ? py+pdist*rdy : px+pdist*rdx; wall-=Math.floor(wall);
+    const lh=Math.round((H/pdist)*ASPECT*2.0);  // 벽 높이(세로 압축 반영)
+    const ds=Math.max(0,horizon-(lh>>1));
+    const de=Math.min(H-1,horizon+(lh>>1));
+    zbuf[x]=pdist;
+    cols[x]={ds,de,pdist,side,lh,wall,mx,my};
+  }
+
+  // 2) 천장/벽/바닥
+  const buf=new Array(H);
+  for(let y=0;y<H;y++){
+    const rowArr=new Array(W);
+    for(let x=0;x<W;x++){
+      const c=cols[x];
+      if(y<c.ds){
+        // 천장: 약한 음영(멀수록 살짝 진하게)
+        const cy=(horizon-y)/Math.max(1,horizon);   // 1(위)→0
+        rowArr[x]= cy>0.78 ? "·" : (cy>0.5 && ((x+y)&7)===0) ? "." : " ";
+      } else if(y>c.de){
+        const fd=(y-horizon)/Math.max(1,(H-horizon));
+        const fi=Math.min(FLOOR.length-1, ((1-fd)*FLOOR.length)|0);
+        rowArr[x]=FLOOR[fi]||" ";
+      } else {
+        rowArr[x]=wallChar(c, x, y, rb);
+      }
+    }
+    buf[y]=rowArr;
+  }
+
+  // 3) 스프라이트(빌보드) — 먼 것부터
+  const objs = room().objs.map(o=>{
+    const dx=o.x-px, dy=o.y-py;
+    return {o, d:dx*dx+dy*dy, dx, dy};
+  }).sort((a,b)=>b.d-a.d);
+
+  // 카메라 역행렬: invDet * [[ dirY*? ]] (표준 lodev 공식)
+  const invDet = 1.0/(planeX*dirY - dirX*planeY);
+
+  let focus=null, focusDepth=1e9;
+
+  for(const it of objs){
+    const o=it.o;
+    const transX = invDet*(dirY*it.dx - dirX*it.dy);
+    const depth  = invDet*(-planeY*it.dx + planeX*it.dy); // 카메라 전방 깊이
+    if(depth<=0.20) continue;                              // 등 뒤
+    const screenX = (W/2)*(1 + transX/depth);
+
+    const art = SPR[o.spr]||["?"];
+    const artH = art.length;
+    const artW = Math.max(...art.map(r=>r.length));
+
+    // 월드 높이(기본 1.35칸) → 화면 세로 글자행
+    const objWorldH = (o.h||1.35);
+    const sH = Math.max(3, Math.round((H/depth)*ASPECT*objWorldH));
+    const sW = Math.max(3, Math.round(sH*(artW/artH)*ASPECT)); // 모노폭 보정
+
+    // 바닥 접지: 발이 화면상 바닥선에. (벽과 같은 투영)
+    const colH = (H/depth)*ASPECT*2.0;                    // 깊이에서의 벽 높이
+    const footY = Math.round(horizon + colH/2);           // 바닥 만나는 행
+    const groundLift = Math.round((o.lift||0)*(H/depth)*ASPECT); // 천장 매달림 등
+    const bottom = footY - groundLift;
+    const top = bottom - sH;
+    const left = Math.round(screenX - sW/2);
+
+    // 그리기
+    let painted=0;
+    for(let yy=0; yy<sH; yy++){
+      const Y=top+yy; if(Y<0||Y>=H) continue;
+      const ay=Math.min(artH-1, Math.floor(yy*artH/sH));
+      const srcRow=art[ay]||"";
+      for(let xx=0; xx<sW; xx++){
+        const X=left+xx; if(X<0||X>=W) continue;
+        if(depth >= zbuf[X]) continue;                    // 벽보다 뒤면 가림
+        const ax=Math.min(srcRow.length-1, Math.floor(xx*artW/sW));
+        let ch=srcRow[ax]; if(ch==null||ch===" ") continue;
+        if(depth>7.5){ if(ch!=="·"&&ch!=="."&&ch!==" ") ch="·"; }   // 아주 멀면 점묘
+        else if(depth>4.8){ ch = "▒░:·.".includes(ch)?ch:(/[#@|/\\()=]/.test(ch)?ch:ch); }
+        buf[Y][X]=ch; painted++;
+      }
+    }
+
+    // 포커스: 화면 중앙 열을 덮고 손 닿는 거리
+    if(painted>0 && depth<3.6){
+      const half=sW/2+3;
+      if(Math.abs(screenX - W/2) < half && depth<focusDepth){
+        focus=o; focusDepth=depth;
+      }
+    }
+  }
+
+  // 4) 출력
+  const out=new Array(H);
+  for(let y=0;y<H;y++) out[y]=buf[y].join("");
+  view.textContent=out.join("\n");
+
+  // 5) 포커스 HUD
+  if(focus){
+    retic.classList.add("on"); retic.textContent="◈";
+    hudObj.textContent="▸ "+focus.name+"  (E 살펴보기)";
+    curFocus=focus;
+  } else {
+    retic.classList.remove("on"); retic.textContent="+";
+    hudObj.textContent=""; curFocus=null;
+  }
+}
+
+/* 벽 글자: 거리 음영 + 코너/접합부 강조 + 은은한 풍화 결 */
+function wallChar(c, x, y, base){
+  const d=c.pdist;
+  // 음영: 가까움(진함=0) → 멀음(연함). side(측면)는 한 단계 연하게.
+  let s = d*0.66 + (c.side?1.1:0) - base*1.5 - 0.6;
+  // 벽 칸 경계(세로 코너 라인) 진하게 → 기둥/모서리감
+  const ww=c.wall;
+  if(ww<0.045||ww>0.955) s-=2.2;
+  else if(ww<0.12||ww>0.88) s-=0.6;
+  // 천장·바닥 접합 라인
+  if(y===c.ds||y===c.de) s-=1.8;
+  else if(y===c.ds+1||y===c.de-1) s-=0.5;
+  // 풍화: 정적이지 않게, 매우 드물게 벗겨진 자국/얼룩만
+  const grain=((x*131+ (ww*977|0))^(y*53))>>>0;
+  if((grain%53)===0) s+=0.9;          // 드물게 밝게 벗겨짐
+  else if((grain%41)===0) s-=0.7;     // 드물게 곰팡이 얼룩
+  let i=Math.max(0,Math.min(SHADE.length-1, Math.round(s)));
+  return SHADE[i];
+}
+
+/* ---------- 충돌/이동 ---------- */
+function tryMove(nx,ny){
+  const m=0.26;
+  // X
+  const tx = nx + Math.sign(nx-px)*m;
+  if(!isWall(tx|0, py|0)) px=nx;
+  // Y
+  const ty = ny + Math.sign(ny-py)*m;
+  if(!isWall(px|0, ty|0)) py=ny;
+  checkDoor();
+}
+let lastDoor=0;
+function checkDoor(){
+  const d=doorAt(px|0, py|0);
+  if(d){
+    const now=performance.now();
+    if(now-lastDoor<400) return;
+    lastDoor=now;
+    cur=d.to; px=d.x; py=d.y; dir=d.dir;
+    flashRoom();
+  }
+}
+function flashRoom(){
+  const r=room();
+  hudRoom.textContent=r.name;
+  setStatus(`<b>${r.name}</b> — ${r.desc}`);
+}
+
+/* ---------- 소지품 ---------- */
+const ITEM_KR={ brass_key:"황동 열쇠", gear:"톱니바퀴", gear2:"톱니바퀴(2)", matches:"성냥갑" };
+function give(id){ inv[id]=true; refreshInv(); }
+function refreshInv(){
+  const names=Object.keys(inv).filter(k=>inv[k]).map(k=>ITEM_KR[k]||k);
+  hudInv.textContent = "소지품: " + (names.length? names.join(", ") : "없음");
+}
+
+/* ---------- 패널 ---------- */
+let panelTimer=null;
+function showPanel(title, body, action){
+  panelT.textContent=title;
+  panelB.textContent=body;
+  panelA.textContent=action||"";
+  panel.classList.add("show");
+  clearTimeout(panelTimer);
+  panelTimer=setTimeout(()=>panel.classList.remove("show"), action?5200:4200);
+}
+function setStatus(html){ statusEl.innerHTML=html; }
+
+/* ---------- 상호작용 ---------- */
+function interact(){
+  if(!curFocus){ setStatus("아무것도 비추고 있지 않다. 사물 정면에 서서 ◈ 가 떠야 한다."); return; }
+  const o=curFocus;
+  const a=o.action;
+  let act="";
+  if(a){
+    if(a.type==="info"){
+      if(a.note){ act="(어긋난 음이 길게 남는다)"; }
+      if(a.once){
+        const st=objState[o.name]||{};
+        if(!st.done){
+          st.done=true; objState[o.name]=st;
+          if(a.give){ give(a.give); }
+          showPanel(o.name, o.text, (a.after||""));
+          return;
+        } else {
+          showPanel(o.name, "이미 살펴본 곳이다. 더는 나올 것이 없다.", "");
+          return;
+        }
+      }
+      showPanel(o.name, o.text, act); return;
+    }
+    if(a.type==="locked"){
+      const st=objState[o.id]||{};
+      if(st.open){
+        // 이미 열림 → 통과
+        cur=a.to; const e=enterHeartPos(); px=e.x; py=e.y; dir=e.dir; flashRoom(); return;
+      }
+      if(inv[a.need]){
+        st.open=true; objState[o.id]=st;
+        showPanel(o.name, a.openMsg, "(문이 열렸다 — 다가가면 들어간다)");
+        // 즉시 입장
+        setTimeout(()=>{ cur=a.to; const e=enterHeartPos(); px=e.x; py=e.y; dir=e.dir; flashRoom(); }, 1400);
+      } else {
+        showPanel(o.name, a.lockedMsg, "");
+      }
+      return;
+    }
+    if(a.type==="machine"){
+      const have = a.need.every(n=>inv[n]);
+      if(have){
+        flags[a.flag]=true;
+        showPanel(o.name, a.okMsg, "(집의 동력이 돌아왔다 — 심장의 박동이 강해진다)");
+      } else {
+        showPanel(o.name, a.failMsg, "");
+      }
+      return;
+    }
+    if(a.type==="finale"){
+      finale(); return;
+    }
+  }
+  // 액션 없는 사물: 묘사만
+  showPanel(o.name, o.text, "");
+}
+
+function enterHeartPos(){ return {x:4.0, y:5.0, dir:-Math.PI/2}; }
+
+/* ---------- 엔딩 ---------- */
+const endingEl=document.getElementById("ending");
+const endingH=document.getElementById("ending-h");
+const endingArt=document.getElementById("ending-art");
+const endingText=document.getElementById("ending-text");
+function finale(){
+  if(finished) return;
+  finished=true;
+  const powered = !!flags.power;
+  endingH.textContent = powered? "되살아난 집" : "심장";
+  endingArt.textContent = powered ?
+`     .-~~~~~~~-.
+   /  ()  ▓  ()  \\
+  |  ~ B E A T ~  |
+   \\  ▓▓▓▓▓▓▓  /
+    '-~~~~~~~-'
+      \\  |  /
+   ~~~ 집이 숨을 쉰다 ~~~` :
+`     .-~^~-. .-~^~-.
+    /  ()   V   ()  \\
+   |   ~ b e a t ~   |
+    \\   ......     /
+     '-..  |  ..-'
+         \\ | /
+      여린 박동 하나`;
+  endingText.innerHTML = powered ?
+    "비어 있던 톱니가 맞물리고, 마른 분수가 다시 흐른다.<br>"+
+    "샹들리에의 남은 세 결정이 빛을 머금는다.<br><br>"+
+    "당신이 지나온 모든 방이 한 번에 숨을 들이쉰다.<br>"+
+    "폐허는, 당신이 본 것들로 다시 지어졌다." :
+    "잠긴 문을 열고 들어온 당신을, 심장이 기억한다.<br><br>"+
+    "아직 집의 동력은 잠들어 있다 — 어딘가 멈춘 기계가 있었다.<br>"+
+    "그래도 한 사람이 끝까지 걸어온 것을, 이 박동은 안다.";
+  endingEl.classList.remove("hidden");
+  endingEl.style.opacity="1"; endingEl.style.pointerEvents="auto";
+}
+
+/* ---------- 입력 ---------- */
+const intro=document.getElementById("intro");
+function enter(){
+  if(entered) return;
+  entered=true;
+  intro.classList.add("hidden");
+  flashRoom();
+}
+document.getElementById("go").addEventListener("click", enter);
+document.getElementById("restart").addEventListener("click", ()=>location.reload());
+
+addEventListener("keydown", e=>{
+  const k=e.key.toLowerCase();
+  if(!entered){ enter(); }
+  keys[k]=true;
+  if(k==="e"){ interact(); }
+  if(["arrowup","arrowdown","arrowleft","arrowright"," ","w","a","s","d"].includes(k)) e.preventDefault();
+});
+addEventListener("keyup", e=>{ keys[e.key.toLowerCase()]=false; });
+// 클릭으로도 상호작용
+view.addEventListener("click", ()=>{ if(entered) interact(); });
+
+/* 모바일 버튼 */
+function bind(id, key){
+  const el=document.getElementById(id);
+  if(!el) return;
+  const dn=e=>{ e.preventDefault(); enter(); keys[key]=true; };
+  const up=e=>{ e.preventDefault(); keys[key]=false; };
+  el.addEventListener("touchstart",dn,{passive:false});
+  el.addEventListener("touchend",up,{passive:false});
+  el.addEventListener("mousedown",dn);
+  el.addEventListener("mouseup",up);
+  el.addEventListener("mouseleave",up);
+}
+bind("t-fwd","arrowup"); bind("t-bwd","arrowdown");
+bind("t-strafeL","a"); bind("t-strafeR","d");
+bind("t-turnL","arrowleft"); bind("t-turnR","arrowright");
+document.getElementById("t-act").addEventListener("touchstart",e=>{e.preventDefault();enter();interact();},{passive:false});
+document.getElementById("t-act").addEventListener("mousedown",e=>{e.preventDefault();enter();interact();});
+
+/* ---------- 메인 루프 ---------- */
+let lastT=performance.now(), acc=0;
+function loop(t){
+  const dt=Math.min(0.05,(t-lastT)/1000); lastT=t;
+  if(entered && !finished){
+    const rs=2.3*dt, ms=2.5*dt;
+    if(keys["arrowleft"]||keys["q"]) dir-=rs;
+    if(keys["arrowright"]||keys["e2"]) dir+=rs;
+    // a/d: 스트레이프 (회전은 화살표). w/s 또는 위/아래: 전후
+    const fx=Math.cos(dir), fy=Math.sin(dir);
+    if(keys["w"]||keys["arrowup"]) tryMove(px+fx*ms, py+fy*ms);
+    if(keys["s"]||keys["arrowdown"]) tryMove(px-fx*ms, py-fy*ms);
+    if(keys["a"]) tryMove(px+fy*ms, py-fx*ms);
+    if(keys["d"]) tryMove(px-fy*ms, py+fx*ms);
+  }
+  acc+=dt;
+  if(acc>1/32){ acc=0; render(); }
+  requestAnimationFrame(loop);
+}
+
+/* 첫 페인트 */
+hudRoom.textContent=room().name;
+refreshInv();
+render();
+setStatus("대문 앞 — <b>아무 키나 누르거나 '대문을 넘는다'</b>");
+requestAnimationFrame(loop);
+
+/* 진단용 전역 노출(자가검증) */
+window.__manor = {
+  state:()=>({cur, px:+px.toFixed(2), py:+py.toFixed(2), dir:+dir.toFixed(2),
+    entered, finished, inv:Object.keys(inv).filter(k=>inv[k]), flags:Object.assign({},flags),
+    rooms:Object.keys(ROOMS).length, W, H}),
+  press:(k)=>{ keys[k]=true; },
+  release:(k)=>{ keys[k]=false; },
+  setPos:(r,x,y,d)=>{ cur=r; px=x; py=y; dir=(d==null?dir:d); flashRoom(); },
+  focusName:()=>curFocus?curFocus.name:null,
+  interact:()=>interact(),
+  enter:()=>enter(),
+  spriteCount:()=>Object.keys(SPR).length,
+  viewText:()=>view.textContent
+};
+
+})();
+</script>
+</body>
+</html>

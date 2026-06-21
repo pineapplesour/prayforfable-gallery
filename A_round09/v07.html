@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>HYPERGATE — infinity mirror</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#02030a; }
+  body {
+    font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+    -webkit-user-select:none; user-select:none; touch-action:none;
+    cursor: crosshair;
+  }
+  #stage { position:fixed; inset:0; display:block; }
+  /* faint grain + vignette overlay */
+  #vig {
+    position:fixed; inset:0; pointer-events:none; z-index:3;
+    background:
+      radial-gradient(120% 120% at 50% 50%, transparent 38%, rgba(0,0,3,0.30) 72%, rgba(0,0,4,0.78) 100%);
+    mix-blend-mode: multiply;
+  }
+  .ui { position:fixed; z-index:5; pointer-events:none;
+        font-weight:600; letter-spacing:.18em; }
+  #title {
+    left:clamp(16px,3.2vw,46px); top:clamp(14px,3vh,40px);
+    font-size:clamp(13px,1.5vw,19px); color:#e8f4ff;
+    text-shadow:0 0 22px rgba(120,180,255,.55);
+    line-height:1.5;
+  }
+  #title small {
+    display:block; font-size:.56em; letter-spacing:.42em;
+    color:#7fb6ff; opacity:.8; margin-top:.5em; font-weight:500;
+  }
+  #hint {
+    right:clamp(16px,3.2vw,46px); bottom:clamp(14px,3vh,38px);
+    text-align:right; font-size:clamp(9px,1.05vw,12px);
+    color:#9fb8d8; opacity:.62; line-height:1.85; font-weight:500;
+    letter-spacing:.22em;
+  }
+  #hint b { color:#bfe2ff; font-weight:700; }
+  #fps {
+    left:clamp(16px,3.2vw,46px); bottom:clamp(14px,3vh,38px);
+    font-size:clamp(9px,1vw,11px); color:#5a7ba8; opacity:.55;
+    letter-spacing:.2em; font-variant-numeric:tabular-nums; font-weight:500;
+  }
+  /* subtle intro fade of the chrome only — the art itself paints instantly */
+  .ui { animation: chrome 1.6s ease-out both; }
+  @keyframes chrome { from{opacity:0; filter:blur(6px)} to{opacity:1; filter:blur(0)} }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="vig"></div>
+<div id="title" class="ui">HYPERGATE<small>INFINITY · MIRROR</small></div>
+<div id="hint" class="ui">
+  MOVE <b>steer</b> &nbsp;·&nbsp; DRAG <b>twist</b><br>
+  WHEEL <b>dive</b> &nbsp;·&nbsp; CLICK <b>pulse</b><br>
+  SPACE <b>shift palette</b>
+</div>
+<div id="fps" class="ui">—</div>
+
+<script>
+(() => {
+"use strict";
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', { alpha:false });
+const fpsEl = document.getElementById('fps');
+
+let W=0,H=0,DPR=1, cx=0, cy=0, MINSIDE=0;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = Math.round(innerWidth  * DPR);
+  H = Math.round(innerHeight * DPR);
+  cv.width=W; cv.height=H;
+  cv.style.width=innerWidth+'px'; cv.style.height=innerHeight+'px';
+  MINSIDE = Math.min(W,H);
+}
+resize();
+addEventListener('resize', resize);
+
+// ---------- palettes (depth-mapped HSL ramps) ----------
+const PALETTES = [
+  { name:'AZURE',   base: 205, span: 150, sat: 92, accent: 50  },  // blue→magenta
+  { name:'EMBER',   base: 18,  span: -70, sat: 95, accent: 300 },  // amber→crimson
+  { name:'VENOM',   base: 150, span: 120, sat: 88, accent: 80  },  // teal→violet
+  { name:'NOIR',    base: 280, span: 90,  sat: 80, accent: 180 },  // violet→cyan
+  { name:'SOLAR',   base: 45,  span: 250, sat: 90, accent: 200 },  // gold→pink→cyan
+];
+let palIdx = 0;
+let palMix = 0;            // 0..1 morph between prev and current palette
+let prevPal = PALETTES[0];
+let curPal  = PALETTES[0];
+function lerp(a,b,t){return a+(b-a)*t;}
+function curHue(depth, t){
+  // depth 0 (near) .. 1 (far)
+  const a = prevPal, b = curPal, m = palMix;
+  const base = lerp(a.base, b.base, m);
+  const span = lerp(a.span, b.span, m);
+  const sat  = lerp(a.sat,  b.sat,  m);
+  return { h: base + span*depth + t, s: sat };
+}
+
+// ---------- interaction state ----------
+const M = {
+  x:0, y:0,            // target vanishing point offset (-1..1 normalized)
+  px:0, py:0,          // smoothed
+  twist:0, twistTarget:0,
+  dive:0, diveTarget:0,// forward travel velocity bias
+  down:false, lastX:0, lastY:0,
+  active:0,            // 0..1 energy from interaction (drives glow/audio)
+};
+let zoom = 0;          // continuous tunnel travel phase (accumulates)
+
+// pulses traveling down the tunnel
+const pulses = [];
+function spawnPulse(strength){
+  pulses.push({ z: 0, life: 1, strength: strength||1 });
+  if (pulses.length>14) pulses.shift();
+  M.active = Math.min(1, M.active + 0.5);
+}
+
+function pointerPos(e){
+  const r = cv.getBoundingClientRect();
+  const t = (e.touches && e.touches[0]) ? e.touches[0] : e;
+  return { x:(t.clientX-r.left)*DPR, y:(t.clientY-r.top)*DPR };
+}
+function onMove(e){
+  const p = pointerPos(e);
+  M.x = (p.x - W/2) / (W/2);
+  M.y = (p.y - H/2) / (H/2);
+  if (M.down){
+    const dx = p.x - M.lastX;
+    M.twistTarget += dx * 0.0016;
+    M.active = Math.min(1, M.active + Math.abs(dx)*0.0008);
+  }
+  M.lastX = p.x; M.lastY = p.y;
+}
+function onDown(e){
+  M.down = true;
+  const p = pointerPos(e); M.lastX=p.x; M.lastY=p.y;
+  M.x=(p.x-W/2)/(W/2); M.y=(p.y-H/2)/(H/2);
+  ensureAudio();
+}
+function onUp(){ M.down=false; }
+function onClick(e){ spawnPulse(1.2); ensureAudio(); }
+function onWheel(e){
+  e.preventDefault();
+  M.diveTarget += Math.max(-1,Math.min(1, e.deltaY*0.001)) * 0.9;
+  M.diveTarget = Math.max(-2.2, Math.min(2.6, M.diveTarget));
+  M.active = Math.min(1, M.active + 0.25);
+  ensureAudio();
+}
+addEventListener('mousemove', onMove, {passive:true});
+addEventListener('mousedown', onDown);
+addEventListener('mouseup',   onUp);
+addEventListener('click',     onClick);
+addEventListener('wheel',     onWheel, {passive:false});
+addEventListener('touchstart',(e)=>{onDown(e);}, {passive:true});
+addEventListener('touchmove', (e)=>{onMove(e);}, {passive:true});
+addEventListener('touchend',  (e)=>{ onUp(); if(!e.touches.length) spawnPulse(1.0); }, {passive:true});
+addEventListener('keydown', (e)=>{
+  if (e.code==='Space'){ e.preventDefault(); shiftPalette(); }
+});
+function shiftPalette(){
+  prevPal = curPal;
+  palIdx = (palIdx+1)%PALETTES.length;
+  curPal = PALETTES[palIdx];
+  palMix = 0;
+  M.active = Math.min(1, M.active+0.4);
+  for(let i=0;i<3;i++) spawnPulse(0.8);
+}
+
+// ---------- WebAudio: subtle reactive drone (lazy, post-interaction) ----------
+let actx=null, masterGain=null, droneOsc=[], droneGain=null, filt=null;
+function ensureAudio(){
+  if (actx) { if(actx.state==='suspended') actx.resume(); return; }
+  try{
+    actx = new (window.AudioContext||window.webkitAudioContext)();
+    masterGain = actx.createGain(); masterGain.gain.value = 0.0;
+    filt = actx.createBiquadFilter(); filt.type='lowpass';
+    filt.frequency.value=600; filt.Q.value=4;
+    droneGain = actx.createGain(); droneGain.gain.value=0.16;
+    const freqs=[55, 82.4, 110, 164.8];
+    freqs.forEach((f,i)=>{
+      const o=actx.createOscillator();
+      o.type = i%2? 'sawtooth':'sine';
+      o.frequency.value=f;
+      const g=actx.createGain(); g.gain.value = i? 0.18:0.5;
+      o.connect(g); g.connect(droneGain);
+      o.start(); droneOsc.push(o);
+    });
+    droneGain.connect(filt); filt.connect(masterGain); masterGain.connect(actx.destination);
+    masterGain.gain.linearRampToValueAtTime(0.5, actx.currentTime+1.4);
+  }catch(err){ actx=null; }
+}
+function tickAudio(){
+  if(!actx) return;
+  const t=actx.currentTime;
+  filt.frequency.setTargetAtTime(420 + M.active*1800 + Math.abs(M.dive)*900, t, 0.15);
+  droneGain.gain.setTargetAtTime(0.10 + M.active*0.22, t, 0.2);
+  // gentle detune from twist
+  droneOsc.forEach((o,i)=>{
+    o.detune.setTargetAtTime(M.twist*120 + Math.sin(t*0.3+i)*6, t, 0.3);
+  });
+}
+function audioPing(strength){
+  if(!actx) return;
+  const t=actx.currentTime;
+  const o=actx.createOscillator(); o.type='triangle';
+  const g=actx.createGain();
+  const f= 320 + Math.random()*180;
+  o.frequency.setValueAtTime(f*2.4, t);
+  o.frequency.exponentialRampToValueAtTime(f, t+0.5);
+  g.gain.setValueAtTime(0.0001,t);
+  g.gain.exponentialRampToValueAtTime(0.22*strength, t+0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, t+0.9);
+  o.connect(g); g.connect(masterGain); o.start(t); o.stop(t+1.0);
+}
+
+// ---------- dust particles drawn toward vanishing point ----------
+const DUST = [];
+function seedDust(){
+  DUST.length=0;
+  const N = Math.round( Math.min(160, (W*H)/16000) );
+  for(let i=0;i<N;i++){
+    DUST.push(newDust(Math.random()));
+  }
+}
+function newDust(zStart){
+  const ang = Math.random()*Math.PI*2;
+  const r = 0.35 + Math.random()*0.9;
+  return {
+    a: ang, r: r,
+    z: zStart!==undefined? zStart : 1.0, // 1=far, 0=near (passes camera)
+    spd: 0.0016 + Math.random()*0.0032,
+    tw: (Math.random()*2-1)*0.6,
+    sz: 0.6+Math.random()*1.8,
+  };
+}
+seedDust();
+addEventListener('resize', seedDust);
+
+// ---------- geometry: nested polygon frames forming the tunnel ----------
+const SIDES = 6;          // hexagonal mirror — feels like a real infinity gate
+const RINGS = 54;         // depth layers
+const SPACING = 0.135;    // depth between rings (in phase units)
+
+// reusable
+function polyPoints(n, R, rot, ox, oy, squash){
+  // returns flat array x0,y0,x1,y1...
+  const pts = new Float32Array(n*2);
+  for(let i=0;i<n;i++){
+    const a = rot + i*(Math.PI*2/n);
+    pts[i*2]   = ox + Math.cos(a)*R;
+    pts[i*2+1] = oy + Math.sin(a)*R*squash;
+  }
+  return pts;
+}
+
+// ---------- main loop ----------
+let last = performance.now();
+let fpsAcc=0, fpsN=0, fpsShow=0, fpsT=0;
+let T = 0;
+
+function frame(now){
+  const dt = Math.min(50, now-last)/16.6667; // ~frames
+  last = now;
+  T += 0.016 * dt;
+
+  // ---- smoothing of interaction ----
+  M.px += (M.x - M.px)*0.08*dt;
+  M.py += (M.y - M.py)*0.08*dt;
+  M.twist += (M.twistTarget - M.twist)*0.10*dt;
+  M.twistTarget *= Math.pow(0.965, dt);     // twist relaxes back
+  M.dive  += (M.diveTarget - M.dive)*0.06*dt;
+  M.diveTarget *= Math.pow(0.94, dt);        // dive momentum decays
+  M.active *= Math.pow(0.96, dt);
+  if (palMix<1) palMix = Math.min(1, palMix + 0.02*dt);
+
+  // continuous travel: idle drift + dive impulse
+  const travel = (0.010 + M.dive*0.06) * dt;
+  zoom += travel;
+
+  // vanishing point with parallax (subtle, the gate leans toward cursor)
+  const vpx = cx0() + M.px * MINSIDE * 0.10;
+  const vpy = cy0() + M.py * MINSIDE * 0.10;
+
+  // ---- background: deep radial wash that pulses ----
+  ctx.globalCompositeOperation='source-over';
+  const bgPulse = 0.5 + 0.5*Math.sin(T*0.6);
+  const bg = ctx.createRadialGradient(vpx,vpy, 0, vpx,vpy, MINSIDE*0.9);
+  const cH = curHue(0.5, T*6);
+  bg.addColorStop(0, `hsl(${cH.h+40}, ${cH.s*0.7}%, ${5+bgPulse*4}%)`);
+  bg.addColorStop(0.5, `hsl(${cH.h}, 60%, ${2.5+bgPulse*1.5}%)`);
+  bg.addColorStop(1, `#010206`);
+  ctx.fillStyle = bg;
+  ctx.fillRect(0,0,W,H);
+
+  // ---- outer atmosphere: large soft colored bloom so corners breathe ----
+  ctx.globalCompositeOperation='lighter';
+  const atmoH = curHue(0.7, T*7);
+  const atmoR = MINSIDE*(0.95 + 0.08*Math.sin(T*0.4));
+  const atmo = ctx.createRadialGradient(vpx,vpy, MINSIDE*0.2, vpx,vpy, atmoR);
+  atmo.addColorStop(0, `hsla(${atmoH.h}, 80%, 22%, ${0.10+M.active*0.12})`);
+  atmo.addColorStop(0.6, `hsla(${atmoH.h+30}, 75%, 14%, ${0.06+M.active*0.06})`);
+  atmo.addColorStop(1, `hsla(${atmoH.h}, 70%, 8%, 0)`);
+  ctx.fillStyle=atmo;
+  ctx.fillRect(0,0,W,H);
+
+  // ---- the tunnel : draw far->near, additive ----
+  ctx.globalCompositeOperation='lighter';
+  ctx.lineJoin='round'; ctx.lineCap='round';
+
+  const baseR = MINSIDE * 0.78;
+  const squash = clamp(H/W, 0.62, 1.0) * 0.82 + 0.18; // mild aspect handling
+  const sq = (W>H)? 1 : (W/H)*0.5+0.5;
+
+  // For perspective: ring i has depth d, scale = pow(persp, d - zoomPhase)
+  const PERSP = 0.82;
+  const zPhase = zoom % SPACING / SPACING; // sub-ring interpolation 0..1
+
+  // ---- precompute every ring's geometry (so we can fill walls between them) ----
+  const ringGeom = new Array(RINGS);
+  for(let i=0;i<RINGS;i++){
+    const di = i + zPhase;
+    const scale = Math.pow(PERSP, di) * (1.0 + M.dive*0.05);
+    const R = baseR * scale;
+    const rot = T*0.16
+              + di*0.17
+              + M.twist*(1.5 - i/RINGS)*3.2
+              + Math.sin(T*0.5 + di*0.3)*0.045;
+    const ringX = vpx*(1-scale) + cx0()*scale;
+    const ringY = vpy*(1-scale) + cy0()*scale;
+    ringGeom[i] = {
+      di, scale, R, rot, x:ringX, y:ringY,
+      pts: polyPoints(SIDES, R, rot, ringX, ringY, sq)
+    };
+  }
+
+  // pulse boost helper
+  function boostAt(i){
+    let b=0;
+    for(const p of pulses){
+      const d=Math.abs(p.z*RINGS - i);
+      if(d<3.2) b += (1-d/3.2)*p.life*p.strength;
+    }
+    return b;
+  }
+
+  // ---- PASS 1: filled luminous mirror walls (far -> near) ----
+  ctx.globalCompositeOperation='lighter';
+  for(let i=RINGS-1;i>0;i--){
+    const g0=ringGeom[i], g1=ringGeom[i-1];   // g1 is nearer (larger)
+    if (g1.R < 1) continue;
+    const depth01 = i/RINGS;
+    const hue = curHue(depth01, T*9 + g0.di*4);
+    const pb = boostAt(i);
+    // walls fade toward camera so near ones are translucent (mirror depth feel)
+    const wallA = (0.018 + 0.05*(depth01)) * (1 + pb*2.2) * (0.7+M.active*0.6);
+    if (wallA < 0.004) continue;
+    const wl = 34 + pb*30 + Math.sin(g0.di*0.7+T)*6;
+    const a=g0.pts, b=g1.pts;
+    for(let k=0;k<SIDES;k++){
+      const k2=(k+1)%SIDES;
+      ctx.beginPath();
+      ctx.moveTo(a[k*2],a[k*2+1]);
+      ctx.lineTo(a[k2*2],a[k2*2+1]);
+      ctx.lineTo(b[k2*2],b[k2*2+1]);
+      ctx.lineTo(b[k*2],b[k*2+1]);
+      ctx.closePath();
+      // alternate facet brightness for faceted-glass shimmer
+      const facet = 0.6 + 0.4*Math.sin(k*1.7 + g0.di*0.9 + T*0.8);
+      ctx.fillStyle = `hsla(${hue.h + k*4}, ${hue.s}%, ${wl}%, ${wallA*facet})`;
+      ctx.fill();
+    }
+  }
+
+  // ---- PASS 2: glowing ring edges, two-pass bloom (far -> near) ----
+  ctx.lineJoin='round'; ctx.lineCap='round';
+  for(let i=RINGS-1;i>=0;i--){
+    const g=ringGeom[i];
+    if (g.R < 0.6) continue;
+    const depth01 = i/RINGS;
+    const hue = curHue(depth01, T*10 + g.di*4);
+    const pb = boostAt(i);
+    let light = 56 - depth01*14 + pb*38;
+    let alpha = Math.min(1, 0.9*(0.4+0.6*(1-depth01)) + pb*0.6);
+    const isAccent = (i % 7 === 0);
+    const drawHue = isAccent ? lerp(hue.h, curPal.accent, 0.55) : hue.h;
+    const baseLw = (1.6 + pb*5) * g.scale * DPR * (1+M.active*0.5);
+
+    const pts = g.pts;
+    function strokeRing(){
+      ctx.beginPath();
+      ctx.moveTo(pts[0],pts[1]);
+      for(let k=1;k<SIDES;k++) ctx.lineTo(pts[k*2],pts[k*2+1]);
+      ctx.closePath();
+      ctx.stroke();
+    }
+    // soft wide bloom pass
+    ctx.lineWidth = Math.max(1.2, baseLw*3.0);
+    ctx.strokeStyle = `hsla(${drawHue}, ${hue.s}%, ${Math.min(60,light)}%, ${alpha*0.22})`;
+    strokeRing();
+    // crisp bright core pass
+    ctx.lineWidth = Math.max(0.7, baseLw);
+    ctx.strokeStyle = `hsla(${drawHue}, ${Math.min(100,hue.s+6)}%, ${Math.min(90,light+18)}%, ${alpha})`;
+    strokeRing();
+
+    // spokes: faint radial connectors near the camera for structure
+    if (i<RINGS-1 && depth01<0.55){
+      const gn=ringGeom[i+1];
+      ctx.lineWidth=Math.max(0.5, baseLw*0.4);
+      ctx.strokeStyle=`hsla(${drawHue}, ${hue.s}%, ${light}%, ${alpha*0.28})`;
+      ctx.beginPath();
+      for(let k=0;k<SIDES;k++){
+        ctx.moveTo(pts[k*2],pts[k*2+1]);
+        ctx.lineTo(gn.pts[k*2],gn.pts[k*2+1]);
+      }
+      ctx.stroke();
+    }
+  }
+
+  // ---- radial god-rays shooting out of the gate ----
+  const rayN = 12;
+  const rayLen = MINSIDE*(0.5 + M.active*0.3);
+  ctx.save();
+  ctx.translate(vpx,vpy);
+  for(let r=0;r<rayN;r++){
+    const a = T*0.05 + M.twist*0.6 + r*(Math.PI*2/rayN);
+    const flick = 0.5+0.5*Math.sin(T*1.7 + r*2.1);
+    const rh = curHue(0.0, T*12 + r*30);
+    const grd = ctx.createLinearGradient(0,0, Math.cos(a)*rayLen, Math.sin(a)*rayLen*sq);
+    grd.addColorStop(0, `hsla(${rh.h},100%,82%,${(0.16+M.active*0.16)*flick})`);
+    grd.addColorStop(0.5, `hsla(${rh.h},100%,68%,${(0.06+M.active*0.08)*flick})`);
+    grd.addColorStop(1, `hsla(${rh.h},100%,60%,0)`);
+    ctx.strokeStyle=grd;
+    ctx.lineWidth = (3 + flick*5)*DPR;
+    ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(Math.cos(a)*rayLen, Math.sin(a)*rayLen*sq); ctx.stroke();
+  }
+  ctx.restore();
+
+  // ---- bright core at the vanishing point + chromatic aberration halo ----
+  const coreP = 0.6+0.4*Math.sin(T*1.3) + M.active*0.5;
+  const coreR = MINSIDE*0.055*(1+M.active*0.9) + (pulses.reduce((s,p)=> s + (p.z<0.12? (0.12-p.z)*MINSIDE*0.45*p.life:0),0));
+  const ch = curHue(0.0, T*12);
+  // chromatic halo: three offset color discs
+  const aber = (3 + M.active*9)*DPR;
+  const halo = (col,ox,oy,rad,al)=>{
+    const gg=ctx.createRadialGradient(vpx+ox,vpy+oy,0, vpx+ox,vpy+oy, rad);
+    gg.addColorStop(0,`rgba(${col},${al})`);
+    gg.addColorStop(1,`rgba(${col},0)`);
+    ctx.fillStyle=gg;
+    ctx.beginPath(); ctx.arc(vpx+ox,vpy+oy,rad,0,Math.PI*2); ctx.fill();
+  };
+  halo('120,180,255', -aber, 0, coreR*2.0, 0.18*coreP);   // blue shifted
+  halo('255,120,180',  aber, 0, coreR*2.0, 0.18*coreP);   // red shifted
+  const core = ctx.createRadialGradient(vpx,vpy,0, vpx,vpy, Math.max(4,coreR));
+  core.addColorStop(0, `hsla(${ch.h+30},100%,96%,1)`);
+  core.addColorStop(0.25, `hsla(${ch.h+10},100%,82%,${0.8})`);
+  core.addColorStop(0.55, `hsla(${ch.h},100%,66%,${0.5*coreP})`);
+  core.addColorStop(1, `hsla(${ch.h},100%,50%,0)`);
+  ctx.fillStyle=core;
+  ctx.beginPath(); ctx.arc(vpx,vpy,Math.max(4,coreR),0,Math.PI*2); ctx.fill();
+
+  // ---- dust streaming toward the vanishing point ----
+  for(const d of DUST){
+    d.z -= d.spd*(1 + M.dive*4 + M.active)*dt;
+    d.a += d.tw*0.004*dt + M.twist*0.02;
+    if (d.z <= 0.02){ Object.assign(d, newDust(1.0)); continue; }
+    const sc = Math.pow(PERSP, d.z*RINGS*0.6);
+    const rr = d.r*baseR*sc;
+    const px = vpx + Math.cos(d.a)*rr;
+    const py = vpy + Math.sin(d.a)*rr*sq;
+    const a = (1-d.z)*0.9;
+    const dh = curHue(d.z, T*8);
+    const s2 = d.sz*sc*DPR*2.2 + 0.4;
+    ctx.fillStyle = `hsla(${dh.h+20}, 100%, 80%, ${a})`;
+    ctx.beginPath(); ctx.arc(px,py, s2, 0, Math.PI*2); ctx.fill();
+    // motion streak
+    const px2 = vpx + Math.cos(d.a)*rr*1.08;
+    const py2 = vpy + Math.sin(d.a)*rr*1.08*sq;
+    ctx.strokeStyle = `hsla(${dh.h+20},100%,75%,${a*0.5})`;
+    ctx.lineWidth=Math.max(0.5,s2*0.6);
+    ctx.beginPath(); ctx.moveTo(px,py); ctx.lineTo(px2,py2); ctx.stroke();
+  }
+
+  // ---- advance pulses ----
+  for(let i=pulses.length-1;i>=0;i--){
+    const p=pulses[i];
+    p.z += (0.012 + 0.01*p.strength)*dt;
+    p.life *= Math.pow(0.985, dt);
+    if (p.z>1.05 || p.life<0.03){
+      pulses.splice(i,1);
+      if (p.z>1.0) audioPing(p.strength*0.8);
+    }
+  }
+
+  // chromatic scanline shimmer near edges (very light, additive)
+  // (kept minimal for perf)
+
+  tickAudio();
+
+  // ---- fps (rolling) ----
+  const frameMs = now - (frame._p||now); frame._p=now;
+  if (frameMs>0){ fpsAcc += 1000/frameMs; fpsN++; }
+  if (now - (frame._lastFps||0) > 500){
+    fpsShow = fpsN? Math.round(fpsAcc/fpsN) : 0; fpsAcc=0; fpsN=0; frame._lastFps=now;
+    fpsEl.textContent = fpsShow+' FPS · '+curPal.name;
+  }
+
+  requestAnimationFrame(frame);
+}
+function cx0(){ return W/2; }
+function cy0(){ return H/2; }
+function clamp(v,a,b){return v<a?a:v>b?b:v;}
+
+// kick a couple of pulses so the very first frames already feel alive
+spawnPulse(0.6);
+setTimeout(()=>spawnPulse(0.9), 400);
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

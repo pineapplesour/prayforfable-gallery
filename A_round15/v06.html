@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>QUICKSILVER — coalescence</title>
+<style>
+  :root{ color-scheme: dark; }
+  html,body{ margin:0; height:100%; background:#04060a; overflow:hidden;
+    font-family: ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif; -webkit-tap-highlight-color:transparent; }
+  #stage{ position:fixed; inset:0; display:block; touch-action:none; cursor:crosshair; }
+  .ui{ position:fixed; left:0; right:0; pointer-events:none; z-index:5;
+    color:#cfe3ff; text-shadow:0 1px 18px rgba(0,0,0,.6); user-select:none; }
+  #title{ top:clamp(16px,3.4vh,34px); left:clamp(16px,3vw,40px); right:auto; }
+  #title h1{ margin:0; font-weight:300; letter-spacing:.42em;
+    font-size:clamp(20px,4.4vw,40px); }
+  #title h1 b{ font-weight:700; letter-spacing:.34em; }
+  #title p{ margin:.5em 0 0; font-weight:300; letter-spacing:.26em; opacity:.62;
+    font-size:clamp(9px,1.5vw,12px); text-transform:uppercase; }
+  #hint{ bottom:clamp(14px,3vh,30px); text-align:center; font-size:clamp(9px,1.6vw,12px);
+    letter-spacing:.22em; opacity:.5; text-transform:uppercase; }
+  #hint span{ opacity:.9; }
+  #hud{ top:clamp(16px,3.4vh,34px); right:clamp(16px,3vw,40px); left:auto; text-align:right;
+    font-variant-numeric:tabular-nums; font-size:clamp(9px,1.4vw,11px); letter-spacing:.18em; opacity:.5; }
+  #hud b{ font-weight:600; opacity:.95; }
+  @media (max-width:520px){ #title p{ display:none; } }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="title" class="ui">
+  <h1>QUICK<b>SILVER</b></h1>
+  <p>surface tension &nbsp;·&nbsp; coalescence</p>
+</div>
+<div id="hud" class="ui"><span id="hudN">—</span> drops &nbsp;<b id="hudF">60</b> fps</div>
+<div id="hint" class="ui"><span>드래그</span> 끌어모으기 &nbsp;·&nbsp; <span>클릭</span> 방울 던지기 &nbsp;·&nbsp; <span>휠/핀치</span> 점도 &nbsp;·&nbsp; <span>스페이스</span> 분열</div>
+
+<script>
+(function(){
+"use strict";
+const cv = document.getElementById('stage');
+const gl = cv.getContext('webgl', {antialias:false, premultipliedAlpha:false, alpha:false, depth:false, stencil:false})
+        || cv.getContext('experimental-webgl');
+
+// ---------- Fallback (2D) if no WebGL ----------
+if(!gl){ run2DFallback(); return; }
+
+// ================= CONFIG =================
+const MAXBLOBS = 56;           // shader uniform cap (loop unroll bound — keep modest for fill-rate)
+let   DPR = Math.min(window.devicePixelRatio||1, 1.75);
+let   W=0,H=0, PW=0,PH=0;       // CSS px / device px
+let   t0 = performance.now();
+
+// ================= SHADERS =================
+const VSRC = `
+attribute vec2 a;
+void main(){ gl_Position = vec4(a,0.0,1.0); }
+`;
+
+// Metaball field with surface-tension look + chromatic specular + caustic shimmer.
+const FSRC = `
+precision highp float;
+uniform vec2  uRes;       // device px
+uniform float uTime;
+uniform int   uN;
+uniform vec3  uBlob[${MAXBLOBS}];   // x,y (device px), radius (device px)
+uniform vec2  uPtr;       // pointer (device px)
+uniform float uPtrOn;     // 0/1 pointer active
+uniform float uVisc;      // 0..1  viscosity -> threshold/iso sharpness
+uniform float uHue;       // global hue drift
+
+// soft min for organic merge necks
+float smin(float a, float b, float k){
+  float h = clamp(0.5 + 0.5*(b-a)/k, 0.0, 1.0);
+  return mix(b, a, h) - k*h*(1.0-h);
+}
+
+// scalar field: sum of metaball potentials. returns field value.
+float field(vec2 p, out vec2 grad){
+  float f = 0.0;
+  vec2 g = vec2(0.0);
+  for(int i=0;i<${MAXBLOBS};i++){
+    if(i>=uN) break;
+    vec3 b = uBlob[i];
+    vec2 d = p - b.xy;
+    float r2 = dot(d,d);
+    float R2 = b.z*b.z;
+    // smooth polynomial kernel, finite support ~ 1.6R
+    float q = r2/(R2*2.56);
+    if(q<1.0){
+      float w = (1.0-q);
+      float contrib = w*w*w;       // C2 smooth falloff
+      f += contrib;
+      float dq = -6.0*w*w/(R2*2.56);
+      g += dq*d;
+    }
+  }
+  grad = g;
+  return f;
+}
+
+// hash for grain
+float hash(vec2 p){ return fract(sin(dot(p,vec2(41.3,289.1)))*43758.5453); }
+
+// liquid-metal palette (deep teal -> steel -> warm chrome highlight)
+vec3 palette(float x){
+  x = clamp(x,0.0,1.0);
+  vec3 a = vec3(0.02,0.05,0.09);
+  vec3 b = vec3(0.10,0.34,0.46);
+  vec3 c = vec3(0.55,0.78,0.92);
+  vec3 d = vec3(0.98,0.92,0.86);
+  vec3 col = mix(a,b, smoothstep(0.0,0.45,x));
+  col = mix(col,c, smoothstep(0.40,0.82,x));
+  col = mix(col,d, smoothstep(0.80,1.0,x));
+  return col;
+}
+
+void main(){
+  vec2 fc = gl_FragCoord.xy;
+  vec2 uv = fc/uRes;
+
+  // background: subtle vertical gradient + slow caustic ripple
+  float vign = smoothstep(1.25,0.15, length(uv-0.5));
+  vec3 bg = mix(vec3(0.012,0.018,0.030), vec3(0.02,0.05,0.075), uv.y);
+  float caust = sin((uv.x*9.0 + sin(uv.y*7.0+uTime*0.4))*1.4 - uTime*0.5);
+  caust *= sin((uv.y*11.0 - uTime*0.33));
+  bg += vec3(0.02,0.05,0.08)*smoothstep(0.6,1.0,caust)*0.5*vign;
+
+  vec2 grad;
+  float f = field(fc, grad);
+
+  // iso threshold; viscosity sharpens / softens the membrane
+  float iso = mix(0.62, 0.40, uVisc);
+  float aa  = mix(0.10, 0.035, uVisc) * (1.0 + 0.0);
+  float m = smoothstep(iso-aa, iso+aa, f);     // 1 = inside liquid
+
+  if(m < 0.001){
+    // outside: just background, but add a faint reflective glow halo near surfaces
+    float halo = smoothstep(iso*0.35, iso, f);
+    vec3 outc = bg + vec3(0.10,0.20,0.30)*halo*0.5;
+    gl_FragColor = vec4(outc,1.0);
+    return;
+  }
+
+  // ---- inside the liquid: build a fake 3D normal from the field gradient ----
+  // height proxy: distance above iso
+  float depth = clamp((f-iso)*1.4, 0.0, 1.0);
+  vec2 n2 = normalize(grad + 1e-5);
+  // bulge: surface points outward at edges, up in center
+  float bulge = sqrt(max(0.0, 1.0 - (1.0-depth)*(1.0-depth)));
+  vec3 N = normalize(vec3(-n2 * (1.0-bulge), bulge*0.9 + 0.18));
+
+  vec3 V = vec3(0.0,0.0,1.0);
+  // two moving lights for the rolling chrome reflections
+  vec3 L1 = normalize(vec3(cos(uTime*0.25)*0.6, 0.55, 0.75));
+  vec3 L2 = normalize(vec3(-0.5, sin(uTime*0.21)*0.4-0.3, 0.7));
+
+  float diff = max(dot(N,L1),0.0)*0.8 + max(dot(N,L2),0.0)*0.4;
+
+  // fresnel rim
+  float fres = pow(1.0 - max(dot(N,V),0.0), 3.0);
+
+  // specular with chromatic split (sells liquid-metal)
+  vec3 Hh = normalize(L1+V);
+  float sp = max(dot(N,Hh),0.0);
+  float specR = pow(sp, 220.0);
+  float specG = pow(sp, 180.0);
+  float specB = pow(sp, 150.0);
+  vec3 spec = vec3(specR,specG,specB);
+
+  // environment reflection: sample the moving caustic by the normal direction
+  vec2 refUV = uv + N.xy*0.18;
+  float env = sin((refUV.x*8.0 + uTime*0.3)*1.3) * sin((refUV.y*8.0 - uTime*0.2)*1.3);
+  env = 0.5 + 0.5*env;
+
+  // base color from depth, hue-drifted
+  float shade = depth*0.7 + diff*0.55 + env*0.18;
+  vec3 col = palette(shade);
+
+  // hue tint drift
+  float hueShift = 0.04*sin(uHue + uv.x*2.0 + uv.y*1.3);
+  col += vec3(hueShift, hueShift*0.3, -hueShift)*0.6;
+
+  // rim + spec
+  col += vec3(0.35,0.55,0.75) * fres * (0.6 + 0.4*env);
+  col += spec * 1.5;
+
+  // pointer attractor glow: warm core where cursor gathers liquid
+  if(uPtrOn>0.5){
+    float pd = length(fc - uPtr);
+    float pg = exp(-pd*pd/(2.0*${'120.0'}*120.0));
+    col += vec3(0.9,0.55,0.35)*pg*0.45*m;
+  }
+
+  // fine grain to break banding
+  col += (hash(fc + uTime)-0.5)*0.012;
+
+  // edge anti-alias blend with background
+  vec3 bgEdge = bg + vec3(0.10,0.20,0.30)*0.18;
+  col = mix(bgEdge, col, m);
+
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+function compile(type, src){
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+    console.error(gl.getShaderInfoLog(s)); throw new Error('shader');
+  }
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VSRC));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FSRC));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog, gl.LINK_STATUS)){ console.error(gl.getProgramInfoLog(prog)); throw new Error('link'); }
+gl.useProgram(prog);
+
+// fullscreen triangle
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+const aLoc = gl.getAttribLocation(prog, 'a');
+gl.enableVertexAttribArray(aLoc);
+gl.vertexAttribPointer(aLoc, 2, gl.FLOAT, false, 0, 0);
+
+const U = {
+  res: gl.getUniformLocation(prog,'uRes'),
+  time: gl.getUniformLocation(prog,'uTime'),
+  n:   gl.getUniformLocation(prog,'uN'),
+  blob:gl.getUniformLocation(prog,'uBlob'),
+  ptr: gl.getUniformLocation(prog,'uPtr'),
+  ptrOn:gl.getUniformLocation(prog,'uPtrOn'),
+  visc:gl.getUniformLocation(prog,'uVisc'),
+  hue: gl.getUniformLocation(prog,'uHue'),
+};
+const blobData = new Float32Array(MAXBLOBS*3);
+
+// ================= SIM =================
+const drops = [];   // {x,y,vx,vy,r,phase}
+let viscosity = 0.45;
+let hue = 0;
+
+const rnd = (a,b)=> a + Math.random()*(b-a);
+
+function spawn(x,y,r,vx,vy){
+  if(drops.length >= MAXBLOBS) return null;
+  const d = {x,y,vx:vx||0,vy:vy||0,r,phase:Math.random()*6.28, wob:0};
+  drops.push(d);
+  return d;
+}
+
+function targetCount(){
+  const area = W*H;
+  return Math.max(14, Math.min(MAXBLOBS-4, Math.round(area/26000)));
+}
+
+function seed(){
+  drops.length=0;
+  const n = targetCount();
+  for(let i=0;i<n;i++){
+    const r = rnd(14, 46);
+    spawn(rnd(r,W-r), rnd(r,H-r), r, rnd(-12,12), rnd(-12,12));
+  }
+}
+
+// pointer
+const ptr = {x:0,y:0, on:false, down:false, vx:0, vy:0, lx:0, ly:0};
+
+function physics(dt){
+  dt = Math.min(dt, 0.033);
+  const grav = 0;                         // weightless pool (planar)
+  const damp = 0.992 - viscosity*0.02;    // higher visc => more damping
+  // pointer velocity
+  ptr.vx = (ptr.x-ptr.lx); ptr.vy=(ptr.y-ptr.ly); ptr.lx=ptr.x; ptr.ly=ptr.y;
+
+  for(let i=0;i<drops.length;i++){
+    const a = drops[i];
+    // gentle brownian + breathing wobble
+    a.phase += dt*(1.2+a.r*0.01);
+    a.vx += (Math.random()-0.5)*4*dt;
+    a.vy += (Math.random()-0.5)*4*dt;
+
+    // pointer interaction
+    if(ptr.on){
+      const dx = ptr.x-a.x, dy = ptr.y-a.y;
+      const dist = Math.hypot(dx,dy)+1e-3;
+      const reach = 260;
+      if(ptr.down){
+        // attract & gather
+        if(dist<reach){
+          const f = (1 - dist/reach);
+          a.vx += (dx/dist)*f*620*dt;
+          a.vy += (dy/dist)*f*620*dt;
+          // carry pointer momentum
+          a.vx += ptr.vx*f*0.6;
+          a.vy += ptr.vy*f*0.6;
+        }
+      } else {
+        // hover: gentle swirl / push
+        if(dist<reach*0.7){
+          const f = (1 - dist/(reach*0.7));
+          a.vx += (-dy/dist)*f*120*dt - (dx/dist)*f*40*dt;
+          a.vy += ( dx/dist)*f*120*dt - (dy/dist)*f*40*dt;
+        }
+      }
+    }
+
+    // pairwise: surface tension (short attract) + merge
+    for(let j=i+1;j<drops.length;j++){
+      const b = drops[j];
+      let dx=b.x-a.x, dy=b.y-a.y;
+      let dist=Math.hypot(dx,dy)+1e-4;
+      const sum=a.r+b.r;
+      // cohesion when membranes are close: form the neck/bridge
+      if(dist < sum*1.55){
+        const nx=dx/dist, ny=dy/dist;
+        // overlap repulsion to avoid collapse to a point
+        if(dist < sum*0.62){
+          // MERGE: conserve area (mass) & momentum
+          const A = a.r*a.r + b.r*b.r;
+          const m1=a.r*a.r, m2=b.r*b.r;
+          a.x=(a.x*m1+b.x*m2)/A; a.y=(a.y*m1+b.y*m2)/A;
+          a.vx=(a.vx*m1+b.vx*m2)/A; a.vy=(a.vy*m1+b.vy*m2)/A;
+          a.r=Math.sqrt(A);
+          a.wob = 1.0;            // ripple after merge
+          drops.splice(j,1); j--;
+          continue;
+        } else {
+          // attraction (surface tension pulling membranes together)
+          const ten = (1 - dist/(sum*1.55));
+          const k = 240*ten;
+          a.vx += nx*k*dt; a.vy += ny*k*dt;
+          b.vx -= nx*k*dt; b.vy -= ny*k*dt;
+        }
+      } else if(dist < sum){
+        // soft separation if just overlapping but not merging
+        const nx=dx/dist, ny=dy/dist;
+        const push=(sum-dist)*30;
+        a.vx -= nx*push*dt; a.vy -= ny*push*dt;
+        b.vx += nx*push*dt; b.vy += ny*push*dt;
+      }
+    }
+
+    // integrate
+    a.vx*=damp; a.vy*=damp;
+    a.x += a.vx*dt; a.y += a.vy*dt;
+    a.wob *= 0.93;
+
+    // walls (soft, with energy loss)
+    const m = a.r*0.55;
+    if(a.x < m){ a.x=m; a.vx=Math.abs(a.vx)*0.6; }
+    if(a.x > W-m){ a.x=W-m; a.vx=-Math.abs(a.vx)*0.6; }
+    if(a.y < m){ a.y=m; a.vy=Math.abs(a.vy)*0.6; }
+    if(a.y > H-m){ a.y=H-m; a.vy=-Math.abs(a.vy)*0.6; }
+  }
+
+  // replenish slowly toward target so the pool never empties
+  if(drops.length < targetCount()-2 && Math.random()<0.04){
+    const r=rnd(12,28);
+    const edge=Math.floor(Math.random()*4);
+    let x,y;
+    if(edge===0){x=rnd(0,W);y=-r;}
+    else if(edge===1){x=rnd(0,W);y=H+r;}
+    else if(edge===2){x=-r;y=rnd(0,H);}
+    else {x=W+r;y=rnd(0,H);}
+    spawn(Math.max(r,Math.min(W-r,x)), Math.max(r,Math.min(H-r,y)), r,
+          (W/2-x)*0.02,(H/2-y)*0.02);
+  }
+}
+
+// split the biggest drop into shards (space / double-tap)
+function shatter(){
+  if(!drops.length) return;
+  // pick largest
+  let bi=0; for(let i=1;i<drops.length;i++) if(drops[i].r>drops[bi].r) bi=i;
+  const b=drops[bi];
+  if(b.r<22) { // if small, just nudge everything
+    for(const d of drops){ d.vx+=rnd(-160,160); d.vy+=rnd(-160,160); d.wob=1; }
+    return;
+  }
+  drops.splice(bi,1);
+  const pieces = Math.min(5, Math.max(2, Math.round(b.r/16)));
+  const area=b.r*b.r;
+  const pr=Math.sqrt(area/pieces);
+  for(let i=0;i<pieces;i++){
+    const ang=(i/pieces)*6.283+rnd(-0.3,0.3);
+    const sp=rnd(120,260);
+    const nd=spawn(b.x+Math.cos(ang)*b.r*0.4, b.y+Math.sin(ang)*b.r*0.4, pr,
+       b.vx+Math.cos(ang)*sp, b.vy+Math.sin(ang)*sp);
+    if(nd) nd.wob=1;
+  }
+}
+
+// ================= RENDER =================
+const hudN=document.getElementById('hudN'), hudF=document.getElementById('hudF');
+let lastT=performance.now(), frames=0, fpsT=0, fps=60;
+let renderScale=1.0;        // adaptive resolution (0.55..1.0)
+let adaptT=0, adaptLow=0;
+
+function applyBackbuffer(){
+  const eff = Math.max(0.55, Math.min(1, renderScale));
+  PW = Math.max(2, Math.round(W*DPR*eff));
+  PH = Math.max(2, Math.round(H*DPR*eff));
+  cv.width=PW; cv.height=PH; cv.style.width=W+'px'; cv.style.height=H+'px';
+  gl.viewport(0,0,PW,PH);
+}
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 1.75);
+  W = window.innerWidth; H = window.innerHeight;
+  applyBackbuffer();
+  if(drops.length===0) seed();
+  else { // keep drops in-bounds after resize
+    for(const d of drops){ d.x=Math.max(d.r,Math.min(W-d.r,d.x)); d.y=Math.max(d.r,Math.min(H-d.r,d.y)); }
+  }
+}
+
+function frame(now){
+  const dt=(now-lastT)/1000; lastT=now;
+  physics(isFinite(dt)?dt:0.016);
+
+  // upload blobs (device px incl. renderScale; flip y for gl)
+  const sx = PW / W;          // effective device-px per CSS-px
+  const n=Math.min(drops.length, MAXBLOBS);
+  for(let i=0;i<n;i++){
+    const d=drops[i];
+    const wob = 1 + Math.sin(d.phase)*0.04 + d.wob*0.18*Math.sin(d.phase*5);
+    blobData[i*3]   = d.x*sx;
+    blobData[i*3+1] = (H-d.y)*sx;
+    blobData[i*3+2] = d.r*sx*wob;
+  }
+  hue += dt*0.15;
+
+  gl.uniform2f(U.res, PW, PH);
+  gl.uniform1f(U.time, (now-t0)/1000);
+  gl.uniform1i(U.n, n);
+  gl.uniform3fv(U.blob, blobData);
+  gl.uniform2f(U.ptr, ptr.x*sx, (H-ptr.y)*sx);
+  gl.uniform1f(U.ptrOn, (ptr.on&&ptr.down)?1:0);
+  gl.uniform1f(U.visc, viscosity);
+  gl.uniform1f(U.hue, hue);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+
+  // hud + adaptive resolution
+  frames++; fpsT+=dt; adaptT+=dt;
+  if(fpsT>=0.5){ fps=Math.round(frames/fpsT); frames=0; fpsT=0;
+    hudF.textContent=fps; hudN.textContent=drops.length; }
+  if(adaptT>=0.9){
+    if(fps<46){ adaptLow++; } else if(fps>57){ adaptLow=Math.max(0,adaptLow-1); }
+    if(adaptLow>=2 && renderScale>0.56){ renderScale=Math.max(0.55,renderScale-0.12); adaptLow=0; applyBackbuffer(); }
+    else if(fps>58 && renderScale<1.0 && adaptLow===0){ renderScale=Math.min(1.0,renderScale+0.08); applyBackbuffer(); }
+    adaptT=0;
+  }
+
+  requestAnimationFrame(frame);
+}
+
+// ================= INPUT =================
+function pos(e){
+  const r=cv.getBoundingClientRect();
+  const cx=(e.touches?e.touches[0].clientX:e.clientX)-r.left;
+  const cy=(e.touches?e.touches[0].clientY:e.clientY)-r.top;
+  return {x:cx,y:cy};
+}
+cv.addEventListener('pointermove', e=>{ const p=pos(e); ptr.x=p.x; ptr.y=p.y; ptr.on=true; }, {passive:true});
+cv.addEventListener('pointerdown', e=>{ const p=pos(e); ptr.x=p.x; ptr.y=p.y; ptr.lx=p.x; ptr.ly=p.y; ptr.on=true; ptr.down=true;
+  ptr._t=performance.now(); ptr._sx=p.x; ptr._sy=p.y;
+}, {passive:true});
+window.addEventListener('pointerup', e=>{
+  if(ptr.down){
+    const dt=performance.now()-(ptr._t||0);
+    const moved=Math.hypot(ptr.x-(ptr._sx||ptr.x), ptr.y-(ptr._sy||ptr.y));
+    if(dt<260 && moved<10){
+      // tap = throw a fresh droplet inward with momentum
+      const r=rnd(18,34);
+      const cx=W/2, cy=H/2;
+      const ang=Math.atan2(cy-ptr.y, cx-ptr.x);
+      spawn(ptr.x, ptr.y, r, Math.cos(ang)*rnd(160,300), Math.sin(ang)*rnd(160,300));
+    }
+  }
+  ptr.down=false;
+}, {passive:true});
+cv.addEventListener('pointerleave', ()=>{ ptr.on=false; ptr.down=false; });
+
+// wheel -> viscosity
+cv.addEventListener('wheel', e=>{
+  e.preventDefault();
+  viscosity = Math.max(0, Math.min(1, viscosity - Math.sign(e.deltaY)*0.06));
+}, {passive:false});
+
+// pinch -> viscosity
+let pinch0=null;
+cv.addEventListener('touchstart', e=>{
+  if(e.touches.length===2){
+    pinch0=Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
+  }
+}, {passive:true});
+cv.addEventListener('touchmove', e=>{
+  if(e.touches.length===2 && pinch0){
+    const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
+    viscosity=Math.max(0,Math.min(1, viscosity + (d-pinch0)*0.0012));
+    pinch0=d;
+    e.preventDefault();
+  }
+}, {passive:false});
+cv.addEventListener('touchend', e=>{ if(e.touches.length<2) pinch0=null; }, {passive:true});
+
+window.addEventListener('keydown', e=>{
+  if(e.code==='Space'){ e.preventDefault(); shatter(); }
+  else if(e.key==='r'||e.key==='R'){ seed(); }
+});
+
+window.addEventListener('resize', resize);
+
+// test hook
+window.__qs = {
+  state:()=>({n:drops.length, visc:viscosity, fps}),
+  drag:(x,y)=>{ ptr.x=x;ptr.y=y;ptr.on=true;ptr.down=true; },
+  release:()=>{ ptr.down=false; },
+  tapAt:(x,y)=>{ const r=rnd(18,34); const ang=Math.atan2(H/2-y,W/2-x);
+    spawn(x,y,r,Math.cos(ang)*220,Math.sin(ang)*220); },
+  shatter, seed,
+  setVisc:(v)=>{viscosity=v;}
+};
+
+// ================= GO (first paint = art) =================
+resize();
+seed();
+requestAnimationFrame(frame);
+
+// ---------- 2D fallback (no webgl) ----------
+function run2DFallback(){
+  const ctx=cv.getContext('2d');
+  let w,h,blobs=[];
+  function rs(){ w=cv.width=innerWidth; h=cv.height=innerHeight; if(!blobs.length){ for(let i=0;i<24;i++) blobs.push({x:Math.random()*w,y:Math.random()*h,r:18+Math.random()*30,vx:0,vy:0}); } }
+  rs(); addEventListener('resize',rs);
+  function loop(){
+    ctx.fillStyle='#05080d'; ctx.fillRect(0,0,w,h);
+    for(const b of blobs){ b.x+=b.vx; b.y+=b.vy; b.vx*=.99;b.vy*=.99; b.vx+=(Math.random()-.5)*.4;b.vy+=(Math.random()-.5)*.4;
+      if(b.x<b.r||b.x>w-b.r)b.vx*=-1; if(b.y<b.r||b.y>h-b.r)b.vy*=-1;
+      const g=ctx.createRadialGradient(b.x-b.r*.3,b.y-b.r*.3,1,b.x,b.y,b.r);
+      g.addColorStop(0,'#dff0ff');g.addColorStop(1,'#1a4a5a');
+      ctx.fillStyle=g; ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,7); ctx.fill();
+    }
+    requestAnimationFrame(loop);
+  }
+  loop();
+}
+
+})();
+</script>
+</body>
+</html>

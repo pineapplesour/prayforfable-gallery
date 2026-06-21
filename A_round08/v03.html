@@ -1,0 +1,847 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+<title>COLLAPSE · 파동함수 도시</title>
+<style>
+  :root{ --ink:#e8ecf6; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#05060c; }
+  body{
+    font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;
+    color:var(--ink);
+    -webkit-tap-highlight-color:transparent;
+    cursor:crosshair;
+  }
+  #stage{ position:fixed; inset:0; display:block; }
+  /* HUD */
+  #hud{
+    position:fixed; left:0; right:0; top:0; padding:18px 22px;
+    display:flex; justify-content:space-between; align-items:flex-start;
+    pointer-events:none; mix-blend-mode:screen; z-index:5;
+    font-feature-settings:"tnum" 1;
+  }
+  .brand{ line-height:1; }
+  .brand .t{
+    font-size:13px; letter-spacing:.62em; font-weight:700;
+    text-transform:uppercase; opacity:.92;
+  }
+  .brand .s{
+    margin-top:7px; font-size:10px; letter-spacing:.34em;
+    opacity:.42; text-transform:uppercase; font-weight:400;
+  }
+  .meta{ text-align:right; line-height:1.45; }
+  .meta .row{ font-size:10px; letter-spacing:.2em; opacity:.5; text-transform:uppercase; }
+  .meta .big{ font-size:22px; letter-spacing:.04em; opacity:.95; font-weight:300; margin-top:1px; }
+  .meta .biome{ font-size:10px; letter-spacing:.32em; opacity:.65; margin-top:9px; }
+  /* bottom hint bar */
+  #hint{
+    position:fixed; left:0; right:0; bottom:0; padding:16px 22px 18px;
+    display:flex; gap:22px; flex-wrap:wrap; justify-content:center;
+    pointer-events:none; z-index:5; mix-blend-mode:screen;
+  }
+  #hint span{
+    font-size:10px; letter-spacing:.22em; text-transform:uppercase; opacity:.46;
+    white-space:nowrap;
+  }
+  #hint b{ opacity:.92; font-weight:600; }
+  /* entropy meter */
+  #ent{
+    position:fixed; left:22px; bottom:54px; width:180px; height:3px;
+    background:rgba(255,255,255,.08); z-index:5; pointer-events:none; overflow:hidden;
+    border-radius:2px;
+  }
+  #entfill{ position:absolute; left:0; top:0; bottom:0; width:0%;
+    background:linear-gradient(90deg,#36e0c8,#7c6cff,#ff5fa2); transition:width .12s linear; }
+  @media (max-width:560px){
+    .brand .t{ font-size:11px; letter-spacing:.42em; }
+    .meta .big{ font-size:17px; }
+    #hint{ gap:14px; padding-bottom:14px; }
+    #hint span{ letter-spacing:.16em; }
+    #ent{ width:120px; bottom:48px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="hud">
+  <div class="brand">
+    <div class="t">Collapse</div>
+    <div class="s">wave function · procedural city</div>
+  </div>
+  <div class="meta">
+    <div class="row">collapsed cells</div>
+    <div class="big" id="mCells">0</div>
+    <div class="biome" id="mBiome">— NEON DELTA —</div>
+  </div>
+</div>
+<div id="ent"><div id="entfill"></div></div>
+<div id="hint">
+  <span><b>이동</b> 엔트로피 끌어당김</span>
+  <span><b>클릭</b> 붕괴 충격파</span>
+  <span><b>휠 / 위·아래</b> 바이옴 전환</span>
+  <span><b>스페이스</b> 전면 재생성</span>
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   COLLAPSE — Wave Function Collapse procedural city
+   Single-file generative artwork. Pure canvas 2D.
+   - Grid of cells collapse from superposition (entropy waves)
+   - Edge-adjacency WFC over a hand-tuned city tileset
+   - Living layer: traffic lights pulse along roads, towers breathe
+   - Cursor = entropy gravity well that re-collapses nearby cells
+   - Click = collapse shockwave; wheel/arrows = biome palettes
+   - Space = full regenerate
+   ============================================================ */
+
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', { alpha:false });
+let DPR = Math.min(window.devicePixelRatio || 1, 2);
+let W=0, H=0;          // css px
+let CW=0, CH=0;        // device px
+
+/* ---------- biomes (palettes) ---------- */
+const BIOMES = [
+  { name:'NEON DELTA',
+    bg:['#05060c','#0a0d1c'],
+    ink:'#e8ecf6',
+    ground:'#0b0f1e',
+    park:['#0e3b3a','#1c6f5e'],
+    water:['#0a1c3a','#1956b0'],
+    build:['#1a2348','#3d5bd8','#7c6cff','#36e0c8'],
+    glow:['#7c6cff','#36e0c8','#ff5fa2'],
+    lane:'#7fe9ff'
+  },
+  { name:'EMBER GRID',
+    bg:['#0a0604','#180a06'],
+    ink:'#fbe9dc',
+    ground:'#160b07',
+    park:['#3a2406','#7a5410'],
+    water:['#2a0d1a','#7a1f3a'],
+    build:['#3a1408','#a8431a','#ff7a2e','#ffd35a'],
+    glow:['#ff7a2e','#ffd35a','#ff3d6e'],
+    lane:'#ffd9a0'
+  },
+  { name:'GLACIER',
+    bg:['#04080c','#08131c'],
+    ink:'#e6f4ff',
+    ground:'#07101a',
+    park:['#0a3030','#1c7a6e'],
+    water:['#06243a','#1670c0'],
+    build:['#0e2236','#2f6ea0','#7fc8e8','#cfeeff'],
+    glow:['#7fc8e8','#cfeeff','#a0ffe6'],
+    lane:'#dff4ff'
+  },
+  { name:'ORCHID NOIR',
+    bg:['#08040c','#150a1c'],
+    ink:'#f6e6ff',
+    ground:'#120818',
+    park:['#241038','#5a2a78'],
+    water:['#1a0a30','#5a1f9a'],
+    build:['#22103a','#6a2fb0','#c25fe8','#ff8ad0'],
+    glow:['#c25fe8','#ff8ad0','#7c6cff'],
+    lane:'#ffc4f0'
+  }
+];
+let biomeIdx = 0;
+let biome = BIOMES[biomeIdx];
+
+/* ---------- WFC tileset ----------
+   Each cell collapses to a tile. We use socket-based adjacency on 4 edges.
+   Sockets: 'R' road, 'G' ground/none. A road edge can only meet a road edge.
+   Tiles encode road connectivity on N,E,S,W (1=road exits this edge).
+   This yields coherent road networks; non-road cells fill with
+   buildings/parks/water chosen by a separate Perlin-ish field for biome feel.
+*/
+// road tile templates: [N,E,S,W]
+const ROAD_TILES = [
+  [0,0,0,0], // empty (block interior)
+  [1,1,1,1], // 4-way cross
+  [1,1,1,0], // T
+  [1,1,0,1],
+  [1,0,1,1],
+  [0,1,1,1],
+  [1,1,0,0], // corner
+  [0,1,1,0],
+  [0,0,1,1],
+  [1,0,0,1],
+  [1,0,1,0], // straight vertical
+  [0,1,0,1], // straight horizontal
+  [1,0,0,0], // dead-end (rare)
+  [0,1,0,0],
+  [0,0,1,0],
+  [0,0,0,1],
+];
+
+/* ---------- grid ---------- */
+let COLS=0, ROWS=0, CELL=0;
+let grid = [];     // cell objects
+let waveQueue = []; // cells waiting to collapse (entropy-ordered-ish)
+let collapsedCount = 0;
+
+/* deterministic-ish hash noise for ground feature field */
+function hash2(x,y,s){
+  let h = x*374761393 + y*668265263 + s*1442695040888963407;
+  h = (h ^ (h>>>13)) * 1274126177;
+  h = (h ^ (h>>>16)) >>> 0;
+  return h / 4294967296;
+}
+// smooth value noise
+function vnoise(x,y,s){
+  const xi=Math.floor(x), yi=Math.floor(y);
+  const xf=x-xi, yf=y-yi;
+  const u=xf*xf*(3-2*xf), v=yf*yf*(3-2*yf);
+  const a=hash2(xi,yi,s), b=hash2(xi+1,yi,s);
+  const c=hash2(xi,yi+1,s), d=hash2(xi+1,yi+1,s);
+  return (a*(1-u)+b*u)*(1-v) + (c*(1-u)+d*u)*v;
+}
+function fbm(x,y,s){
+  let t=0,amp=.55,f=1;
+  for(let i=0;i<4;i++){ t+=vnoise(x*f,y*f,s+i*53)*amp; amp*=.5; f*=2; }
+  return t;
+}
+
+let seedBase = (Math.random()*9999)|0;
+
+function rint(n){ return (Math.random()*n)|0; }
+function pick(arr){ return arr[(Math.random()*arr.length)|0]; }
+
+/* mix two hex colors */
+function lerpHex(a,b,t){
+  const ai=parseInt(a.slice(1),16), bi=parseInt(b.slice(1),16);
+  const ar=(ai>>16)&255, ag=(ai>>8)&255, ab=ai&255;
+  const br=(bi>>16)&255, bg2=(bi>>8)&255, bb=bi&255;
+  const r=Math.round(ar+(br-ar)*t), g=Math.round(ag+(bg2-ag)*t), bl=Math.round(ab+(bb-ab)*t);
+  return `rgb(${r},${g},${bl})`;
+}
+function hexA(h,a){
+  const i=parseInt(h.slice(1),16);
+  return `rgba(${(i>>16)&255},${(i>>8)&255},${i&255},${a})`;
+}
+
+/* cached soft-glow sprites keyed by color — built once, blitted with drawImage.
+   Avoids creating thousands of radial gradients every frame. */
+const _glowCache={};
+function glowSprite(hex){
+  let s=_glowCache[hex];
+  if(s) return s;
+  const R=32; const cvs=document.createElement('canvas'); cvs.width=cvs.height=R*2;
+  const g=cvs.getContext('2d');
+  const grd=g.createRadialGradient(R,R,0,R,R,R);
+  grd.addColorStop(0, hexA(hex,1));
+  grd.addColorStop(0.5, hexA(hex,0.5));
+  grd.addColorStop(1, hexA(hex,0));
+  g.fillStyle=grd; g.fillRect(0,0,R*2,R*2);
+  _glowCache[hex]=cvs; return cvs;
+}
+
+/* ---------- build empty grid ---------- */
+function buildGrid(){
+  // choose cell size that yields ~ pleasant density on each viewport
+  const target = Math.min(W,H) < 520 ? 30 : 44;
+  CELL = Math.max(22, Math.round(Math.min(W,H)/ (Math.min(W,H)<520?13:16)));
+  COLS = Math.ceil(W/CELL)+1;
+  ROWS = Math.ceil(H/CELL)+1;
+  grid = new Array(COLS*ROWS);
+  for(let y=0;y<ROWS;y++){
+    for(let x=0;x<COLS;x++){
+      grid[y*COLS+x] = {
+        x,y,
+        tile:null,        // chosen ROAD_TILES index, or special
+        kind:'?',         // road | build | park | water | ground
+        collapsed:false,
+        anim:0,           // 0..1 settle animation
+        h:0,              // building height factor
+        hue:0,
+        seedR:Math.random(),
+        light:Math.random()*6.283, // traffic-light phase
+      };
+    }
+  }
+  collapsedCount=0;
+  waveQueue.length=0;
+}
+
+function at(x,y){
+  if(x<0||y<0||x>=COLS||y>=ROWS) return null;
+  return grid[y*COLS+x];
+}
+
+/* Determine possible road tiles for a cell given collapsed neighbors.
+   Returns array of tile indices respecting socket constraints. */
+function options(cell){
+  const x=cell.x,y=cell.y;
+  const nN=at(x,y-1), nE=at(x+1,y), nS=at(x,y+1), nW=at(x-1,y);
+  const out=[];
+  for(let i=0;i<ROAD_TILES.length;i++){
+    const t=ROAD_TILES[i];
+    // edge i sockets: t[0]=N,1=E,2=S,3=W
+    // neighbor must match on shared edge if collapsed
+    if(nN&&nN.collapsed){ const nt=roadOf(nN); if(nt && nt[2]!==t[0]) continue; if(!nt && t[0]===1) continue; }
+    if(nE&&nE.collapsed){ const nt=roadOf(nE); if(nt && nt[3]!==t[1]) continue; if(!nt && t[1]===1) continue; }
+    if(nS&&nS.collapsed){ const nt=roadOf(nS); if(nt && nt[0]!==t[2]) continue; if(!nt && t[2]===1) continue; }
+    if(nW&&nW.collapsed){ const nt=roadOf(nW); if(nt && nt[1]!==t[3]) continue; if(!nt && t[3]===1) continue; }
+    // border: no road leading off-canvas edge (cleaner frame), allow some
+    out.push(i);
+  }
+  return out;
+}
+function roadOf(cell){
+  if(cell.kind!=='road') return null;
+  return ROAD_TILES[cell.tile];
+}
+
+/* weighted choice biased toward roads continuing (straights/cross) for
+   highway feel, and away from dead-ends */
+function weightFor(idx){
+  const t=ROAD_TILES[idx];
+  const deg=t[0]+t[1]+t[2]+t[3];
+  if(deg===0) return 2.4;   // empty common (interiors)
+  if(deg===1) return 0.05;  // dead-end rare
+  if(deg===2) return 1.3;   // straights/corners
+  if(deg===3) return 0.5;
+  return 0.35;              // crosses
+}
+
+/* collapse one cell */
+function collapseCell(cell, forceRoad){
+  if(cell.collapsed) return;
+  const opts = options(cell);
+  // weighted pick among road-template options
+  let total=0; const w=[];
+  for(const o of opts){ const ww=weightFor(o)*(forceRoad?(ROAD_TILES[o][0]+ROAD_TILES[o][1]+ROAD_TILES[o][2]+ROAD_TILES[o][3]>0?6:0.2):1); w.push(ww); total+=ww; }
+  let r=Math.random()*total, chosen=opts[0]||0, ci=0;
+  for(let i=0;i<opts.length;i++){ r-=w[i]; if(r<=0){ chosen=opts[i]; ci=i; break; } }
+  cell.tile=chosen;
+  const deg=ROAD_TILES[chosen][0]+ROAD_TILES[chosen][1]+ROAD_TILES[chosen][2]+ROAD_TILES[chosen][3];
+  if(deg>0){
+    cell.kind='road';
+  } else {
+    // non-road: decide ground feature by noise field -> building/park/water
+    const nx=cell.x*0.16, ny=cell.y*0.16;
+    const f=fbm(nx,ny,seedBase);
+    const f2=fbm(nx+11.3,ny+7.1,seedBase+99);
+    if(f<0.30){ cell.kind='water'; }
+    else if(f>0.30 && f2>0.62){ cell.kind='park'; }
+    else { cell.kind='build';
+      // dramatic skyline: a low-rise floor everywhere, with downtown clusters
+      // (high fbm) spiking into skyscrapers. Pow curve makes spikes rarer & taller.
+      const downtown = fbm(nx*0.55+3.1, ny*0.55+9.4, seedBase+13); // big-scale density field
+      const spike = Math.pow(Math.max(0, downtown-0.32)/0.68, 2.0);
+      cell.h = 0.45 + spike*3.4 + cell.seedR*0.55 + f2*0.6;
+      cell.hue = (f2*0.55 + cell.seedR*0.45);
+    }
+  }
+  cell.collapsed=true;
+  cell.anim=0;
+  collapsedCount++;
+  // propagate: enqueue uncollapsed neighbors
+  const x=cell.x,y=cell.y;
+  for(const [dx,dy] of [[0,-1],[1,0],[0,1],[-1,0]]){
+    const n=at(x+dx,y+dy);
+    if(n && !n.collapsed && waveQueue.indexOf(n)<0) waveQueue.push(n);
+  }
+}
+
+/* seed the wave with a few road anchors so highways emerge */
+function seedWave(){
+  // a couple of road seeds
+  const seeds = 2 + rint(2);
+  for(let i=0;i<seeds;i++){
+    const c = at(rint(COLS), rint(ROWS));
+    if(c) collapseCell(c, true);
+  }
+  // ensure queue nonempty
+  if(waveQueue.length===0){ const c=at((COLS/2)|0,(ROWS/2)|0); if(c) collapseCell(c,true); }
+}
+
+/* progressively collapse a budget of cells per frame */
+function stepWave(budget){
+  let done=0;
+  while(budget-->0){
+    // pick next: prefer queue (frontier) for organic spread
+    let cell=null;
+    while(waveQueue.length){
+      const c=waveQueue.shift();
+      if(!c.collapsed){ cell=c; break; }
+    }
+    if(!cell){
+      // scan for any uncollapsed
+      for(let i=0;i<grid.length;i++){ if(!grid[i].collapsed){ cell=grid[i]; break; } }
+    }
+    if(!cell) return false; // fully collapsed
+    collapseCell(cell,false);
+    done++;
+  }
+  return true;
+}
+
+/* re-collapse a region around (gx,gy) within radius — the entropy well */
+function recollapse(gx,gy,rad,forceRoad){
+  const r2=rad*rad;
+  for(let y=Math.max(0,gy-rad); y<Math.min(ROWS,gy+rad+1); y++){
+    for(let x=Math.max(0,gx-rad); x<Math.min(COLS,gx+rad+1); x++){
+      const dx=x-gx, dy=y-gy;
+      if(dx*dx+dy*dy<=r2){
+        const c=at(x,y);
+        if(c){ c.collapsed=false; c.tile=null; c.kind='?'; collapsedCount--; }
+      }
+    }
+  }
+  // recollapse them with constraints from surviving neighbors
+  for(let y=Math.max(0,gy-rad); y<Math.min(ROWS,gy+rad+1); y++){
+    for(let x=Math.max(0,gx-rad); x<Math.min(COLS,gx+rad+1); x++){
+      const dx=x-gx, dy=y-gy;
+      if(dx*dx+dy*dy<=r2){
+        const c=at(x,y);
+        if(c && !c.collapsed){
+          const fr = (dx*dx+dy*dy < (rad*0.5)*(rad*0.5)) && forceRoad;
+          collapseCell(c, fr);
+        }
+      }
+    }
+  }
+}
+
+/* ---------- shockwaves & particles ---------- */
+const shocks=[];   // {x,y,r,max,a}
+const sparks=[];   // settle sparks {x,y,vx,vy,life,c}
+function addShock(px,py){
+  shocks.push({x:px,y:py,r:0,max:Math.max(W,H)*0.7,a:1});
+}
+function addSpark(px,py,c){
+  for(let i=0;i<3;i++){
+    const a=Math.random()*6.283, sp=Math.random()*1.6+0.3;
+    sparks.push({x:px,y:py,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp-0.4,life:1,c});
+  }
+}
+
+/* ---------- pointer / entropy well ---------- */
+const well = { x:-999,y:-999, active:false, vx:0,vy:0, lastGx:-1,lastGy:-1 };
+let entropyLoad = 0;
+
+function setWell(px,py,active){
+  well.vx = px-well.x; well.vy=py-well.y;
+  well.x=px; well.y=py; well.active=active;
+}
+
+cv.addEventListener('pointermove', e=>{
+  const r=cv.getBoundingClientRect();
+  setWell(e.clientX-r.left, e.clientY-r.top, true);
+});
+cv.addEventListener('pointerdown', e=>{
+  const r=cv.getBoundingClientRect();
+  const px=e.clientX-r.left, py=e.clientY-r.top;
+  setWell(px,py,true);
+  addShock(px,py);
+  const gx=Math.floor(px/CELL), gy=Math.floor(py/CELL);
+  recollapse(gx,gy, Math.max(3,Math.round(Math.min(COLS,ROWS)*0.22)), true);
+});
+cv.addEventListener('pointerleave', ()=>{ well.active=false; well.x=-999; well.y=-999; });
+
+cv.addEventListener('wheel', e=>{
+  e.preventDefault();
+  cycleBiome(e.deltaY>0?1:-1);
+},{passive:false});
+
+window.addEventListener('keydown', e=>{
+  if(e.code==='Space'){ e.preventDefault(); regenerate(); }
+  else if(e.code==='ArrowDown'||e.code==='ArrowRight'){ cycleBiome(1); }
+  else if(e.code==='ArrowUp'||e.code==='ArrowLeft'){ cycleBiome(-1); }
+});
+
+let biomeFade=1; // crossfade amount when switching
+function cycleBiome(dir){
+  biomeIdx = (biomeIdx + dir + BIOMES.length) % BIOMES.length;
+  biome = BIOMES[biomeIdx];
+  document.getElementById('mBiome').textContent = '— '+biome.name+' —';
+  biomeFade=0;
+  // a soft global shock to re-energize lights
+  addShock(W/2,H/2);
+}
+
+function regenerate(){
+  seedBase = (Math.random()*9999)|0;
+  buildGrid();
+  seedWave();
+  addShock(W/2,H/2);
+}
+
+/* ---------- resize ---------- */
+function resize(){
+  W=window.innerWidth; H=window.innerHeight;
+  DPR=Math.min(window.devicePixelRatio||1,2);
+  CW=Math.round(W*DPR); CH=Math.round(H*DPR);
+  cv.width=CW; cv.height=CH;
+  cv.style.width=W+'px'; cv.style.height=H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  buildGrid();
+  seedWave();
+  buildOverlay();
+}
+
+/* cached vignette + skyline haze (rebuilt on resize) */
+let vignetteGrad=null, hazeGrad=null;
+function buildOverlay(){
+  vignetteGrad=ctx.createRadialGradient(W/2,H*0.54,Math.min(W,H)*0.22, W/2,H*0.5,Math.max(W,H)*0.72);
+  vignetteGrad.addColorStop(0,'rgba(0,0,0,0)');
+  vignetteGrad.addColorStop(0.7,'rgba(0,0,0,0.12)');
+  vignetteGrad.addColorStop(1,'rgba(0,0,0,0.62)');
+  hazeGrad=ctx.createLinearGradient(0,0,0,H*0.5);
+  hazeGrad.addColorStop(0,'rgba(0,0,0,0)'); // filled with biome tint at draw
+}
+window.addEventListener('resize', ()=>{ clearTimeout(resize._t); resize._t=setTimeout(resize,140); });
+
+/* ---------- drawing ---------- */
+function drawCell(c, t){
+  const px=c.x*CELL, py=c.y*CELL, s=CELL;
+  // settle animation easing
+  const a=c.anim;
+  const ease = a<1 ? (1-Math.pow(1-a,3)) : 1;
+  const grow = 0.55 + 0.45*ease;
+  const cx=px+s/2, cy=py+s/2;
+
+  if(c.kind==='water'){
+    const w0=lerpHex(biome.water[0],biome.water[1], 0.3+0.4*Math.sin(t*0.6+c.x*0.5+c.y*0.5)*0.5+0.2);
+    ctx.fillStyle=w0;
+    ctx.fillRect(px,py,s+0.6,s+0.6);
+    // ripple lines
+    ctx.strokeStyle=hexA(biome.glow[0], 0.12*ease);
+    ctx.lineWidth=1;
+    const ph=t*1.4+c.x*0.7+c.y*0.4;
+    ctx.beginPath();
+    for(let i=0;i<2;i++){
+      const yy=py+s*(0.35+i*0.32)+Math.sin(ph+i)*1.4;
+      ctx.moveTo(px+2,yy); ctx.lineTo(px+s-2,yy+Math.sin(ph+i+1)*1.2);
+    }
+    ctx.stroke();
+    return;
+  }
+  if(c.kind==='park'){
+    ctx.fillStyle=lerpHex(biome.park[0],biome.park[1], 0.4+c.seedR*0.5);
+    ctx.fillRect(px,py,s+0.6,s+0.6);
+    // canopy dots breathing
+    const br=0.5+0.5*Math.sin(t*0.9+c.seedR*6.28);
+    ctx.fillStyle=hexA(biome.glow[1], 0.10+0.10*br);
+    const rr=s*0.16*grow;
+    ctx.beginPath(); ctx.arc(cx,cy,rr,0,6.283); ctx.fill();
+    return;
+  }
+  if(c.kind==='road'){
+    const tt=ROAD_TILES[c.tile];
+    // road base
+    ctx.fillStyle=biome.ground;
+    ctx.fillRect(px,py,s+0.6,s+0.6);
+    const rw=Math.max(3, s*0.32)*grow;       // road width
+    const half=rw/2;
+    ctx.fillStyle=lerpHex('#0e1018', biome.lane, 0.06);
+    ctx.fillStyle='rgba(255,255,255,0.045)';
+    // asphalt arms
+    if(tt[0]) ctx.fillRect(cx-half,py,rw,s/2+1);     // N
+    if(tt[2]) ctx.fillRect(cx-half,cy,rw,s/2+1);     // S
+    if(tt[1]) ctx.fillRect(cx,cy-half,s/2+1,rw);     // E
+    if(tt[3]) ctx.fillRect(px,cy-half,s/2+1,rw);     // W
+    ctx.fillRect(cx-half,cy-half,rw,rw);             // center
+    // animated lane lights running along arms (traffic) — uses a single
+    // shared cached glow sprite blitted with drawImage (no per-frame gradients).
+    const flow=(t*0.9 + c.x*0.13 + c.y*0.11)%1;
+    const flow2=(flow+0.5)%1;
+    ctx.save();
+    ctx.globalCompositeOperation='lighter';
+    const sprA=glowSprite(biome.lane), sprB=glowSprite(biome.glow[0]);
+    const rA=rw*1.25, rB=rw*1.0;
+    const aA=0.55*ease, aB=0.42*ease;
+    function lane(x0,y0,x1,y1){
+      ctx.globalAlpha=aA;
+      ctx.drawImage(sprA, x0+(x1-x0)*flow-rA, y0+(y1-y0)*flow-rA, rA*2, rA*2);
+      ctx.globalAlpha=aB;
+      ctx.drawImage(sprB, x0+(x1-x0)*flow2-rB, y0+(y1-y0)*flow2-rB, rB*2, rB*2);
+    }
+    if(tt[0]) lane(cx,py,cx,cy);
+    if(tt[2]) lane(cx,cy,cx,py+s);
+    if(tt[1]) lane(cx,cy,px+s,cy);
+    if(tt[3]) lane(px,cy,cx,cy);
+    ctx.globalAlpha=1;
+    ctx.restore();
+    return;
+  }
+  if(c.kind==='build'){
+    // ground pass only draws the dark plot + a faint contact shadow.
+    // The 3D tower volume is drawn later in the sorted extrusion pass.
+    ctx.fillStyle=biome.ground;
+    ctx.fillRect(px,py,s+0.6,s+0.6);
+    return;
+  }
+  // uncollapsed: superposition shimmer
+  const sh=0.06+0.10*Math.abs(Math.sin(t*2+c.x*0.6+c.y*0.5));
+  ctx.fillStyle=hexA(biome.glow[(c.x+c.y)%biome.glow.length], sh);
+  ctx.fillRect(px+s*0.2,py+s*0.2,s*0.6,s*0.6);
+}
+
+/* ---- pseudo-isometric tower extrusion (drawn back-to-front) ----
+   Each building is a box pushed "up and right" by (kx,ky) per unit height.
+   Top face = bright neon roof, right + bottom faces = shaded with window
+   lights crawling up. Gives the WFC grid a real skyline. */
+const ISO_KX = 0.26, ISO_KY = -0.52;  // screen offset per height-unit (px = *CELL)
+function drawTower(c, t){
+  if(c.kind!=='build') return;
+  const s=CELL;
+  const a=c.anim;
+  const ease = a<1 ? (1-Math.pow(1-a,3)) : 1;
+  const px=c.x*s, py=c.y*s;
+  const pad=s*0.10;
+  const bw=s-pad*2, bh=s-pad*2;
+  const bx=px+pad, by=py+pad;
+  // height in px
+  const ht = c.h * (0.55 + 0.45*ease);
+  const dx = ISO_KX*s*ht;      // top face horizontal shift
+  const dy = ISO_KY*s*ht;      // top face vertical shift (negative=up)
+  const ci=Math.min(biome.build.length-2, Math.floor(c.hue*(biome.build.length-1)));
+  const f0=biome.build[ci], f1=biome.build[ci+1];
+
+  // contact shadow on ground
+  ctx.fillStyle='rgba(0,0,0,0.38)';
+  ctx.beginPath();
+  ctx.moveTo(bx, by+bh);
+  ctx.lineTo(bx+bw, by+bh);
+  ctx.lineTo(bx+bw+dx*0.4, by+bh+Math.abs(dy)*0.10);
+  ctx.lineTo(bx+dx*0.4, by+bh+Math.abs(dy)*0.10);
+  ctx.closePath(); ctx.fill();
+
+  // corner points: base (b) and top (u)
+  const Tx=bx+dx, Ty=by+dy;            // top-left of roof
+  // RIGHT side face (parallelogram): base right edge -> top right edge
+  ctx.fillStyle=lerpHex(f0,'#000000',0.34);
+  ctx.beginPath();
+  ctx.moveTo(bx+bw, by);
+  ctx.lineTo(bx+bw, by+bh);
+  ctx.lineTo(Tx+bw, Ty+bh);
+  ctx.lineTo(Tx+bw, Ty);
+  ctx.closePath(); ctx.fill();
+
+  // FRONT/BOTTOM face
+  ctx.fillStyle=lerpHex(f0,'#000000',0.12);
+  ctx.beginPath();
+  ctx.moveTo(bx, by+bh);
+  ctx.lineTo(bx+bw, by+bh);
+  ctx.lineTo(Tx+bw, Ty+bh);
+  ctx.lineTo(Tx, Ty+bh);
+  ctx.closePath(); ctx.fill();
+
+  // vertical facade gradient overlay (front face) for depth
+  const fg=ctx.createLinearGradient(bx, by+bh, Tx, Ty+bh);
+  fg.addColorStop(0, hexA('#000000', 0.30));
+  fg.addColorStop(1, hexA('#000000', 0.0));
+  ctx.fillStyle=fg;
+  ctx.beginPath();
+  ctx.moveTo(bx, by+bh);
+  ctx.lineTo(bx+bw, by+bh);
+  ctx.lineTo(Tx+bw, Ty+bh);
+  ctx.lineTo(Tx, Ty+bh);
+  ctx.closePath(); ctx.fill();
+
+  // TOP roof face — bright
+  ctx.fillStyle=lerpHex(f1,'#ffffff',0.18);
+  ctx.fillRect(Tx, Ty, bw, bh);
+  // neon roof rim
+  ctx.strokeStyle=hexA(biome.glow[2], 0.55*ease);
+  ctx.lineWidth=1.2;
+  ctx.strokeRect(Tx+0.5, Ty+0.5, bw-1, bh-1);
+
+  // WINDOW LIGHTS crawling up the front + right faces
+  ctx.save(); ctx.globalCompositeOperation='lighter';
+  const steps=Math.max(3, Math.round(4+ht*5));
+  const wcols=Math.max(2, Math.round(bw/4.5));
+  for(let r=0;r<steps;r++){
+    const fr=r/steps;            // 0 base ->1 roof
+    // interpolate a horizontal line on the front face
+    const lyA=(by+bh) + (Ty+bh - (by+bh))*fr;
+    const lxA=bx + (Tx - bx)*fr;
+    for(let wcol=0;wcol<wcols;wcol++){
+      const wfrac=(wcol+0.5)/wcols;
+      const tw=hash2(c.x*11+wcol, c.y*11+r, seedBase+5);
+      if(tw>0.55){
+        const lx=lxA + bw*wfrac;
+        const ly=lyA;
+        const fl=0.30 + 0.70*Math.abs(Math.sin(t*0.7 + tw*40 + r*0.5 + c.seedR*10));
+        ctx.fillStyle=hexA(biome.glow[(wcol+r)%biome.glow.length], 0.30*fl*ease);
+        ctx.fillRect(lx-0.9, ly-0.9, 1.8, 1.8);
+      }
+    }
+  }
+  ctx.restore();
+
+  // crown glow on tall towers (cached sprite blit)
+  if(c.h>1.4){
+    ctx.save(); ctx.globalCompositeOperation='lighter';
+    const ccx=Tx+bw/2, ccy=Ty+bh/2;
+    const pulse=0.4+0.6*Math.abs(Math.sin(t*0.8+c.seedR*6));
+    const rr=bw*1.6;
+    ctx.globalAlpha=0.40*pulse*ease;
+    ctx.drawImage(glowSprite(biome.glow[2]), ccx-rr, ccy-rr, rr*2, rr*2);
+    ctx.globalAlpha=1;
+    // aircraft warning blink on very tall skyscrapers
+    if(c.h>2.4){
+      const bl=Math.sin(t*2.4+c.seedR*6)>0.6?1:0.05;
+      ctx.fillStyle=hexA('#ff3d5a', bl*0.9*ease);
+      ctx.beginPath(); ctx.arc(ccx,ccy,1.8,0,6.283); ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
+/* settle wave: cells animate anim->1 after collapse, emit sparks */
+function updateAnims(dt){
+  for(let i=0;i<grid.length;i++){
+    const c=grid[i];
+    if(c.collapsed && c.anim<1){
+      if(c.anim===0){
+        addSpark(c.x*CELL+CELL/2, c.y*CELL+CELL/2,
+          c.kind==='road'?biome.lane:biome.glow[(c.x+c.y)%biome.glow.length]);
+      }
+      c.anim=Math.min(1, c.anim+dt*3.2);
+    }
+  }
+}
+
+let lastT=performance.now();
+let collapsing=true;
+
+function frame(now){
+  const dt=Math.min(0.05,(now-lastT)/1000); lastT=now;
+  const t=now/1000;
+
+  // ---- grow the city ---- (fast enough to fill ~1.2s, slow enough to see the wave)
+  if(collapsing){
+    const budget = Math.max(14, Math.round(grid.length/26));
+    const more=stepWave(budget);
+    if(!more) collapsing=false;
+  }
+
+  // ---- entropy well drags & re-collapses along its path ----
+  entropyLoad *= 0.92;
+  if(well.active){
+    const gx=Math.floor(well.x/CELL), gy=Math.floor(well.y/CELL);
+    const speed=Math.hypot(well.vx,well.vy);
+    if((gx!==well.lastGx||gy!==well.lastGy) && speed>0.5){
+      const rad = 1 + Math.min(4, Math.round(speed/9));
+      recollapse(gx,gy,rad,false);
+      entropyLoad=Math.min(1, entropyLoad + 0.04 + speed*0.002);
+      well.lastGx=gx; well.lastGy=gy;
+      // a few drift sparks toward cursor
+      addSpark(well.x, well.y, biome.glow[1]);
+    }
+    well.vx*=0.6; well.vy*=0.6;
+  }
+  document.getElementById('entfill').style.width=(entropyLoad*100).toFixed(0)+'%';
+
+  updateAnims(dt);
+
+  // ---- background ----
+  const bg=ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,biome.bg[0]); bg.addColorStop(1,biome.bg[1]);
+  ctx.fillStyle=bg; ctx.fillRect(0,0,W,H);
+
+  // PASS 1: ground plane (roads, water, parks, plots, superposition shimmer)
+  for(let i=0;i<grid.length;i++){ drawCell(grid[i], t); }
+  // PASS 2: extruded towers, back-to-front so taller front rows overlap
+  // those behind them. Iterating rows top->bottom yields correct painter order.
+  for(let y=0;y<ROWS;y++){
+    const base=y*COLS;
+    for(let x=0;x<COLS;x++){ const c=grid[base+x]; if(c.kind==='build') drawTower(c,t); }
+  }
+
+  // ---- entropy well visual: a soft collapsing ring ----
+  if(well.active){
+    ctx.save(); ctx.globalCompositeOperation='lighter';
+    const rr=CELL*3.0*(1+0.12*Math.sin(t*4));
+    const g=ctx.createRadialGradient(well.x,well.y,0,well.x,well.y,rr);
+    g.addColorStop(0,hexA(biome.glow[2],0.0));
+    g.addColorStop(0.7,hexA(biome.glow[0],0.10));
+    g.addColorStop(0.92,hexA(biome.glow[2],0.22));
+    g.addColorStop(1,hexA(biome.glow[2],0));
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(well.x,well.y,rr,0,6.283); ctx.fill();
+    // crosshair pulse
+    ctx.strokeStyle=hexA(biome.lane,0.5);
+    ctx.lineWidth=1;
+    ctx.beginPath();
+    const ch=10+3*Math.sin(t*5);
+    ctx.moveTo(well.x-ch,well.y); ctx.lineTo(well.x+ch,well.y);
+    ctx.moveTo(well.x,well.y-ch); ctx.lineTo(well.x,well.y+ch);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // ---- shockwaves ----
+  ctx.save(); ctx.globalCompositeOperation='lighter';
+  for(let i=shocks.length-1;i>=0;i--){
+    const sh=shocks[i];
+    sh.r += dt*Math.max(W,H)*0.9; sh.a -= dt*0.7;
+    if(sh.a<=0){ shocks.splice(i,1); continue; }
+    ctx.strokeStyle=hexA(biome.glow[2], sh.a*0.5);
+    ctx.lineWidth=2.5*sh.a+0.5;
+    ctx.beginPath(); ctx.arc(sh.x,sh.y,sh.r,0,6.283); ctx.stroke();
+    ctx.strokeStyle=hexA(biome.glow[0], sh.a*0.3);
+    ctx.beginPath(); ctx.arc(sh.x,sh.y,sh.r*0.82,0,6.283); ctx.stroke();
+  }
+  ctx.restore();
+
+  // ---- sparks ----
+  ctx.save(); ctx.globalCompositeOperation='lighter';
+  for(let i=sparks.length-1;i>=0;i--){
+    const sp=sparks[i];
+    sp.x+=sp.vx; sp.y+=sp.vy; sp.vy+=0.04; sp.life-=dt*1.8;
+    if(sp.life<=0){ sparks.splice(i,1); continue; }
+    ctx.fillStyle=hexA(sp.c, sp.life*0.7);
+    ctx.beginPath(); ctx.arc(sp.x,sp.y, 1.6*sp.life+0.4, 0,6.283); ctx.fill();
+  }
+  ctx.restore();
+  if(sparks.length>600) sparks.splice(0,sparks.length-600);
+
+  // ---- biome crossfade flash ----
+  if(biomeFade<1){
+    biomeFade=Math.min(1,biomeFade+dt*1.6);
+    ctx.fillStyle=hexA(biome.glow[0], (1-biomeFade)*0.18);
+    ctx.fillRect(0,0,W,H);
+  }
+
+  // ---- atmospheric haze toward the top (skyline depth) ----
+  ctx.save(); ctx.globalCompositeOperation='lighter';
+  const hz=ctx.createLinearGradient(0,0,0,H*0.42);
+  hz.addColorStop(0, hexA(biome.glow[0], 0.07));
+  hz.addColorStop(1, hexA(biome.glow[0], 0));
+  ctx.fillStyle=hz; ctx.fillRect(0,0,W,H*0.42);
+  ctx.restore();
+
+  // ---- vignette (cinematic frame, focuses eye to center) ----
+  if(vignetteGrad){ ctx.fillStyle=vignetteGrad; ctx.fillRect(0,0,W,H); }
+
+  // HUD counter
+  document.getElementById('mCells').textContent = collapsedCount.toLocaleString();
+
+  requestAnimationFrame(frame);
+}
+
+/* ---------- boot ---------- */
+resize();
+// kick a chunk immediately so first paint already shows structure
+for(let k=0;k<8;k++) stepWave(Math.round(grid.length/14));
+requestAnimationFrame(frame);
+
+/* expose for self-verification */
+window.__collapse = {
+  state(){ return {
+    collapsedCount, total:grid.length, collapsing,
+    biome:biome.name, sparks:sparks.length, shocks:shocks.length,
+    well:{x:well.x,y:well.y,active:well.active}
+  };},
+  regenerate, cycleBiome,
+  move(px,py){ setWell(px,py,true); const gx=Math.floor(px/CELL),gy=Math.floor(py/CELL); recollapse(gx,gy,2,false); },
+  click(px,py){ addShock(px,py); const gx=Math.floor(px/CELL),gy=Math.floor(py/CELL); recollapse(gx,gy,4,true); }
+};
+</script>
+</body>
+</html>

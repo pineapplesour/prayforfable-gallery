@@ -1,0 +1,685 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>墨守 · 한 방울의 강 — Ink Warden</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+KR:wght@200;300;400;500;600;700;900&family=Noto+Sans+KR:wght@300;400;500;700&family=Cinzel:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#efe9dc;
+  --paper2:#e7dfce;
+  --paper-deep:#ddd3bd;
+  --ink:#16130f;
+  --ink-soft:#322b22;
+  --ink-mist:#5b5040;
+  --seal:#b5402e;
+  --seal-deep:#8d2c1f;
+  --gold:#a98b4f;
+  --line:rgba(33,28,20,.16);
+  --serif:"Noto Serif KR",serif;
+  --sans:"Noto Sans KR",sans-serif;
+  --cinzel:"Cinzel",serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  background:var(--paper);
+  color:var(--ink);
+  font-family:var(--serif);
+  -webkit-font-smoothing:antialiased;
+  overflow-x:hidden;
+  cursor:default;
+}
+/* paper grain + vignette baked into body so first paint is never empty */
+body::before{
+  content:"";position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:
+    radial-gradient(120% 90% at 50% -10%, rgba(255,252,244,.55), transparent 55%),
+    radial-gradient(140% 120% at 50% 120%, rgba(60,48,30,.18), transparent 60%);
+  mix-blend-mode:multiply;
+}
+body::after{
+  content:"";position:fixed;inset:0;z-index:60;pointer-events:none;opacity:.5;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
+  mix-blend-mode:multiply;
+}
+
+/* ---------- fixed ink canvas (live ink wash) ---------- */
+#inkCanvas{position:fixed;inset:0;z-index:1;pointer-events:none;}
+
+/* ---------- top frame / chrome ---------- */
+.frame{position:fixed;z-index:40;pointer-events:none;color:var(--ink-soft);}
+.frame.tl{top:26px;left:30px;}
+.frame.tr{top:26px;right:30px;text-align:right;}
+.brand{font-family:var(--cinzel);letter-spacing:.42em;font-size:11px;text-transform:uppercase;color:var(--ink-mist);}
+.brand b{color:var(--ink);font-weight:600}
+.han-mark{display:flex;align-items:center;gap:10px;margin-top:6px;}
+.han-mark .glyph{font-weight:900;font-size:22px;letter-spacing:.1em;}
+.han-mark .rom{font-family:var(--sans);font-size:10px;letter-spacing:.34em;color:var(--ink-mist);text-transform:uppercase;padding-top:3px}
+.meta-r{font-family:var(--sans);font-size:10px;letter-spacing:.28em;color:var(--ink-mist);line-height:2.1;text-transform:uppercase}
+
+/* vertical rail right */
+.rail{position:fixed;z-index:40;right:30px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:14px;align-items:center;pointer-events:auto;}
+.rail .dot{width:7px;height:7px;border-radius:50%;border:1px solid var(--ink-mist);background:transparent;transition:.4s;cursor:pointer;position:relative}
+.rail .dot.on{background:var(--seal);border-color:var(--seal);transform:scale(1.25)}
+.rail .dot::after{content:attr(data-l);position:absolute;right:16px;top:50%;transform:translateY(-50%);font-family:var(--sans);font-size:9px;letter-spacing:.2em;color:var(--ink-mist);white-space:nowrap;opacity:0;transition:.3s;text-transform:uppercase}
+.rail .dot:hover::after{opacity:1}
+
+/* vertical column text left edge */
+.vlabel{position:fixed;left:28px;top:50%;transform:translateY(-50%);z-index:40;writing-mode:vertical-rl;font-family:var(--sans);font-size:10px;letter-spacing:.7em;color:var(--ink-mist);text-transform:uppercase;pointer-events:none;}
+
+/* progress brushline at very top */
+.brushbar{position:fixed;top:0;left:0;height:2px;background:linear-gradient(90deg,var(--seal-deep),var(--seal));z-index:50;width:0;}
+
+/* ---------- general section ---------- */
+main{position:relative;z-index:5;}
+section{position:relative;min-height:100vh;display:flex;align-items:center;}
+.wrap{width:100%;max-width:1180px;margin:0 auto;padding:0 56px;position:relative;}
+
+/* reveal */
+.rv{opacity:0;transform:translateY(34px);transition:opacity 1.1s cubic-bezier(.16,1,.3,1),transform 1.1s cubic-bezier(.16,1,.3,1);}
+.rv.in{opacity:1;transform:none;}
+.rv.d1{transition-delay:.12s}.rv.d2{transition-delay:.24s}.rv.d3{transition-delay:.36s}.rv.d4{transition-delay:.48s}.rv.d5{transition-delay:.6s}
+
+/* =================== HERO =================== */
+#hero{min-height:100vh;align-items:center;overflow:hidden;}
+.hero-grid{display:grid;grid-template-columns:auto 1fr;gap:0;align-items:center;width:100%;}
+/* giant vertical hanja */
+.hero-han{
+  font-family:var(--serif);font-weight:900;
+  writing-mode:vertical-rl;text-orientation:upright;
+  font-size:clamp(120px,21vw,300px);line-height:.92;
+  letter-spacing:.02em;color:var(--ink);
+  margin-right:clamp(10px,4vw,60px);
+  position:relative;
+  text-shadow:0 2px 0 rgba(0,0,0,.05);
+}
+.hero-han .drip{position:absolute;width:3px;background:linear-gradient(var(--ink),transparent);left:50%;top:96%;height:0;animation:drip 5.5s ease-in-out 1.4s infinite;border-radius:0 0 3px 3px;opacity:.5}
+@keyframes drip{0%{height:0;opacity:.0}15%{opacity:.6}70%{height:90px;opacity:.45}100%{height:120px;opacity:0}}
+.hero-copy{max-width:620px}
+.eyebrow{font-family:var(--sans);font-size:11px;letter-spacing:.5em;text-transform:uppercase;color:var(--seal-deep);display:flex;align-items:center;gap:14px;margin-bottom:26px}
+.eyebrow .ln{height:1px;width:60px;background:var(--seal-deep);opacity:.6}
+.hero-title{font-size:clamp(34px,4.6vw,62px);font-weight:300;line-height:1.16;letter-spacing:-.01em;}
+.hero-title b{font-weight:700}
+.hero-title .em{font-style:italic;color:var(--seal-deep);font-weight:500}
+.hero-sub{margin-top:30px;font-family:var(--sans);font-weight:300;font-size:clamp(14px,1.15vw,17px);line-height:2;color:var(--ink-soft);max-width:520px}
+.hero-cta{margin-top:42px;display:flex;align-items:center;gap:26px;flex-wrap:wrap}
+.btn{font-family:var(--sans);font-size:12px;letter-spacing:.22em;text-transform:uppercase;border:1px solid var(--ink);color:var(--ink);background:transparent;padding:15px 30px;cursor:pointer;position:relative;overflow:hidden;transition:color .5s}
+.btn span{position:relative;z-index:2}
+.btn::before{content:"";position:absolute;inset:0;background:var(--ink);transform:translateY(101%);transition:transform .5s cubic-bezier(.7,0,.2,1);z-index:1}
+.btn:hover{color:var(--paper)}
+.btn:hover::before{transform:translateY(0)}
+.scrollhint{display:flex;align-items:center;gap:10px;font-family:var(--sans);font-size:11px;letter-spacing:.3em;text-transform:uppercase;color:var(--ink-mist)}
+.scrollhint .bar{position:relative;width:1px;height:34px;background:var(--line);overflow:hidden}
+.scrollhint .bar::after{content:"";position:absolute;top:0;left:0;width:100%;height:40%;background:var(--seal);animation:flow 2.2s ease-in-out infinite}
+@keyframes flow{0%{top:-40%}100%{top:100%}}
+
+/* small floating seal in hero */
+.float-seal{position:absolute;right:6%;bottom:11%;width:88px;height:88px;z-index:6;}
+.float-seal svg{width:100%;height:100%;animation:bob 7s ease-in-out infinite}
+@keyframes bob{0%,100%{transform:translateY(0) rotate(0)}50%{transform:translateY(-12px) rotate(-2.5deg)}}
+
+/* =================== MOUNTAIN STAGE (SVG parallax) =================== */
+#ridge{min-height:118vh;align-items:flex-start;padding-top:0;overflow:hidden}
+.ridge-scene{position:absolute;inset:0;z-index:2;pointer-events:none}
+.ridge-scene svg{position:absolute;bottom:-2px;left:0;width:100%;height:78vh}
+.r1{opacity:.10}.r2{opacity:.16}.r3{opacity:.26}.r4{opacity:.42}.r5{opacity:.72}
+.sun{position:absolute;top:13%;left:50%;transform:translateX(-50%);width:160px;height:160px;border-radius:50%;
+  background:radial-gradient(circle at 50% 50%,rgba(181,64,46,.0) 56%,rgba(181,64,46,.22) 60%,rgba(181,64,46,0) 72%);
+  z-index:1}
+.sun::after{content:"";position:absolute;inset:34%;border-radius:50%;background:radial-gradient(circle,rgba(190,72,52,.55),rgba(190,72,52,0) 70%);filter:blur(2px)}
+.ridge-copy{position:relative;z-index:8;width:100%;max-width:1180px;margin:0 auto;padding:18vh 56px 0;}
+.chapter-no{font-family:var(--cinzel);font-size:13px;letter-spacing:.5em;color:var(--seal-deep)}
+.ridge-h{font-size:clamp(40px,7vw,108px);font-weight:200;line-height:1;letter-spacing:-.01em;margin-top:18px}
+.ridge-h b{font-weight:700}
+.ridge-vert{position:absolute;right:8%;top:16vh;writing-mode:vertical-rl;font-weight:400;font-size:clamp(18px,2vw,26px);line-height:2.4;letter-spacing:.5em;color:var(--ink-soft);z-index:8}
+.ridge-quote{margin-top:34px;font-family:var(--sans);font-weight:300;font-size:clamp(13px,1.1vw,16px);line-height:2.05;color:var(--ink-soft);max-width:430px}
+
+/* birds */
+.bird{position:absolute;z-index:7;width:26px;height:13px;opacity:.6}
+.bird svg{width:100%;height:100%}
+
+/* =================== CREED / principles =================== */
+#creed{background:transparent}
+.creed-head{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:20px;border-bottom:1px solid var(--line);padding-bottom:22px}
+.sec-kicker{font-family:var(--cinzel);font-size:12px;letter-spacing:.5em;color:var(--seal-deep)}
+.sec-h{font-size:clamp(28px,3.4vw,44px);font-weight:300}
+.sec-h b{font-weight:700}
+.creed-list{margin-top:50px;display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border:1px solid var(--line)}
+.creed-card{background:var(--paper);padding:38px 32px 44px;position:relative;transition:.6s;min-height:280px;overflow:hidden;cursor:default}
+.creed-card:hover{background:var(--paper2)}
+.creed-card .idx{font-family:var(--cinzel);font-size:13px;color:var(--seal-deep);letter-spacing:.3em}
+.creed-card .big-han{position:absolute;right:-6px;bottom:-26px;font-size:140px;font-weight:900;color:rgba(22,19,15,.05);line-height:1;transition:.6s;pointer-events:none}
+.creed-card:hover .big-han{color:rgba(181,64,46,.10);transform:translateY(-8px)}
+.creed-card h3{font-size:24px;font-weight:600;margin-top:26px;letter-spacing:.01em}
+.creed-card p{font-family:var(--sans);font-weight:300;font-size:14px;line-height:1.95;color:var(--ink-soft);margin-top:14px;max-width:230px}
+.creed-card .ln{position:absolute;left:32px;bottom:30px;width:30px;height:2px;background:var(--seal);transition:width .6s cubic-bezier(.16,1,.3,1)}
+.creed-card:hover .ln{width:80px}
+
+/* =================== STROKE / interactive brush =================== */
+#stroke{min-height:108vh}
+.stroke-wrap{display:grid;grid-template-columns:1fr 1.05fr;gap:60px;align-items:center;width:100%}
+.stroke-pad{position:relative;aspect-ratio:1/1;border:1px solid var(--line);background:
+  linear-gradient(var(--paper2),var(--paper2));overflow:hidden;box-shadow:inset 0 0 60px rgba(60,48,30,.12)}
+.stroke-pad canvas{position:absolute;inset:0;width:100%;height:100%}
+.stroke-pad .grid-tick{position:absolute;inset:0;pointer-events:none;
+  background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);
+  background-size:25% 25%;opacity:.5}
+.stroke-pad .hintc{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font-family:var(--sans);font-size:12px;letter-spacing:.3em;color:var(--ink-mist);text-transform:uppercase;pointer-events:none;transition:.5s}
+.stroke-pad.dirty .hintc{opacity:0}
+.stroke-pad .corner{position:absolute;width:14px;height:14px;border:1px solid var(--ink-mist);opacity:.45}
+.stroke-pad .c1{top:10px;left:10px;border-right:0;border-bottom:0}
+.stroke-pad .c2{top:10px;right:10px;border-left:0;border-bottom:0}
+.stroke-pad .c3{bottom:10px;left:10px;border-right:0;border-top:0}
+.stroke-pad .c4{bottom:10px;right:10px;border-left:0;border-top:0}
+.stroke-side .num{font-family:var(--cinzel);font-size:13px;letter-spacing:.5em;color:var(--seal-deep)}
+.stroke-side h2{font-size:clamp(30px,3.6vw,50px);font-weight:300;line-height:1.12;margin-top:16px}
+.stroke-side h2 b{font-weight:700}
+.stroke-side p{font-family:var(--sans);font-weight:300;font-size:15px;line-height:2;color:var(--ink-soft);margin-top:26px;max-width:430px}
+.stroke-tools{margin-top:34px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.tlbl{font-family:var(--sans);font-size:10px;letter-spacing:.25em;text-transform:uppercase;color:var(--ink-mist)}
+.range{appearance:none;-webkit-appearance:none;width:150px;height:2px;background:var(--ink-mist);outline:none;cursor:pointer}
+.range::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:14px;height:14px;background:var(--seal);border-radius:50%;cursor:pointer}
+.range::-moz-range-thumb{width:14px;height:14px;background:var(--seal);border:0;border-radius:50%;cursor:pointer}
+.lbtn{font-family:var(--sans);font-size:11px;letter-spacing:.18em;text-transform:uppercase;border:1px solid var(--ink);background:transparent;color:var(--ink);padding:11px 20px;cursor:pointer;transition:.4s}
+.lbtn:hover{background:var(--ink);color:var(--paper)}
+
+/* =================== SCROLL POEM / verses =================== */
+#poem{padding:14vh 0}
+.poem-wrap{text-align:center}
+.verse{font-size:clamp(28px,4.4vw,68px);font-weight:200;line-height:1.5;letter-spacing:.02em;color:var(--ink)}
+.verse .word{display:inline-block;opacity:.12;transition:opacity .5s,color .5s}
+.verse .word.lit{opacity:1}
+.verse .seal-word{color:var(--seal-deep);font-weight:600}
+.poem-cap{margin-top:60px;font-family:var(--sans);font-size:11px;letter-spacing:.4em;text-transform:uppercase;color:var(--ink-mist)}
+
+/* =================== SEAL FINALE =================== */
+#seal{min-height:100vh;flex-direction:column;justify-content:center;align-items:center;text-align:center;overflow:hidden}
+.seal-stage{position:relative;display:flex;flex-direction:column;align-items:center}
+.stamp{width:clamp(180px,26vw,260px);height:clamp(180px,26vw,260px);position:relative;cursor:pointer}
+.stamp svg{width:100%;height:100%;filter:drop-shadow(0 18px 30px rgba(141,44,31,.28))}
+.stamp .ring{transform-origin:center;transition:transform .8s cubic-bezier(.16,1,.3,1)}
+.stamp.pressed{animation:press .5s ease}
+@keyframes press{0%{transform:scale(1)}40%{transform:scale(.9) rotate(-3deg)}100%{transform:scale(1)}}
+.seal-h{font-size:clamp(30px,4vw,56px);font-weight:200;margin-top:48px;line-height:1.2}
+.seal-h b{font-weight:700}
+.seal-p{font-family:var(--sans);font-weight:300;font-size:15px;line-height:2;color:var(--ink-soft);margin-top:24px;max-width:480px}
+.seal-foot{margin-top:64px;display:flex;gap:40px;flex-wrap:wrap;justify-content:center;font-family:var(--sans);font-size:11px;letter-spacing:.28em;text-transform:uppercase;color:var(--ink-mist)}
+.seal-foot a{color:var(--ink-mist);text-decoration:none;position:relative;transition:.4s}
+.seal-foot a:hover{color:var(--seal-deep)}
+.seal-foot a::after{content:"";position:absolute;left:0;bottom:-6px;width:0;height:1px;background:var(--seal);transition:width .4s}
+.seal-foot a:hover::after{width:100%}
+.imprint{position:absolute;width:clamp(180px,26vw,260px);height:clamp(180px,26vw,260px);opacity:0;transform:scale(.6);transition:opacity .5s,transform .5s;pointer-events:none;mix-blend-mode:multiply}
+.imprint.show{opacity:.85;transform:scale(1.06)}
+
+/* sound toggle */
+.snd{position:fixed;left:30px;bottom:26px;z-index:45;font-family:var(--sans);font-size:10px;letter-spacing:.24em;text-transform:uppercase;color:var(--ink-mist);background:transparent;border:1px solid var(--line);padding:9px 14px;cursor:pointer;display:flex;gap:9px;align-items:center;transition:.4s}
+.snd:hover{border-color:var(--ink-mist);color:var(--ink-soft)}
+.snd .wv{display:flex;gap:2px;align-items:flex-end;height:11px}
+.snd .wv i{width:2px;background:var(--ink-mist);height:4px;border-radius:1px;transition:height .2s}
+.snd.on .wv i{animation:wave 1s ease-in-out infinite}
+.snd.on .wv i:nth-child(2){animation-delay:.15s}.snd.on .wv i:nth-child(3){animation-delay:.3s}.snd.on .wv i:nth-child(4){animation-delay:.45s}
+@keyframes wave{0%,100%{height:3px}50%{height:11px}}
+
+/* =================== responsive =================== */
+@media (max-width:920px){
+  .wrap{padding:0 30px}
+  .vlabel,.brand .extra{display:none}
+  .hero-grid{grid-template-columns:1fr;gap:6vh}
+  .hero-han{writing-mode:horizontal-tb;font-size:clamp(96px,32vw,150px);margin:0 0 6px;text-orientation:mixed}
+  .hero-han .drip{display:none}
+  .float-seal{display:none}
+  .ridge-vert{display:none}
+  .ridge-copy{padding:16vh 30px 0}
+  .creed-list{grid-template-columns:1fr}
+  .stroke-wrap{grid-template-columns:1fr;gap:40px}
+  .stroke-pad{aspect-ratio:4/3}
+  .rail{display:none}
+  .seal-foot{gap:22px}
+}
+@media (max-width:480px){
+  .frame.tr{display:none}
+  .hero-title{font-size:30px}
+  .verse{font-size:clamp(24px,8vw,40px)}
+}
+.noscroll{position:relative}
+</style>
+</head>
+<body>
+
+<canvas id="inkCanvas"></canvas>
+<div class="brushbar" id="brushbar"></div>
+
+<!-- chrome -->
+<div class="frame tl">
+  <div class="brand">INK&nbsp;·&nbsp;WARDEN <b>墨守</b></div>
+  <div class="han-mark"><span class="glyph">墨守</span><span class="rom extra">An Ink Scroll</span></div>
+</div>
+<div class="frame tr">
+  <div class="meta-r">
+    水墨 · WATER & INK<br>
+    癸卯 · MMXXVI<br>
+    A4 · ROUND 01
+  </div>
+</div>
+<div class="vlabel">SCROLL · 卷 · DOWN TO UNROLL</div>
+
+<div class="rail" id="rail"></div>
+
+<button class="snd" id="snd"><span class="wv"><i></i><i></i><i></i><i></i></span><span id="sndlbl">소리 켜기</span></button>
+
+<main>
+  <!-- ================= HERO ================= -->
+  <section id="hero">
+    <div class="wrap">
+      <div class="hero-grid">
+        <div class="hero-han rv in">墨守<span class="drip"></span></div>
+        <div class="hero-copy">
+          <div class="eyebrow rv d1"><span class="ln"></span> 水墨 SCROLLYTELLING</div>
+          <h1 class="hero-title rv d1">먹 한 방울이<br><b>산이 되고</b>, 산은 다시<br><span class="em">강으로</span> 풀린다.</h1>
+          <p class="hero-sub rv d2">한 점의 묵(墨)에서 시작한 이야기. 여백은 비어 있지 않고, 멈춘 붓은 다음 획을 머금는다. 아래로 두루마리를 펼쳐 흐름을 따라가라.</p>
+          <div class="hero-cta rv d3">
+            <button class="btn" id="beginBtn"><span>두루마리 펴기 →</span></button>
+            <div class="scrollhint"><span class="bar"></span> SCROLL</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="float-seal rv d4">
+      <svg viewBox="0 0 100 100" aria-hidden="true">
+        <rect x="6" y="6" width="88" height="88" rx="8" fill="none" stroke="#b5402e" stroke-width="3"/>
+        <rect x="14" y="14" width="72" height="72" rx="5" fill="#b5402e" opacity="0.9"/>
+        <text x="50" y="40" text-anchor="middle" font-family="Noto Serif KR" font-weight="900" font-size="30" fill="#efe9dc">墨</text>
+        <text x="50" y="76" text-anchor="middle" font-family="Noto Serif KR" font-weight="900" font-size="30" fill="#efe9dc">守</text>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ================= RIDGE / MOUNTAINS ================= -->
+  <section id="ridge">
+    <div class="ridge-scene">
+      <div class="sun" id="sun"></div>
+      <svg class="r1 ridgeL" data-d="0.10" viewBox="0 0 1440 600" preserveAspectRatio="none"><path d="M0,600 L0,320 C180,240 320,360 520,300 C760,228 920,360 1140,290 C1280,250 1380,310 1440,280 L1440,600Z" fill="#16130f"/></svg>
+      <svg class="r2 ridgeL" data-d="0.16" viewBox="0 0 1440 600" preserveAspectRatio="none"><path d="M0,600 L0,400 C200,330 360,430 560,380 C780,322 980,440 1180,372 C1300,332 1390,392 1440,360 L1440,600Z" fill="#16130f"/></svg>
+      <svg class="r3 ridgeL" data-d="0.26" viewBox="0 0 1440 600" preserveAspectRatio="none"><path d="M0,600 L0,470 C160,420 300,500 480,450 C700,388 900,498 1120,440 C1280,398 1380,460 1440,430 L1440,600Z" fill="#16130f"/></svg>
+      <svg class="r4 ridgeL" data-d="0.42" viewBox="0 0 1440 600" preserveAspectRatio="none"><path d="M0,600 L0,520 C220,475 380,545 600,505 C840,460 1020,548 1240,505 C1340,485 1400,525 1440,508 L1440,600Z" fill="#16130f"/></svg>
+      <svg class="r5 ridgeL" data-d="0.62" viewBox="0 0 1440 600" preserveAspectRatio="none"><path d="M0,600 L0,560 C260,532 420,575 680,552 C920,531 1100,576 1320,552 C1380,545 1420,562 1440,556 L1440,600Z" fill="#16130f"/></svg>
+    </div>
+    <div class="ridge-copy">
+      <div class="chapter-no rv">CHAPTER 一 · 山</div>
+      <h2 class="ridge-h rv d1">먼 <b>산</b>은<br>비어서 깊다</h2>
+      <p class="ridge-quote rv d2">짙은 봉우리는 가까이, 옅은 능선은 멀리. 농담(濃淡)의 거리로 산수는 깊이를 짓는다. 화면을 스칠수록 능선은 서로 다른 속도로 미끄러진다.</p>
+    </div>
+    <div class="ridge-vert rv d2">高山流水 · 깊은 산, 흐르는 물</div>
+  </section>
+
+  <!-- ================= CREED ================= -->
+  <section id="creed">
+    <div class="wrap">
+      <div class="creed-head">
+        <div>
+          <div class="sec-kicker rv">CHAPTER 二 · 法</div>
+          <h2 class="sec-h rv d1">묵(墨)을 지키는 <b>세 가지 법</b></h2>
+        </div>
+        <p class="rv d2" style="font-family:var(--sans);font-weight:300;font-size:13px;letter-spacing:.04em;color:var(--ink-mist);max-width:300px;line-height:1.9">墨守란 한 번 정한 자리를 끝까지 지킨다는 말. 붓의 규율이자 마음의 규율이다.</p>
+      </div>
+      <div class="creed-list">
+        <article class="creed-card rv d1">
+          <div class="idx">壹 · 01</div>
+          <span class="big-han">虛</span>
+          <h3>여백을 그린다</h3>
+          <p>그리지 않은 곳이 그린 곳을 살린다. 비움은 게으름이 아니라 가장 어려운 한 획이다.</p>
+          <span class="ln"></span>
+        </article>
+        <article class="creed-card rv d2">
+          <div class="idx">貳 · 02</div>
+          <span class="big-han">氣</span>
+          <h3>한 호흡에 긋는다</h3>
+          <p>멈칫하면 먹이 번진다. 시작과 끝 사이를 한 숨으로 잇는 기운생동(氣韻生動).</p>
+          <span class="ln"></span>
+        </article>
+        <article class="creed-card rv d3">
+          <div class="idx">參 · 03</div>
+          <span class="big-han">守</span>
+          <h3>자리를 지킨다</h3>
+          <p>유행을 좇지 않고 자기 결을 지킨다. 묵수(墨守)는 고집이 아니라 중심이다.</p>
+          <span class="ln"></span>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= STROKE / interactive ================= -->
+  <section id="stroke">
+    <div class="wrap">
+      <div class="stroke-wrap">
+        <div class="stroke-pad" id="pad">
+          <canvas id="brushCanvas"></canvas>
+          <div class="grid-tick"></div>
+          <div class="hintc">여기에 획을 그어보세요 · DRAG TO PAINT</div>
+          <span class="corner c1"></span><span class="corner c2"></span><span class="corner c3"></span><span class="corner c4"></span>
+        </div>
+        <div class="stroke-side">
+          <div class="num rv">CHAPTER 三 · 筆</div>
+          <h2 class="rv d1">붓은 <b>마음</b>의<br>속도를 안다</h2>
+          <p class="rv d2">빠르게 그으면 먹이 마르고, 느리게 머물면 깊게 번진다. 직접 화선지 위에 한 획을 남겨보라 — 압력과 속도가 농담을 만든다.</p>
+          <div class="stroke-tools rv d3">
+            <span class="tlbl">먹의 농도</span>
+            <input type="range" class="range" id="inkRange" min="6" max="44" value="22">
+            <button class="lbtn" id="clearBtn">화선지 비우기</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= POEM ================= -->
+  <section id="poem">
+    <div class="wrap poem-wrap">
+      <div class="chapter-no rv" style="margin-bottom:40px">CHAPTER 四 · 詩</div>
+      <p class="verse" id="verse">
+        <span class="word">물은</span> <span class="word">낮은</span> <span class="word">곳을</span> <span class="word">향해</span>
+        <span class="word">서두르지</span> <span class="word">않고,</span>
+        <span class="word seal-word">먹은</span> <span class="word seal-word">제</span> <span class="word seal-word">자리에서</span>
+        <span class="word">천천히</span> <span class="word">번진다.</span>
+      </p>
+      <div class="poem-cap">— 묵수첩(墨守帖)에서</div>
+    </div>
+  </section>
+
+  <!-- ================= SEAL FINALE ================= -->
+  <section id="seal">
+    <div class="seal-stage">
+      <div class="chapter-no rv" style="margin-bottom:30px">FINIS · 印</div>
+      <div class="stamp" id="stamp" title="눌러서 낙관을 찍으세요">
+        <svg viewBox="0 0 120 120" aria-hidden="true">
+          <g class="ring">
+            <rect x="8" y="8" width="104" height="104" rx="12" fill="none" stroke="#b5402e" stroke-width="3.5"/>
+            <rect x="17" y="17" width="86" height="86" rx="7" fill="#b5402e"/>
+            <text x="40" y="50" text-anchor="middle" font-family="Noto Serif KR" font-weight="900" font-size="32" fill="#efe9dc">墨</text>
+            <text x="80" y="50" text-anchor="middle" font-family="Noto Serif KR" font-weight="900" font-size="32" fill="#efe9dc">守</text>
+            <text x="40" y="92" text-anchor="middle" font-family="Noto Serif KR" font-weight="900" font-size="32" fill="#efe9dc">之</text>
+            <text x="80" y="92" text-anchor="middle" font-family="Noto Serif KR" font-weight="900" font-size="32" fill="#efe9dc">印</text>
+          </g>
+        </svg>
+      </div>
+      <canvas class="imprint" id="imprint"></canvas>
+      <h2 class="seal-h rv d1">한 방울에서 시작해<br><b>강에 이르렀다</b></h2>
+      <p class="seal-p rv d2">두루마리는 여기서 멈춘다. 도장을 눌러 이 이야기에 낙관을 남겨라 — 끝은 또 하나의 시작이므로.</p>
+      <div class="seal-foot rv d3">
+        <a href="#hero">↑ 처음으로</a>
+        <a href="#" id="again">다시 펴기</a>
+        <span>墨守 · INK WARDEN · A4</span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+"use strict";
+const PRM = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/* ---------------- IntersectionObserver reveals ---------------- */
+const io = new IntersectionObserver((es)=>{
+  es.forEach(e=>{ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target);} });
+},{threshold:.18});
+document.querySelectorAll('.rv').forEach(el=>{ if(!el.classList.contains('in')) io.observe(el); });
+
+/* ---------------- progress brushbar + ridge parallax + sun + rail ---------------- */
+const brushbar=document.getElementById('brushbar');
+const ridgeLayers=[...document.querySelectorAll('.ridgeL')];
+const ridgeSec=document.getElementById('ridge');
+const sun=document.getElementById('sun');
+let ticking=false;
+function onScroll(){
+  if(ticking)return; ticking=true;
+  requestAnimationFrame(()=>{
+    const sc=window.scrollY, h=document.body.scrollHeight-innerHeight;
+    brushbar.style.width=(Math.min(1,sc/h)*100)+'%';
+    // ridge parallax
+    const r=ridgeSec.getBoundingClientRect();
+    const prog=(innerHeight - r.top)/(innerHeight + r.height);
+    ridgeLayers.forEach(l=>{
+      const d=parseFloat(l.dataset.d);
+      l.style.transform='translateY('+(prog*120*d)+'px)';
+    });
+    if(sun){ sun.style.transform='translateX(-50%) translateY('+(prog*-60)+'px)'; sun.style.opacity=Math.max(.2,1-prog*.6); }
+    // rail active
+    updateRail();
+    ticking=false;
+  });
+}
+addEventListener('scroll',onScroll,{passive:true});
+
+/* ---------------- side rail ---------------- */
+const sections=[['hero','序'],['ridge','山'],['creed','法'],['stroke','筆'],['poem','詩'],['seal','印']];
+const rail=document.getElementById('rail');
+sections.forEach(([id,l])=>{
+  const d=document.createElement('span'); d.className='dot'; d.dataset.l=l; d.dataset.id=id;
+  d.onclick=()=>document.getElementById(id).scrollIntoView({behavior:'smooth'});
+  rail.appendChild(d);
+});
+const dots=[...rail.children];
+function updateRail(){
+  let cur=0, mid=innerHeight/2;
+  sections.forEach(([id],i)=>{ const r=document.getElementById(id).getBoundingClientRect(); if(r.top<=mid) cur=i; });
+  dots.forEach((d,i)=>d.classList.toggle('on',i===cur));
+}
+updateRail();
+
+/* ---------------- begin button ---------------- */
+document.getElementById('beginBtn').onclick=()=>document.getElementById('ridge').scrollIntoView({behavior:'smooth'});
+document.getElementById('again').onclick=(e)=>{e.preventDefault();scrollTo({top:0,behavior:'smooth'});};
+
+/* ============================================================
+   LIVE INK CANVAS — drifting ink-wash blooms behind everything
+   Renders a beautiful frame instantly (seeded blooms) so first
+   paint is never empty.
+   ============================================================ */
+const ic=document.getElementById('inkCanvas'), ix=ic.getContext('2d');
+let W,H,DPR;
+function sizeInk(){ DPR=Math.min(devicePixelRatio||1,2); W=ic.width=innerWidth*DPR; H=ic.height=innerHeight*DPR; ic.style.width=innerWidth+'px'; ic.style.height=innerHeight+'px'; }
+sizeInk();
+const blooms=[];
+function makeBloom(seeded){
+  return {
+    x:Math.random()*W, y:Math.random()*H,
+    r:(seeded? (40+Math.random()*120):2)*DPR,
+    tr:(80+Math.random()*200)*DPR,
+    a:seeded? (0.015+Math.random()*0.05) : 0.02+Math.random()*0.05,
+    vx:(Math.random()-.5)*0.12*DPR, vy:(Math.random()*0.10+0.02)*DPR,
+    grow:(0.06+Math.random()*0.14)*DPR,
+    life:1, decay:0.0006+Math.random()*0.0011,
+    petals:5+(Math.random()*4|0), rot:Math.random()*7
+  };
+}
+for(let i=0;i<10;i++) blooms.push(makeBloom(true));   // pre-seed so frame 0 looks rich
+function drawBloom(b){
+  ix.save(); ix.translate(b.x,b.y); ix.rotate(b.rot);
+  const g=ix.createRadialGradient(0,0,0,0,0,b.r);
+  const al=b.a*b.life;
+  g.addColorStop(0,'rgba(22,19,15,'+(al*1.1)+')');
+  g.addColorStop(.55,'rgba(40,33,24,'+(al*.7)+')');
+  g.addColorStop(1,'rgba(60,48,30,0)');
+  ix.fillStyle=g;
+  // irregular bloom via overlapping arcs
+  ix.beginPath();
+  for(let i=0;i<b.petals;i++){
+    const ang=(i/b.petals)*Math.PI*2;
+    const rr=b.r*(0.7+Math.sin(i*1.7+b.rot)*0.25);
+    const px=Math.cos(ang)*rr*0.4, py=Math.sin(ang)*rr*0.4;
+    ix.moveTo(px,py); ix.arc(px,py,rr*0.66,0,Math.PI*2);
+  }
+  ix.fill();
+  ix.restore();
+}
+let inkRunning=true;
+function inkLoop(){
+  if(!inkRunning) return;
+  // fade toward paper (multiply-ish wash)
+  ix.globalCompositeOperation='source-over';
+  ix.fillStyle='rgba(239,233,220,0.045)';
+  ix.fillRect(0,0,W,H);
+  ix.globalCompositeOperation='multiply';
+  for(let i=blooms.length-1;i>=0;i--){
+    const b=blooms[i];
+    b.x+=b.vx; b.y+=b.vy; b.r=Math.min(b.tr,b.r+b.grow); b.life-=b.decay;
+    drawBloom(b);
+    if(b.life<=0||b.y>H+200) blooms.splice(i,1);
+  }
+  if(blooms.length<14 && Math.random()<0.06) blooms.push(makeBloom(false));
+  ix.globalCompositeOperation='source-over';
+  requestAnimationFrame(inkLoop);
+}
+if(!PRM){ inkLoop(); } else { for(let k=0;k<3;k++){blooms.forEach(drawBloom);} } // static rich frame if reduced motion
+addEventListener('resize',()=>{ sizeInk(); blooms.length=0; for(let i=0;i<10;i++) blooms.push(makeBloom(true)); if(PRM) blooms.forEach(drawBloom); });
+
+/* ============================================================
+   INTERACTIVE BRUSH PAD — drag to paint a real ink stroke
+   ============================================================ */
+const pad=document.getElementById('pad');
+const bc=document.getElementById('brushCanvas'), bx=bc.getContext('2d');
+let bw,bh,bdpr;
+function sizePad(){ bdpr=Math.min(devicePixelRatio||1,2); const r=pad.getBoundingClientRect(); bw=bc.width=r.width*bdpr; bh=bc.height=r.height*bdpr; bc.style.width=r.width+'px'; bc.style.height=r.height+'px'; }
+sizePad(); addEventListener('resize',()=>{ const data=bx.getImageData? null:null; sizePad(); });
+let painting=false,lastX=0,lastY=0,lastT=0,inkSize=22;
+const inkRange=document.getElementById('inkRange');
+inkRange.oninput=()=>inkSize=+inkRange.value;
+function posFromEvent(e){
+  const r=bc.getBoundingClientRect();
+  const cx=(e.touches?e.touches[0].clientX:e.clientX)-r.left;
+  const cy=(e.touches?e.touches[0].clientY:e.clientY)-r.top;
+  return [cx*bdpr,cy*bdpr];
+}
+function stampInk(x,y,rad,alpha){
+  const g=bx.createRadialGradient(x,y,0,x,y,rad);
+  g.addColorStop(0,'rgba(20,17,13,'+alpha+')');
+  g.addColorStop(.6,'rgba(34,28,20,'+(alpha*.55)+')');
+  g.addColorStop(1,'rgba(34,28,20,0)');
+  bx.fillStyle=g; bx.beginPath(); bx.arc(x,y,rad,0,Math.PI*2); bx.fill();
+  // bleed specks
+  if(Math.random()<.5){
+    const ba=alpha*.3;
+    bx.fillStyle='rgba(30,25,18,'+ba+')';
+    for(let i=0;i<3;i++){ const a=Math.random()*7,d=rad*(.8+Math.random());
+      bx.beginPath(); bx.arc(x+Math.cos(a)*d,y+Math.sin(a)*d,rad*.18*Math.random(),0,7); bx.fill(); }
+  }
+}
+function startPaint(e){ painting=true; pad.classList.add('dirty'); const[x,y]=posFromEvent(e); lastX=x;lastY=y;lastT=performance.now(); stampInk(x,y,inkSize*bdpr*.5,.5); e.preventDefault(); ensureAudio(); }
+function movePaint(e){
+  if(!painting)return;
+  const[x,y]=posFromEvent(e); const now=performance.now();
+  const dx=x-lastX,dy=y-lastY,dist=Math.hypot(dx,dy);
+  const dt=Math.max(1,now-lastT); const speed=dist/dt; // px/ms
+  const taper=Math.max(.25,1-speed*0.5);                // faster = thinner & lighter
+  const steps=Math.max(1,Math.floor(dist/ (inkSize*bdpr*.18)));
+  for(let i=0;i<=steps;i++){
+    const t=i/steps, px=lastX+dx*t, py=lastY+dy*t;
+    const rad=inkSize*bdpr*.5*taper*(0.85+Math.random()*0.3);
+    stampInk(px,py,rad,0.16*taper+0.05);
+  }
+  lastX=x;lastY=y;lastT=now; e.preventDefault();
+}
+function endPaint(){ painting=false; }
+pad.addEventListener('mousedown',startPaint); addEventListener('mousemove',movePaint); addEventListener('mouseup',endPaint);
+pad.addEventListener('touchstart',startPaint,{passive:false}); pad.addEventListener('touchmove',movePaint,{passive:false}); addEventListener('touchend',endPaint);
+document.getElementById('clearBtn').onclick=()=>{ bx.clearRect(0,0,bw,bh); pad.classList.remove('dirty'); };
+// seed a faint sample stroke so the pad isn't blank before interaction
+(function seedPad(){
+  let t=0; const N=46; const cx0=bw*0.28, cy0=bh*0.3;
+  for(let i=0;i<N;i++){ t=i/N; const x=cx0+t*bw*0.46+Math.sin(t*6)*bw*0.02; const y=cy0+t*bh*0.4+Math.sin(t*3)*bh*0.05;
+    const taper=Math.sin(t*Math.PI); stampInk(x,y,(8+taper*16)*bdpr,0.12*taper+0.03); }
+})();
+
+/* ============================================================
+   POEM — light words on scroll
+   ============================================================ */
+const verse=document.getElementById('verse');
+const words=[...verse.querySelectorAll('.word')];
+const pio=new IntersectionObserver((es)=>{
+  es.forEach(e=>{ if(e.isIntersecting){ words.forEach((w,i)=>setTimeout(()=>w.classList.add('lit'),i*120)); pio.disconnect(); } });
+},{threshold:.4});
+pio.observe(verse);
+
+/* ============================================================
+   SEAL — press to imprint a stamped vermilion mark
+   ============================================================ */
+const stamp=document.getElementById('stamp');
+const imc=document.getElementById('imprint'), imx=imc.getContext('2d');
+function paintImprint(){
+  const r=imc.getBoundingClientRect(); const d=Math.min(devicePixelRatio||1,2);
+  imc.width=r.width*d; imc.height=r.height*d;
+  const w=imc.width,h=imc.height;
+  imx.clearRect(0,0,w,h);
+  imx.save(); imx.translate(w/2,h/2);
+  // textured vermilion square with carved chars (negative)
+  imx.fillStyle='#b5402e';
+  roundRect(imx,-w*0.42,-h*0.42,w*0.84,h*0.84,12*d); imx.fill();
+  // erode texture
+  imx.globalCompositeOperation='destination-out';
+  for(let i=0;i<900;i++){ imx.globalAlpha=Math.random()*0.5; const a=Math.random()*7,dd=Math.random()*w*0.46;
+    imx.beginPath(); imx.arc(Math.cos(a)*dd,Math.sin(a)*dd,Math.random()*3*d,0,7); imx.fill(); }
+  imx.globalAlpha=1; imx.globalCompositeOperation='source-over';
+  imx.fillStyle='#efe9dc'; imx.font='900 '+(30*d)+'px "Noto Serif KR"'; imx.textAlign='center'; imx.textBaseline='middle';
+  imx.globalCompositeOperation='destination-out';
+  imx.fillText('墨',-w*0.18,-h*0.16); imx.fillText('守',w*0.18,-h*0.16);
+  imx.fillText('之',-w*0.18,h*0.2); imx.fillText('印',w*0.18,h*0.2);
+  imx.globalCompositeOperation='source-over';
+  imx.restore();
+}
+function roundRect(c,x,y,w,h,r){ c.beginPath(); c.moveTo(x+r,y); c.arcTo(x+w,y,x+w,y+h,r); c.arcTo(x+w,y+h,x,y+h,r); c.arcTo(x,y+h,x,y,r); c.arcTo(x,y,x+w,y,r); c.closePath(); }
+let imprinted=false;
+stamp.onclick=()=>{
+  stamp.classList.remove('pressed'); void stamp.offsetWidth; stamp.classList.add('pressed');
+  if(!imprinted){ paintImprint(); imprinted=true; }
+  imc.classList.add('show');
+  // small thud
+  ensureAudio(); thud();
+  // re-show with slight random offset each press for "stamping" feel
+};
+
+/* ============================================================
+   AMBIENT SOUND — gentle water/ink drone via WebAudio (opt-in)
+   ============================================================ */
+let actx=null, master=null, soundOn=false;
+const sndBtn=document.getElementById('snd'), sndLbl=document.getElementById('sndlbl');
+function ensureAudio(){ if(!actx){ try{ actx=new (window.AudioContext||window.webkitAudioContext)(); master=actx.createGain(); master.gain.value=0; master.connect(actx.destination);}catch(e){} } if(actx&&actx.state==='suspended') actx.resume(); }
+function startDrone(){
+  if(!actx)return;
+  // soft filtered noise = water; two detuned low sines = drone
+  const buf=actx.createBuffer(1,actx.sampleRate*2,actx.sampleRate);
+  const data=buf.getChannelData(0); for(let i=0;i<data.length;i++) data[i]=(Math.random()*2-1)*0.5;
+  const noise=actx.createBufferSource(); noise.buffer=buf; noise.loop=true;
+  const lp=actx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=420; lp.Q.value=0.7;
+  const ng=actx.createGain(); ng.gain.value=0.12;
+  noise.connect(lp).connect(ng).connect(master);
+  const o1=actx.createOscillator(); o1.type='sine'; o1.frequency.value=110;
+  const o2=actx.createOscillator(); o2.type='sine'; o2.frequency.value=110.4;
+  const og=actx.createGain(); og.gain.value=0.05; o1.connect(og); o2.connect(og); og.connect(master);
+  // slow LFO on filter for breathing water
+  const lfo=actx.createOscillator(); lfo.frequency.value=0.08; const lg=actx.createGain(); lg.gain.value=160; lfo.connect(lg); lg.connect(lp.frequency);
+  noise.start(); o1.start(); o2.start(); lfo.start();
+  master.gain.setTargetAtTime(0.5,actx.currentTime,1.5);
+}
+function thud(){ if(!actx||!soundOn)return; const o=actx.createOscillator(); const g=actx.createGain(); o.type='sine'; o.frequency.setValueAtTime(160,actx.currentTime); o.frequency.exponentialRampToValueAtTime(60,actx.currentTime+0.18); g.gain.setValueAtTime(0.4,actx.currentTime); g.gain.exponentialRampToValueAtTime(0.001,actx.currentTime+0.4); o.connect(g).connect(master); o.start(); o.stop(actx.currentTime+0.45); }
+sndBtn.onclick=()=>{
+  ensureAudio();
+  if(!soundOn){ if(!sndBtn.dataset.started){ startDrone(); sndBtn.dataset.started='1'; } else { master.gain.setTargetAtTime(0.5,actx.currentTime,1.0);} soundOn=true; sndBtn.classList.add('on'); sndLbl.textContent='소리 끄기'; }
+  else{ if(master) master.gain.setTargetAtTime(0,actx.currentTime,0.6); soundOn=false; sndBtn.classList.remove('on'); sndLbl.textContent='소리 켜기'; }
+};
+
+/* cursor ink trail on hero (subtle) */
+let lastDrop=0;
+addEventListener('mousemove',(e)=>{
+  const now=performance.now(); if(now-lastDrop<55)return; lastDrop=now;
+  if(window.scrollY>innerHeight*0.9) return; // only near hero
+  blooms.push({x:e.clientX*DPR,y:e.clientY*DPR,r:2*DPR,tr:(20+Math.random()*30)*DPR,a:0.05,vx:0,vy:0.04*DPR,grow:0.5*DPR,life:1,decay:0.02,petals:5,rot:Math.random()*7});
+},{passive:true});
+
+onScroll();
+</script>
+</body>
+</html>

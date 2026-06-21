@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>KNOT — living torus</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#04040a; }
+  body { font-family: ui-monospace, "SF Mono", Menlo, monospace; cursor:crosshair; }
+  #stage { position:fixed; inset:0; display:block; }
+  .hud {
+    position:fixed; z-index:5; color:rgba(220,228,255,.55);
+    font-size:11px; letter-spacing:.18em; text-transform:uppercase;
+    pointer-events:none; user-select:none; mix-blend-mode:screen;
+    text-shadow:0 0 12px rgba(120,160,255,.5);
+  }
+  #title { top:22px; left:26px; font-size:13px; letter-spacing:.42em; color:rgba(235,240,255,.82); }
+  #sub   { top:42px; left:26px; font-size:10px; color:rgba(160,180,230,.5); }
+  #readout { bottom:22px; left:26px; line-height:1.7; }
+  #hint  { bottom:22px; right:26px; text-align:right; line-height:1.7; }
+  #readout b { color:rgba(150,230,255,.9); font-weight:600; }
+  .key { color:rgba(255,180,230,.85); }
+  #flash {
+    position:fixed; inset:0; z-index:4; pointer-events:none;
+    background:radial-gradient(circle at 50% 50%, rgba(120,180,255,.18), transparent 60%);
+    opacity:0; transition:opacity .5s ease;
+  }
+  @media (max-width:520px){
+    #title{font-size:11px;letter-spacing:.3em;top:16px;left:16px;}
+    #sub{top:33px;left:16px;}
+    #readout{bottom:16px;left:16px;font-size:10px;}
+    #hint{bottom:16px;right:16px;font-size:9px;}
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="flash"></div>
+<div id="title" class="hud">T O R U S &nbsp; K N O T</div>
+<div id="sub" class="hud">a living curve in (p,q) space</div>
+<div id="readout" class="hud">
+  knot &nbsp;<b id="rPQ">3 : 2</b><br>
+  spin &nbsp;<b id="rSpin">drift</b>
+</div>
+<div id="hint" class="hud">
+  <span class="key">drag</span> rotate &nbsp;·&nbsp; <span class="key">move</span> warp<br>
+  <span class="key">scroll</span> morph knot &nbsp;·&nbsp; <span class="key">click</span> pulse<br>
+  <span class="key">space</span> auto &nbsp;·&nbsp; <span class="key">tap</span> hold to spin
+</div>
+
+<script>
+"use strict";
+(function(){
+  const cv = document.getElementById("stage");
+  const ctx = cv.getContext("2d", { alpha:false });
+  const flashEl = document.getElementById("flash");
+  const rPQ = document.getElementById("rPQ");
+  const rSpin = document.getElementById("rSpin");
+
+  let W=0, H=0, DPR=1, CX=0, CY=0;
+  function resize(){
+    DPR = Math.min(window.devicePixelRatio||1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = (W*DPR)|0; cv.height = (H*DPR)|0;
+    cv.style.width = W+"px"; cv.style.height = H+"px";
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    CX = W/2; CY = H/2;
+    SCALE = Math.min(W,H) * 0.30;
+  }
+
+  // ---------- state ----------
+  let SCALE = 200;
+  // knot parameters (p,q) -- can be fractional during morph
+  // ordered so the opening frame is already a rich, woven knot
+  const PRESETS = [[3,7],[7,3],[5,3],[3,4],[4,3],[5,2],[3,2],[2,3],[8,3],[7,4]];
+  let presetIdx = 0;
+  let p = PRESETS[0][0], q = PRESETS[0][1];   // current displayed
+  let pTarget = p, qTarget = q;
+  let pShow = p, qShow = q;                    // smoothed for render
+
+  // camera / rotation
+  let rotX = -0.95, rotY = 0.5;           // tilted to reveal the weave
+  let velX = 0.0011, velY = 0.0017;       // idle drift
+  let dragVX = 0, dragVY = 0;
+  let dragging = false, lastX=0, lastY=0, dragMoved=false;
+  let auto = true;
+
+  // mouse warp field (gravitational lens in screen space)
+  let mx = -9999, my = -9999, mAct = 0;   // mAct = activation 0..1
+
+  // pulses (clicks) — expanding spherical shells of energy
+  const pulses = [];
+
+  // audio
+  let audioOn=false, analyser=null, freqData=null, audioLevel=0, audioBeat=0;
+
+  // time
+  let t = 0, last = performance.now();
+
+  // ---------- geometry buffers ----------
+  const N = 1100;                       // samples along the knot
+  const pts = new Array(N);             // {x,y,z,sx,sy,depth,r,tube...}
+  for(let i=0;i<N;i++) pts[i] = {x:0,y:0,z:0,sx:0,sy:0,d:0,phase:i/N};
+  const order = new Int32Array(N);
+  for(let i=0;i<N;i++) order[i]=i;
+
+  // a thin tube: offset rings for ribbon feel (cheap — 1 extra strand)
+  // we compute the curve once, then draw glowing segments depth-sorted.
+
+  // ---------- color ----------
+  // cycling palette: electric cyan -> magenta -> violet, hue by depth+phase
+  function hsl(h,s,l,a){ return "hsla("+h+","+s+"%,"+l+"%,"+a+")"; }
+
+  // ---------- torus knot point ----------
+  // Proper (p,q) torus knot: winds p times around the axis of rotational
+  // symmetry and q times around the tube. This yields the characteristic
+  // over/under woven structure that reads as a real knot.
+  const TUBE = 0.62;   // minor radius — how far the curve swings off the torus mid-circle
+  function knotPoint(u, pp, qq, R, out){
+    // u in [0, 2PI)
+    const pu = pp*u, qu = qq*u;
+    const cq = Math.cos(qu), sq = Math.sin(qu);
+    const r = 1 + TUBE*cq;              // radial distance modulated by q winding
+    const x = r * Math.cos(pu);
+    const y = r * Math.sin(pu);
+    const z = TUBE * sq;               // vertical swing — drives the over/under weave
+    out.x = x; out.y = y; out.z = z;
+  }
+
+  // rotate point by rotX (around X) then rotY (around Y)
+  let sinX,cosX,sinY,cosY;
+  function precomputeRot(){
+    sinX=Math.sin(rotX); cosX=Math.cos(rotX);
+    sinY=Math.sin(rotY); cosY=Math.cos(rotY);
+  }
+
+  const FOV = 4.2;
+  function project(o){
+    let x=o.x, y=o.y, z=o.z;
+    // rotX
+    let y1 = y*cosX - z*sinX;
+    let z1 = y*sinX + z*cosX;
+    // rotY
+    let x2 = x*cosY + z1*sinY;
+    let z2 = -x*sinY + z1*cosY;
+    o._z = z2;
+    const persp = FOV / (FOV + z2);
+    o.sx = CX + x2 * SCALE * persp;
+    o.sy = CY + y1 * SCALE * persp;
+    o.persp = persp;
+    o.d = z2;
+  }
+
+  // ---------- main update ----------
+  function update(dt){
+    t += dt;
+
+    // smooth p,q toward target
+    pShow += (pTarget - pShow) * Math.min(1, dt*4);
+    qShow += (qTarget - qShow) * Math.min(1, dt*4);
+
+    // rotation integration
+    if(dragging){
+      rotY += dragVX; rotX += dragVY;
+      dragVX *= 0.6; dragVY *= 0.6;
+    } else {
+      // inertia from last drag, then settle to idle drift
+      rotY += dragVX; rotX += dragVY;
+      dragVX *= 0.94; dragVY *= 0.94;
+      if(auto){
+        rotY += velY*dt*60*0.016*60*0.0; // (kept structure; real drift below)
+      }
+      if(auto){
+        rotY += velY; rotX += velX;
+      }
+    }
+    // clamp tilt a bit so it never flips fully upside (keeps it readable)
+    if(rotX > 1.45) rotX = 1.45;
+    if(rotX < -1.45) rotX = -1.45;
+
+    // mouse activation easing
+    const targetAct = (mx>-9000)? 1 : 0;
+    mAct += (targetAct - mAct) * Math.min(1, dt*6);
+
+    // audio
+    if(audioOn && analyser){
+      analyser.getByteFrequencyData(freqData);
+      let bass=0, total=0;
+      const nb = 12;
+      for(let i=0;i<nb;i++) bass += freqData[i];
+      bass/=(nb*255);
+      for(let i=0;i<freqData.length;i++) total += freqData[i];
+      total/=(freqData.length*255);
+      audioLevel += (total - audioLevel)*0.2;
+      // simple beat: bass jump
+      const beatTarget = Math.max(0, bass-0.45)*2.2;
+      audioBeat += (beatTarget - audioBeat) * (beatTarget>audioBeat?0.6:0.08);
+    } else {
+      audioBeat *= 0.92; audioLevel *= 0.96;
+    }
+
+    // pulses lifecycle
+    for(let i=pulses.length-1;i>=0;i--){
+      const pl = pulses[i];
+      pl.age += dt;
+      pl.r = pl.age * pl.speed;
+      if(pl.age > pl.life) pulses.splice(i,1);
+    }
+
+    precomputeRot();
+
+    // breathing scale + audio pump
+    const breathe = 1 + Math.sin(t*0.6)*0.04 + audioBeat*0.18 + audioLevel*0.1;
+
+    // build curve
+    const TWO = Math.PI*2;
+    const pp = pShow, qq = qShow;
+    for(let i=0;i<N;i++){
+      const o = pts[i];
+      const u = (i/N) * TWO;
+      knotPoint(u, pp, qq, 1, o);
+
+      // base scale (knot mid-radius ~1, tube swing 0.62 -> fits ~1.6 units)
+      const s = 0.92*breathe;
+      o.x *= s; o.y *= s; o.z *= s;
+
+      // traveling wave along the knot (gives "alive" shimmer) — gentle so the
+      // woven structure stays legible
+      const wave = Math.sin(o.phase*TWO*qq*0.5 - t*2.2);
+      const wob = 1 + wave*0.018;
+      o.x*=wob; o.y*=wob; o.z*=wob;
+
+      project(o);
+
+      // screen-space warp: mouse as gravity well bending the projected curve
+      if(mAct>0.001){
+        const ddx = o.sx - mx, ddy = o.sy - my;
+        const dist2 = ddx*ddx + ddy*ddy;
+        const rad = 230;
+        const f = Math.exp(-dist2/(rad*rad)) * mAct;
+        // pull/swirl
+        const ang = Math.atan2(ddy,ddx);
+        const swirl = f*52;
+        o.sx += Math.cos(ang+1.3)*swirl - ddx*f*0.28;
+        o.sy += Math.sin(ang+1.3)*swirl - ddy*f*0.28;
+        o._mw = f;
+      } else o._mw = 0;
+
+      // pulse displacement (radial shells from click point in 3D-ish screen)
+      let pl_e = 0;
+      for(let k=0;k<pulses.length;k++){
+        const pl=pulses[k];
+        const dx=o.sx-pl.x, dy=o.sy-pl.y;
+        const dd=Math.sqrt(dx*dx+dy*dy);
+        const band = Math.exp(-((dd-pl.r)*(dd-pl.r))/(40*40));
+        const k2 = band * (1-pl.age/pl.life);
+        if(k2>0.001){
+          const a=Math.atan2(dy,dx);
+          const push = k2*26;
+          o.sx += Math.cos(a)*push;
+          o.sy += Math.sin(a)*push;
+          pl_e += k2;
+        }
+      }
+      o._pe = pl_e;
+    }
+
+    // depth sort (painter's): far first
+    order.sort? null : null;
+    // manual sort on typed array via Array — do an insertion-ish using slice for stability
+    sortOrder();
+  }
+
+  // sort indices by depth (descending z = far first). Use Array sort on a JS array.
+  const orderArr = new Array(N);
+  for(let i=0;i<N;i++) orderArr[i]=i;
+  function sortOrder(){
+    orderArr.sort((a,b)=> pts[b]._z - pts[a]._z);
+  }
+
+  // ---------- render ----------
+  function render(){
+    // trailing fade for motion blur / glow accumulation
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = "rgba(4,4,12,0.30)";
+    ctx.fillRect(0,0,W,H);
+
+    // subtle vignette gradient background drift
+    drawBackdrop();
+
+    ctx.globalCompositeOperation = "lighter";
+
+    const hueBase = (t*14) % 360;
+    // draw as connected glowing segments between consecutive original indices,
+    // but ordered by depth for correct overlap of glow.
+    // We iterate the curve in original order for line continuity, layering glow,
+    // then add depth-cued bright cores via the sorted order.
+
+    // 1) continuous neon thread (in original order, but alpha by depth)
+    ctx.lineCap="round"; ctx.lineJoin="round";
+    let prev = pts[N-1];
+    for(let i=0;i<N;i++){
+      const o = pts[i];
+      // depth 0..1 (near=1)
+      const dz = o._z;
+      const near = clamp((2.4 - dz)/3.4, 0, 1);
+      const persp = o.persp;
+      const hue = (hueBase + o.phase*220 + dz*40) % 360;
+
+      const energy = o._mw*1.0 + o._pe*1.2 + audioBeat*0.4;
+      const sat = 78 + energy*22;
+      const lig = 50 + near*18 + energy*30;
+      const aBase = (0.10 + near*0.45) * (0.5+persp*0.5);
+
+      // outer glow stroke
+      const wide = (0.5 + near*2.2 + energy*3.4) * persp;
+      ctx.strokeStyle = hsl(hue|0, clamp(sat,0,100), clamp(lig,0,100), clamp(aBase*0.7,0,1));
+      ctx.lineWidth = wide*2.0;
+      ctx.beginPath();
+      ctx.moveTo(prev.sx, prev.sy);
+      ctx.lineTo(o.sx, o.sy);
+      ctx.stroke();
+
+      // bright core
+      ctx.strokeStyle = hsl((hue+20)|0, 100, clamp(72+near*20+energy*20,0,100), clamp(aBase*1.1,0,1));
+      ctx.lineWidth = Math.max(0.4, wide*0.55);
+      ctx.beginPath();
+      ctx.moveTo(prev.sx, prev.sy);
+      ctx.lineTo(o.sx, o.sy);
+      ctx.stroke();
+
+      prev = o;
+    }
+
+    // 2) sparkling depth nodes (sorted near→ drawn last so they pop)
+    for(let oi=0; oi<N; oi+=1){
+      const idx = orderArr[oi];
+      const o = pts[idx];
+      const dz = o._z;
+      const near = clamp((2.4 - dz)/3.4, 0, 1);
+      if(near<0.55 && o._mw<0.05 && o._pe<0.05) continue; // only bright/near nodes
+      const persp=o.persp;
+      const energy = o._mw + o._pe + audioBeat*0.3;
+      const hue = (hueBase + o.phase*220 + 40) % 360;
+      const rad = (0.5 + near*2.2 + energy*4)*persp;
+      const a = clamp((near*0.5 + energy*0.7),0,1);
+      const g = ctx.createRadialGradient(o.sx,o.sy,0,o.sx,o.sy,rad*4+0.1);
+      g.addColorStop(0, hsl((hue+30)|0,100,92,a));
+      g.addColorStop(0.4, hsl(hue|0,100,65,a*0.5));
+      g.addColorStop(1, hsl(hue|0,100,50,0));
+      ctx.fillStyle=g;
+      ctx.beginPath();
+      ctx.arc(o.sx,o.sy,rad*4+0.1,0,6.2832);
+      ctx.fill();
+    }
+
+    // 3) mouse lens halo
+    if(mAct>0.01 && mx>-9000){
+      const r = 230;
+      const g = ctx.createRadialGradient(mx,my,0,mx,my,r);
+      g.addColorStop(0, "rgba(150,200,255,"+(0.10*mAct)+")");
+      g.addColorStop(0.5,"rgba(180,120,255,"+(0.05*mAct)+")");
+      g.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle=g;
+      ctx.beginPath(); ctx.arc(mx,my,r,0,6.2832); ctx.fill();
+    }
+
+    // 4) pulse rings (screen-space)
+    for(let k=0;k<pulses.length;k++){
+      const pl=pulses[k];
+      const a = (1-pl.age/pl.life)*0.5;
+      if(a<=0) continue;
+      ctx.strokeStyle="rgba(160,220,255,"+a+")";
+      ctx.lineWidth=2;
+      ctx.beginPath(); ctx.arc(pl.x,pl.y,pl.r,0,6.2832); ctx.stroke();
+      ctx.strokeStyle="rgba(255,160,240,"+(a*0.6)+")";
+      ctx.lineWidth=0.8;
+      ctx.beginPath(); ctx.arc(pl.x,pl.y,pl.r*1.08,0,6.2832); ctx.stroke();
+    }
+  }
+
+  let bdHue=210;
+  function drawBackdrop(){
+    bdHue = (210 + Math.sin(t*0.08)*30);
+    const g = ctx.createRadialGradient(CX, CY, 0, CX, CY, Math.max(W,H)*0.75);
+    g.addColorStop(0, hsl(bdHue, 60, 8, 0.5));
+    g.addColorStop(0.6, "rgba(6,5,16,0.4)");
+    g.addColorStop(1, "rgba(2,2,7,0.6)");
+    ctx.globalCompositeOperation="source-over";
+    ctx.fillStyle=g;
+    ctx.fillRect(0,0,W,H);
+  }
+
+  function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
+
+  // ---------- loop ----------
+  function frame(now){
+    let dt = (now-last)/1000; last=now;
+    if(dt>0.05) dt=0.05;       // clamp big gaps
+    update(dt);
+    render();
+    requestAnimationFrame(frame);
+  }
+
+  // ---------- knot morphing ----------
+  function setKnot(np, nq){
+    pTarget = np; qTarget = nq;
+    p=np; q=nq;
+    rPQ.textContent = np+" : "+nq;
+    flashEl.style.opacity = "1";
+    clearTimeout(setKnot._t);
+    setKnot._t = setTimeout(()=>{ flashEl.style.opacity="0"; }, 120);
+  }
+  function cycleKnot(dir){
+    presetIdx = (presetIdx + dir + PRESETS.length) % PRESETS.length;
+    const pr = PRESETS[presetIdx];
+    setKnot(pr[0], pr[1]);
+  }
+
+  // ---------- interaction ----------
+  function pointerPos(e){
+    if(e.touches && e.touches.length){
+      return {x:e.touches[0].clientX, y:e.touches[0].clientY};
+    }
+    return {x:e.clientX, y:e.clientY};
+  }
+
+  function onDown(e){
+    const p=pointerPos(e);
+    dragging=true; dragMoved=false;
+    lastX=p.x; lastY=p.y;
+    mx=p.x; my=p.y;
+    rSpin.textContent="hold";
+  }
+  function onMove(e){
+    const p=pointerPos(e);
+    mx=p.x; my=p.y;
+    if(dragging){
+      const dx=p.x-lastX, dy=p.y-lastY;
+      if(Math.abs(dx)+Math.abs(dy) > 3) dragMoved=true;
+      dragVX = dx*0.006;
+      dragVY = dy*0.006;
+      lastX=p.x; lastY=p.y;
+    }
+  }
+  function onUp(e){
+    if(dragging && !dragMoved){
+      // treat as click -> pulse
+      addPulse(mx,my);
+    }
+    dragging=false;
+    rSpin.textContent = auto? "drift":"free";
+  }
+  function addPulse(x,y){
+    if(x<-9000) { x=CX; y=CY; }
+    pulses.push({x:x,y:y,r:0,age:0,life:1.1,speed:Math.max(W,H)*0.9});
+    flashEl.style.opacity="0.8";
+    clearTimeout(addPulse._t);
+    addPulse._t=setTimeout(()=>flashEl.style.opacity="0",160);
+  }
+
+  cv.addEventListener("mousedown", onDown);
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+  cv.addEventListener("mouseleave", ()=>{ if(!dragging){ mx=-9999; my=-9999; } });
+
+  cv.addEventListener("touchstart", (e)=>{ e.preventDefault(); onDown(e); }, {passive:false});
+  cv.addEventListener("touchmove", (e)=>{ e.preventDefault(); onMove(e); }, {passive:false});
+  cv.addEventListener("touchend", (e)=>{ e.preventDefault(); onUp(e); mx=-9999;my=-9999; }, {passive:false});
+
+  // scroll/wheel -> morph knot through presets
+  let wheelAcc=0;
+  window.addEventListener("wheel", (e)=>{
+    e.preventDefault();
+    wheelAcc += e.deltaY;
+    if(Math.abs(wheelAcc) > 60){
+      cycleKnot(wheelAcc>0?1:-1);
+      wheelAcc=0;
+    }
+  }, {passive:false});
+
+  window.addEventListener("keydown",(e)=>{
+    if(e.code==="Space"){ e.preventDefault(); auto=!auto; rSpin.textContent=auto?"drift":"free"; }
+    else if(e.code==="ArrowRight") cycleKnot(1);
+    else if(e.code==="ArrowLeft") cycleKnot(-1);
+    else if(e.key==="a"||e.key==="A") toggleAudio();
+  });
+
+  // double-click -> audio reactive toggle (optional, needs mic)
+  cv.addEventListener("dblclick", toggleAudio);
+
+  function toggleAudio(){
+    if(audioOn){ audioOn=false; rSpin.textContent="drift"; return; }
+    if(!navigator.mediaDevices) return;
+    navigator.mediaDevices.getUserMedia({audio:true}).then((stream)=>{
+      const AC = window.AudioContext||window.webkitAudioContext;
+      const ac = new AC();
+      const src = ac.createMediaStreamSource(stream);
+      analyser = ac.createAnalyser();
+      analyser.fftSize = 256;
+      freqData = new Uint8Array(analyser.frequencyBinCount);
+      src.connect(analyser);
+      audioOn=true;
+    }).catch(()=>{});
+  }
+
+  window.addEventListener("resize", resize);
+
+  // ---------- boot ----------
+  resize();
+  precomputeRot();
+  setKnot(PRESETS[0][0], PRESETS[0][1]);
+  // render one frame synchronously so the very first paint is the artwork
+  update(0.016);
+  render();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

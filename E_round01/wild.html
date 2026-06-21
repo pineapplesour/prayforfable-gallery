@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ON://STYLE.SYS — 486 Sunset Wardrobe Terminal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<style>
+  /* ===== 486 DITHER WARDROBE TERMINAL ===================================
+     real ordered (Bayer 8x8) dithering, quantized to a ~13-color VGA-ish
+     warm-sunset palette. The dithered scene IS the first paint. No gate. */
+
+  :root{
+    /* restrained VGA-ish warm sunset palette (~13 ink stops) */
+    --maroon:#2a0d18;
+    --maroon2:#42121f;
+    --rust:#7a2718;
+    --rust2:#9c3a1c;
+    --orange:#c4561f;
+    --salmon:#e07a3e;
+    --peach:#f0a868;
+    --cream:#f5d8a8;
+    --teal:#1f6b63;
+    --teal2:#2b8c7e;
+    --mint:#6fd0b8;
+    --dgreen:#123b34;
+    --ink:#1a0810;
+    --paper:#f5d8a8;
+
+    --panel:#2a0d18;
+    --line:#7a2718;
+  }
+
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{background:#1a0810;color:var(--cream);}
+  body{
+    font-family:'VT323',monospace;
+    font-size:20px;
+    line-height:1.25;
+    -webkit-font-smoothing:none;
+    image-rendering:pixelated;
+    overflow-x:hidden;
+    letter-spacing:.5px;
+  }
+  .px{font-family:'Press Start 2P',monospace;letter-spacing:0;}
+  .up{text-transform:uppercase;letter-spacing:2px;}
+
+  /* ---- global CRT overlays (scanlines + grain + vignette) ---------- */
+  .crt-lines,.crt-vig{position:fixed;inset:0;pointer-events:none;z-index:90;}
+  .crt-lines{
+    background:repeating-linear-gradient(
+      to bottom,
+      rgba(0,0,0,0) 0px,
+      rgba(0,0,0,0) 2px,
+      rgba(0,0,0,.20) 3px,
+      rgba(0,0,0,.20) 4px);
+    mix-blend-mode:multiply;
+    opacity:.55;
+  }
+  .crt-vig{
+    background:radial-gradient(120% 90% at 50% 42%, rgba(0,0,0,0) 52%, rgba(20,4,8,.85) 100%);
+  }
+  .crt-vig.off,.crt-lines.off{display:none;}
+
+  /* =================== HERO TERMINAL ============================== */
+  .term{
+    position:relative;
+    min-height:100vh;
+    padding:14px;
+    background:
+      linear-gradient(180deg,#120308,#1f0911);
+  }
+  /* outer beige 486 window bezel */
+  .bezel{
+    position:relative;
+    border:3px solid #0c0407;
+    background:
+      linear-gradient(180deg,#c9b48c,#a8916a);
+    box-shadow:0 0 0 2px #5a4327, 0 14px 0 #0c0407, 0 14px 0 6px #2a0d18;
+    padding:6px;
+  }
+  .titlebar{
+    display:flex;align-items:center;gap:8px;
+    background:linear-gradient(180deg,#2b8c7e,#1f6b63);
+    border:2px solid #0c0407;
+    color:#04201c;
+    padding:5px 9px;
+    font-family:'Press Start 2P';font-size:9px;letter-spacing:1px;
+  }
+  .titlebar .dot{width:11px;height:11px;border:2px solid #04201c;background:#6fd0b8;display:inline-block;}
+  .titlebar .dot.red{background:#e07a3e;}
+  .titlebar .dot.yel{background:#f0a868;}
+  .titlebar .grow{flex:1;}
+  .titlebar .min{
+    border:2px solid #04201c;background:#6fd0b8;color:#04201c;
+    width:18px;height:16px;display:grid;place-items:center;font-size:8px;line-height:1;
+  }
+
+  .screen{
+    position:relative;
+    border:3px solid #0c0407;
+    background:#1a0810;
+    overflow:hidden;
+  }
+  /* dithered scene canvas fills the screen */
+  #scene{
+    display:block;width:100%;height:auto;
+    image-rendering:pixelated;image-rendering:crisp-edges;
+  }
+  @media (max-width:760px){
+    /* taller hero on mobile: cover the screen, crop sides */
+    .screen{height:74vh;min-height:440px;}
+    #scene{width:100%;height:100%;object-fit:cover;object-position:50% 60%;}
+  }
+
+  /* ----- HUD overlaid on the dithered scene ----- */
+  .hud{position:absolute;inset:0;pointer-events:none;}
+  .hud > *{pointer-events:auto;}
+
+  /* teal CONTROL chip (top-right), mirrors the reference */
+  .control{
+    position:absolute;top:14px;right:14px;
+    display:flex;flex-direction:column;gap:6px;
+    background:rgba(18,59,52,.78);
+    border:2px solid #6fd0b8;
+    box-shadow:3px 3px 0 #04140f;
+    padding:8px 10px;min-width:158px;
+    backdrop-filter:blur(.5px);
+  }
+  .control .row{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+  .control .tag{font-family:'Press Start 2P';font-size:8px;color:#6fd0b8;letter-spacing:1px;}
+  .control .val{font-size:16px;color:#cdeee2;}
+  .control .chips{display:flex;gap:5px;flex-wrap:wrap;margin-top:2px;}
+  .chip{
+    font-family:'Press Start 2P';font-size:7px;letter-spacing:.5px;
+    border:2px solid #2b8c7e;color:#9fe6d3;background:rgba(31,107,99,.6);
+    padding:4px 5px;cursor:pointer;user-select:none;
+  }
+  .chip[aria-pressed="true"]{background:#2b8c7e;color:#04201c;}
+  .chip:hover{filter:brightness(1.15);}
+
+  /* big headline plate, lower-left */
+  .plate{
+    position:absolute;left:16px;bottom:30px;right:auto;max-width:60%;
+    padding:14px 16px 14px 14px;
+    background:linear-gradient(180deg,rgba(20,4,8,0) 0%,rgba(20,4,8,.42) 38%,rgba(20,4,8,.62) 100%);
+    border-left:3px solid rgba(111,208,184,.5);
+  }
+  .plate .kick{
+    display:inline-block;
+    font-family:'Press Start 2P';font-size:8px;letter-spacing:2px;
+    color:#04201c;background:#6fd0b8;border:2px solid #04140f;
+    padding:5px 7px;margin-bottom:10px;box-shadow:3px 3px 0 #04140f;
+  }
+  .plate h1{
+    font-family:'Press Start 2P';
+    font-size:clamp(20px,4vw,40px);line-height:1.18;
+    color:#f5d8a8;
+    text-shadow:3px 3px 0 #2a0d18, 6px 6px 0 #7a2718;
+  }
+  .plate h1 .on{color:#6fd0b8;text-shadow:3px 3px 0 #04201c;}
+  .plate p{
+    margin-top:12px;max-width:40ch;font-size:21px;color:#f0c79a;
+    text-shadow:2px 2px 0 #2a0d18;
+  }
+  .runline{
+    margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;
+  }
+  .btn{
+    font-family:'Press Start 2P';font-size:9px;letter-spacing:1px;
+    border:2px solid #04140f;padding:9px 12px;cursor:pointer;
+    background:#e07a3e;color:#2a0d18;box-shadow:4px 4px 0 #04140f;
+    text-decoration:none;display:inline-block;
+  }
+  .btn:active{transform:translate(2px,2px);box-shadow:2px 2px 0 #04140f;}
+  .btn.alt{background:#6fd0b8;color:#04201c;}
+
+  /* readout strip bottom of screen */
+  .ticker{
+    position:absolute;left:0;right:0;bottom:0;
+    background:rgba(10,4,8,.74);border-top:2px solid #7a2718;
+    color:#f0a868;font-size:15px;letter-spacing:1px;
+    white-space:nowrap;overflow:hidden;
+    padding:4px 0;
+  }
+  .ticker span{display:inline-block;padding-left:100%;animation:tick 22s linear infinite;}
+  @keyframes tick{to{transform:translateX(-100%);}}
+
+  /* status footer under screen, inside bezel */
+  .statusbar{
+    display:flex;flex-wrap:wrap;gap:2px;margin-top:6px;
+    font-family:'Press Start 2P';font-size:8px;
+  }
+  .statusbar div{
+    background:#2a0d18;color:#f0a868;border:2px solid #0c0407;
+    padding:6px 8px;flex:1;text-align:center;min-width:96px;
+  }
+  .statusbar div b{color:#6fd0b8;}
+
+  /* =================== BODY SECTIONS ============================== */
+  main{max-width:1180px;margin:0 auto;padding:30px 16px 70px;}
+  section{margin-top:34px;}
+  .winhead{
+    display:flex;align-items:center;gap:8px;
+    background:linear-gradient(180deg,#2b8c7e,#1f6b63);
+    color:#04201c;border:3px solid #0c0407;border-bottom:none;
+    font-family:'Press Start 2P';font-size:10px;letter-spacing:1px;
+    padding:8px 11px;
+  }
+  .winhead .led{width:10px;height:10px;background:#f0a868;border:2px solid #04201c;}
+  .winhead .led.b{background:#6fd0b8;}
+  .winbody{
+    border:3px solid #0c0407;background:#2a0d18;
+    padding:18px;
+    box-shadow:6px 6px 0 #0c0407;
+  }
+  .sectlabel{font-family:'Press Start 2P';font-size:9px;color:#6fd0b8;letter-spacing:2px;}
+  h2{font-family:'Press Start 2P';font-size:clamp(15px,2.5vw,24px);color:#f5d8a8;line-height:1.3;margin:8px 0 4px;
+     text-shadow:2px 2px 0 #7a2718;}
+  .lede{color:#f0c79a;font-size:21px;max-width:62ch;margin-top:6px;}
+
+  /* problem channels */
+  .channels{display:flex;flex-wrap:wrap;gap:7px;margin:14px 0 18px;}
+  .channels .c{
+    font-family:'VT323';font-size:19px;letter-spacing:1px;
+    border:2px dashed #9c3a1c;color:#f0a868;background:#1a0810;
+    padding:4px 10px;
+  }
+  .pains{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
+  .pain{
+    border:2px solid #7a2718;background:#1a0810;padding:12px;
+    box-shadow:3px 3px 0 #0c0407;
+  }
+  .pain .n{font-family:'Press Start 2P';font-size:9px;color:#e07a3e;}
+  .pain .t{font-size:21px;color:#f5d8a8;margin:6px 0 2px;}
+  .pain .d{font-size:17px;color:#cda;opacity:.85;}
+
+  /* 10 ON apps grid — each a tiny dithered icon tile */
+  .apps{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;}
+  .app{
+    border:2px solid #7a2718;background:#1a0810;
+    padding:10px;display:flex;flex-direction:column;align-items:center;gap:7px;
+    box-shadow:3px 3px 0 #0c0407;cursor:default;transition:transform .08s steps(2);
+  }
+  .app:hover{transform:translate(-1px,-2px);border-color:#6fd0b8;}
+  .app canvas{image-rendering:pixelated;border:2px solid #0c0407;background:#2a0d18;}
+  .app .nm{font-family:'Press Start 2P';font-size:8px;color:#6fd0b8;letter-spacing:.5px;text-align:center;}
+  .app .ds{font-size:15px;color:#f0c79a;text-align:center;line-height:1.15;}
+
+  /* traction stat slabs */
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;}
+  .stat{border:2px solid #2b8c7e;background:#123b34;padding:14px;text-align:center;box-shadow:3px 3px 0 #04140f;}
+  .stat .big{font-family:'Press Start 2P';font-size:clamp(16px,2.6vw,26px);color:#6fd0b8;}
+  .stat .cap{font-size:16px;color:#cdeee2;margin-top:8px;letter-spacing:1px;}
+
+  /* before/after flow */
+  .flow{display:grid;grid-template-columns:1fr 44px 1fr;gap:8px;align-items:stretch;}
+  .flow .col{border:2px solid #7a2718;background:#1a0810;padding:12px;}
+  .flow .col.after{border-color:#2b8c7e;background:#123b34;}
+  .flow .col h4{font-family:'Press Start 2P';font-size:9px;color:#e07a3e;margin-bottom:8px;letter-spacing:1px;}
+  .flow .col.after h4{color:#6fd0b8;}
+  .flow .col ul{list-style:none;}
+  .flow .col li{font-size:18px;color:#f0c79a;padding:3px 0;border-bottom:1px dashed #4a1f14;}
+  .flow .col.after li{border-color:#1f6b63;}
+  .flow .arrow{display:grid;place-items:center;font-family:'Press Start 2P';font-size:18px;color:#f0a868;}
+
+  /* pricing tiers */
+  .tiers{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;}
+  .tier{border:2px solid #7a2718;background:#1a0810;padding:14px;box-shadow:3px 3px 0 #0c0407;}
+  .tier.hot{border-color:#6fd0b8;background:#123b34;}
+  .tier .pt{font-family:'Press Start 2P';font-size:11px;color:#f5d8a8;letter-spacing:1px;}
+  .tier.hot .pt{color:#6fd0b8;}
+  .tier .pr{font-size:24px;color:#e07a3e;margin:8px 0;}
+  .tier ul{list-style:none;}
+  .tier li{font-size:16px;color:#f0c79a;padding:2px 0;}
+  .tier li::before{content:"▪ ";color:#2b8c7e;}
+
+  /* roadmap timeline */
+  .road{display:grid;grid-template-columns:repeat(4,1fr);gap:0;border:2px solid #7a2718;}
+  .road .r{padding:12px;border-right:2px solid #7a2718;background:#1a0810;}
+  .road .r:last-child{border-right:none;background:#123b34;}
+  .road .r .ph{font-family:'Press Start 2P';font-size:9px;color:#6fd0b8;letter-spacing:1px;}
+  .road .r .yr{font-size:16px;color:#f0a868;margin:6px 0;}
+  .road .r .tx{font-size:17px;color:#f0c79a;}
+
+  footer{
+    margin-top:46px;border:3px solid #0c0407;background:linear-gradient(180deg,#2b8c7e,#1f6b63);
+    color:#04201c;padding:16px;display:flex;flex-wrap:wrap;gap:14px;align-items:center;justify-content:space-between;
+    box-shadow:6px 6px 0 #0c0407;
+  }
+  footer .lg{font-family:'Press Start 2P';font-size:14px;letter-spacing:1px;}
+  footer .meta{font-size:18px;}
+  footer .b+button,footer .btn{background:#2a0d18;color:#6fd0b8;border-color:#04140f;}
+
+  /* responsive */
+  @media (max-width:760px){
+    body{font-size:18px;}
+    .pains{grid-template-columns:1fr 1fr;}
+    .apps{grid-template-columns:repeat(2,1fr);}
+    .stats{grid-template-columns:1fr 1fr;}
+    .tiers{grid-template-columns:1fr 1fr;}
+    .road{grid-template-columns:1fr 1fr;}
+    .flow{grid-template-columns:1fr;}
+    .flow .arrow{transform:rotate(90deg);height:34px;}
+    .plate{max-width:94%;left:10px;right:10px;bottom:34px;}
+    .plate .kick{font-size:7px;padding:4px 5px;margin-bottom:8px;}
+    .plate h1{font-size:20px;text-shadow:2px 2px 0 #2a0d18,4px 4px 0 #7a2718;}
+    .plate p{display:none;}
+    .plate .runline{margin-top:10px;}
+    .btn{font-size:8px;padding:8px 9px;box-shadow:3px 3px 0 #04140f;}
+    .control{top:8px;right:8px;left:auto;min-width:0;width:auto;padding:5px 6px;gap:4px;}
+    .control .row{gap:7px;}
+    .control .tag{font-size:7px;}
+    .control .val{font-size:12px;}
+    .control .chip{font-size:6px;padding:3px 4px;}
+    .ticker{font-size:13px;}
+    .statusbar div{min-width:46%;}
+  }
+  @media (max-width:430px){
+    .pains{grid-template-columns:1fr;}
+    .plate h1{font-size:18px;}
+  }
+</style>
+</head>
+<body>
+<div class="crt-lines" id="crtLines"></div>
+<div class="crt-vig" id="crtVig"></div>
+
+<!-- ================= HERO TERMINAL ================= -->
+<div class="term">
+  <div class="bezel">
+    <div class="titlebar px">
+      <span class="dot red"></span><span class="dot yel"></span><span class="dot"></span>
+      <span>ON://STYLE.SYS&nbsp; v4.86</span>
+      <span class="grow"></span>
+      <span class="min">_</span><span class="min">▭</span><span class="min">x</span>
+    </div>
+
+    <div class="screen">
+      <canvas id="scene" width="960" height="540" aria-label="dithered sunset wardrobe scene"></canvas>
+
+      <div class="hud">
+        <!-- teal CONTROL chip -->
+        <div class="control" aria-label="control panel">
+          <div class="row"><span class="tag">CONTROL</span><span class="val" id="clock">--:--</span></div>
+          <div class="row"><span class="tag">SUN</span><span class="val" id="sunVal">SET</span></div>
+          <div class="row"><span class="tag">PALETTE</span><span class="val">VGA-13</span></div>
+          <div class="chips">
+            <span class="chip" id="cDither" aria-pressed="true" role="button" tabindex="0">DITHER</span>
+            <span class="chip" id="cScan" aria-pressed="true" role="button" tabindex="0">SCAN</span>
+            <span class="chip" id="cMotion" aria-pressed="true" role="button" tabindex="0">MOTION</span>
+          </div>
+        </div>
+
+        <!-- headline plate -->
+        <div class="plate">
+          <span class="kick">AI STYLIST WORK OS · BOOT OK</span>
+          <h1><span class="on">STYLE:ON</span><br>옷장을 운영체제로</h1>
+          <p>협찬·소싱·피팅·정산을 한 화면으로. 현직 스타일리스트가 만든 통합 워크 터미널.</p>
+          <div class="runline">
+            <a class="btn" href="#apps">RUN ON-APPS ▸</a>
+            <a class="btn alt" href="#fund">VIEW DECK</a>
+          </div>
+        </div>
+
+        <div class="ticker"><span id="tk">▌ MVP 구축 완료 ▌ AI 기반 10개 핵심 기능 ▌ 협업 네트워크 연계 ▌ ordered-dither: Bayer 8×8 ▌ palette: warm sunset / VGA-13 ▌ no loading gate — the scene is the first paint ▌</span></div>
+      </div>
+    </div>
+
+    <div class="statusbar">
+      <div>STATUS <b>ONLINE</b></div>
+      <div>MEM <b>640K</b></div>
+      <div>RENDER <b id="fps">DITHER</b></div>
+      <div>APPS <b>10</b></div>
+      <div>NET <b>BETA</b></div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= BODY ================= -->
+<main>
+
+  <!-- PROBLEM -->
+  <section>
+    <div class="winhead px"><span class="led"></span><span class="led b"></span> C:\WORK\PROBLEM.LOG</div>
+    <div class="winbody">
+      <div class="sectlabel">// PROBLEM</div>
+      <h2>스타일리스트의 일은 아직도 파편화되어 있습니다</h2>
+      <p class="lede">메일·DM·카톡·엑셀·수집·SNS로 흩어진 현장 업무. 시간이 스타일링이 아닌 반복 잡무에 잠긴다.</p>
+      <div class="channels">
+        <span class="c">MAIL</span><span class="c">DM</span><span class="c">KAKAO</span>
+        <span class="c">EXCEL</span><span class="c">수집</span><span class="c">SNS</span>
+      </div>
+      <div class="pains">
+        <div class="pain"><div class="n">01</div><div class="t">협찬</div><div class="d">브랜드별 개별 문의, 회신 지연</div></div>
+        <div class="pain"><div class="n">02</div><div class="t">의상 수배</div><div class="d">쇼룸/대행사 보유처 탐색 비효율</div></div>
+        <div class="pain"><div class="n">03</div><div class="t">피팅</div><div class="d">실물 준비·반복 피팅 비용 증가</div></div>
+        <div class="pain"><div class="n">04</div><div class="t">리서치</div><div class="d">인스타/샤오훙슈/룩북 수동 탐색</div></div>
+        <div class="pain"><div class="n">05</div><div class="t">정산</div><div class="d">영수증 수기 정리, 누락·오기입</div></div>
+        <div class="pain"><div class="n">06</div><div class="t">정보 단절</div><div class="d">담당자·노하우가 카톡방에 흩어짐</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- SOLUTION FLOW -->
+  <section>
+    <div class="winhead px"><span class="led"></span><span class="led b"></span> C:\WORK\WORKFLOW.EXE</div>
+    <div class="winbody">
+      <div class="sectlabel">// SOLUTION</div>
+      <h2>흩어진 업무를 단일 워크플로우로</h2>
+      <div class="flow" style="margin-top:14px;">
+        <div class="col"><h4>BEFORE — 파편화</h4>
+          <ul><li>메일/DM/카톡 분산</li><li>엑셀 수기 정산</li><li>쇼룸 개별 컨택</li><li>룩북 수동 탐색</li><li>노하우 휘발</li></ul>
+        </div>
+        <div class="arrow">▶</div>
+        <div class="col after"><h4>AFTER — 단일 OS</h4>
+          <ul><li>한 화면 소싱·협찬</li><li>OCR 자동 정산</li><li>네트워크 보유처 검색</li><li>AI 레퍼런스·피팅</li><li>아카이브 락인</li></ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 10 ON APPS -->
+  <section id="apps">
+    <div class="winhead px"><span class="led"></span><span class="led b"></span> C:\STYLE.SYS\ON-APPS [10]</div>
+    <div class="winbody">
+      <div class="sectlabel">// PRODUCT</div>
+      <h2>10개 핵심 기능으로 구성된 Stylist Work OS</h2>
+      <p class="lede">단일 기능 앱이 아니라, 스타일리스트 전체 업무를 연결하는 운영체제.</p>
+      <div class="apps" id="appsGrid"></div>
+    </div>
+  </section>
+
+  <!-- TRACTION -->
+  <section>
+    <div class="winhead px"><span class="led"></span><span class="led b"></span> C:\WORK\TRACTION.DAT</div>
+    <div class="winbody">
+      <div class="sectlabel">// TRACTION</div>
+      <h2>검증 단계 — 이미 돌아가는 제품</h2>
+      <div class="stats" style="margin-top:14px;">
+        <div class="stat"><div class="big">MVP</div><div class="cap">인터랙티브 구축 완료</div></div>
+        <div class="stat"><div class="big">10</div><div class="cap">AI 핵심 기능</div></div>
+        <div class="stat"><div class="big">NET</div><div class="cap">업계 협업 네트워크</div></div>
+        <div class="stat"><div class="big">BETA</div><div class="cap">베타 출시 준비</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- BUSINESS MODEL -->
+  <section>
+    <div class="winhead px"><span class="led"></span><span class="led b"></span> C:\WORK\PRICING.CFG</div>
+    <div class="winbody">
+      <div class="sectlabel">// BUSINESS MODEL</div>
+      <h2>커뮤니티 → 유료 워크 플랫폼</h2>
+      <div class="tiers" style="margin-top:14px;">
+        <div class="tier"><div class="pt">FREE</div><div class="pr">₩0</div><ul><li>기본 소싱</li><li>커뮤니티</li><li>아카이브 열람</li></ul></div>
+        <div class="tier hot"><div class="pt">PRO</div><div class="pr">구독</div><ul><li>AI 10기능</li><li>OCR 정산</li><li>가상 피팅</li></ul></div>
+        <div class="tier"><div class="pt">TEAM</div><div class="pr">시트</div><ul><li>협업·권한</li><li>공유 워크룸</li><li>네트워크</li></ul></div>
+        <div class="tier"><div class="pt">ENTERPRISE</div><div class="pr">B2B</div><ul><li>수수료 매출</li><li>데이터 광고</li><li>전용 연동</li></ul></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ROADMAP / FUND -->
+  <section id="fund">
+    <div class="winhead px"><span class="led"></span><span class="led b"></span> C:\WORK\ROADMAP.MAP</div>
+    <div class="winbody">
+      <div class="sectlabel">// ROADMAP · USE OF FUNDS</div>
+      <h2>MVP에서 산업 표준 OS로</h2>
+      <div class="road" style="margin-top:14px;">
+        <div class="r"><div class="ph">PHASE 1</div><div class="yr">NOW</div><div class="tx">MVP · 핵심 화면 · 베타</div></div>
+        <div class="r"><div class="ph">PHASE 2</div><div class="yr">Q2-Q4</div><div class="tx">AI 파이프라인 · 정식 출시</div></div>
+        <div class="r"><div class="ph">PHASE 3</div><div class="yr">YR 2</div><div class="tx">팀·엔터프라이즈 · B2B</div></div>
+        <div class="r"><div class="ph">PHASE 4</div><div class="yr">비전</div><div class="tx">스타일링 산업 인프라</div></div>
+      </div>
+      <div style="margin-top:18px;display:flex;gap:10px;flex-wrap:wrap;">
+        <a class="btn" href="#">자금 사용처: 제품·AI·GTM</a>
+        <a class="btn alt" href="#">12개월 성과 목표 ▸</a>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <div>
+      <div class="lg">STYLE:ON</div>
+      <div class="meta">AI Stylist Work OS — 스타일리스트의 일을 더 체계적으로.</div>
+    </div>
+    <div class="meta">ON://STYLE.SYS · 486 SUNSET TERMINAL · VGA-13 / BAYER-8</div>
+  </footer>
+</main>
+
+<script>
+/* =====================================================================
+   ORDERED DITHERING ENGINE  (real Bayer 8x8, per-channel quantization
+   to a fixed warm-sunset palette).  Procedural sunset wardrobe scene is
+   drawn on an offscreen buffer, then dithered onto the visible canvas.
+   ===================================================================== */
+
+// ---- 13-stop warm sunset palette (RGB) ----
+const PALETTE = [
+  [26,8,16],    [42,18,31],   [122,39,24],  [156,58,28],
+  [196,86,31],  [224,122,62], [240,168,104],[245,216,168],
+  [31,107,99],  [43,140,126], [111,208,184],[18,59,52],[12,3,8]
+];
+
+// Bayer 8x8 threshold matrix (0..63) normalized to -0.5..0.5
+const BAYER8 = [
+  [ 0,32, 8,40, 2,34,10,42],
+  [48,16,56,24,50,18,58,26],
+  [12,44, 4,36,14,46, 6,38],
+  [60,28,52,20,62,30,54,22],
+  [ 3,35,11,43, 1,33, 9,41],
+  [51,19,59,27,49,17,57,25],
+  [15,47, 7,39,13,45, 5,37],
+  [63,31,55,23,61,29,53,21]
+];
+
+function nearestPaletteIndex(r,g,b){
+  let best=0,bd=1e12;
+  for(let i=0;i<PALETTE.length;i++){
+    const p=PALETTE[i];
+    const dr=r-p[0],dg=g-p[1],db=b-p[2];
+    const d=dr*dr+dg*dg+db*db;
+    if(d<bd){bd=d;best=i;}
+  }
+  return best;
+}
+
+/* Dither an ImageData in-place.  We add the Bayer offset (scaled by a
+   spread) to each channel before snapping to the nearest palette color —
+   this is genuine ordered dithering, producing the dot-mosaic gradients. */
+function ditherImageData(img, spread){
+  const {data,width,height}=img;
+  for(let y=0;y<height;y++){
+    const brow=BAYER8[y&7];
+    for(let x=0;x<width;x++){
+      const t=(brow[x&7]/64 - 0.5)*spread; // -spread/2 .. +spread/2
+      const o=(y*width+x)*4;
+      let r=data[o]+t, g=data[o+1]+t, b=data[o+2]+t;
+      const idx=nearestPaletteIndex(r,g,b);
+      const p=PALETTE[idx];
+      data[o]=p[0]; data[o+1]=p[1]; data[o+2]=p[2]; data[o+3]=255;
+    }
+  }
+}
+
+/* ---------------- procedural SUNSET WARDROBE scene ---------------- */
+const scene = document.getElementById('scene');
+const sctx  = scene.getContext('2d',{willReadFrequently:true});
+
+// internal low-res buffer (true 486 resolution) -> dithered -> upscaled
+const LW = 240, LH = 135;            // ~16:9 lo-res grid
+const buf = document.createElement('canvas');
+buf.width=LW; buf.height=LH;
+const bctx = buf.getContext('2d',{willReadFrequently:true});
+
+let DITHER_ON=true, MOTION_ON=true, SPREAD=48;
+
+function drawScene(t){
+  // t: seconds. Subtle motion = drifting sun + shimmer.
+  const g=bctx;
+  // ----- sky: vertical warm-sunset gradient -----
+  const grad=g.createLinearGradient(0,0,0,LH);
+  grad.addColorStop(0.00,'#2a0d18');
+  grad.addColorStop(0.30,'#7a2718');
+  grad.addColorStop(0.52,'#c4561f');
+  grad.addColorStop(0.66,'#e07a3e');
+  grad.addColorStop(0.78,'#f0a868');
+  grad.addColorStop(0.86,'#f5d8a8');
+  g.fillStyle=grad; g.fillRect(0,0,LW,LH);
+
+  const horizon=Math.round(LH*0.66);
+
+  // ----- the sun: a disc low on the horizon, gentle bob -----
+  const sunX=LW*0.5;
+  const sunBob = MOTION_ON ? Math.sin(t*0.4)*1.4 : 0;
+  const sunY=horizon - 14 + sunBob;
+  const sunR=20;
+  const sg=g.createRadialGradient(sunX,sunY,2,sunX,sunY,sunR);
+  sg.addColorStop(0,'#f5d8a8'); sg.addColorStop(0.5,'#f0a868'); sg.addColorStop(1,'#e07a3e');
+  g.fillStyle=sg;
+  g.beginPath(); g.arc(sunX,sunY,sunR,0,Math.PI*2); g.fill();
+  // sun band cutouts (retro venetian sun)
+  g.fillStyle='#7a2718';
+  for(let i=0;i<5;i++){
+    const by=sunY+4+i*4;
+    g.fillRect(sunX-sunR, by, sunR*2, 1+ (i*0.4));
+  }
+
+  // ----- distant hills behind horizon (teal/dgreen accent) -----
+  g.fillStyle='#123b34';
+  g.beginPath();
+  g.moveTo(0,horizon);
+  for(let x=0;x<=LW;x+=6){
+    const hy=horizon-6-Math.sin(x*0.05)*4-Math.cos(x*0.11)*3;
+    g.lineTo(x,hy);
+  }
+  g.lineTo(LW,horizon); g.closePath(); g.fill();
+
+  // ----- ground / studio floor below horizon (deep maroon) -----
+  const fg=g.createLinearGradient(0,horizon,0,LH);
+  fg.addColorStop(0,'#42121f'); fg.addColorStop(1,'#1a0810');
+  g.fillStyle=fg; g.fillRect(0,horizon,LW,LH-horizon);
+
+  // floor perspective lines (runway)
+  g.strokeStyle='rgba(196,86,31,.6)'; g.lineWidth=1;
+  for(let i=-6;i<=6;i++){
+    g.beginPath();
+    g.moveTo(LW/2, horizon);
+    g.lineTo(LW/2 + i*40, LH);
+    g.stroke();
+  }
+  // horizontal floor rows
+  for(let i=1;i<=5;i++){
+    const fy=horizon + Math.pow(i/5,1.7)*(LH-horizon);
+    g.beginPath(); g.moveTo(0,fy); g.lineTo(LW,fy); g.stroke();
+  }
+
+  // ----- sun reflection shimmer on floor -----
+  const shim = MOTION_ON ? (Math.sin(t*1.5)*1.2) : 0;
+  g.fillStyle='rgba(240,168,104,.5)';
+  for(let i=0;i<8;i++){
+    const ry=horizon+2+i*3;
+    const rw=(sunR*1.4)*(1+i*0.16);
+    g.fillRect(sunX-rw/2 + (i%2?shim:-shim), ry, rw, 1);
+  }
+
+  // ----- WARDROBE silhouettes: garment rack + dress forms ------
+  g.fillStyle='#1a0810';
+
+  // dress form (mannequin) left
+  drawDressForm(g, LW*0.2, horizon, 1.0);
+  // dress form right (smaller)
+  drawDressForm(g, LW*0.82, horizon, 0.82);
+
+  // garment rack center-left
+  drawRack(g, LW*0.34, horizon, t);
+
+  // hanging dress on rack-right
+  drawRack(g, LW*0.62, horizon, t+1.3);
+
+  // ----- a few VGA stars in the upper maroon -----
+  g.fillStyle='#f5d8a8';
+  const stars=[[30,14],[64,9],[110,20],[168,12],[206,18],[88,26],[140,7]];
+  for(const [sx,sy] of stars){
+    const tw = MOTION_ON ? (0.5+0.5*Math.sin(t*2+sx)) : 1;
+    if(tw>0.55) g.fillRect(sx,sy,1,1);
+  }
+
+  // ---- now DITHER the buffer ----
+  if(DITHER_ON){
+    const id=g.getImageData(0,0,LW,LH);
+    ditherImageData(id, SPREAD);
+    g.putImageData(id,0,0);
+  } else {
+    // still quantize (no bayer offset) so palette stays restrained
+    const id=g.getImageData(0,0,LW,LH);
+    ditherImageData(id, 0);
+    g.putImageData(id,0,0);
+  }
+
+  // ---- upscale onto visible canvas with nearest-neighbor ----
+  sctx.imageSmoothingEnabled=false;
+  sctx.clearRect(0,0,scene.width,scene.height);
+  sctx.drawImage(buf,0,0,LW,LH,0,0,scene.width,scene.height);
+}
+
+function drawDressForm(g,cx,baseY,s){
+  g.save();
+  g.translate(cx,baseY);
+  g.scale(s,s);
+  // stand pole
+  g.fillRect(-1,-2,2,2);
+  g.fillRect(-3,0,6,2);
+  // torso (bell silhouette)
+  g.beginPath();
+  g.moveTo(-5,-2);
+  g.bezierCurveTo(-9,-14,-7,-26,0,-30);
+  g.bezierCurveTo(7,-26,9,-14,5,-2);
+  g.closePath();
+  g.fill();
+  // shoulders/neck nub
+  g.beginPath(); g.arc(0,-32,2.4,0,Math.PI*2); g.fill();
+  g.restore();
+}
+
+function drawRack(g,cx,baseY,t){
+  g.save();
+  g.translate(cx,baseY);
+  // legs
+  g.fillRect(-14,-1,3,2); g.fillRect(11,-1,3,2);
+  g.fillRect(-13,-26,2,26); g.fillRect(11,-26,2,26);
+  // top bar
+  g.fillRect(-14,-28,28,3);
+  // hanging garments (swaying)
+  for(let i=0;i<4;i++){
+    const hx=-9+i*6;
+    const sway=Math.sin(t*1.2+i)*1.2;
+    g.beginPath();
+    g.moveTo(hx-3,-25);
+    g.bezierCurveTo(hx-4+sway,-16,hx-3+sway,-6,hx+sway,-2);
+    g.bezierCurveTo(hx+3+sway,-6,hx+4+sway,-16,hx+3,-25);
+    g.closePath(); g.fill();
+  }
+  g.restore();
+}
+
+/* animate */
+let start=performance.now();
+function loop(now){
+  const t=(now-start)/1000;
+  drawScene(t);
+  rafId=requestAnimationFrame(loop);
+}
+let rafId=requestAnimationFrame(loop);
+
+/* =================== tiny ON-APP dithered icons =================== */
+const APPS=[
+  ['ON Sourcing','무드 기반 의상 소싱','rack'],
+  ['ON Sponsor','브랜드 협찬 확인·요청','tag'],
+  ['ON Track','픽업·반납 트래킹','box'],
+  ['ON Ref','레퍼런스 검색','grid'],
+  ['ON Lens','사진 제품 검색','lens'],
+  ['ON Fit','AI 가상 피팅','form'],
+  ['ON Trend','트렌드 예측','wave'],
+  ['ON Pay','영수증 OCR 정산','recpt'],
+  ['ON Desk','촬영 일정 관리','cal'],
+  ['ON Crew','실무 커뮤니티·아카이브','crew']
+];
+
+function makeIcon(kind){
+  const W=48,H=48;
+  const c=document.createElement('canvas'); c.width=W;c.height=H;
+  const x=c.getContext('2d',{willReadFrequently:true});
+  // bg sunset-ish gradient
+  const gd=x.createLinearGradient(0,0,0,H);
+  gd.addColorStop(0,'#7a2718'); gd.addColorStop(1,'#e07a3e');
+  x.fillStyle=gd; x.fillRect(0,0,W,H);
+  x.fillStyle='#1a0810';
+  x.strokeStyle='#1a0810'; x.lineWidth=2;
+  const M=W/2;
+  switch(kind){
+    case 'rack':
+      x.fillRect(8,12,32,3); x.fillRect(10,12,2,24); x.fillRect(36,12,2,24);
+      for(let i=0;i<3;i++){let hx=14+i*9;x.beginPath();x.moveTo(hx,14);x.bezierCurveTo(hx-4,26,hx+4,30,hx,36);x.lineTo(hx+5,30);x.bezierCurveTo(hx+6,24,hx+5,16,hx+4,14);x.closePath();x.fill();}
+      break;
+    case 'tag':
+      x.beginPath();x.moveTo(12,12);x.lineTo(30,12);x.lineTo(38,24);x.lineTo(24,38);x.lineTo(12,26);x.closePath();x.fill();
+      x.fillStyle='#f5d8a8';x.beginPath();x.arc(20,20,3,0,7);x.fill();
+      break;
+    case 'box':
+      x.fillRect(12,16,24,20); x.fillStyle='#e07a3e';x.fillRect(12,16,24,6);
+      x.fillStyle='#1a0810';x.fillRect(22,16,4,20);
+      break;
+    case 'grid':
+      for(let r=0;r<3;r++)for(let cc=0;cc<3;cc++){x.fillRect(11+cc*10,11+r*10,7,7);}
+      break;
+    case 'lens':
+      x.beginPath();x.arc(21,21,10,0,7);x.fill();
+      x.fillStyle='#f0a868';x.beginPath();x.arc(21,21,5,0,7);x.fill();
+      x.fillStyle='#1a0810';x.fillRect(28,28,4,12);x.save();x.translate(30,32);x.rotate(0.8);x.fillRect(0,-2,12,4);x.restore();
+      break;
+    case 'form':
+      x.beginPath();x.moveTo(18,36);x.bezierCurveTo(12,22,16,12,24,10);x.bezierCurveTo(32,12,36,22,30,36);x.closePath();x.fill();
+      x.beginPath();x.arc(24,8,3,0,7);x.fill();
+      break;
+    case 'wave':
+      x.lineWidth=3;x.beginPath();x.moveTo(8,30);for(let i=0;i<=32;i++){const px=8+i;const py=26-Math.sin(i*0.4)*8;x.lineTo(px,py);}x.stroke();
+      x.fillStyle='#f5d8a8';x.beginPath();x.arc(40,18,3,0,7);x.fill();
+      break;
+    case 'recpt':
+      x.fillRect(14,8,20,32);
+      x.fillStyle='#e07a3e';for(let i=0;i<5;i++)x.fillRect(17,13+i*5,14,2);
+      x.fillStyle='#1a0810';x.beginPath();x.moveTo(14,40);x.lineTo(19,36);x.lineTo(24,40);x.lineTo(29,36);x.lineTo(34,40);x.lineTo(34,8);x.lineTo(14,8);x.closePath();x.fill();
+      x.fillStyle='#e07a3e';for(let i=0;i<5;i++)x.fillRect(17,13+i*5,14,2);
+      break;
+    case 'cal':
+      x.fillRect(10,12,28,26); x.fillStyle='#e07a3e';x.fillRect(10,12,28,7);
+      x.fillStyle='#f5d8a8';for(let r=0;r<3;r++)for(let cc=0;cc<4;cc++)x.fillRect(13+cc*6,23+r*5,3,3);
+      break;
+    case 'crew':
+      x.beginPath();x.arc(17,18,5,0,7);x.fill();x.beginPath();x.arc(31,18,5,0,7);x.fill();
+      x.beginPath();x.moveTo(9,38);x.bezierCurveTo(9,28,25,28,25,38);x.closePath();x.fill();
+      x.beginPath();x.moveTo(23,38);x.bezierCurveTo(23,28,39,28,39,38);x.closePath();x.fill();
+      break;
+  }
+  // dither the icon for matching texture
+  const id=x.getImageData(0,0,W,H);
+  ditherImageData(id, DITHER_ON?40:0);
+  x.putImageData(id,0,0);
+  return c;
+}
+
+(function buildApps(){
+  const grid=document.getElementById('appsGrid');
+  for(const [nm,ds,kind] of APPS){
+    const el=document.createElement('div'); el.className='app';
+    const ic=makeIcon(kind);
+    ic.style.width='64px'; ic.style.height='64px';
+    el.appendChild(ic);
+    const n=document.createElement('div'); n.className='nm'; n.textContent=nm;
+    const d=document.createElement('div'); d.className='ds'; d.textContent=ds;
+    el.appendChild(n); el.appendChild(d);
+    grid.appendChild(el);
+  }
+})();
+
+/* =================== CONTROL chip behavior =================== */
+function bindChip(id, on, off){
+  const el=document.getElementById(id);
+  function toggle(){
+    const now=el.getAttribute('aria-pressed')==='true';
+    el.setAttribute('aria-pressed', String(!now));
+    (!now?on:off)();
+  }
+  el.addEventListener('click',toggle);
+  el.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();toggle();}});
+}
+bindChip('cDither', ()=>{DITHER_ON=true;}, ()=>{DITHER_ON=false;});
+bindChip('cScan',
+  ()=>{document.getElementById('crtLines').classList.remove('off');document.getElementById('crtVig').classList.remove('off');},
+  ()=>{document.getElementById('crtLines').classList.add('off');document.getElementById('crtVig').classList.add('off');});
+bindChip('cMotion',
+  ()=>{MOTION_ON=true; if(!rafId) rafId=requestAnimationFrame(loop);},
+  ()=>{MOTION_ON=false;});
+
+/* clock readout */
+function tickClock(){
+  const d=new Date();
+  const p=n=>String(n).padStart(2,'0');
+  document.getElementById('clock').textContent=p(d.getHours())+':'+p(d.getMinutes());
+}
+tickClock(); setInterval(tickClock,15000);
+
+/* respect prefers-reduced-motion */
+if(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches){
+  MOTION_ON=false;
+  const m=document.getElementById('cMotion'); m.setAttribute('aria-pressed','false');
+}
+</script>
+</body>
+</html>

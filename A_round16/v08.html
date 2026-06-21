@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>흐르는 시 · River of Verse</title>
+<style>
+  :root{ color-scheme: dark; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#05070f; }
+  body{
+    font-family: "Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic", system-ui, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    cursor: crosshair;
+  }
+  #stage{ position:fixed; inset:0; display:block; }
+  /* faint title that fades after first interaction */
+  #hud{
+    position:fixed; left:0; right:0; bottom:0; padding:14px 20px 16px;
+    display:flex; justify-content:space-between; align-items:flex-end;
+    pointer-events:none; z-index:5; mix-blend-mode:screen;
+    font-feature-settings:"tnum";
+    transition: opacity 1.2s ease;
+  }
+  #hud .t{
+    font-size:12px; letter-spacing:.32em; text-transform:uppercase;
+    color:rgba(186,214,255,.55); font-weight:600;
+  }
+  #hud .h{
+    font-size:11px; letter-spacing:.14em; color:rgba(150,180,230,.42);
+    text-align:right; line-height:1.7;
+  }
+  #title{
+    position:fixed; top:0; left:0; right:0; padding:26px 24px 0;
+    z-index:5; pointer-events:none; mix-blend-mode:screen;
+    transition: opacity 1.4s ease, transform 1.4s ease;
+  }
+  #title .k{
+    font-size:clamp(22px,4.4vw,46px); font-weight:800; letter-spacing:-.01em;
+    color:rgba(222,236,255,.92);
+    text-shadow:0 0 30px rgba(90,150,255,.35);
+  }
+  #title .s{
+    margin-top:6px; font-size:clamp(11px,1.4vw,14px); font-weight:500;
+    letter-spacing:.22em; color:rgba(150,185,245,.6);
+  }
+  body.touched #title{ opacity:0; transform:translateY(-12px); }
+  body.touched #hud .t{ opacity:.32; }
+  @media (max-width:480px){
+    #hud{ padding:10px 14px 12px; }
+    #hud .h{ font-size:9px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="title">
+  <div class="k">흐르는 시</div>
+  <div class="s">움직여 보세요 · 강물이 글자를 안고 흐릅니다</div>
+</div>
+<div id="hud">
+  <div class="t">River&nbsp;of&nbsp;Verse</div>
+  <div class="h"><span id="fps">— fps</span> &nbsp;·&nbsp; <span id="cnt">—</span> glyphs<br>drag to part the water · scroll to change season</div>
+</div>
+
+<script>
+(() => {
+"use strict";
+
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', { alpha:false });
+const fpsEl = document.getElementById('fps');
+const cntEl = document.getElementById('cnt');
+
+let W=0, H=0, DPR=1, CX=0, CY=0;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = Math.round(W*DPR); cv.height = Math.round(H*DPR);
+  cv.style.width = W+'px'; cv.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  CX = W*0.5; CY = H*0.5;
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* ---------------- The poem: a river of Korean verse ---------------- */
+const verses = [
+  "강은 글자를 데리고 흐른다",
+  "물결마다 한 음절씩 떠나보내며",
+  "어떤 말은 가라앉고 어떤 말은 빛난다",
+  "손을 대면 시가 갈라지고",
+  "다시 모여 새로운 문장이 된다",
+  "밤은 깊고 강물은 별을 적신다",
+  "흐른다는 것은 잊는다는 것",
+  "그리고 끝내 바다에 닿는다는 것",
+  "여기 흘려보낸 모든 마음이",
+  "한 줄의 빛으로 다시 떠오른다",
+];
+// flatten to a stream of glyphs (skip spaces but remember word boundaries)
+const POEM = verses.join("   ");
+const glyphChars = [];
+for (const ch of POEM){ glyphChars.push(ch); }
+
+/* ---------------- pointer state ---------------- */
+const ptr = { x: -9999, y: -9999, px:-9999, py:-9999, down:false, vx:0, vy:0, active:false, t:0 };
+let touched = false;
+function markTouched(){ if(!touched){ touched=true; document.body.classList.add('touched'); } }
+
+function setPtr(x,y){
+  ptr.px = ptr.x; ptr.py = ptr.y;
+  ptr.x = x; ptr.y = y;
+  if(ptr.px>-9000){ ptr.vx = x-ptr.px; ptr.vy = y-ptr.py; }
+  ptr.active = true; ptr.t = performance.now();
+  markTouched();
+}
+cv.addEventListener('mousemove', e=> setPtr(e.clientX, e.clientY));
+cv.addEventListener('mousedown', e=>{ ptr.down=true; setPtr(e.clientX,e.clientY); spawnRipple(e.clientX,e.clientY,1.4); });
+window.addEventListener('mouseup', ()=> ptr.down=false);
+cv.addEventListener('mouseleave', ()=>{ ptr.active=false; });
+cv.addEventListener('touchstart', e=>{ const t=e.touches[0]; ptr.down=true; setPtr(t.clientX,t.clientY); spawnRipple(t.clientX,t.clientY,1.4); e.preventDefault(); }, {passive:false});
+cv.addEventListener('touchmove',  e=>{ const t=e.touches[0]; setPtr(t.clientX,t.clientY); e.preventDefault(); }, {passive:false});
+cv.addEventListener('touchend',   ()=>{ ptr.down=false; ptr.active=false; });
+
+/* season / mood via scroll or wheel */
+let season = 0;      // continuous, wraps
+let seasonTarget = 0;
+function nudgeSeason(d){ seasonTarget += d; markTouched(); }
+window.addEventListener('wheel', e=>{ nudgeSeason(e.deltaY*0.0016); e.preventDefault(); }, {passive:false});
+// vertical drag on touch also shifts season slightly handled implicitly; add gentle auto-drift
+let lastTouchY=null;
+cv.addEventListener('touchmove', e=>{
+  const y=e.touches[0].clientY;
+  if(lastTouchY!=null) nudgeSeason((y-lastTouchY)*0.0009);
+  lastTouchY=y;
+},{passive:false});
+cv.addEventListener('touchend', ()=> lastTouchY=null);
+
+/* ---------------- palette per season (4 moods, blend) -------------- */
+// each mood: deep bg, two flow tints, glow accent, ink for text
+const moods = [
+  { name:"심야",  bg:[5,7,16],     a:[64,128,255],  b:[150,90,255],  glow:[120,180,255], ink:[214,232,255] },
+  { name:"새벽",  bg:[12,9,18],    a:[255,120,170],  b:[120,150,255], glow:[255,170,200], ink:[255,228,238] },
+  { name:"황혼",  bg:[16,8,8],     a:[255,150,60],   b:[255,80,120],  glow:[255,190,110], ink:[255,236,214] },
+  { name:"여명",  bg:[6,14,14],    a:[60,220,180],   b:[80,160,255],  glow:[140,255,220], ink:[222,255,246] },
+];
+function lerp(a,b,t){ return a+(b-a)*t; }
+function mixCol(c1,c2,t){ return [ lerp(c1[0],c2[0],t), lerp(c1[1],c2[1],t), lerp(c1[2],c2[2],t) ]; }
+function moodAt(s){
+  const n = moods.length;
+  let f = ((s % n)+n)%n;
+  const i = Math.floor(f); const t = f-i;
+  const m0 = moods[i], m1 = moods[(i+1)%n];
+  return {
+    bg: mixCol(m0.bg,m1.bg,t),
+    a:  mixCol(m0.a,m1.a,t),
+    b:  mixCol(m0.b,m1.b,t),
+    glow:mixCol(m0.glow,m1.glow,t),
+    ink:mixCol(m0.ink,m1.ink,t),
+  };
+}
+function rgba(c,al){ return `rgba(${c[0]|0},${c[1]|0},${c[2]|0},${al})`; }
+
+/* ---------------- flow field (curl-ish noise via layered sin) ------ */
+// cheap, smooth, animated pseudo-noise -> directional river current
+function flowAngle(x,y,t){
+  const s = 0.0016;
+  let n = 0;
+  n += Math.sin(x*s*1.0 + y*s*0.6 + t*0.20);
+  n += Math.sin(x*s*0.4 - y*s*1.3 + t*0.14)*0.7;
+  n += Math.sin((x+y)*s*0.8 + t*0.30)*0.5;
+  // base flow direction = rightward + downward drift (the river runs)
+  const base = -0.18 + Math.sin(y*0.004 + t*0.1)*0.22;
+  return base + n*0.55;
+}
+function flowSpeed(x,y,t){
+  // faster in the central "channel", slower at banks
+  const dy = (y - CY)/(H*0.5);
+  const channel = 1.0 - Math.min(1, dy*dy*0.85);
+  return (0.7 + channel*1.3);
+}
+
+/* ---------------- glyph particles ---------------- */
+// cap particle count by area for performance
+let N = 0;
+const P = { x:[],y:[],z:[],vx:[],vy:[],ch:[],ph:[],sz:[],hue:[],life:[] };
+function buildParticles(){
+  const area = W*H;
+  // density tuned; cap so phones stay smooth
+  N = Math.round(Math.min(360, Math.max(140, area/5200)));
+  for(const k in P) P[k].length = 0;
+  for(let i=0;i<N;i++){
+    P.x.push(Math.random()*W);
+    P.y.push(CY + (Math.random()-0.5)*H*0.9);
+    P.z.push(Math.random());                 // depth 0=far(small,faint) 1=near
+    P.vx.push(0); P.vy.push(0);
+    P.ch.push(glyphChars[Math.floor(Math.random()*glyphChars.length)]);
+    P.ph.push(Math.random()*Math.PI*2);
+    P.sz.push(0);
+    P.hue.push(Math.random());               // mix between a/b tint
+    P.life.push(Math.random());
+  }
+}
+buildParticles();
+let lastBuildW=W,lastBuildH=H;
+window.addEventListener('resize', ()=>{ if(Math.abs(W-lastBuildW)>80||Math.abs(H-lastBuildH)>80){ buildParticles(); lastBuildW=W;lastBuildH=H; } });
+
+/* ---------------- ripples (click/tap) ---------------- */
+const ripples = [];
+function spawnRipple(x,y,strength){
+  ripples.push({x,y,r:0,mx:Math.max(W,H)*0.55,str:strength,age:0});
+  if(ripples.length>8) ripples.shift();
+}
+
+/* ---------------- foreground "surface" light streaks ------------- */
+const streaks = [];
+for(let i=0;i<26;i++) streaks.push({ y:Math.random(), x:Math.random(), len:0.04+Math.random()*0.12, sp:0.0006+Math.random()*0.0016, a:0.04+Math.random()*0.10 });
+
+/* ---------------- main loop ---------------- */
+let t0 = performance.now();
+let frames=0, fpsT=0, fps=60;
+let prevT = t0;
+
+function frame(now){
+  const dt = Math.min(40, now - prevT)/16.6667;  // normalized to 60fps step
+  prevT = now;
+  const T = (now - t0)/1000;
+
+  // ease season
+  season += (seasonTarget - season)*0.05;
+  // tiny ambient season drift so it always feels alive
+  seasonTarget += 0.00018;
+  const M = moodAt(season);
+
+  // ---- background: deep gradient + slow vignette breathing ----
+  const bgTop = mixCol(M.bg, [0,0,0], 0.35);
+  const g = ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0, rgba(bgTop,1));
+  g.addColorStop(0.5, rgba(M.bg,1));
+  g.addColorStop(1, rgba(mixCol(M.bg,M.a,0.10),1));
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,W,H);
+
+  // soft current bands (the river body) — additive, low alpha
+  ctx.globalCompositeOperation = 'lighter';
+  const bands = 5;
+  for(let i=0;i<bands;i++){
+    const yc = CY + Math.sin(T*0.25 + i*1.7)* (H*0.06) + (i-(bands-1)/2)*(H*0.11);
+    const rg = ctx.createRadialGradient(CX + Math.sin(T*0.2+i)*W*0.2, yc, 0, CX, yc, W*0.7);
+    const col = (i%2===0)?M.a:M.b;
+    rg.addColorStop(0, rgba(col, 0.05));
+    rg.addColorStop(1, rgba(col, 0));
+    ctx.fillStyle = rg;
+    ctx.fillRect(0,0,W,H);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+
+  // ---- update ripples ----
+  for(let i=ripples.length-1;i>=0;i--){
+    const r = ripples[i];
+    r.age += dt; r.r += (r.mx - r.r)*0.045*dt;
+    if(r.r > r.mx*0.985){ ripples.splice(i,1); }
+  }
+
+  // pointer velocity decay
+  ptr.vx *= 0.82; ptr.vy *= 0.82;
+  const ptrAlive = ptr.active && (now - ptr.t) < 1600;
+
+  // ---- update + draw particles ----
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  cntEl.textContent = N;
+
+  for(let i=0;i<N;i++){
+    let x=P.x[i], y=P.y[i], z=P.z[i];
+
+    // flow field current
+    const sp = flowSpeed(x,y,T) * (0.4 + z*0.9);
+    const ang = flowAngle(x,y,T);
+    let fx = Math.cos(ang)*sp;
+    let fy = Math.sin(ang)*sp*0.6;
+
+    // pointer interaction: part the water (repel) + carry on drag (attract w/ velocity)
+    if(ptrAlive){
+      const dx = x - ptr.x, dy = y - ptr.y;
+      const d2 = dx*dx + dy*dy;
+      const R = 150 + z*60;
+      if(d2 < R*R){
+        const d = Math.sqrt(d2)+0.001;
+        const force = (1 - d/R);
+        if(ptr.down){
+          // suck inward + impart drag velocity -> "carry" the verse
+          fx += (-dx/d)*force*2.2 + ptr.vx*0.10*force;
+          fy += (-dy/d)*force*2.2 + ptr.vy*0.10*force;
+        } else {
+          // part the stream around the cursor
+          fx += (dx/d)*force*force*3.4;
+          fy += (dy/d)*force*force*3.4;
+        }
+      }
+    }
+
+    // ripples push outward
+    for(let r of ripples){
+      const dx=x-r.x, dy=y-r.y; const d=Math.sqrt(dx*dx+dy*dy)+0.001;
+      const ring = Math.abs(d - r.r);
+      if(ring < 60){
+        const f = (1 - ring/60) * r.str * (1 - r.r/r.mx);
+        fx += (dx/d)*f*4.2; fy += (dy/d)*f*4.2;
+      }
+    }
+
+    // integrate with damping
+    P.vx[i] = P.vx[i]*0.86 + fx*0.5;
+    P.vy[i] = P.vy[i]*0.86 + fy*0.5;
+    x += P.vx[i]*dt; y += P.vy[i]*dt;
+
+    // gentle pull back toward the river channel vertically (keeps the band)
+    y += ((CY - y) * 0.0009) * Math.abs(y-CY)/(H*0.5) * dt * 20;
+
+    // wrap horizontally (the river is endless); recycle vertical strays
+    if(x > W+40){ x -= (W+80); P.ch[i]=glyphChars[(Math.random()*glyphChars.length)|0]; }
+    if(x < -40){ x += (W+80); }
+    if(y < -40) y = H+30;
+    if(y > H+40) y = -30;
+
+    P.x[i]=x; P.y[i]=y;
+
+    // ---- render glyph ----
+    const baseSize = 11 + z*30;
+    const wob = 1 + Math.sin(T*1.6 + P.ph[i])*0.06;
+    const size = baseSize*wob;
+    P.sz[i]=size;
+
+    // depth fog: far = faint+blue-shift, near = bright
+    const depthA = 0.18 + z*0.7;
+    const tint = mixCol(M.a, M.b, P.hue[i]*0.6 + 0.2 + Math.sin(T*0.4+P.ph[i])*0.2);
+    // sparkle when carried fast
+    const speedMag = Math.min(1, (Math.abs(P.vx[i])+Math.abs(P.vy[i]))/8);
+    const col = mixCol(tint, M.glow, speedMag*0.7);
+
+    ctx.font = `700 ${size.toFixed(1)}px "Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",sans-serif`;
+
+    // glow halo for near/fast glyphs (additive)
+    if(z>0.5 || speedMag>0.25){
+      ctx.globalCompositeOperation='lighter';
+      ctx.fillStyle = rgba(col, (0.10 + speedMag*0.35) * depthA);
+      ctx.shadowColor = rgba(M.glow, 0.9);
+      ctx.shadowBlur = 8 + size*0.6 + speedMag*18;
+      ctx.fillText(P.ch[i], x, y);
+      ctx.shadowBlur = 0;
+      ctx.globalCompositeOperation='source-over';
+    }
+
+    // core glyph
+    ctx.fillStyle = rgba(mixCol(M.ink, col, 0.45), depthA);
+    ctx.fillText(P.ch[i], x, y);
+
+    // reflection ghost below (river surface) for near glyphs
+    if(z>0.62){
+      ctx.save();
+      ctx.globalAlpha = (z-0.62)*0.4;
+      ctx.scale(1,-1);
+      ctx.fillStyle = rgba(col, 0.20);
+      ctx.fillText(P.ch[i], x, -(y + size*1.5));
+      ctx.restore();
+    }
+  }
+
+  // ---- foreground surface light streaks (drift across) ----
+  ctx.globalCompositeOperation='lighter';
+  for(const s of streaks){
+    s.x += s.sp*dt; if(s.x>1.15) s.x=-0.2;
+    const yy = s.y*H + Math.sin(T*0.3 + s.y*8)*8;
+    const xx = s.x*W;
+    const grd = ctx.createLinearGradient(xx,yy, xx+s.len*W, yy);
+    grd.addColorStop(0, rgba(M.glow,0));
+    grd.addColorStop(0.5, rgba(M.glow,s.a));
+    grd.addColorStop(1, rgba(M.glow,0));
+    ctx.fillStyle=grd;
+    ctx.fillRect(xx, yy-1, s.len*W, 2);
+  }
+  ctx.globalCompositeOperation='source-over';
+
+  // ---- cursor aura ----
+  if(ptrAlive){
+    const rg = ctx.createRadialGradient(ptr.x,ptr.y,0,ptr.x,ptr.y,150);
+    rg.addColorStop(0, rgba(M.glow, ptr.down?0.16:0.08));
+    rg.addColorStop(1, rgba(M.glow,0));
+    ctx.globalCompositeOperation='lighter';
+    ctx.fillStyle=rg; ctx.beginPath(); ctx.arc(ptr.x,ptr.y,150,0,7); ctx.fill();
+    ctx.globalCompositeOperation='source-over';
+  }
+
+  // ---- top/bottom vignette for cinematic frame ----
+  const vg = ctx.createLinearGradient(0,0,0,H);
+  vg.addColorStop(0, rgba(M.bg,0.55));
+  vg.addColorStop(0.18, rgba(M.bg,0));
+  vg.addColorStop(0.82, rgba(M.bg,0));
+  vg.addColorStop(1, rgba(M.bg,0.6));
+  ctx.fillStyle=vg; ctx.fillRect(0,0,W,H);
+
+  // fps
+  frames++; if(now - fpsT > 500){ fps = Math.round(frames*1000/(now-fpsT)); frames=0; fpsT=now; fpsEl.textContent = fps+' fps · '+moods[((Math.floor(season)%4)+4)%4].name; }
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// expose for verification
+window.__river = {
+  state:()=>({ N, season, touched, ripples:ripples.length, fps }),
+  poke:(x,y)=>{ setPtr(x,y); },
+  tapAt:(x,y)=>{ spawnRipple(x,y,1.4); markTouched(); },
+};
+})();
+</script>
+</body>
+</html>

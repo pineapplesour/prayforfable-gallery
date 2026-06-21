@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>ABYSSCRAFT // 아스키 심해 복셀</title>
+<style>
+  :root{
+    --bg:#02060f; --ink:#cfe9ff; --dim:#5b7fa3; --accent:#33e0c8;
+    --panel:rgba(4,16,30,.82); --line:#13384f;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
+    font-family:"DejaVu Sans Mono","Consolas","Menlo",ui-monospace,monospace;
+    overflow:hidden;user-select:none;-webkit-user-select:none;touch-action:none;}
+  #app{position:fixed;inset:0;display:flex;flex-direction:column;}
+
+  /* ---- world canvas (ASCII grid) ---- */
+  #screen{flex:1;position:relative;display:flex;align-items:center;justify-content:center;
+    background:
+      radial-gradient(120% 90% at 50% -10%, #06304a 0%, #04203a 35%, #020a18 75%, #01040a 100%);}
+  #world{white-space:pre;line-height:1.0;letter-spacing:0;
+    font-size:14px;font-weight:700;text-shadow:0 0 6px rgba(0,0,0,.6);
+    cursor:crosshair;will-change:contents;}
+  #vignette{position:absolute;inset:0;pointer-events:none;
+    box-shadow:inset 0 0 160px 30px rgba(0,0,0,.7);}
+  #bubbles{position:absolute;inset:0;pointer-events:none;overflow:hidden;}
+
+  /* ---- HUD ---- */
+  #topbar{position:absolute;top:0;left:0;right:0;display:flex;gap:10px;
+    align-items:center;padding:6px 10px;font-size:12px;color:var(--dim);
+    pointer-events:none;flex-wrap:wrap;}
+  #topbar b{color:var(--accent);}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:6px;
+    padding:3px 8px;white-space:nowrap;}
+  .bar{display:inline-block;color:var(--ink);}
+  #title{font-weight:700;color:var(--ink);letter-spacing:1px;}
+  #credit{margin-left:auto;color:#46627d;font-size:11px;text-align:right;line-height:1.3;}
+
+  /* ---- hotbar ---- */
+  #hotbar{display:flex;gap:6px;justify-content:center;padding:8px;
+    background:linear-gradient(0deg,rgba(2,8,16,.95),rgba(2,8,16,0));}
+  .slot{width:52px;height:52px;border:2px solid var(--line);border-radius:8px;
+    background:rgba(6,20,36,.85);display:flex;flex-direction:column;
+    align-items:center;justify-content:center;position:relative;cursor:pointer;
+    font-size:20px;line-height:1;}
+  .slot .nm{font-size:8px;color:var(--dim);position:absolute;bottom:2px;}
+  .slot .ct{font-size:10px;color:var(--ink);position:absolute;top:2px;right:4px;font-weight:700;}
+  .slot .key{font-size:8px;color:#3a5670;position:absolute;top:2px;left:4px;}
+  .slot.sel{border-color:var(--accent);box-shadow:0 0 10px rgba(51,224,200,.5);
+    background:rgba(10,40,56,.95);}
+
+  /* ---- buttons / panels ---- */
+  .btn{background:rgba(8,28,46,.9);border:1px solid var(--line);color:var(--ink);
+    border-radius:8px;padding:8px 12px;font-family:inherit;font-size:13px;cursor:pointer;}
+  .btn:active{transform:scale(.96);}
+  #craftBtn{position:absolute;right:10px;bottom:78px;}
+  #overlay{position:absolute;inset:0;background:rgba(1,5,12,.92);
+    display:flex;align-items:center;justify-content:center;z-index:30;flex-direction:column;}
+  #overlay .card{max-width:560px;width:92%;border:1px solid var(--line);
+    border-radius:12px;background:var(--panel);padding:22px;}
+  #overlay h1{margin:0 0 4px;font-size:22px;color:var(--accent);letter-spacing:2px;}
+  #overlay h2{margin:0 0 14px;font-size:12px;color:var(--dim);font-weight:400;}
+  #overlay pre{color:#2fd6bf;font-size:9px;line-height:1.05;margin:0 0 12px;text-shadow:0 0 8px rgba(47,214,191,.4);overflow:auto;}
+  .keyrow{font-size:12px;color:var(--ink);line-height:1.8;}
+  .keyrow span{color:var(--accent);}
+
+  /* ---- crafting modal ---- */
+  #craftModal{position:absolute;inset:0;background:rgba(1,5,12,.9);z-index:40;
+    display:none;align-items:center;justify-content:center;}
+  #craftModal .card{max-width:520px;width:92%;border:1px solid var(--line);
+    border-radius:12px;background:var(--panel);padding:18px;max-height:84%;overflow:auto;}
+  #craftModal h2{margin:0 0 10px;color:var(--accent);font-size:16px;}
+  .recipe{display:flex;align-items:center;gap:10px;border:1px solid var(--line);
+    border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:12px;}
+  .recipe .out{font-size:22px;width:28px;text-align:center;}
+  .recipe .info{flex:1;}
+  .recipe .info .rn{color:var(--ink);font-weight:700;}
+  .recipe .info .rc{color:var(--dim);font-size:11px;}
+  .recipe.ok .mk{color:#031;background:var(--accent);}
+  .recipe.no .mk{color:var(--dim);background:rgba(255,255,255,.05);cursor:not-allowed;}
+  .mk{border:none;border-radius:6px;padding:6px 10px;font-family:inherit;font-weight:700;cursor:pointer;}
+  #closeCraft{margin-top:6px;}
+
+  /* ---- touch controls ---- */
+  #touch{position:absolute;inset:0;pointer-events:none;z-index:20;display:none;}
+  .pad{position:absolute;pointer-events:auto;display:grid;gap:6px;}
+  #dpad{left:12px;bottom:88px;grid-template-columns:repeat(3,46px);grid-template-rows:repeat(3,46px);}
+  #actpad{right:12px;bottom:140px;grid-template-columns:repeat(2,56px);gap:8px;}
+  .tbtn{background:rgba(8,28,46,.78);border:1px solid var(--line);border-radius:10px;
+    color:var(--ink);font-size:18px;display:flex;align-items:center;justify-content:center;
+    font-family:inherit;}
+  .tbtn:active{background:rgba(20,60,84,.95);}
+  .tbtn.wide{font-size:13px;}
+  #toast{position:absolute;left:50%;top:46px;transform:translateX(-50%);
+    background:var(--panel);border:1px solid var(--line);border-radius:8px;
+    padding:6px 12px;font-size:12px;color:var(--accent);z-index:25;opacity:0;
+    transition:opacity .25s;pointer-events:none;}
+  .empty{grid-column:span 1;background:transparent;border:none;}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="screen">
+    <pre id="world"></pre>
+    <div id="bubbles"></div>
+    <div id="vignette"></div>
+    <div id="topbar">
+      <span id="title">ABYSSCRAFT</span>
+      <span class="stat">HP <span id="hp" class="bar"></span></span>
+      <span class="stat">O₂ <span id="ox" class="bar"></span></span>
+      <span class="stat">FOOD <span id="fd" class="bar"></span></span>
+      <span class="stat">DEPTH <b id="depth">0</b>m</span>
+      <span class="stat" id="clock">☀ 06:00</span>
+      <span id="credit">Minecraft에서 영감 — © Mojang/Microsoft.<br>오리지널 구현 · ABYSSCRAFT</span>
+    </div>
+    <div id="toast"></div>
+    <button class="btn" id="craftBtn">⚒ 제작 [E]</button>
+
+    <div id="touch">
+      <div class="pad" id="dpad">
+        <div class="empty"></div><button class="tbtn" data-k="up">▲</button><div class="empty"></div>
+        <button class="tbtn" data-k="left">◀</button><button class="tbtn" data-k="down">▼</button><button class="tbtn" data-k="right">▶</button>
+        <div class="empty"></div><button class="tbtn" data-k="up2">⤒</button><div class="empty"></div>
+      </div>
+      <div class="pad" id="actpad">
+        <button class="tbtn wide" data-k="mine">⛏ 채굴</button>
+        <button class="tbtn wide" data-k="place">▣ 설치</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="hotbar"></div>
+</div>
+
+<!-- crafting modal -->
+<div id="craftModal"><div class="card">
+  <h2>⚒ 제작대 — 오리지널 레시피</h2>
+  <div id="recipeList"></div>
+  <button class="btn" id="closeCraft">닫기</button>
+</div></div>
+
+<!-- intro overlay -->
+<div id="overlay"><div class="card">
+  <h1>A B Y S S C R A F T</h1>
+  <h2>아스키 아트 심해 복셀 샌드박스 · 산호초 수중 건축</h2>
+  <pre>   ~~~~~  .  ~~~~   ~~~  .  ~~~~~
+  ~~  o  ~~~~   ><>   ~~~  .  ~~
+   #Y#   psi   #Y#    ~~   ><>
+  ===================================
+  :::: ▒▒ @@ ▒▒ :::: ## ▒▒ :::: ##
+  :::::::: ◆ :::::: $$ :::::::: ◆ ::</pre>
+  <div class="keyrow">
+    이동 <span>WASD / 방향키</span> · 위로헤엄 <span>Space</span><br>
+    채굴 <span>좌클릭</span> · 설치 <span>우클릭</span> · 슬롯 <span>1~8 / 휠</span><br>
+    제작 <span>E</span> · 모바일은 화면 패드 사용<br><br>
+    물속이라 O₂가 줄어든다. 수면(파도)에서 숨을 쉬고,<br>
+    바다를 파내려가 광물을 캐고 산호초 기지를 지어라.
+  </div>
+  <br>
+  <button class="btn" id="startBtn">▶ 잠수 시작</button>
+  <div style="margin-top:12px;color:#46627d;font-size:10px;">
+    Minecraft에서 영감을 받은 완전 오리지널 게임 — © Mojang/Microsoft. 본 구현은 독립 제작물입니다.
+  </div>
+</div></div>
+
+<script>
+"use strict";
+/* ================================================================
+   ABYSSCRAFT — single-file ASCII voxel sandbox (underwater reef)
+   2D side-section voxel world. Original art/blocks/mobs/recipes.
+   ================================================================ */
+
+// ---------- block registry (all original) ----------
+// id: {ch, fg, name, solid, hard(mining ticks), drop, light, swim}
+const AIR=0;
+const B = {
+  [AIR]:   {ch:' ', fg:'#000', name:'물', solid:false, hard:0},
+  1: {ch:'≈', fg:'#1a4e6e', name:'해수',   solid:false, hard:0, water:true},
+  2: {ch:'▒', fg:'#b9935a', name:'모래',   solid:true,  hard:2, drop:2},
+  3: {ch:'▓', fg:'#5a4632', name:'해저토', solid:true,  hard:3, drop:3},
+  4: {ch:'█', fg:'#42505a', name:'심해암', solid:true,  hard:5, drop:4},
+  5: {ch:'#', fg:'#6b7a82', name:'각력암', solid:true,  hard:4, drop:5},
+  6: {ch:'$', fg:'#f2c14e', name:'금정석', solid:true,  hard:6, drop:20, ore:true},
+  7: {ch:'◆', fg:'#7fe3ff', name:'심청정', solid:true,  hard:8, drop:21, ore:true},
+  8: {ch:'%', fg:'#d7553b', name:'적철광', solid:true,  hard:5, drop:22, ore:true},
+  9: {ch:'Y', fg:'#ff7eb6', name:'산호초', solid:true,  hard:2, drop:9},
+  10:{ch:'§', fg:'#39d98a', name:'해초',   solid:false, hard:1, drop:10, plant:true},
+  11:{ch:'@', fg:'#caa15a', name:'널빤지', solid:true,  hard:3, drop:11},  // crafted
+  12:{ch:'▣', fg:'#9fb3c0', name:'석벽돌', solid:true,  hard:4, drop:12},  // crafted
+  13:{ch:'◙', fg:'#36e0ff', name:'발광등', solid:true,  hard:2, drop:13, light:6}, // crafted
+  14:{ch:'░', fg:'#1f6f8b', name:'유리벽', solid:true,  hard:2, drop:14},  // crafted
+  15:{ch:'T', fg:'#1f8f5a', name:'켈프대', solid:false, hard:1, drop:15, plant:true},
+  16:{ch:'o', fg:'#ffd27f', name:'진주조', solid:true,  hard:3, drop:23, ore:true},
+};
+// item-only ids (drops that aren't placeable as same block):
+const ITEM = {
+  20:{ch:'$', fg:'#f2c14e', name:'금괴',   place:6},
+  21:{ch:'◆', fg:'#7fe3ff', name:'심청정', place:7},
+  22:{ch:'%', fg:'#d7553b', name:'적철편', place:8},
+  23:{ch:'o', fg:'#ffd27f', name:'진주',   place:16},
+  30:{ch:'✦', fg:'#fff2a8', name:'산호검', tool:'sword'},
+  31:{ch:'¥', fg:'#cfe9ff', name:'합금곡괭이', tool:'pick', power:2},
+  32:{ch:'♥', fg:'#ff5b7a', name:'해초죽', food:6},
+};
+function meta(id){ return B[id]||null; }
+function itemMeta(id){ return ITEM[id]||null; }
+function isPlaceable(id){ return !!B[id] && id!==AIR && id!==1; }
+// what a hotbar id renders as (block or item)
+function glyph(id){ if(B[id])return B[id]; if(ITEM[id])return ITEM[id]; return {ch:'?',fg:'#888',name:'?'}; }
+
+// ---------- world (column-based, infinite horizontal via gen) ----------
+const SEA_LEVEL = 18;           // y of water surface (rows; y grows downward)
+const WORLD_H = 96;             // total world height in blocks
+const tiles = new Map();        // "x,y" -> block id (only stores edits + generated chunks)
+const genCols = new Set();      // generated column x's
+
+function key(x,y){ return x+','+y; }
+
+// deterministic pseudo-noise
+function hash(x){ let h=x*374761393 + 668265263; h=(h^(h>>13))*1274126177; return ((h^(h>>16))>>>0)/4294967296; }
+function noise1(x,scale,seed){ const xs=x/scale+seed; const x0=Math.floor(xs); const t=xs-x0;
+  const a=hash(x0*1013+seed*7); const b=hash((x0+1)*1013+seed*7); const u=t*t*(3-2*t); return a+(b-a)*u; }
+
+function genColumn(x){
+  if(genCols.has(x)) return;
+  genCols.add(x);
+  // seafloor height: undulating dunes + ridges
+  const base = SEA_LEVEL + 22;
+  const dune = Math.floor(noise1(x,11,3)*8);
+  const ridge = Math.floor(noise1(x,28,9)*14);
+  const floorY = base + dune + Math.floor(ridge*0.6);
+  for(let y=0;y<WORLD_H;y++){
+    let id = AIR;
+    if(y>=SEA_LEVEL && y<floorY) id=1;            // water column
+    else if(y>=floorY){
+      const d = y-floorY;
+      if(d<2) id=2;                                // sand top
+      else if(d<6) id=3;                           // seabed soil
+      else id=4;                                   // deep rock
+      // gravel pockets
+      if(id===4 && noise1(x*1.3,4,21+y)>0.78) id=5;
+      // ore veins (deeper => rarer/better)
+      const ore = noise1(x*2.1, 3.2, 100+y*0.7);
+      if(id===4){
+        if(d>4 && d<14 && ore>0.86) id=6;          // gold near upper rock
+        else if(d>10 && ore>0.90) id=8;            // iron mid
+        else if(d>16 && ore>0.93) id=7;            // crystal deep
+        else if(d>20 && ore>0.965) id=16;          // pearl very deep
+      }
+    }
+    if(id!==AIR) setGen(x,y,id);
+  }
+  // caves (carve)
+  for(let y=floorY+3;y<WORLD_H-2;y++){
+    const c = noise1(x*1.7,5,55) * noise1(y*1.7,5,77);
+    if(c>0.42 && c<0.5) setGen(x,y, 1); // flooded cave
+  }
+  // surface decorations on floor top
+  const topY = floorY;
+  const r = hash(x*7+13);
+  if(r<0.16){ // coral cluster
+    for(let i=0;i<2+Math.floor(hash(x*3)*3);i++){
+      if(meta(get(x,topY-1-i))?.water || get(x,topY-1-i)===AIR) setGen(x,topY-1-i,9);
+    }
+  } else if(r<0.40){ // kelp/seaweed
+    const h=2+Math.floor(hash(x*5)*4);
+    for(let i=0;i<h;i++){ const yy=topY-1-i; if(get(x,yy)===1||get(x,yy)===AIR) setGen(x,yy, i===h-1?10:15); }
+  } else if(r<0.45){ // pearl oyster on floor
+    if(get(x,topY-1)===1) setGen(x,topY-1,16);
+  }
+}
+function setGen(x,y,id){ tiles.set(key(x,y),id); }
+function get(x,y){
+  if(y<0||y>=WORLD_H) return y<0?1:4;          // sky=water above? above sea = air
+  const v=tiles.get(key(x,y));
+  if(v!==undefined) return v;
+  // ungenerated default
+  if(y<SEA_LEVEL) return AIR;
+  return 1; // water until generated
+}
+function set(x,y,id){ tiles.set(key(x,y),id); }
+function solidAt(x,y){ const m=meta(get(x,y)); return m && m.solid; }
+function waterAt(x,y){ const id=get(x,y); return id===1 || (B[id]&&B[id].water); }
+
+// ---------- player ----------
+const player = {
+  x: 6.0, y: SEA_LEVEL-1.0, vx:0, vy:0,
+  hp:20, ox:20, food:20, facing:1,
+  hb:[ {id:31,n:1},{id:2,n:0},{id:9,n:0},{id:11,n:0},{id:12,n:0},{id:13,n:0},{id:10,n:0},{id:30,n:1} ],
+  sel:0,
+  inv:{}, // overflow inventory id->count
+};
+// starter inventory
+player.inv[2]=12; player.inv[9]=8; player.inv[10]=4;
+
+// ---------- rendering ----------
+const worldEl = document.getElementById('world');
+let COLS=0, ROWS=0;
+const CELL_W=8.4, CELL_H=14; // approx px per glyph at 14px monospace
+
+function fitGrid(){
+  const sc=document.getElementById('screen');
+  COLS = Math.max(40, Math.floor(sc.clientWidth / CELL_W));
+  ROWS = Math.max(24, Math.floor((sc.clientHeight-60) / CELL_H));
+  if(COLS%2===0) COLS--; // keep player centered nicely
+}
+window.addEventListener('resize', ()=>{ fitGrid(); });
+
+let camX=0, camY=0;
+function render(){
+  const px=Math.floor(player.x), py=Math.floor(player.y);
+  camX = px - (COLS>>1);
+  camY = py - (ROWS>>1);
+  if(camY<0) camY=0;
+  if(camY>WORLD_H-ROWS) camY=Math.max(0,WORLD_H-ROWS);
+
+  // ensure columns generated in view (+margin)
+  for(let cx=camX-2; cx<camX+COLS+2; cx++) genColumn(cx);
+
+  // light map (simple): light blocks + surface daylight
+  const lightCache = computeLights(camX, camY);
+
+  let html='';
+  const t=worldTime();
+  const dayFac = daylight(t); // 0..1
+  for(let row=0; row<ROWS; row++){
+    const wy = camY+row;
+    let line='';
+    let curColor=null, buf='';
+    for(let col=0; col<COLS; col++){
+      const wx = camX+col;
+      let ch=' ', color;
+      // player
+      if(wx===px && wy===py){
+        ch = player.facing>0?'¶':'∮'; // diver glyph
+        color='#fff6c4';
+      } else if(wx===px && wy===py-1){
+        ch='○'; color='#ffe9a8'; // head/helmet
+      } else {
+        const id = get(wx,wy);
+        const m = glyph(id);
+        ch = m.ch;
+        color = m.fg;
+        if(id===AIR){
+          // sky above sea
+          if(wy<SEA_LEVEL){ ch=' '; color='#000'; }
+          else { ch=' '; color='#000'; }
+        }
+        if(id===1){ // water shading by depth + caustics
+          const depth=wy-SEA_LEVEL;
+          const caustic = ((wx*7+wy*3 + Math.floor(t*4))%17===0);
+          ch = caustic? '·' : (depth<3 ? '≈' : (depth<14?'~':' '));
+          const dk = Math.max(0, 1-depth/60);
+          color = caustic? '#4fd7ff' : shade('#1a4e6e', 0.35+dk*0.5);
+        }
+        // surface wave line
+        if(wy===SEA_LEVEL-1 && id===AIR && get(wx,wy+1)===1){
+          ch = (Math.floor(t*3)+wx)%2? '~':'-'; color='#7fd0e8';
+        }
+        // apply light/darkness
+        const lv = lightCache[col+row*COLS];
+        const amb = (wy<SEA_LEVEL? 1 : Math.max(0.18, dayFac - (wy-SEA_LEVEL)/70));
+        const lit = Math.min(1, amb*0.7 + lv);
+        if(ch!==' ') color = shade(color, lit);
+      }
+      // batch same-color runs into spans
+      if(color!==curColor){
+        if(buf) line+= '<span style="color:'+curColor+'">'+esc(buf)+'</span>';
+        buf=ch; curColor=color;
+      } else buf+=ch;
+    }
+    if(buf) line+='<span style="color:'+curColor+'">'+esc(buf)+'</span>';
+    html += line+'\n';
+  }
+  worldEl.innerHTML = html;
+}
+function esc(s){ return s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function shade(hex,f){
+  f=Math.max(0,Math.min(1.3,f));
+  const r=parseInt(hex.slice(1,3),16), g=parseInt(hex.slice(3,5),16), b=parseInt(hex.slice(5,7),16);
+  const c=v=>Math.round(Math.min(255,v*f)).toString(16).padStart(2,'0');
+  return '#'+c(r)+c(g)+c(b);
+}
+
+function computeLights(cx,cy){
+  const L=new Float32Array(COLS*ROWS);
+  const sources=[];
+  for(let row=0;row<ROWS;row++)for(let col=0;col<COLS;col++){
+    const id=get(cx+col,cy+row); const m=meta(id);
+    if(m&&m.light){ sources.push([col,row,m.light]); }
+  }
+  // player gives faint glow
+  const ppx=Math.floor(player.x)-cx, ppy=Math.floor(player.y)-cy;
+  sources.push([ppx,ppy,3]);
+  for(const [sx,sy,pw] of sources){
+    const rad=pw;
+    for(let dy=-rad;dy<=rad;dy++)for(let dx=-rad;dx<=rad;dx++){
+      const x=sx+dx,y=sy+dy; if(x<0||y<0||x>=COLS||y>=ROWS)continue;
+      const d=Math.hypot(dx,dy); if(d>rad)continue;
+      const v=(1-d/rad)*0.85;
+      const i=x+y*COLS; if(v>L[i])L[i]=v;
+    }
+  }
+  return L;
+}
+
+// ---------- time / day-night ----------
+let gameStart=0;
+function worldTime(){ return (performance.now()-gameStart)/1000; }
+function dayPhase(){ // 0..1 across a 4-min day
+  return ((worldTime()/240)%1);
+}
+function daylight(){ const p=dayPhase(); return 0.25 + 0.75*Math.max(0,Math.sin(p*Math.PI*2 - Math.PI/2)*0.5+0.5); }
+function clockStr(){
+  const p=dayPhase(); const mins=Math.floor(p*1440); const hh=String(Math.floor(mins/60)).padStart(2,'0');
+  const mm=String(mins%60).padStart(2,'0'); const d=daylight();
+  return (d>0.55?'☀ ':d>0.35?'☼ ':'☾ ')+hh+':'+mm;
+}
+
+// ---------- physics ----------
+const GRAV_AIR=0.045, GRAV_WATER=0.012, BUOY=0.02;
+function physics(dt){
+  const inWater = waterAt(Math.floor(player.x), Math.floor(player.y));
+  const g = inWater? GRAV_WATER : GRAV_AIR;
+  player.vy += g;
+  if(inWater){ player.vy -= BUOY; player.vy*=0.86; player.vx*=0.80; }
+  else { player.vx*=0.7; }
+  // clamp
+  player.vy=Math.max(-0.5,Math.min(0.6,player.vy));
+  player.vx=Math.max(-0.4,Math.min(0.4,player.vx));
+
+  moveAxis('x', player.vx);
+  moveAxis('y', player.vy);
+}
+function moveAxis(ax, amt){
+  if(amt===0)return;
+  const steps=Math.ceil(Math.abs(amt)/0.2);
+  for(let s=0;s<steps;s++){
+    const d=amt/steps;
+    let nx=player.x+(ax==='x'?d:0), ny=player.y+(ax==='y'?d:0);
+    if(!collide(nx,ny)){ player.x=nx; player.y=ny; }
+    else { if(ax==='x')player.vx=0; else player.vy=0; break; }
+  }
+  player.x=Math.max(-1e6,Math.min(1e6,player.x));
+  player.y=Math.max(0, Math.min(WORLD_H-1, player.y));
+}
+function collide(x,y){
+  // 1x2 body
+  const xi=Math.floor(x);
+  return solidAt(xi,Math.floor(y)) || solidAt(xi,Math.floor(y-1));
+}
+
+// ---------- input state ----------
+const keys={};
+addEventListener('keydown',e=>{
+  if(e.repeat) return;
+  const k=e.key.toLowerCase();
+  keys[k]=true;
+  if(k>='1'&&k<='8'){ player.sel=+k-1; drawHotbar(); }
+  if(k==='e'){ toggleCraft(); }
+  if(k===' '){ e.preventDefault(); }
+});
+addEventListener('keyup',e=>{ keys[e.key.toLowerCase()]=false; });
+addEventListener('wheel',e=>{
+  player.sel=(player.sel+(e.deltaY>0?1:7))%8; drawHotbar();
+},{passive:true});
+
+function applyInput(){
+  const sp=0.085;
+  if(keys['a']||keys['arrowleft']){ player.vx-=sp; player.facing=-1; }
+  if(keys['d']||keys['arrowright']){ player.vx+=sp; player.facing=1; }
+  const inWater=waterAt(Math.floor(player.x),Math.floor(player.y));
+  if(keys['w']||keys['arrowup']||keys[' ']){
+    if(inWater) player.vy-=0.06; else if(onGround()) player.vy=-0.42;
+  }
+  if(keys['s']||keys['arrowdown']){ if(inWater)player.vy+=0.05; }
+}
+function onGround(){ return solidAt(Math.floor(player.x),Math.floor(player.y+0.1+0)) ||
+  solidAt(Math.floor(player.x),Math.floor(player.y)+1); }
+
+// ---------- mining / placing ----------
+let aim={x:0,y:0,active:false};
+const screenEl=document.getElementById('screen');
+worldEl.addEventListener('mousemove',e=>{ updateAim(e.clientX,e.clientY); });
+worldEl.addEventListener('mousedown',e=>{
+  updateAim(e.clientX,e.clientY);
+  if(e.button===0) startMine();
+  if(e.button===2) tryPlace();
+});
+worldEl.addEventListener('mouseup',()=>{ mining=null; });
+worldEl.addEventListener('contextmenu',e=>e.preventDefault());
+
+function updateAim(clientX,clientY){
+  const r=worldEl.getBoundingClientRect();
+  const col=Math.floor((clientX-r.left)/CELL_W);
+  const row=Math.floor((clientY-r.top)/CELL_H);
+  aim.x=camX+col; aim.y=camY+row; aim.active=true;
+}
+function reachOk(tx,ty){
+  const d=Math.hypot(tx-player.x, ty-(player.y-0.5));
+  return d<=5.5;
+}
+
+let mining=null; // {x,y,prog,total}
+function startMine(){
+  const tx=aim.x, ty=aim.y;
+  if(!reachOk(tx,ty)) { toast('너무 멀다'); return; }
+  const id=get(tx,ty); const m=meta(id);
+  if(!m || id===AIR || id===1){ return; }
+  const sel=glyph(player.hb[player.sel].id);
+  let speed=1;
+  const tool=ITEM[player.hb[player.sel].id];
+  if(tool&&tool.tool==='pick') speed = 1 + (tool.power||1);
+  if(m.ore && !(tool&&tool.tool==='pick')) speed=0.4; // need pick for ore
+  mining={x:tx,y:ty,prog:0,total:m.hard,speed};
+}
+function tickMine(dt){
+  if(!mining)return;
+  if(!reachOk(mining.x,mining.y) || get(mining.x,mining.y)===AIR){ mining=null; return; }
+  mining.prog += dt*3*mining.speed;
+  if(mining.prog>=mining.total){
+    const id=get(mining.x,mining.y); const m=meta(id);
+    const dropId = m.drop!==undefined? m.drop : id;
+    addItem(dropId,1);
+    // small chance pearl oyster drops 2
+    if(id===16 && Math.random()<0.5) addItem(23,1);
+    set(mining.x,mining.y, waterAt(mining.x,mining.y+1)||mining.y>=SEA_LEVEL?1:AIR);
+    // water flows into mined underwater gap
+    if(mining.y>=SEA_LEVEL) set(mining.x,mining.y,1);
+    toast('+'+(glyph(dropId).name));
+    mining=null;
+  }
+}
+function tryPlace(){
+  const tx=aim.x, ty=aim.y;
+  if(!reachOk(tx,ty)){ toast('너무 멀다'); return; }
+  const slot=player.hb[player.sel];
+  if(!slot.n||slot.n<=0){ toast('재고 없음'); return; }
+  let placeId=slot.id;
+  if(ITEM[slot.id]){
+    if(ITEM[slot.id].place) placeId=ITEM[slot.id].place; else { toast('설치 불가'); return; }
+  }
+  if(!isPlaceable(placeId)){ toast('설치 불가'); return; }
+  const cur=get(tx,ty);
+  if(meta(cur)&&meta(cur).solid){ toast('이미 막힘'); return; }
+  // can't place on player
+  if(tx===Math.floor(player.x)&&(ty===Math.floor(player.y)||ty===Math.floor(player.y)-1)) return;
+  set(tx,ty,placeId);
+  slot.n--; syncSlotFromInv(slot,-0); drawHotbar();
+}
+
+// ---------- inventory ----------
+function addItem(id,n){
+  // prefer same-id hotbar slot
+  for(const s of player.hb){ if(s.id===id){ s.n+=n; drawHotbar(); return; } }
+  // empty hotbar slot
+  for(const s of player.hb){ if(s.n<=0){ s.id=id; s.n=n; drawHotbar(); return; } }
+  player.inv[id]=(player.inv[id]||0)+n;
+}
+function countOf(id){
+  let c=player.inv[id]||0;
+  for(const s of player.hb){ if(s.id===id) c+=s.n; }
+  return c;
+}
+function consume(id,n){
+  let need=n;
+  for(const s of player.hb){ if(s.id===id && s.n>0){ const t=Math.min(s.n,need); s.n-=t; need-=t; if(need<=0)break; } }
+  if(need>0 && player.inv[id]){ const t=Math.min(player.inv[id],need); player.inv[id]-=t; need-=t; if(player.inv[id]<=0)delete player.inv[id]; }
+  drawHotbar();
+  return need<=0;
+}
+function syncSlotFromInv(){ /* placeholder for future overflow refill */ }
+
+// ---------- crafting (original recipes) ----------
+const RECIPES=[
+  {out:11, n:4, name:'널빤지 ×4', cost:{15:2}, desc:'켈프대 2 → 가공 널빤지'},
+  {out:12, n:4, name:'석벽돌 ×4', cost:{5:4}, desc:'각력암 4 → 석벽돌'},
+  {out:14, n:3, name:'유리벽 ×3', cost:{2:3}, desc:'모래 3 → 압축 유리벽'},
+  {out:13, n:2, name:'발광등 ×2', cost:{21:1,15:2}, desc:'심청정 1 + 켈프 2 → 발광등'},
+  {out:31, n:1, name:'합금곡괭이', cost:{22:3,11:2}, desc:'적철편 3 + 널빤지 2 → 곡괭이'},
+  {out:30, n:1, name:'산호검', cost:{9:3,11:1}, desc:'산호초 3 + 널빤지 1 → 검'},
+  {out:32, n:1, name:'해초죽(회복)', cost:{10:2,23:1}, desc:'해초 2 + 진주 1 → 음식'},
+];
+const craftModal=document.getElementById('craftModal');
+const recipeList=document.getElementById('recipeList');
+function toggleCraft(){
+  const open=craftModal.style.display==='flex';
+  if(open){ craftModal.style.display='none'; return; }
+  drawRecipes(); craftModal.style.display='flex';
+}
+function drawRecipes(){
+  recipeList.innerHTML='';
+  for(const r of RECIPES){
+    const ok=Object.entries(r.cost).every(([id,c])=>countOf(+id)>=c);
+    const div=document.createElement('div');
+    div.className='recipe '+(ok?'ok':'no');
+    const costStr=Object.entries(r.cost).map(([id,c])=>glyph(+id).name+'×'+c+'('+countOf(+id)+')').join(' + ');
+    div.innerHTML=`<div class="out" style="color:${glyph(r.out).fg}">${esc(glyph(r.out).ch)}</div>
+      <div class="info"><div class="rn">${r.name}</div><div class="rc">${esc(costStr)}</div></div>
+      <button class="mk">${ok?'제작':'부족'}</button>`;
+    if(ok){ div.querySelector('.mk').onclick=()=>{ doCraft(r); }; }
+    recipeList.appendChild(div);
+  }
+}
+function doCraft(r){
+  for(const [id,c] of Object.entries(r.cost)){ if(countOf(+id)<c){ toast('재료 부족'); return; } }
+  for(const [id,c] of Object.entries(r.cost)) consume(+id,c);
+  addItem(r.out, r.n);
+  toast('제작 완료: '+glyph(r.out).name);
+  drawRecipes(); drawHotbar();
+}
+document.getElementById('closeCraft').onclick=()=>{ craftModal.style.display='none'; };
+document.getElementById('craftBtn').onclick=()=>toggleCraft();
+
+// ---------- hotbar UI ----------
+const hotbarEl=document.getElementById('hotbar');
+function drawHotbar(){
+  hotbarEl.innerHTML='';
+  player.hb.forEach((s,i)=>{
+    const g=glyph(s.id);
+    const d=document.createElement('div');
+    d.className='slot'+(i===player.sel?' sel':'');
+    d.innerHTML=`<span class="key">${i+1}</span>
+      <span style="color:${g.fg};font-size:22px">${esc(g.ch)}</span>
+      <span class="nm">${g.name}</span>
+      ${s.n>0?`<span class="ct">${s.n}</span>`:(ITEM[s.id]&&ITEM[s.id].tool?'<span class="ct">∞</span>':'')}`;
+    d.onclick=()=>{ player.sel=i; drawHotbar(); };
+    hotbarEl.appendChild(d);
+  });
+}
+
+// ---------- vitals ----------
+function vitals(dt){
+  const headInWater = waterAt(Math.floor(player.x), Math.floor(player.y-1));
+  const atSurface = (Math.floor(player.y-1) < SEA_LEVEL) || !headInWater;
+  if(atSurface){ player.ox=Math.min(20, player.ox+dt*6); }
+  else { player.ox=Math.max(0, player.ox-dt*0.7); }
+  if(player.ox<=0){ player.hp=Math.max(0, player.hp-dt*1.2); }
+  // hunger slowly
+  player.food=Math.max(0, player.food-dt*0.06);
+  if(player.food<=0) player.hp=Math.max(0,player.hp-dt*0.3);
+  // regen if fed & oxygenated
+  if(player.food>14 && player.ox>5 && player.hp<20) player.hp=Math.min(20,player.hp+dt*0.4);
+  if(player.hp<=0) respawn();
+}
+function eat(){
+  if(consume(32,1)){ player.food=Math.min(20,player.food+8); player.hp=Math.min(20,player.hp+3); toast('해초죽을 먹었다'); }
+  else toast('먹을 게 없다 (해초죽 제작)');
+}
+addEventListener('keydown',e=>{ if(e.key.toLowerCase()==='f') eat(); });
+
+function respawn(){
+  toast('의식을 잃었다… 수면에서 깨어남');
+  player.x=6; player.y=SEA_LEVEL-1; player.vx=player.vy=0;
+  player.hp=20; player.ox=20; player.food=14;
+}
+
+// ---------- mobs (original): drifting jelly, nibble fish ----------
+const mobs=[];
+function spawnMobs(){
+  // keep a few mobs near player
+  while(mobs.length<6){
+    const side=Math.random()<0.5?-1:1;
+    const mx=player.x+side*(15+Math.random()*20);
+    const my=SEA_LEVEL+3+Math.random()*30;
+    if(!waterAt(Math.floor(mx),Math.floor(my))) continue;
+    const type=Math.random()<0.5?'jelly':'fish';
+    mobs.push({type,x:mx,y:my,vx:(Math.random()-0.5)*0.05,vy:(Math.random()-0.5)*0.03,t:Math.random()*9});
+  }
+  // cull far mobs
+  for(let i=mobs.length-1;i>=0;i--){ if(Math.abs(mobs[i].x-player.x)>50) mobs.splice(i,1); }
+}
+function tickMobs(dt){
+  for(const m of mobs){
+    m.t+=dt;
+    if(m.type==='fish'){
+      // swim toward then away; nibble if hungry-night
+      m.vx += (Math.sin(m.t*1.3))*0.004;
+      m.vy += (Math.cos(m.t*0.9))*0.002;
+    } else {
+      m.vy = -0.01 + Math.sin(m.t*0.8)*0.02; // bob
+      m.vx *= 0.98;
+    }
+    m.vx=Math.max(-0.12,Math.min(0.12,m.vx));
+    m.vy=Math.max(-0.08,Math.min(0.08,m.vy));
+    let nx=m.x+m.vx, ny=m.y+m.vy;
+    if(!solidAt(Math.floor(nx),Math.floor(m.y))&&waterAt(Math.floor(nx),Math.floor(m.y))) m.x=nx; else m.vx*=-1;
+    if(!solidAt(Math.floor(m.x),Math.floor(ny))&&waterAt(Math.floor(m.x),Math.floor(ny))) m.y=ny; else m.vy*=-1;
+    // night-aggressive jelly stings player on contact
+    const dist=Math.hypot(m.x-player.x,m.y-player.y);
+    if(m.type==='jelly' && daylight()<0.4 && dist<1.2){
+      player.hp=Math.max(0,player.hp-dt*1.5);
+      if(Math.random()<0.02) toast('해파리에 쏘였다!');
+    }
+  }
+}
+// draw mobs by overwriting world buffer after render (cheap: re-place into DOM is heavy;
+// instead inject into the get() pass via a transient overlay map)
+const mobOverlay=new Map();
+function buildMobOverlay(){
+  mobOverlay.clear();
+  for(const m of mobs){
+    const mx=Math.floor(m.x), my=Math.floor(m.y);
+    mobOverlay.set(key(mx,my), m.type==='fish'? {ch:(m.vx>=0?'>':'<')+'°', fg:'#ffd27f'} : {ch:'Ϙ', fg:'#c79bff'});
+  }
+}
+
+// integrate mob overlay into render by patching get-glyph step:
+const _render=render;
+render=function(){
+  buildMobOverlay();
+  // temporarily wrap: we re-run render but include overlay by monkey-injecting into glyph lookup
+  renderWithMobs();
+};
+function renderWithMobs(){
+  const px=Math.floor(player.x), py=Math.floor(player.y);
+  camX=px-(COLS>>1); camY=py-(ROWS>>1);
+  if(camY<0)camY=0; if(camY>WORLD_H-ROWS)camY=Math.max(0,WORLD_H-ROWS);
+  for(let cx=camX-2;cx<camX+COLS+2;cx++) genColumn(cx);
+  const lightCache=computeLights(camX,camY);
+  const dayFac=daylight();
+  const t=worldTime();
+  let html='';
+  for(let row=0;row<ROWS;row++){
+    const wy=camY+row; let line='',curColor=null,buf='';
+    for(let col=0;col<COLS;col++){
+      const wx=camX+col; let ch=' ',color;
+      if(wx===px&&wy===py){ ch=player.facing>0?'¶':'∮'; color='#fff6c4'; }
+      else if(wx===px&&wy===py-1){ ch='○'; color='#ffe9a8'; }
+      else if(mobOverlay.has(key(wx,wy)) && waterAt(wx,wy)){
+        const mo=mobOverlay.get(key(wx,wy)); ch=mo.ch[0]; color=mo.fg;
+      } else {
+        const id=get(wx,wy); const m=glyph(id); ch=m.ch; color=m.fg;
+        if(id===AIR){ ch=' '; color='#000'; }
+        if(id===1){
+          const depth=wy-SEA_LEVEL;
+          const caustic=((wx*7+wy*3+Math.floor(t*4))%19===0);
+          ch=caustic?'·':(depth<3?'≈':(depth<14?'~':' '));
+          const dk=Math.max(0,1-depth/60);
+          color=caustic?'#5fe0ff':shade('#1a4e6e',0.30+dk*0.55);
+        }
+        if(wy===SEA_LEVEL-1&&id===AIR&&get(wx,wy+1)===1){ ch=(Math.floor(t*3)+wx)%2?'~':'-'; color='#7fd0e8'; }
+        // mining crack overlay
+        if(mining&&mining.x===wx&&mining.y===wy){
+          const p=mining.prog/mining.total;
+          ch=p<0.34?'░':p<0.67?'▒':'▓'; color='#ffd86b';
+        }
+        const lv=lightCache[col+row*COLS];
+        const amb=(wy<SEA_LEVEL?1:Math.max(0.42,dayFac-(wy-SEA_LEVEL)/120));
+        let lit=Math.min(1.15,amb*0.85+lv);
+        // ores, coral & light blocks self-illuminate so they pop in the dark
+        if(m&&(m.ore||m.light||id===9)) lit=Math.max(lit,0.95);
+        if(ch!==' ')color=shade(color,lit);
+      }
+      // aim highlight
+      if(aim.active&&wx===aim.x&&wy===aim.y&&ch===' '&&reachOk(wx,wy)){ ch='+'; color='#2a6f8a'; }
+      if(color!==curColor){ if(buf)line+='<span style="color:'+curColor+'">'+esc(buf)+'</span>'; buf=ch; curColor=color; }
+      else buf+=ch;
+    }
+    if(buf)line+='<span style="color:'+curColor+'">'+esc(buf)+'</span>';
+    html+=line+'\n';
+  }
+  worldEl.innerHTML=html;
+}
+
+// ---------- HUD update ----------
+function barStr(v,max,full,empty){ const n=Math.round((v/max)*10); return full.repeat(n)+empty.repeat(10-n); }
+function updateHUD(){
+  document.getElementById('hp').textContent=barStr(player.hp,20,'♥','·');
+  document.getElementById('hp').style.color='#ff5b7a';
+  document.getElementById('ox').textContent=barStr(player.ox,20,'●','·');
+  document.getElementById('ox').style.color='#5fd7ff';
+  document.getElementById('fd').textContent=barStr(player.food,20,'◆','·');
+  document.getElementById('fd').style.color='#9ee07a';
+  document.getElementById('depth').textContent=Math.max(0,Math.floor(player.y-SEA_LEVEL));
+  document.getElementById('clock').textContent=clockStr();
+}
+
+// ---------- toast ----------
+let toastT=0; const toastEl=document.getElementById('toast');
+function toast(msg){ toastEl.textContent=msg; toastEl.style.opacity=1; toastT=performance.now(); }
+function toastTick(){ if(toastT&&performance.now()-toastT>1400){ toastEl.style.opacity=0; toastT=0; } }
+
+// ---------- bubbles ambiance ----------
+const bubblesEl=document.getElementById('bubbles');
+function spawnBubble(){
+  const b=document.createElement('div');
+  const x=Math.random()*100;
+  b.textContent=Math.random()<0.5?'°':'∘';
+  b.style.cssText=`position:absolute;left:${x}%;bottom:-10px;color:rgba(120,200,230,${0.15+Math.random()*0.3});font-size:${8+Math.random()*8}px;pointer-events:none;`;
+  bubblesEl.appendChild(b);
+  const dur=4000+Math.random()*4000;
+  const drift=(Math.random()-0.5)*40;
+  b.animate([{transform:'transl(0,0)',opacity:0},{opacity:.8,offset:.2},{transform:`translate(${drift}px,-100vh)`,opacity:0}],{duration:dur,easing:'linear'});
+  setTimeout(()=>b.remove(),dur);
+}
+
+// ---------- touch controls ----------
+function setupTouch(){
+  const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints>0 || window.innerWidth<=480;
+  if(!isTouch) return;
+  document.getElementById('touch').style.display='block';
+  const map={up:'w',down:'s',left:'a',right:'d',up2:' '};
+  document.querySelectorAll('#dpad .tbtn').forEach(b=>{
+    const k=map[b.dataset.k];
+    const on=e=>{e.preventDefault();keys[k]=true;}; const off=e=>{e.preventDefault();keys[k]=false;};
+    b.addEventListener('touchstart',on,{passive:false}); b.addEventListener('touchend',off,{passive:false});
+    b.addEventListener('mousedown',on); b.addEventListener('mouseup',off); b.addEventListener('mouseleave',off);
+  });
+  // action buttons + tap-to-aim on screen
+  const mineBtn=document.querySelector('[data-k=mine]'), placeBtn=document.querySelector('[data-k=place]');
+  mineBtn.addEventListener('touchstart',e=>{e.preventDefault(); startMine();},{passive:false});
+  mineBtn.addEventListener('touchend',e=>{e.preventDefault(); mining=null;},{passive:false});
+  placeBtn.addEventListener('touchstart',e=>{e.preventDefault(); tryPlace();},{passive:false});
+  // tap on world to set aim
+  worldEl.addEventListener('touchstart',e=>{
+    const tch=e.touches[0]; updateAim(tch.clientX,tch.clientY);
+  },{passive:true});
+}
+
+// ---------- main loop ----------
+let last=0, acc=0;
+function loop(ts){
+  if(!last)last=ts;
+  let dt=(ts-last)/1000; last=ts;
+  if(dt>0.1)dt=0.1;
+  applyInput();
+  physics(dt);
+  tickMine(dt);
+  tickMobs(dt);
+  vitals(dt);
+  spawnMobs();
+  render();
+  updateHUD();
+  toastTick();
+  requestAnimationFrame(loop);
+}
+
+// ---------- boot ----------
+function start(){
+  document.getElementById('overlay').style.display='none';
+  gameStart=performance.now();
+  fitGrid(); drawHotbar();
+  // spawn just above the seafloor so the player starts in the reef, not empty surface water
+  genColumn(Math.floor(player.x));
+  let fy=SEA_LEVEL+20;
+  for(let y=SEA_LEVEL+4;y<WORLD_H;y++){ if(solidAt(Math.floor(player.x),y)){ fy=y; break; } }
+  player.y=Math.max(SEA_LEVEL+2, fy-2);
+  player.vx=player.vy=0; player.ox=20;
+  setupTouch();
+  setInterval(spawnBubble, 600);
+  requestAnimationFrame(loop);
+}
+document.getElementById('startBtn').onclick=start;
+
+// init grid sizing immediately so first paint isn't blank if started fast
+fitGrid(); drawHotbar();
+
+// expose for self-test (real internal pipeline, not re-implementations)
+window.__ABYSS={player,get,set,RECIPES,doCraft,countOf,start,toggleCraft,addItem,B,ITEM,
+  _aim:aim, _setAim:(x,y)=>{aim.x=x;aim.y=y;aim.active=true;},
+  _startMine:startMine, _tickMine:tickMine, _mining:()=>mining,
+  _tryPlace:tryPlace, _reachOk:reachOk};
+</script>
+</body>
+</html>

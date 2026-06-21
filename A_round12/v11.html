@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>MINT — coin & marble cascade</title>
+<style>
+  :root{
+    --bg0:#0a0a0f;
+    --bg1:#15121b;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;overflow:hidden;background:#06060a;}
+  body{
+    font-family:"Helvetica Neue",-apple-system,system-ui,sans-serif;
+    color:#e9e2d0;
+    -webkit-user-select:none;user-select:none;
+    touch-action:none;
+  }
+  #stage{position:fixed;inset:0;}
+  canvas{display:block;width:100%;height:100%;}
+  /* UI overlay */
+  .hud{
+    position:fixed;left:0;right:0;pointer-events:none;
+    z-index:5;
+  }
+  .top{top:0;padding:22px 26px;display:flex;justify-content:space-between;align-items:flex-start;}
+  .brand{line-height:1;}
+  .brand h1{
+    font-size:clamp(26px,5.4vw,58px);
+    font-weight:800;letter-spacing:.14em;
+    background:linear-gradient(180deg,#fff6d8,#e7b94a 55%,#9c6f1e);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+    text-shadow:0 2px 24px rgba(220,170,60,.18);
+  }
+  .brand .sub{
+    margin-top:6px;font-size:clamp(9px,1.5vw,12px);
+    letter-spacing:.42em;color:#9b9486;text-transform:uppercase;
+    padding-left:.42em;
+  }
+  .counter{
+    text-align:right;font-variant-numeric:tabular-nums;
+  }
+  .counter .n{
+    font-size:clamp(20px,4vw,40px);font-weight:700;color:#f2e6c4;
+    letter-spacing:.04em;
+  }
+  .counter .lbl{font-size:clamp(8px,1.3vw,10px);letter-spacing:.34em;color:#7d7668;text-transform:uppercase;margin-top:2px;}
+  .bottom{
+    bottom:0;padding:18px 26px;display:flex;justify-content:center;gap:clamp(10px,2.4vw,30px);
+    flex-wrap:wrap;
+  }
+  .hint{
+    font-size:clamp(8.5px,1.4vw,11px);letter-spacing:.2em;color:#8a8378;text-transform:uppercase;
+    display:flex;align-items:center;gap:8px;opacity:.85;
+  }
+  .hint b{color:#dcc475;font-weight:700;letter-spacing:.16em;}
+  .dot{width:5px;height:5px;border-radius:50%;background:#dcc475;box-shadow:0 0 8px #dcc475;}
+  .grav{
+    position:fixed;right:24px;bottom:64px;z-index:5;pointer-events:none;
+    width:54px;height:54px;
+  }
+  .vig{
+    position:fixed;inset:0;z-index:3;pointer-events:none;
+    background:radial-gradient(120% 90% at 50% 18%,transparent 38%,rgba(0,0,0,.55) 100%);
+    mix-blend-mode:multiply;
+  }
+  .fade{animation:fin 1.2s ease both}
+  @keyframes fin{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="c"></canvas>
+</div>
+<div class="vig"></div>
+<svg class="grav" id="gravDial" viewBox="0 0 54 54" aria-hidden="true">
+  <circle cx="27" cy="27" r="24" fill="none" stroke="rgba(220,196,117,.18)" stroke-width="1.5"/>
+  <line id="gline" x1="27" y1="27" x2="27" y2="48" stroke="#dcc475" stroke-width="2.4" stroke-linecap="round"/>
+  <circle cx="27" cy="27" r="2.5" fill="#dcc475"/>
+</svg>
+<div class="hud top">
+  <div class="brand fade">
+    <h1>MINT</h1>
+    <div class="sub">coins &amp; marbles</div>
+  </div>
+  <div class="counter fade">
+    <div class="n" id="cnt">0</div>
+    <div class="lbl">bodies</div>
+  </div>
+</div>
+<div class="hud bottom fade">
+  <div class="hint"><span class="dot"></span>DRAG <b>stir</b></div>
+  <div class="hint"><span class="dot"></span>CLICK <b>pour</b></div>
+  <div class="hint"><span class="dot"></span>SCROLL <b>tilt gravity</b></div>
+  <div class="hint"><span class="dot"></span>DBL-CLICK <b>shake</b></div>
+</div>
+
+<script>
+(()=>{
+"use strict";
+
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d', {alpha:false});
+const cntEl = document.getElementById('cnt');
+const gline = document.getElementById('gline');
+
+let W=0,H=0,DPR=1;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = Math.floor(W*DPR); cv.height = Math.floor(H*DPR);
+  cv.style.width = W+'px'; cv.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  rebuildWalls();
+}
+window.addEventListener('resize', resize);
+
+// ------------------------------------------------------------------
+// Body model: circles (coins = thin discs rendered as ellipses w/ spin;
+// marbles = glass spheres). Custom impulse-based solver.
+// ------------------------------------------------------------------
+const TYPE_COIN = 0, TYPE_MARBLE = 1;
+
+// metal palettes (coins)
+const METALS = [
+  {name:'gold',   hi:'#fff2c4', mid:'#e9b945', lo:'#7c4f12', rim:'#f7da7e', edge:'#5b3a0d'},
+  {name:'rose',   hi:'#ffe2d6', mid:'#e08a6c', lo:'#7a3322', rim:'#ffb89a', edge:'#5a261a'},
+  {name:'silver', hi:'#ffffff', mid:'#c7ccd6', lo:'#5a6070', rim:'#e8edf6', edge:'#3d4250'},
+  {name:'copper', hi:'#ffd9a8', mid:'#c87a35', lo:'#6b3812', rim:'#f0a85e', edge:'#4c2a0e'},
+];
+// glass palettes (marbles)
+const GLASS = [
+  {core:'#7ad7ff', deep:'#1a5fb0', glow:'#cdf2ff'},
+  {core:'#ff8fd0', deep:'#a8226d', glow:'#ffd6ec'},
+  {core:'#a0ffce', deep:'#1e8a55', glow:'#daffec'},
+  {core:'#c5a3ff', deep:'#5d2db0', glow:'#ecdcff'},
+  {core:'#ffd27a', deep:'#b8761a', glow:'#fff0cf'},
+];
+
+let bodies = [];
+let walls = [];           // static line segments (axis-ish) as {a,b,nx,ny}
+let GVEC = {x:0, y:1};    // gravity direction (unit), magnitude applied below
+let gravAngle = 0;        // for dial + tilt
+const G = 2300;           // gravity strength (px/s^2)
+
+let MAX_BODIES = 230;
+
+function clamp(v,a,b){return v<a?a:v>b?b:v;}
+function rand(a,b){return a+Math.random()*(b-a);}
+
+function makeBody(x,y,type,r){
+  const b={
+    x,y, px:x,py:y,         // verlet-ish prev for damping ref
+    vx:0,vy:0,
+    r, type,
+    ang: rand(0,Math.PI*2),
+    av: rand(-3,3),         // angular vel
+    inertiaInv: 0,
+    mInv: 0,
+    rest: type===TYPE_MARBLE?0.32:0.16,
+    fric: type===TYPE_MARBLE?0.04:0.12,
+    sleep: 0,
+    asleep:false,
+    spawnT: 0,
+  };
+  const mass = (type===TYPE_MARBLE? 1.1 : 1.0) * r*r;
+  b.mInv = 1/mass;
+  b.inertiaInv = 1/(0.5*mass*r*r);
+  if(type===TYPE_COIN){
+    b.metal = METALS[(Math.random()*METALS.length)|0];
+    // coin "thickness" phase for the spinning disc look
+    b.discPhase = rand(0,Math.PI*2);
+  } else {
+    b.glass = GLASS[(Math.random()*GLASS.length)|0];
+    b.hlx = rand(-0.4,0.1); b.hly = rand(-0.5,-0.1); // highlight offset
+  }
+  return b;
+}
+
+function spawn(x,y,vx,vy,forceType){
+  if(bodies.length>=MAX_BODIES){
+    // recycle the oldest sleeping/lowest body
+    bodies.sort((a,b)=> (b.asleep?1:0)-(a.asleep?1:0) || b.y-a.y);
+    bodies.pop();
+  }
+  const type = forceType!=null ? forceType : (Math.random()<0.62?TYPE_COIN:TYPE_MARBLE);
+  const r = type===TYPE_COIN ? rand(13,22) : rand(9,18);
+  const b = makeBody(x,y,type,r);
+  b.vx=vx; b.vy=vy; b.av=rand(-7,7);
+  bodies.push(b);
+  return b;
+}
+
+// ------------------------------------------------------------------
+// Walls: floor + slanted side hoppers forming a basin so coins pile nicely
+// ------------------------------------------------------------------
+function seg(ax,ay,bx,by){
+  // normal points "inward" (left of a->b). We'll fix sign by ensuring it faces field center.
+  let dx=bx-ax, dy=by-ay; const L=Math.hypot(dx,dy)||1; dx/=L;dy/=L;
+  let nx=-dy, ny=dx;
+  const cx=(ax+bx)/2, cy=(ay+by)/2;
+  const tox=W/2-cx, toy=H*0.6-cy;
+  if(nx*tox+ny*toy<0){nx=-nx;ny=-ny;}
+  return {ax,ay,bx,by,nx,ny};
+}
+function rebuildWalls(){
+  walls.length=0;
+  const m=2;
+  // floor
+  walls.push(seg(-m, H-2, W+m, H-2));
+  // left & right vertical-ish
+  walls.push(seg(2, -200, 2, H));
+  walls.push(seg(W-2,-200, W-2, H));
+  // basin slants near bottom for a hopper pile
+  const fw = Math.min(W*0.30, 360);
+  walls.push(seg(0, H*0.62, fw, H));        // left ramp
+  walls.push(seg(W, H*0.62, W-fw, H));      // right ramp
+}
+
+function closestOnSeg(px,py,s){
+  const dx=s.bx-s.ax, dy=s.by-s.ay;
+  const l2=dx*dx+dy*dy;
+  let t = l2? ((px-s.ax)*dx+(py-s.ay)*dy)/l2 : 0;
+  t=clamp(t,0,1);
+  return {x:s.ax+dx*t, y:s.ay+dy*t};
+}
+
+// ------------------------------------------------------------------
+// Spatial hash for broadphase
+// ------------------------------------------------------------------
+const CELL = 56;
+let grid = new Map();
+function hkey(cx,cy){return cx*73856093 ^ cy*19349663;}
+function rebuildGrid(){
+  grid.clear();
+  for(let i=0;i<bodies.length;i++){
+    const b=bodies[i];
+    const cx=(b.x/CELL)|0, cy=(b.y/CELL)|0;
+    const k=hkey(cx,cy);
+    let a=grid.get(k); if(!a){a=[];grid.set(k,a);} a.push(i);
+  }
+}
+function neighbors(b,out){
+  out.length=0;
+  const cx=(b.x/CELL)|0, cy=(b.y/CELL)|0;
+  for(let ox=-1;ox<=1;ox++)for(let oy=-1;oy<=1;oy++){
+    const a=grid.get(hkey(cx+ox,cy+oy)); if(a)for(let j=0;j<a.length;j++)out.push(a[j]);
+  }
+}
+
+// ------------------------------------------------------------------
+// Interaction state
+// ------------------------------------------------------------------
+const pointer={x:W/2,y:H/2,px:W/2,py:H/2,down:false,vx:0,vy:0,grabbed:null,t:0};
+let shakeAmt=0;
+let pourBurst=0;
+
+function pointerPos(e){
+  const t = e.touches? e.touches[0] : e;
+  return {x:t.clientX, y:t.clientY};
+}
+function onDown(e){
+  const p=pointerPos(e); pointer.down=true; pointer.x=pointer.px=p.x; pointer.y=pointer.py=p.y;
+  // try grab nearest body within radius
+  let best=null,bd=1e9;
+  for(const b of bodies){
+    const d=(b.x-p.x)**2+(b.y-p.y)**2;
+    if(d<bd && d< (b.r+26)**2){bd=d;best=b;}
+  }
+  pointer.grabbed=best;
+  if(best){best.asleep=false;best.sleep=0;}
+  pourBurst = best? 0 : 7;   // empty space click -> pour fountain
+}
+function onMove(e){
+  const p=pointerPos(e);
+  pointer.px=pointer.x;pointer.py=pointer.y;
+  pointer.x=p.x;pointer.y=p.y;
+}
+function onUp(){
+  if(pointer.grabbed){
+    pointer.grabbed.vx=pointer.vx*1.1;
+    pointer.grabbed.vy=pointer.vy*1.1;
+    pointer.grabbed=null;
+  }
+  pointer.down=false;
+}
+cv.addEventListener('mousedown',onDown);
+window.addEventListener('mousemove',onMove);
+window.addEventListener('mouseup',onUp);
+cv.addEventListener('touchstart',e=>{e.preventDefault();onDown(e);},{passive:false});
+window.addEventListener('touchmove',e=>{e.preventDefault();onMove(e);},{passive:false});
+window.addEventListener('touchend',e=>{e.preventDefault();onUp();},{passive:false});
+cv.addEventListener('dblclick',()=>{shakeAmt=820;});
+window.addEventListener('wheel',e=>{
+  e.preventDefault();
+  gravAngle = clamp(gravAngle + Math.sign(e.deltaY)*0.10, -1.15, 1.15);
+},{passive:false});
+window.addEventListener('contextmenu',e=>e.preventDefault());
+
+// ------------------------------------------------------------------
+// Ambient gold dust particles (purely cosmetic, cheap)
+// ------------------------------------------------------------------
+const DUST=[];
+for(let i=0;i<70;i++)DUST.push({x:Math.random(),y:Math.random(),z:rand(.2,1),ph:rand(0,6.28),sp:rand(.02,.08)});
+
+// ------------------------------------------------------------------
+// Physics step
+// ------------------------------------------------------------------
+let nbuf=[];
+function step(dt){
+  // gravity vector from angle
+  GVEC.x=Math.sin(gravAngle); GVEC.y=Math.cos(gravAngle);
+  gline.setAttribute('x2', (27+Math.sin(gravAngle)*21).toFixed(1));
+  gline.setAttribute('y2', (27+Math.cos(gravAngle)*21).toFixed(1));
+
+  // pointer velocity
+  pointer.vx=(pointer.x-pointer.px)/Math.max(dt,1e-3);
+  pointer.vy=(pointer.y-pointer.py)/Math.max(dt,1e-3);
+
+  // integrate
+  const gax=GVEC.x*G, gay=GVEC.y*G;
+  for(const b of bodies){
+    b.spawnT+=dt;
+    if(b===pointer.grabbed){
+      // soft attach
+      b.vx += (pointer.x-b.x)*22*dt;
+      b.vy += (pointer.y-b.y)*22*dt;
+      b.vx*=0.86; b.vy*=0.86;
+      b.asleep=false;b.sleep=0;
+    } else {
+      b.vx+=gax*dt; b.vy+=gay*dt;
+    }
+    if(shakeAmt>1){
+      b.vx+=rand(-1,1)*shakeAmt*dt; b.vy+=rand(-1,1)*shakeAmt*dt;
+      b.asleep=false;
+    }
+    // air drag
+    b.vx*=0.998; b.vy*=0.998; b.av*=0.992;
+    b.x+=b.vx*dt; b.y+=b.vy*dt;
+    b.ang+=b.av*dt;
+  }
+  shakeAmt*=Math.pow(0.001,dt); if(shakeAmt<1)shakeAmt=0;
+
+  // solve constraints several iterations
+  rebuildGrid();
+  const ITER=4;
+  for(let it=0; it<ITER; it++){
+    // body-body
+    for(let i=0;i<bodies.length;i++){
+      const a=bodies[i];
+      neighbors(a,nbuf);
+      for(let n=0;n<nbuf.length;n++){
+        const j=nbuf[n]; if(j<=i) continue;
+        const b=bodies[j];
+        let dx=b.x-a.x, dy=b.y-a.y;
+        let d2=dx*dx+dy*dy;
+        const rr=a.r+b.r;
+        if(d2>=rr*rr || d2===0) continue;
+        let d=Math.sqrt(d2);
+        const nx=dx/d, ny=dy/d;
+        const pen=rr-d;
+        // positional correction (split by inverse mass)
+        const tot=a.mInv+b.mInv;
+        const corr=pen/tot*0.8;
+        a.x-=nx*corr*a.mInv; a.y-=ny*corr*a.mInv;
+        b.x+=nx*corr*b.mInv; b.y+=ny*corr*b.mInv;
+        // relative velocity at contact
+        const rvx=b.vx-a.vx, rvy=b.vy-a.vy;
+        const vn=rvx*nx+rvy*ny;
+        if(vn<0){
+          const e=Math.min(a.rest,b.rest);
+          const Jn=-(1+e)*vn/tot;
+          a.vx-=nx*Jn*a.mInv; a.vy-=ny*Jn*a.mInv;
+          b.vx+=nx*Jn*b.mInv; b.vy+=ny*Jn*b.mInv;
+          // friction (tangent)
+          const tx=-ny, ty=nx;
+          const vt=(b.vx-a.vx)*tx+(b.vy-a.vy)*ty;
+          const mu=(a.fric+b.fric)*0.5;
+          let Jt=-vt/tot; const maxJt=Math.abs(Jn)*mu;
+          Jt=clamp(Jt,-maxJt,maxJt);
+          a.vx-=tx*Jt*a.mInv; a.vy-=ty*Jt*a.mInv;
+          b.vx+=tx*Jt*b.mInv; b.vy+=ty*Jt*b.mInv;
+          // spin coupling from tangential impulse
+          a.av -= Jt*a.inertiaInv*a.r*0.5;
+          b.av += Jt*b.inertiaInv*b.r*0.5;
+        }
+        a.asleep=false;b.asleep=false;
+      }
+    }
+    // body-wall
+    for(const b of bodies){
+      for(const s of walls){
+        const c=closestOnSeg(b.x,b.y,s);
+        let dx=b.x-c.x, dy=b.y-c.y;
+        let d2=dx*dx+dy*dy;
+        if(d2>=b.r*b.r) continue;
+        let d=Math.sqrt(d2)||1e-4;
+        let nx=dx/d, ny=dy/d;
+        // align with stored normal if degenerate
+        if(d<1e-3){nx=s.nx;ny=s.ny;}
+        const pen=b.r-d;
+        b.x+=nx*pen; b.y+=ny*pen;
+        const vn=b.vx*nx+b.vy*ny;
+        if(vn<0){
+          const e=b.rest*0.8;
+          const Jn=-(1+e)*vn;
+          b.vx+=nx*Jn; b.vy+=ny*Jn;
+          // floor friction & rolling
+          const tx=-ny,ty=nx;
+          const vt=b.vx*tx+b.vy*ty;
+          const mu=b.fric*1.6;
+          let Jt=-vt; const maxJt=Math.abs(Jn)*mu;
+          Jt=clamp(Jt,-maxJt,maxJt);
+          b.vx+=tx*Jt; b.vy+=ty*Jt;
+          b.av += Jt*b.inertiaInv*b.r*0.6;
+        }
+      }
+    }
+  }
+
+  // sleeping for performance & stability
+  for(const b of bodies){
+    const sp=b.vx*b.vx+b.vy*b.vy+ (b.av*b.av)*40;
+    if(sp<60 && b!==pointer.grabbed){ b.sleep+=dt; if(b.sleep>0.6){b.vx=0;b.vy=0;b.av*=0.6;b.asleep=true;} }
+    else { b.sleep=0; b.asleep=false; }
+  }
+}
+
+// ------------------------------------------------------------------
+// Render
+// ------------------------------------------------------------------
+let bgGrad=null, bgW=0,bgH=0;
+function buildBG(){
+  bgGrad=ctx.createRadialGradient(W*0.5,H*0.30,40, W*0.5,H*0.5,Math.hypot(W,H)*0.62);
+  bgGrad.addColorStop(0,'#1b1726');
+  bgGrad.addColorStop(0.45,'#100d18');
+  bgGrad.addColorStop(1,'#06060a');
+  bgW=W;bgH=H;
+}
+
+function drawCoin(b){
+  const {metal:m,r}=b;
+  // disc squash from spin gives a "tumbling coin" feel
+  const squash = 0.62+0.38*Math.abs(Math.cos(b.ang));
+  ctx.save();
+  ctx.translate(b.x,b.y);
+  ctx.rotate(b.ang*0.18);            // slight face rotation
+  ctx.scale(1, squash);
+  // edge / thickness (drawn slightly offset under the face)
+  ctx.beginPath();ctx.arc(0, r*0.16, r,0,6.2832);
+  ctx.fillStyle=m.edge; ctx.fill();
+  // face gradient
+  const g=ctx.createRadialGradient(-r*0.32,-r*0.34,r*0.1, 0,0,r*1.05);
+  g.addColorStop(0,m.hi);
+  g.addColorStop(0.42,m.mid);
+  g.addColorStop(0.86,m.lo);
+  g.addColorStop(1,m.edge);
+  ctx.beginPath();ctx.arc(0,0,r,0,6.2832);
+  ctx.fillStyle=g;ctx.fill();
+  // rim ring
+  ctx.lineWidth=Math.max(1.4,r*0.10);
+  ctx.strokeStyle=m.rim; ctx.globalAlpha=0.55;
+  ctx.beginPath();ctx.arc(0,0,r*0.82,0,6.2832);ctx.stroke();
+  ctx.globalAlpha=1;
+  // engraved center mark
+  ctx.fillStyle=m.lo; ctx.globalAlpha=0.5;
+  ctx.beginPath();ctx.arc(0,0,r*0.30,0,6.2832);ctx.fill();
+  ctx.globalAlpha=1;
+  // moving specular streak
+  const sx=Math.cos(b.ang*0.9)*r*0.4, sy=Math.sin(b.ang*0.9)*r*0.4;
+  const sg=ctx.createLinearGradient(sx-r,sy-r,sx+r,sy+r);
+  sg.addColorStop(0,'rgba(255,255,255,0)');
+  sg.addColorStop(0.5,'rgba(255,255,255,0.55)');
+  sg.addColorStop(1,'rgba(255,255,255,0)');
+  ctx.globalCompositeOperation='lighter';
+  ctx.beginPath();ctx.arc(0,0,r*0.94,0,6.2832);
+  ctx.fillStyle=sg;ctx.globalAlpha=0.5;ctx.fill();
+  ctx.globalCompositeOperation='source-over';ctx.globalAlpha=1;
+  ctx.restore();
+}
+
+function drawMarble(b){
+  const {glass:gl,r}=b;
+  ctx.save();
+  ctx.translate(b.x,b.y);
+  // body sphere
+  const hx=b.hlx*r, hy=b.hly*r;
+  const g=ctx.createRadialGradient(hx,hy,r*0.1, 0,0,r);
+  g.addColorStop(0,gl.glow);
+  g.addColorStop(0.32,gl.core);
+  g.addColorStop(0.8,gl.deep);
+  g.addColorStop(1,'#0a0a14');
+  ctx.beginPath();ctx.arc(0,0,r,0,6.2832);
+  ctx.fillStyle=g;ctx.fill();
+  // inner refraction band
+  ctx.globalCompositeOperation='lighter';
+  const ig=ctx.createRadialGradient(-hx*0.5,-hy*0.4,r*0.05,0,0,r*0.9);
+  ig.addColorStop(0,'rgba(255,255,255,0.25)');
+  ig.addColorStop(0.6,'rgba(255,255,255,0)');
+  ctx.fillStyle=ig;ctx.beginPath();ctx.arc(0,0,r*0.9,0,6.2832);ctx.fill();
+  ctx.globalCompositeOperation='source-over';
+  // crisp top highlight
+  ctx.beginPath();ctx.arc(hx,hy,r*0.26,0,6.2832);
+  ctx.fillStyle='rgba(255,255,255,0.9)';ctx.fill();
+  ctx.beginPath();ctx.arc(hx*0.4+r*0.18,hy*0.4+r*0.18,r*0.08,0,6.2832);
+  ctx.fillStyle='rgba(255,255,255,0.55)';ctx.fill();
+  // rim light (bottom, picks up warm bounce)
+  ctx.lineWidth=Math.max(1,r*0.10);
+  ctx.strokeStyle='rgba(220,196,117,0.20)';
+  ctx.beginPath();ctx.arc(0,0,r*0.93,0.6,2.5);ctx.stroke();
+  ctx.restore();
+}
+
+function render(){
+  if(bgW!==W||bgH!==H||!bgGrad) buildBG();
+  ctx.fillStyle=bgGrad;ctx.fillRect(0,0,W,H);
+
+  // ground glow pool
+  const pool=ctx.createLinearGradient(0,H*0.55,0,H);
+  pool.addColorStop(0,'rgba(220,170,60,0)');
+  pool.addColorStop(1,'rgba(190,140,50,0.10)');
+  ctx.fillStyle=pool;ctx.fillRect(0,H*0.55,W,H*0.45);
+
+  // dust
+  const t=performance.now()*0.001;
+  ctx.globalCompositeOperation='lighter';
+  for(const d of DUST){
+    const x=( (d.x + Math.sin(t*d.sp+d.ph)*0.04)*W );
+    const y=( ((d.y + t*d.sp*0.12)%1)*H );
+    const a=0.06+0.10*d.z*(0.5+0.5*Math.sin(t*1.4+d.ph));
+    ctx.fillStyle='rgba(240,210,130,'+a.toFixed(3)+')';
+    ctx.beginPath();ctx.arc(x,y,d.z*1.7,0,6.2832);ctx.fill();
+  }
+  ctx.globalCompositeOperation='source-over';
+
+  // soft contact shadows (cheap: dark ellipse under each body, batched)
+  ctx.save();
+  ctx.globalAlpha=0.22;
+  ctx.fillStyle='#000';
+  for(const b of bodies){
+    ctx.beginPath();
+    ctx.ellipse(b.x+GVEC.x*b.r*0.3, b.y+GVEC.y*b.r*0.55, b.r*0.92, b.r*0.5,0,0,6.2832);
+    ctx.fill();
+  }
+  ctx.restore();
+
+  // bodies
+  for(const b of bodies){
+    if(b.type===TYPE_COIN) drawCoin(b); else drawMarble(b);
+  }
+
+  // grab indicator
+  if(pointer.grabbed){
+    const b=pointer.grabbed;
+    ctx.strokeStyle='rgba(255,240,200,0.7)';ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.arc(b.x,b.y,b.r+6+2*Math.sin(t*8),0,6.2832);ctx.stroke();
+    ctx.strokeStyle='rgba(255,240,200,0.18)';
+    ctx.beginPath();ctx.moveTo(b.x,b.y);ctx.lineTo(pointer.x,pointer.y);ctx.stroke();
+  }
+}
+
+// ------------------------------------------------------------------
+// Main loop
+// ------------------------------------------------------------------
+let last=performance.now();
+let spawnAcc=0;
+function frame(now){
+  let dt=(now-last)/1000; last=now;
+  if(dt>0.040)dt=0.040;          // clamp big gaps
+  // substep physics for stability
+  const sub=2; const sdt=dt/sub;
+  for(let s=0;s<sub;s++) step(sdt);
+
+  // pour fountain from click
+  if(pourBurst>0){
+    pourBurst--;
+    for(let k=0;k<3;k++){
+      const ang=-Math.PI/2 + rand(-0.5,0.5);
+      const spd=rand(380,720);
+      spawn(pointer.x+rand(-8,8),pointer.y+rand(-8,8),Math.cos(ang)*spd,Math.sin(ang)*spd);
+    }
+  }
+  // ambient gentle top-up so the chamber always has life (first paint = full)
+  spawnAcc+=dt;
+  if(bodies.length<MAX_BODIES*0.84 && spawnAcc>0.12){
+    spawnAcc=0;
+    spawn(rand(W*0.35,W*0.65), -30, rand(-60,60), rand(120,260));
+  }
+
+  render();
+  cntEl.textContent=bodies.length;
+  requestAnimationFrame(frame);
+}
+
+// ------------------------------------------------------------------
+// Init: pre-fill a settled pile so the FIRST PAINT is already a piece
+// ------------------------------------------------------------------
+function init(){
+  resize();
+  // pre-place a pile in the basin and let a quick warm-up settle it
+  const target=Math.round((W*H)/7200)+110;
+  MAX_BODIES=clamp(target,130,340);
+  for(let i=0;i<MAX_BODIES*0.88;i++){
+    const x=rand(W*0.10,W*0.90);
+    const y=rand(H*0.20,H*0.97);
+    const b=spawn(x,y);
+    b.vx=rand(-30,30);b.vy=rand(0,40);
+  }
+  // warm-up settle (offscreen iterations) so paint shows a stable pile
+  for(let i=0;i<90;i++) step(1/120);
+  buildBG();
+  render();
+  requestAnimationFrame(frame);
+}
+init();
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>병동 13 — St. Hollow</title>
+<style>
+  :root{
+    --ink:#cdd6e0; --dim:#7a8794; --acc:#7fd1c9; --warn:#e8607a; --gold:#e6c66b;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;height:100%;background:#05070a;overflow:hidden;
+    font-family:"Courier New",ui-monospace,monospace;color:var(--ink);
+    user-select:none;-webkit-user-select:none;touch-action:none;}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;}
+  canvas{image-rendering:pixelated;image-rendering:crisp-edges;
+    background:#02030a;display:block;max-width:100%;max-height:100%;}
+  /* overlay panels */
+  .panel{position:fixed;inset:0;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;text-align:center;
+    background:radial-gradient(ellipse at center,#0a0e16 0%,#02030a 75%);
+    z-index:30;padding:24px;gap:14px;}
+  .panel.hidden{display:none;}
+  .title{font-size:clamp(30px,8vw,64px);letter-spacing:4px;font-weight:bold;
+    color:#e9eef4;text-shadow:0 0 18px rgba(127,209,201,.35),0 3px 0 #000;}
+  .sub{color:var(--dim);max-width:560px;line-height:1.6;font-size:clamp(12px,3.3vw,15px);}
+  .credit{position:fixed;bottom:8px;left:0;right:0;text-align:center;
+    color:#55606b;font-size:11px;z-index:31;letter-spacing:.4px;}
+  button.btn{font-family:inherit;cursor:pointer;border:1px solid #2b3a44;
+    background:#0d141c;color:var(--acc);padding:12px 26px;font-size:16px;
+    letter-spacing:2px;border-radius:6px;transition:.15s;}
+  button.btn:hover{background:#13202b;border-color:var(--acc);box-shadow:0 0 14px rgba(127,209,201,.25);}
+  .danger{color:var(--warn);border-color:#52262f;}
+  .danger:hover{border-color:var(--warn);box-shadow:0 0 14px rgba(232,96,122,.25);}
+  .tagline{color:var(--gold);font-size:13px;letter-spacing:1px;}
+  /* HUD */
+  #hud{position:fixed;top:0;left:0;right:0;z-index:20;display:flex;
+    justify-content:space-between;align-items:flex-start;padding:8px 10px;
+    pointer-events:none;font-size:12px;}
+  #invbar{display:flex;gap:6px;flex-wrap:wrap;max-width:62%;}
+  .item{background:#0b121a;border:1px solid #243640;border-radius:5px;
+    padding:4px 8px;color:var(--gold);font-size:11px;display:flex;gap:4px;align-items:center;}
+  #stat{text-align:right;line-height:1.5;}
+  #heart{color:var(--warn);font-weight:bold;}
+  #msg{position:fixed;left:0;right:0;bottom:118px;z-index:22;text-align:center;
+    pointer-events:none;}
+  #msg span{display:inline-block;background:rgba(5,8,12,.82);border:1px solid #243640;
+    padding:8px 16px;border-radius:6px;color:var(--ink);font-size:14px;
+    max-width:84vw;line-height:1.45;box-shadow:0 4px 20px rgba(0,0,0,.6);}
+  #msg.hide{opacity:0;transition:opacity .4s;}
+  /* touch controls */
+  #touch{position:fixed;inset:0;z-index:25;pointer-events:none;display:none;}
+  #touch.on{display:block;}
+  .pad{position:absolute;bottom:18px;width:128px;height:128px;pointer-events:auto;}
+  #dpad{left:14px;}
+  .dbtn{position:absolute;width:44px;height:44px;background:rgba(20,32,42,.78);
+    border:1px solid #33485400;border:1px solid #2c3e49;border-radius:8px;
+    color:var(--acc);font-size:20px;display:flex;align-items:center;justify-content:center;}
+  .dbtn:active{background:rgba(127,209,201,.3);}
+  #du{left:42px;top:0;} #dd{left:42px;bottom:0;} #dl{left:0;top:42px;} #dr{right:0;top:42px;}
+  #abtns{right:14px;bottom:18px;width:130px;display:flex;flex-direction:column;gap:10px;pointer-events:auto;}
+  .act{height:52px;background:rgba(20,32,42,.82);border:1px solid #2c3e49;border-radius:10px;
+    color:var(--acc);font-size:15px;letter-spacing:1px;display:flex;align-items:center;justify-content:center;}
+  .act:active{background:rgba(127,209,201,.3);}
+  #vig{position:fixed;inset:0;z-index:18;pointer-events:none;
+    box-shadow:inset 0 0 140px 50px rgba(0,0,0,.85);}
+  .flash{animation:fl .5s ease-out;}
+  @keyframes fl{0%{background:rgba(232,96,122,.55);}100%{background:transparent;}}
+  #flashlayer{position:fixed;inset:0;z-index:28;pointer-events:none;background:transparent;}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="cv" width="480" height="320"></canvas></div>
+<div id="vig"></div>
+<div id="flashlayer"></div>
+
+<!-- HUD -->
+<div id="hud">
+  <div id="invbar"></div>
+  <div id="stat">
+    <div id="locline">병동 13</div>
+    <div id="heart">&#9829; &#9829; &#9829;</div>
+  </div>
+</div>
+<div id="msg" class="hide"><span></span></div>
+
+<!-- touch -->
+<div id="touch">
+  <div id="dpad" class="pad">
+    <div id="du" class="dbtn">&#9650;</div>
+    <div id="dd" class="dbtn">&#9660;</div>
+    <div id="dl" class="dbtn">&#9664;</div>
+    <div id="dr" class="dbtn">&#9654;</div>
+  </div>
+  <div id="abtns">
+    <div id="aAct" class="act">조사 E</div>
+    <div id="aRun" class="act">달리기</div>
+  </div>
+</div>
+
+<!-- title -->
+<div id="title" class="panel">
+  <div class="tagline">야간 폐병원 탑다운 호러</div>
+  <div class="title">병동 13</div>
+  <div class="sub">St. Hollow 정신병원, 폐쇄된 지 17년.<br>
+  잠에서 깨니 차가운 침대 위. 문은 잠겼고, 복도 끝에서 무언가 발을 끈다.<br><br>
+  <b>이동</b> 방향키/WASD · <b>조사</b> E/Space · <b>달리기</b> Shift<br>
+  단서를 모아 잠긴 길을 열고, <b>그것</b>에게 잡히기 전에 빠져나가라.<br>
+  발소리가 가까워지면 — <b>사물함</b>에 숨거나 등 뒤로 <b>문을 닫아라.</b></div>
+  <button class="btn" id="startBtn">들어간다</button>
+  <div class="sub" style="font-size:11px;opacity:.7">소리를 켜면 더 무섭습니다 (탭 한 번)</div>
+</div>
+
+<!-- end -->
+<div id="endP" class="panel hidden">
+  <div class="title" id="endT">…</div>
+  <div class="sub" id="endS"></div>
+  <button class="btn" id="againBtn">다시 시도</button>
+</div>
+
+<div class="credit">아오오니(Ao Oni)에서 영감 — &copy; noprops. 오리지널 구현</div>
+
+<script>
+"use strict";
+//==================================================================
+// 병동 13 — single-file top-down horror. Original work.
+// Inspired by Ao Oni (genre/chase only). © noprops.
+//==================================================================
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+const TILE = 16;            // tile size px (world)
+const VW = 480, VH = 320;   // viewport (canvas) px
+
+//---------------- Audio (WebAudio, no assets) -------------------
+let AC=null, audioOn=false;
+function initAudio(){ if(AC) return; try{ AC=new (window.AudioContext||window.webkitAudioContext)(); audioOn=true; }catch(e){} }
+function blip(freq, dur, type, vol){
+  if(!AC) return;
+  const o=AC.createOscillator(), g=AC.createGain();
+  o.type=type||'square'; o.frequency.value=freq;
+  g.gain.value=0.0001;
+  o.connect(g); g.connect(AC.destination);
+  const t=AC.currentTime;
+  g.gain.setValueAtTime(0.0001,t);
+  g.gain.exponentialRampToValueAtTime(vol||0.18,t+0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001,t+(dur||0.12));
+  o.start(t); o.stop(t+(dur||0.12)+0.02);
+}
+function noiseBurst(dur,vol){
+  if(!AC) return;
+  const n=AC.sampleRate*(dur||0.3);
+  const buf=AC.createBuffer(1,n,AC.sampleRate);
+  const d=buf.getChannelData(0);
+  for(let i=0;i<n;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/n,2);
+  const s=AC.createBufferSource(); s.buffer=buf;
+  const g=AC.createGain(); g.gain.value=vol||0.25;
+  s.connect(g); g.connect(AC.destination); s.start();
+}
+function sfx(name){
+  if(!audioOn) return;
+  if(name==='step') blip(80+Math.random()*20,0.06,'sine',0.06);
+  else if(name==='pickup'){ blip(660,0.08,'square',0.14); blip(990,0.1,'square',0.12); }
+  else if(name==='door') blip(140,0.18,'sawtooth',0.16);
+  else if(name==='locked') blip(110,0.14,'square',0.13);
+  else if(name==='solve'){ blip(523,0.12,'triangle',0.16); setTimeout(()=>blip(784,0.16,'triangle',0.16),120); }
+  else if(name==='hide') blip(200,0.2,'sine',0.12);
+  else if(name==='scare'){ noiseBurst(0.5,0.4); blip(70,0.5,'sawtooth',0.25); }
+  else if(name==='hit') blip(90,0.3,'sawtooth',0.22);
+  else if(name==='win'){ [392,523,659,784].forEach((f,i)=>setTimeout(()=>blip(f,0.18,'triangle',0.16),i*150)); }
+  else if(name==='heart') blip(55,0.12,'sine',0.10);
+}
+// distant monster footstep / breath, panned by proximity
+let breathTimer=0;
+function monsterAmbient(near){
+  if(!audioOn||!AC) return;
+  breathTimer-=1;
+  if(breathTimer<=0){
+    breathTimer = near>0.6 ? 14 : (near>0.3 ? 30 : 55);
+    blip(58+Math.random()*8, 0.18, 'sawtooth', 0.04+near*0.10);
+  }
+}
+
+//---------------- Map data ----------------
+// Each room is a grid of chars. Legend:
+// # wall, . floor, = bed, T table/desk, C cabinet/shelf, L locker(hideable),
+// D door(needs handling via doors[]), space outside (black)
+// Multi-room single map; we use one big tilemap with several wings.
+// Tile codes (numbers) in MAP:
+//  0 void(black), 1 floor, 2 wall, 3 bed, 4 desk, 5 shelf, 6 locker,
+//  7 door(generic interactable), 8 exit-door, 9 floor-grate/blood-decor
+//  10 dark-floor(corridor), 11 tile-floor-alt
+const MAPW=40, MAPH=30;
+// Build map from a string for readability.
+const MAPSTR = [
+"########################################",
+"#....=.#..........#............#.......#",
+"#....=.#...TT.....#.....CC.....#...LL..#",
+"#......7..........7..........DD7.......#",
+"#....=.#..........#............#.......#",
+"#......#....9.....#......4.....#.......#",
+"##7#####..........#####7########7#######",
+"#......#..........#....#........#......#",
+"#..CC..#..........#..==#...TT...7..L...#",
+"#......7..........7....#........#......#",
+"#......#..........#..==#...44...#......#",
+"#......#....9.....#....#........#......#",
+"#######7#####7#####7####7#######7#######",
+"#..........#..............#............#",
+"#..LL......7....9.........#....CC......#",
+"#..........#..............7............#",
+"#..==......#.....TT........#....==.....#",
+"#..........#..............#............#",
+"##7########7#######7#######7#####7######",
+"#........#.........#.......#...........#",
+"#...44...#....CC...#..LL...#....TT.....#",
+"#........7.........7.......7...........#",
+"#...==...#.........#.......#....9......#",
+"#........#....==...#.......#...........#",
+"#####7###########7#######7#############",
+"#......................................#",
+"#.........  LOBBY  .....................#",
+"#.....................................8#",
+"#......................................#",
+"########################################",
+];
+// parse: turn chars -> numeric tiles + collect special tiles
+let MAP=[]; let doors=[]; let lockers=[]; let interactables=[];
+function charToTile(c){
+  switch(c){
+    case '#': return 2;
+    case '.': return 1;
+    case ' ': return 1; // treat embedded label spaces as floor
+    case '=': return 3;
+    case 'T': return 4;
+    case 'C': return 5;
+    case 'L': return 6;
+    case '7': return 7;  // generic door
+    case 'D': return 7;  // special door (we'll tag)
+    case '8': return 8;  // exit
+    case '4': return 4;
+    case '5': return 5;
+    case '9': return 9;
+    default: return 1;
+  }
+}
+// We need to ignore the LOBBY text letters as walls; treat letters in row as floor.
+function parseMap(){
+  MAP=[];
+  for(let y=0;y<MAPH;y++){
+    const row=[]; const s=MAPSTR[y]||"";
+    for(let x=0;x<MAPW;x++){
+      let c=s[x]||'#';
+      // letters used as decorative text -> floor unless it's our codes
+      if(/[A-Z]/.test(c) && !'TCLD'.includes(c)) c='.';
+      row.push(charToTile(c));
+    }
+    MAP.push(row);
+  }
+}
+parseMap();
+
+//---------------- Game state ----------------
+const G = {
+  state:'title',            // title, play, end
+  px:0, py:0,               // player pixel pos (world)
+  pdir:0,                   // 0 down,1 up,2 left,3 right
+  pstep:0,                  // anim
+  hp:3,
+  inv:{},                   // item flags
+  hiding:false, hideCell:null,
+  monAwake:false,           // monster active?
+  mx:0, my:0, mdir:0, mstep:0,
+  monSpeedBase:0.9,
+  flags:{ wardKey:false, fuse:false, code:false, scalpel:false, masterKey:false },
+  flicker:0, msgT:0, beat:0, iframe:0, scareT:0,
+  doorClosedAt:0,
+  triggered:false, walk:0,
+};
+
+// doors definition keyed by tile coord "x,y": {locked, needs, name, closed, type}
+const DOORS = {};
+function defDoor(x,y,o){ DOORS[x+","+y]=Object.assign({locked:false,closed:false,needs:null,name:'문'},o); }
+
+// Set up special locked doors & the exit. Coordinates picked to gate progression.
+function setupDoors(){
+  // exit door at row 27 col 38 (tile 8) handled separately
+  // ward gate: the DD/door near top-right that needs ward key
+  // find generic doors and assign needs to some
+  // We'll just configure a few meaningful gates by coordinate.
+  // top corridor door at (31,3) -> ward key gate to right wing
+  defDoor(30,3,{locked:true,needs:'wardKey',name:'병동 잠금문 (열쇠 필요)'});
+  // door (7,12)? lobby south gate at (5,24) -> needs code
+  defDoor(5,24,{locked:true,needs:'code',name:'직원 전용문 (4자리 암호)'});
+  // door (24,12) -> needs fuse(power)
+  defDoor(23,12,{locked:true,needs:'fuse',name:'차단된 자동문 (전원 필요)'});
+  // exit gate to lobby/outside south at (32,24) -> needs masterKey
+  defDoor(32,24,{locked:true,needs:'masterKey',name:'1층 정문 통로 (마스터키)'});
+}
+
+//---------------- Items placed in world ----------------
+// {x,y,key,name,desc, gives, reqRoom}
+let WORLD_ITEMS=[];
+function setupItems(){
+  WORLD_ITEMS=[
+    {x:5,y:2, key:'wardKey', name:'녹슨 병동 열쇠', taken:false,
+      look:'침대 밑에서 녹슨 열쇠를 찾았다. 끝에 "WARD" 각인.'},
+    {x:25,y:2, key:'fuse', name:'예비 퓨즈', taken:false,
+      look:'먼지 쌓인 선반에 예비 퓨즈가 하나. 전원 장치에 쓸 수 있겠다.'},
+    {x:13,y:20, key:'scalpel', name:'수술용 메스', taken:false,
+      look:'캐비닛 안, 마른 핏자국과 함께 메스 한 자루.'},
+    {x:36,y:8, key:'noteCode', name:'찢어진 차트', taken:false,
+      look:'차트 뒷면에 휘갈긴 글씨: "퇴근 암호 = 사망연도. 1-9-0-9." 누가 1909년에…'},
+    {x:33,y:16, key:'masterKey', name:'관리인 마스터키', taken:false,
+      reqFlag:'powerOn',
+      look:'전원이 들어오자 사물함 잠금이 풀렸다. 안에 마스터키가 걸려 있다.'},
+  ];
+}
+
+// power state derived from fuse use on the fuse-door panel
+let powerOn=false;
+
+//---------------- Helpers ----------------
+function tileAt(tx,ty){ if(tx<0||ty<0||tx>=MAPW||ty>=MAPH) return 2; return MAP[ty][tx]; }
+function isWall(tx,ty){
+  const t=tileAt(tx,ty);
+  if(t===2) return true;            // wall
+  if(t===0) return true;            // void
+  // beds/desks/shelves are solid obstacles
+  if(t===3||t===4||t===5) return true;
+  // door: solid if locked or closed
+  if(t===7){
+    const d=DOORS[tx+","+ty];
+    if(d){ if(d.locked) return true; if(d.closed) return true; }
+    return false; // open passable door
+  }
+  if(t===8) return false; // exit reachable to trigger win
+  return false; // floor / locker(walk onto to hide) / grate
+}
+function solidForMonster(tx,ty){
+  const t=tileAt(tx,ty);
+  if(t===2||t===0||t===3||t===4||t===5) return true;
+  if(t===7){
+    const d=DOORS[tx+","+ty];
+    if(d){ if(d.locked) return true; if(d.closed) return true; }
+    return false;
+  }
+  return false;
+}
+function rectFree(px,py,forMonster){
+  // player/monster collision box 12x12 centered-ish
+  const w=11,h=11;
+  const x0=px+2, y0=py+3, x1=px+2+w, y1=py+3+h;
+  const f = forMonster?solidForMonster:isWall;
+  return !(f(Math.floor(x0/TILE),Math.floor(y0/TILE)) ||
+           f(Math.floor(x1/TILE),Math.floor(y0/TILE)) ||
+           f(Math.floor(x0/TILE),Math.floor(y1/TILE)) ||
+           f(Math.floor(x1/TILE),Math.floor(y1/TILE)));
+}
+
+function showMsg(t,dur){
+  const m=document.getElementById('msg'); m.querySelector('span').innerHTML=t;
+  m.classList.remove('hide'); G.msgT=dur||180;
+}
+function setLoc(t){ document.getElementById('locline').textContent=t; }
+function renderInv(){
+  const bar=document.getElementById('invbar'); bar.innerHTML='';
+  const names={wardKey:'병동열쇠',fuse:'퓨즈',scalpel:'메스',noteCode:'차트',masterKey:'마스터키'};
+  Object.keys(names).forEach(k=>{
+    if(G.inv[k]){ const d=document.createElement('div'); d.className='item';
+      d.innerHTML='&#9670; '+names[k]; bar.appendChild(d); }
+  });
+  if(powerOn){ const d=document.createElement('div'); d.className='item';
+    d.style.color='#7fd1c9'; d.innerHTML='&#9889; 전원ON'; bar.appendChild(d); }
+}
+function renderHearts(){
+  let s=''; for(let i=0;i<3;i++) s+= (i<G.hp?'&#9829; ':'&#9825; ');
+  document.getElementById('heart').innerHTML=s;
+}
+
+//---------------- Input ----------------
+const keys={};
+addEventListener('keydown',e=>{
+  if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();
+  keys[e.key.toLowerCase()]=true;
+  if((e.key==='e'||e.key===' ') ) doInteract();
+});
+addEventListener('keyup',e=>{ keys[e.key.toLowerCase()]=false; });
+// touch
+const touch={u:0,d:0,l:0,r:0,run:0};
+function bindHold(id,prop){
+  const el=document.getElementById(id);
+  const on=e=>{e.preventDefault();touch[prop]=1;}; const off=e=>{e.preventDefault();touch[prop]=0;};
+  el.addEventListener('touchstart',on,{passive:false}); el.addEventListener('touchend',off);
+  el.addEventListener('touchcancel',off); el.addEventListener('mousedown',on);
+  addEventListener('mouseup',off);
+}
+bindHold('du','u');bindHold('dd','d');bindHold('dl','l');bindHold('dr','r');bindHold('aRun','run');
+document.getElementById('aAct').addEventListener('touchstart',e=>{e.preventDefault();doInteract();},{passive:false});
+document.getElementById('aAct').addEventListener('mousedown',e=>{e.preventDefault();doInteract();});
+
+// show touch UI if touch device
+if('ontouchstart' in window || navigator.maxTouchPoints>0){
+  document.getElementById('touch').classList.add('on');
+}
+
+//---------------- Interaction ----------------
+function nearestInteract(){
+  // tile the player faces / overlaps
+  const cx=G.px+8, cy=G.py+9;
+  const ctx0=Math.floor(cx/TILE), cty0=Math.floor(cy/TILE);
+  // check 3x3 around for special tiles & items
+  let best=null,bd=999;
+  for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+    const tx=ctx0+dx, ty=cty0+dy; const t=tileAt(tx,ty);
+    const wx=tx*TILE+8, wy=ty*TILE+8;
+    const dist=Math.hypot(wx-cx,wy-cy);
+    // item?
+    const it=WORLD_ITEMS.find(i=>!i.taken && i.x===tx && i.y===ty);
+    if(it && dist<bd){ best={kind:'item',it,tx,ty}; bd=dist; }
+    else if(t===7 && dist<bd){ best={kind:'door',tx,ty}; bd=dist; }
+    else if(t===8 && dist<bd){ best={kind:'exit',tx,ty}; bd=dist; }
+    else if(t===6 && dist<bd && dist<20){ best={kind:'locker',tx,ty}; bd=dist; }
+  }
+  return best;
+}
+
+function doInteract(){
+  if(G.state!=='play') return;
+  if(G.hiding){ // leave hiding
+    G.hiding=false; showMsg('숨은 곳에서 나왔다.',90); sfx('hide'); return;
+  }
+  const o=nearestInteract();
+  if(!o){ return; }
+  if(o.kind==='item'){ pickItem(o.it); return; }
+  if(o.kind==='locker'){
+    G.hiding=true; G.hideCell={x:o.tx,y:o.ty};
+    // snap player visually into locker
+    G.px=o.tx*TILE; G.py=o.ty*TILE;
+    showMsg('사물함 안에 숨었다. 숨을 죽인다… (E로 나오기)',150); sfx('hide'); return;
+  }
+  if(o.kind==='exit'){
+    if(G.flags.masterKey || hasMaster()){ winGame(); }
+    else { showMsg('정문은 굳게 잠겨 있다. 1층 정문 통로 마스터키가 필요하다.',150); sfx('locked'); }
+    return;
+  }
+  if(o.kind==='door'){ handleDoor(o.tx,o.ty); return; }
+}
+function hasMaster(){ return !!G.inv.masterKey; }
+
+function pickItem(it){
+  // masterKey requires power
+  if(it.key==='masterKey' && !powerOn){
+    showMsg('이 사물함은 전자 잠금이다. 전원이 들어와야 열린다.',150); sfx('locked'); return;
+  }
+  it.taken=true;
+  if(it.key==='wardKey') G.inv.wardKey=true, G.flags.wardKey=true;
+  else if(it.key==='fuse') G.inv.fuse=true;
+  else if(it.key==='scalpel') G.inv.scalpel=true;
+  else if(it.key==='noteCode'){ G.inv.noteCode=true; G.flags.code=true; }
+  else if(it.key==='masterKey'){ G.inv.masterKey=true; G.flags.masterKey=true; }
+  sfx('pickup'); showMsg(it.look,200); renderInv();
+  // first pickup triggers the monster waking
+  maybeWake();
+}
+
+function handleDoor(tx,ty){
+  const key=tx+","+ty; let d=DOORS[key];
+  if(!d){ // plain door: just a passage (toggle closed to block monster)
+    DOORS[key]={locked:false,closed:false,name:'문'}; d=DOORS[key];
+  }
+  if(d.locked){
+    // try to unlock with needed item
+    if(d.needs==='wardKey' && G.inv.wardKey){ d.locked=false; sfx('solve');
+      showMsg('병동 열쇠로 잠금문을 열었다. 오른쪽 병동이 열렸다.',170); maybeWake(); return; }
+    if(d.needs==='fuse' && G.inv.fuse){ d.locked=false; powerOn=true; sfx('solve');
+      showMsg('퓨즈를 끼우자 자동문이 깨어났다. 복도에 비상등이 켜진다 — 전원 ON.',200);
+      renderInv(); maybeWake(); return; }
+    if(d.needs==='masterKey' && G.inv.masterKey){ d.locked=false; sfx('solve');
+      showMsg('마스터키로 정문 통로를 열었다. 로비로 가는 길이 보인다.',170); return; }
+    if(d.needs==='code'){ promptCode(d); return; }
+    // missing requirement
+    const need = d.needs==='wardKey'?'병동 열쇠':d.needs==='fuse'?'예비 퓨즈':
+                 d.needs==='masterKey'?'마스터키':'무언가';
+    showMsg(d.name+' — '+need+'가 필요하다.',150); sfx('locked'); return;
+  }
+  // unlocked: toggle closed (used to block monster). If monster chasing, slam shut.
+  d.closed = !d.closed;
+  sfx('door');
+  showMsg(d.closed?'문을 닫았다. (잠깐은 막아줄 것이다)':'문을 열었다.',90);
+  if(d.closed && G.monAwake) G.doorClosedAt=performance.now();
+}
+
+// code lock: simple in-game prompt overlay
+function promptCode(d){
+  const ans = prompt('직원 전용문 — 4자리 암호를 입력하시오:');
+  if(ans===null) return;
+  if(ans.replace(/\D/g,'')==='1909'){ d.locked=false; sfx('solve');
+    showMsg('철컥 — 암호가 맞았다. 직원 전용문이 열렸다.',170); maybeWake(); }
+  else { sfx('locked'); showMsg('"…삐."  암호가 틀렸다.',120); }
+}
+
+//---------------- Monster ----------------
+function maybeWake(){
+  if(G.monAwake) return;
+  G.monAwake=true; G.triggered=true;
+  // spawn monster far from player
+  G.mx = 36*TILE; G.my = 2*TILE;
+  if(Math.hypot(G.mx-G.px,G.my-G.py) < 140){ G.mx=2*TILE; G.my=28*TILE; }
+  sfx('scare'); doFlash();
+  showMsg('어딘가에서 <b style="color:#e8607a">발을 끄는 소리</b>가 시작됐다. 그것이 깨어났다.',220);
+}
+
+function doFlash(){
+  const f=document.getElementById('flashlayer');
+  f.classList.remove('flash'); void f.offsetWidth; f.classList.add('flash');
+}
+
+function updateMonster(dt){
+  if(!G.monAwake) return;
+  // distance to player
+  const dx=(G.px)-(G.mx), dy=(G.py)-(G.my);
+  const dist=Math.hypot(dx,dy);
+  const near = Math.max(0, Math.min(1, 1 - dist/260));
+  monsterAmbient(near);
+
+  // if hiding, monster can't see player; wanders toward last known then mills
+  let targetx=G.px, targety=G.py;
+  if(G.hiding){
+    // monster patrols around; lose interest
+    targetx = G.mx + Math.sin(performance.now()/600)*40;
+    targety = G.my + Math.cos(performance.now()/700)*40;
+  }
+  // speed ramps with progression
+  let spd = G.monSpeedBase + (powerOn?0.35:0) + (G.flags.masterKey?0.45:0);
+  if(G.hiding) spd*=0.5;
+  // move toward target with simple axis stepping + wall slide
+  const ang=Math.atan2(targety-G.my, targetx-G.mx);
+  let nx=G.mx+Math.cos(ang)*spd*dt;
+  let ny=G.my+Math.sin(ang)*spd*dt;
+  if(rectFree(nx,G.my,true)) G.mx=nx; else {
+    // try go around: step perpendicular
+    if(rectFree(G.mx, G.my+(Math.sin(ang)>=0?spd:-spd)*dt,true)) G.my+= (Math.sin(ang)>=0?spd:-spd)*dt;
+  }
+  if(rectFree(G.mx,ny,true)) G.my=ny; else {
+    if(rectFree(G.mx+(Math.cos(ang)>=0?spd:-spd)*dt, G.my,true)) G.mx+= (Math.cos(ang)>=0?spd:-spd)*dt;
+  }
+  G.mdir = Math.abs(dx)>Math.abs(dy) ? (dx<0?2:3) : (dy<0?1:0);
+  G.mstep += spd*dt*0.4;
+
+  // catch check
+  if(!G.hiding && G.iframe<=0 && dist < 13){
+    hitPlayer();
+  }
+  // heartbeat audio when near
+  if(near>0.5){ G.beat-=dt; if(G.beat<=0){ sfx('heart'); G.beat= near>0.8?22:40; } }
+}
+
+function hitPlayer(){
+  G.hp--; renderHearts(); G.iframe=70; sfx('hit'); doFlash();
+  // knockback away from monster
+  const ang=Math.atan2(G.py-G.my, G.px-G.mx);
+  for(let i=0;i<14;i++){ const nx=G.px+Math.cos(ang)*2, ny=G.py+Math.sin(ang)*2;
+    if(rectFree(nx,G.py)) G.px=nx; if(rectFree(G.px,ny)) G.py=ny; }
+  if(G.hp<=0){ loseGame(); }
+  else showMsg('<b style="color:#e8607a">붙잡혔다!</b> 가까스로 뿌리쳤다 — 남은 심장 '+G.hp,140);
+}
+
+//---------------- Win / Lose ----------------
+function winGame(){
+  G.state='end'; sfx('win');
+  document.getElementById('endT').textContent='탈출';
+  document.getElementById('endT').style.color='#7fd1c9';
+  document.getElementById('endS').innerHTML=
+    '차가운 밤공기가 얼굴을 때린다. 등 뒤로 병원의 불빛이 꺼진다.<br>'+
+    '뒤를 돌아보지 않는다. 다시는.<br><br><b>엔딩: 살아남은 자</b><br>'+
+    '심장 '+G.hp+'/3 · 단서 '+Object.keys(G.inv).length+'개 수거';
+  document.getElementById('endP').classList.remove('hidden');
+}
+function loseGame(){
+  G.state='end'; sfx('scare'); doFlash();
+  document.getElementById('endT').textContent='사망';
+  document.getElementById('endT').style.color='#e8607a';
+  document.getElementById('endS').innerHTML=
+    '차가운 손이 발목을 붙잡는다. 복도가 끝없이 늘어나고, 비명은 벽에 삼켜진다.<br>'+
+    '병동 13의 명단에 이름이 하나 더 적힌다.<br><br><b>엔딩: 영면</b>';
+  document.getElementById('endP').classList.remove('hidden');
+}
+
+//---------------- Player update ----------------
+function updatePlayer(dt){
+  if(G.hiding){ // still allow leaving via E; small idle
+    return;
+  }
+  let mx=0,my=0;
+  if(keys['arrowup']||keys['w']||touch.u) my=-1;
+  if(keys['arrowdown']||keys['s']||touch.d) my=1;
+  if(keys['arrowleft']||keys['a']||touch.l) mx=-1;
+  if(keys['arrowright']||keys['d']||touch.r) mx=1;
+  const running = (keys['shift']||touch.run)?1:0;
+  let spd=(running?1.9:1.15)*dt;
+  if(mx&&my){ spd*=0.707; }
+  if(mx||my){
+    G.pdir = Math.abs(mx)>Math.abs(my)?(mx<0?2:3):(my<0?1:0);
+    let nx=G.px+mx*spd, ny=G.py+my*spd;
+    if(rectFree(nx,G.py)) G.px=nx;
+    if(rectFree(G.px,ny)) G.py=ny;
+    G.pstep+=spd*0.35; G.walk+=dt;
+    if(G.walk>14){ if(running)sfx('step'); G.walk=0; }
+  }
+  if(G.iframe>0) G.iframe-=dt;
+  // location label by region
+  const tx=Math.floor((G.px+8)/TILE), ty=Math.floor((G.py+8)/TILE);
+  if(ty>=25) setLoc('1층 로비');
+  else if(ty<=12 && tx>=30) setLoc('동병동 (격리)');
+  else if(ty<=12 && tx<=10) setLoc('서병동 (입원실)');
+  else if(ty<=12) setLoc('중앙 복도');
+  else setLoc('2층 진료동');
+}
+
+//---------------- Drawing (pixel art procedural) ----------------
+let camx=0, camy=0;
+function draw(){
+  ctx.clearRect(0,0,VW,VH);
+  ctx.fillStyle='#03040a'; ctx.fillRect(0,0,VW,VH);
+  // camera follows player
+  camx = Math.round(G.px - VW/2 + 8);
+  camy = Math.round(G.py - VH/2 + 8);
+  camx=Math.max(0,Math.min(camx, MAPW*TILE-VW));
+  camy=Math.max(0,Math.min(camy, MAPH*TILE-VH));
+
+  const x0=Math.floor(camx/TILE), y0=Math.floor(camy/TILE);
+  const x1=x0+Math.ceil(VW/TILE)+1, y1=y0+Math.ceil(VH/TILE)+1;
+  for(let ty=y0;ty<=y1;ty++)for(let tx=x0;tx<=x1;tx++){
+    drawTile(tx,ty, tx*TILE-camx, ty*TILE-camy);
+  }
+  // items
+  WORLD_ITEMS.forEach(it=>{ if(!it.taken && !(it.key==='masterKey'&&!powerOn)){
+    drawItem(it.x*TILE-camx, it.y*TILE-camy, it.key);
+  }});
+  // monster
+  if(G.monAwake) drawMonster(G.mx-camx, G.my-camy);
+  // player
+  if(!G.hiding) drawPlayer(G.px-camx, G.py-camy);
+  else drawLockerClosed((G.hideCell.x)*TILE-camx,(G.hideCell.y)*TILE-camy);
+
+  // darkness / light radius
+  drawLight();
+}
+
+function drawTile(tx,ty,sx,sy){
+  const t=tileAt(tx,ty);
+  if(t===0){ return; }
+  // base floor
+  if(t===2){ // wall
+    ctx.fillStyle='#10161e'; ctx.fillRect(sx,sy,TILE,TILE);
+    ctx.fillStyle='#1a2530'; ctx.fillRect(sx,sy,TILE,3);
+    ctx.fillStyle='#0a0f15'; ctx.fillRect(sx,sy+TILE-2,TILE,2);
+    // grime
+    if(((tx*7+ty*13)%5)===0){ ctx.fillStyle='#0d141b'; ctx.fillRect(sx+2,sy+5,3,6); }
+    return;
+  }
+  // floor variants
+  const fl = ((tx+ty)%2===0)?'#0c1117':'#0a0f14';
+  ctx.fillStyle=fl; ctx.fillRect(sx,sy,TILE,TILE);
+  ctx.fillStyle='rgba(255,255,255,0.018)'; ctx.fillRect(sx,sy,TILE,1);
+  // tile seams
+  ctx.fillStyle='rgba(0,0,0,0.25)'; ctx.fillRect(sx,sy,1,TILE);
+
+  if(t===3){ // bed
+    ctx.fillStyle='#202a33'; ctx.fillRect(sx+2,sy+2,TILE-4,TILE-3);
+    ctx.fillStyle='#33424d'; ctx.fillRect(sx+2,sy+2,TILE-4,4);
+    ctx.fillStyle='#dfe6ec'; ctx.fillRect(sx+3,sy+9,TILE-6,4);
+    ctx.fillStyle='#11181f'; ctx.fillRect(sx+2,sy+12,TILE-4,2);
+  } else if(t===4){ // desk/table
+    ctx.fillStyle='#2a2018'; ctx.fillRect(sx+1,sy+3,TILE-2,TILE-5);
+    ctx.fillStyle='#3a2c20'; ctx.fillRect(sx+1,sy+3,TILE-2,3);
+    ctx.fillStyle='#15100b'; ctx.fillRect(sx+2,sy+TILE-3,2,3);
+    ctx.fillStyle='#15100b'; ctx.fillRect(sx+TILE-4,sy+TILE-3,2,3);
+  } else if(t===5){ // shelf/cabinet
+    ctx.fillStyle='#1c2630'; ctx.fillRect(sx+1,sy+1,TILE-2,TILE-1);
+    ctx.fillStyle='#0c1218'; ctx.fillRect(sx+2,sy+3,TILE-4,2);
+    ctx.fillStyle='#0c1218'; ctx.fillRect(sx+2,sy+7,TILE-4,2);
+    ctx.fillStyle='#0c1218'; ctx.fillRect(sx+2,sy+11,TILE-4,2);
+  } else if(t===6){ // locker (hide)
+    drawLockerClosed(sx,sy);
+  } else if(t===7){ // door
+    const d=DOORS[tx+","+ty];
+    const locked = d&&d.locked, closed=d&&d.closed;
+    ctx.fillStyle = locked?'#3a2026': closed?'#23303a':'#16202a';
+    ctx.fillRect(sx+1,sy,TILE-2,TILE);
+    ctx.fillStyle= locked?'#e8607a':(closed?'#7fd1c9':'#2c3e49');
+    ctx.fillRect(sx+TILE-5,sy+TILE/2-2,2,4); // handle
+    if(locked){ ctx.fillStyle='#e8607a'; ctx.fillRect(sx+TILE/2-1,sy+5,2,5);} // keyhole hint
+  } else if(t===8){ // exit door
+    ctx.fillStyle='#142a22'; ctx.fillRect(sx,sy,TILE,TILE);
+    ctx.fillStyle='#7fd1c9'; ctx.fillRect(sx+2,sy+2,TILE-4,TILE-4);
+    ctx.fillStyle='#0a1a15'; ctx.fillRect(sx+5,sy+4,6,TILE-6);
+    // EXIT glow text dot
+    ctx.fillStyle='#bff5ee'; ctx.fillRect(sx+TILE/2-1,sy+1,2,2);
+  } else if(t===9){ // grate / bloodstain decor
+    ctx.fillStyle='#0a0f14'; ctx.fillRect(sx,sy,TILE,TILE);
+    ctx.fillStyle='#3a1418';
+    ctx.fillRect(sx+4,sy+5,5,4); ctx.fillRect(sx+8,sy+8,3,3); ctx.fillRect(sx+3,sy+10,2,2);
+  }
+}
+
+function drawLockerClosed(sx,sy){
+  ctx.fillStyle='#2a3640'; ctx.fillRect(sx+1,sy,TILE-2,TILE);
+  ctx.fillStyle='#1a242c'; ctx.fillRect(sx+1,sy,TILE-2,2);
+  ctx.fillStyle='#0c1218'; ctx.fillRect(sx+TILE/2-3,sy+3,1,TILE-6); // vent line
+  ctx.fillStyle='#0c1218'; ctx.fillRect(sx+TILE/2+2,sy+3,1,TILE-6);
+  ctx.fillStyle='#7fd1c9'; ctx.fillRect(sx+TILE-4,sy+TILE/2,1,3); // latch
+}
+
+function drawItem(sx,sy,key){
+  const bob=Math.sin(performance.now()/300)*1.5;
+  ctx.save(); ctx.translate(sx+8,sy+8+bob);
+  // glow
+  ctx.fillStyle='rgba(230,198,107,0.12)'; ctx.beginPath();
+  ctx.arc(0,0,7,0,7); ctx.fill();
+  ctx.fillStyle='#e6c66b';
+  if(key==='wardKey'||key==='masterKey'){ // key
+    ctx.fillRect(-1,-4,2,7); ctx.fillRect(-3,-4,5,2); ctx.fillRect(-1,2,3,1);
+  } else if(key==='fuse'){ ctx.fillStyle='#c98a4b'; ctx.fillRect(-3,-3,6,6); ctx.fillStyle='#ffe'; ctx.fillRect(-1,-1,2,2);}
+  else if(key==='scalpel'){ ctx.fillStyle='#cfd8df'; ctx.fillRect(-4,1,8,1); ctx.fillStyle='#888'; ctx.fillRect(0,-3,2,5);}
+  else if(key==='noteCode'){ ctx.fillStyle='#d8d2c0'; ctx.fillRect(-3,-4,6,8); ctx.fillStyle='#555'; ctx.fillRect(-2,-2,4,1); ctx.fillRect(-2,0,4,1);}
+  ctx.restore();
+}
+
+function drawPlayer(sx,sy){
+  const f=Math.floor(G.pstep)%2;
+  ctx.save(); ctx.translate(Math.round(sx),Math.round(sy));
+  // shadow
+  ctx.fillStyle='rgba(0,0,0,0.4)'; ctx.beginPath(); ctx.ellipse(8,15,5,2,0,0,7); ctx.fill();
+  // body (hospital gown teal)
+  const blink = (G.iframe>0 && Math.floor(G.iframe/4)%2)?0.4:1;
+  ctx.globalAlpha=blink;
+  ctx.fillStyle='#3a4f57'; ctx.fillRect(4,7,8,7);          // gown
+  ctx.fillStyle='#4a636d'; ctx.fillRect(4,7,8,2);
+  ctx.fillStyle='#e8d9c0'; ctx.fillRect(5,2,6,6);          // head
+  ctx.fillStyle='#2a2018'; ctx.fillRect(5,2,6,2);          // hair
+  // face by dir
+  ctx.fillStyle='#1a1a1a';
+  if(G.pdir===0){ ctx.fillRect(6,5,1,1); ctx.fillRect(9,5,1,1); }
+  else if(G.pdir===1){ /* back */ ctx.fillStyle='#2a2018'; ctx.fillRect(5,3,6,3);}
+  else if(G.pdir===2){ ctx.fillRect(6,5,1,1); }
+  else { ctx.fillRect(9,5,1,1); }
+  // legs anim
+  ctx.fillStyle='#cfd8df';
+  if(f===0){ ctx.fillRect(5,14,2,2); ctx.fillRect(9,13,2,2);} else { ctx.fillRect(5,13,2,2); ctx.fillRect(9,14,2,2);}
+  ctx.globalAlpha=1;
+  ctx.restore();
+}
+
+function drawMonster(sx,sy){
+  const f=Math.floor(G.mstep)%2;
+  ctx.save(); ctx.translate(Math.round(sx),Math.round(sy));
+  // long shadow
+  ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.beginPath(); ctx.ellipse(8,16,6,2.5,0,0,7); ctx.fill();
+  // The Matron: tall pale bandaged figure, sunken eyes (ORIGINAL design)
+  // body
+  ctx.fillStyle='#c9c2b4'; ctx.fillRect(3,8,10,9);         // gaunt torso (soiled white)
+  ctx.fillStyle='#b3ab9a'; ctx.fillRect(3,8,10,2);
+  // bandage stripes
+  ctx.fillStyle='#9b9384';
+  ctx.fillRect(3,11,10,1); ctx.fillRect(3,14,10,1);
+  // head
+  ctx.fillStyle='#d6cfc0'; ctx.fillRect(4,1,8,8);
+  // bandage over head
+  ctx.fillStyle='#bdb5a4'; ctx.fillRect(4,1,8,2); ctx.fillRect(4,4,8,1);
+  // sunken black eyes + dripping
+  ctx.fillStyle='#080808';
+  ctx.fillRect(5,5,2,2); ctx.fillRect(9,5,2,2);
+  ctx.fillStyle='#5a0d12'; ctx.fillRect(5,7,1,2); ctx.fillRect(10,7,1,2); // bleed
+  // gaping mouth
+  ctx.fillStyle='#1a0508'; ctx.fillRect(6,8,4,1);
+  // long arms
+  ctx.fillStyle='#c9c2b4';
+  if(f===0){ ctx.fillRect(1,9,2,6); ctx.fillRect(13,9,2,5);} else { ctx.fillRect(1,9,2,5); ctx.fillRect(13,9,2,6);}
+  ctx.fillStyle='#b3ab9a'; ctx.fillRect(0,14,3,2); ctx.fillRect(13,13,3,2); // clawed hands
+  // legs
+  ctx.fillStyle='#a39b8a';
+  if(f===0){ ctx.fillRect(5,17,2,1); ctx.fillRect(9,16,2,2);} else { ctx.fillRect(5,16,2,2); ctx.fillRect(9,17,2,1);}
+  ctx.restore();
+}
+
+// darkness with light radius around player + flicker
+// Rendered on a separate offscreen layer so the cut-out hole is fully transparent.
+let darkCv=null, darkCtx=null;
+function ensureDark(){
+  if(darkCv) return;
+  darkCv=document.createElement('canvas'); darkCv.width=VW; darkCv.height=VH;
+  darkCtx=darkCv.getContext('2d');
+}
+function drawLight(){
+  ensureDark();
+  const lx=G.px-camx+8, ly=G.py-camy+9;
+  let r = G.hiding?40 : (powerOn?150:118);
+  // gentle flicker
+  G.flicker = G.flicker*0.88 + (Math.random()-0.5)*3;
+  r += G.flicker;
+
+  // 1) paint the darkness veil on offscreen layer
+  const dk=darkCtx;
+  dk.globalCompositeOperation='source-over';
+  dk.clearRect(0,0,VW,VH);
+  dk.fillStyle='rgba(2,3,8,0.93)';
+  dk.fillRect(0,0,VW,VH);
+  // 2) punch a fully-transparent hole = the lit area (center clear, soft edge)
+  dk.globalCompositeOperation='destination-out';
+  const g2=dk.createRadialGradient(lx,ly,0, lx,ly,r);
+  g2.addColorStop(0,'rgba(0,0,0,1)');     // fully clear in center
+  g2.addColorStop(0.55,'rgba(0,0,0,1)');  // bright core
+  g2.addColorStop(0.8,'rgba(0,0,0,0.7)');
+  g2.addColorStop(1,'rgba(0,0,0,0)');     // fade to dark
+  dk.fillStyle=g2; dk.fillRect(0,0,VW,VH);
+  dk.globalCompositeOperation='source-over';
+
+  // 3) composite the dark layer onto the main canvas
+  ctx.drawImage(darkCv,0,0);
+
+  // 4) red danger tint pulsing in from edges when monster is near
+  if(G.monAwake){
+    const dist=Math.hypot(G.px-G.mx,G.py-G.my);
+    const near=Math.max(0,Math.min(1,1-dist/220));
+    if(near>0.15){
+      const pulse=(Math.sin(performance.now()/180)*0.5+0.5)*near;
+      const rg=ctx.createRadialGradient(lx,ly,r*0.4, lx,ly,VW*0.7);
+      rg.addColorStop(0,'rgba(0,0,0,0)');
+      rg.addColorStop(1,'rgba(120,10,28,'+(0.12+pulse*0.30).toFixed(3)+')');
+      ctx.fillStyle=rg; ctx.fillRect(0,0,VW,VH);
+    }
+  }
+}
+
+//---------------- Main loop ----------------
+let last=0;
+function loop(ts){
+  const dt=Math.min(2.4,(ts-last)/16.67); last=ts;
+  if(G.state==='play'){
+    updatePlayer(dt);
+    updateMonster(dt);
+    // msg timer
+    if(G.msgT>0){ G.msgT-=dt; if(G.msgT<=0) document.getElementById('msg').classList.add('hide'); }
+    draw();
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+//---------------- Start / restart ----------------
+function startGame(){
+  parseMap(); setupDoors(); setupItems();
+  powerOn=false;
+  G.state='play'; G.hp=3; G.inv={}; G.flags={}; G.hiding=false; G.iframe=0;
+  G.monAwake=false; G.triggered=false; G.flicker=0; G.beat=40;
+  // spawn in a bed room top-left (player starts in west ward)
+  G.px=4*TILE; G.py=4*TILE; G.pdir=0;
+  // ensure spawn is on free floor
+  if(!rectFree(G.px,G.py)){ G.px=8*TILE; G.py=8*TILE; }
+  document.getElementById('title').classList.add('hidden');
+  document.getElementById('endP').classList.add('hidden');
+  renderInv(); renderHearts();
+  showMsg('차가운 침대 위에서 눈을 떴다. 문은… 열려 있다. 단서를 찾아 빠져나가자.',260);
+  initAudio();
+}
+document.getElementById('startBtn').addEventListener('click',()=>{ initAudio(); startGame(); });
+document.getElementById('againBtn').addEventListener('click',()=>{ startGame(); });
+// tap anywhere on title also inits audio
+document.getElementById('title').addEventListener('click',initAudio,{once:true});
+
+// expose for self-test
+window.__G=G; window.__startGame=startGame;
+</script>
+</body>
+</html>

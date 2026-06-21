@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>桜の水面</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@300;400&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#9aa79c;}
+  #c{position:fixed;inset:0;width:100%;height:100%;display:block;}
+  #cap{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);
+    color:rgba(247,243,240,.72);
+    font:300 11px/1.6 "Zen Kaku Gothic New","Hiragino Kaku Gothic ProN",sans-serif;
+    letter-spacing:.34em;background:rgba(60,72,66,.26);padding:7px 22px;border-radius:99px;
+    backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px);
+    pointer-events:none;white-space:nowrap;text-indent:.34em;
+    box-shadow:0 1px 14px rgba(40,52,46,.18);}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="cap">水面に散る ─ 桜、ゆるやかに流れて</div>
+<script>
+'use strict';
+(()=>{
+const TAU=Math.PI*2;
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d');
+
+let W=0,H=0,DPR=1,DIAG=1;
+
+/* ---------- deterministic-ish helpers ---------- */
+const rnd=(a,b)=>a+Math.random()*(b-a);
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+
+/* ---------- muted spring palette ---------- */
+// soft sakura tones (top-down translucent water tint applied later)
+const PETAL_COLORS=[
+  ['#f6dfe4','#eec6d2','#dba8bc'],   // pale pink
+  ['#f3d4dc','#e8b9cb','#cf99b3'],   // dusty rose
+  ['#fbe7e2','#f1cfc9','#dba9a4'],   // warm cream-pink
+  ['#efd7df','#e2bccd','#c89bb6'],   // mauve
+  ['#f8e6dd','#edcabd','#d4a896'],   // peachy
+];
+
+/* ============================================================
+   BACKGROUND  — painterly murky spring water, viewed top-down
+   Pre-rendered once to an offscreen canvas, gently drifted in rAF.
+   ============================================================ */
+const bgCan=document.createElement('canvas');
+const bgCtx=bgCan.getContext('2d');
+
+function paintBackground(){
+  const w=bgCan.width, h=bgCan.height, c=bgCtx;
+  c.clearRect(0,0,w,h);
+  // base vertical-ish gradient: muted teal-green water with a soft warm dawn glow
+  const g=c.createRadialGradient(w*0.40,h*0.34,0, w*0.5,h*0.55,Math.max(w,h)*0.82);
+  g.addColorStop(0,'#b7c2b4');   // light, milky surface where light catches
+  g.addColorStop(0.42,'#93a39a');
+  g.addColorStop(0.78,'#71857e');
+  g.addColorStop(1,'#56685f');   // deeper murk at edges
+  c.fillStyle=g; c.fillRect(0,0,w,h);
+
+  // large soft tonal blooms — submerged depth variation
+  const blooms=[
+    ['rgba(176,190,170,0.40)','rgba(176,190,170,0)'],
+    ['rgba(92,116,104,0.34)','rgba(92,116,104,0)'],
+    ['rgba(210,196,182,0.20)','rgba(210,196,182,0)'], // faint warm
+    ['rgba(120,140,148,0.26)','rgba(120,140,148,0)'], // cool teal
+  ];
+  for(let i=0;i<11;i++){
+    const x=rnd(0,w),y=rnd(0,h),r=rnd(w*0.16,w*0.46);
+    const pal=blooms[i%blooms.length];
+    const bg=c.createRadialGradient(x,y,0,x,y,r);
+    bg.addColorStop(0,pal[0]); bg.addColorStop(1,pal[1]);
+    c.fillStyle=bg; c.beginPath(); c.arc(x,y,r,0,TAU); c.fill();
+  }
+
+  // long lazy current streaks — painterly brushwork
+  c.save();
+  c.globalCompositeOperation='soft-light';
+  for(let i=0;i<26;i++){
+    const y=rnd(0,h), len=rnd(w*0.25,w*0.7), x=rnd(-w*0.1,w*0.9);
+    const th=rnd(8,40), tilt=rnd(-0.18,0.18);
+    c.save(); c.translate(x,y); c.rotate(tilt);
+    const sg=c.createLinearGradient(0,0,len,0);
+    const a=rnd(0.04,0.12);
+    sg.addColorStop(0,'rgba(225,232,222,0)');
+    sg.addColorStop(0.5,'rgba(225,232,222,'+a+')');
+    sg.addColorStop(1,'rgba(225,232,222,0)');
+    c.fillStyle=sg;
+    c.beginPath(); c.ellipse(len*0.5,0,len*0.5,th,0,0,TAU); c.fill();
+    c.restore();
+  }
+  // darker undercurrents
+  for(let i=0;i<18;i++){
+    const y=rnd(0,h), len=rnd(w*0.2,w*0.6), x=rnd(0,w);
+    const th=rnd(6,28), tilt=rnd(-0.2,0.2);
+    c.save(); c.translate(x,y); c.rotate(tilt);
+    const sg=c.createLinearGradient(0,0,len,0);
+    sg.addColorStop(0,'rgba(60,78,70,0)');
+    sg.addColorStop(0.5,'rgba(60,78,70,'+rnd(0.05,0.12).toFixed(3)+')');
+    sg.addColorStop(1,'rgba(60,78,70,0)');
+    c.fillStyle=sg;
+    c.beginPath(); c.ellipse(len*0.5,0,len*0.5,th,0,0,TAU); c.fill();
+    c.restore();
+  }
+  c.restore();
+
+  // subtle vignette so edges sink into murk
+  const vg=c.createRadialGradient(w*0.5,h*0.5,Math.min(w,h)*0.28, w*0.5,h*0.5,Math.max(w,h)*0.72);
+  vg.addColorStop(0,'rgba(40,52,46,0)');
+  vg.addColorStop(1,'rgba(40,52,46,0.34)');
+  c.fillStyle=vg; c.fillRect(0,0,w,h);
+}
+
+/* ============================================================
+   FILM GRAIN — tiny static noise tile, multiplied over scene
+   ============================================================ */
+const grainCan=document.createElement('canvas');
+const grainCtx=grainCan.getContext('2d');
+function buildGrain(){
+  const s=160; grainCan.width=s; grainCan.height=s;
+  const id=grainCtx.createImageData(s,s);
+  const d=id.data;
+  for(let i=0;i<d.length;i+=4){
+    const v=200+Math.random()*55;
+    d[i]=d[i+1]=d[i+2]=v;
+    d[i+3]=Math.random()*22;   // very faint
+  }
+  grainCtx.putImageData(id,0,0);
+}
+buildGrain();
+
+/* ============================================================
+   PETALS — sakura petals on / near the surface.
+   Each has a depth (0=deep/blurred, 1=on surface/sharp).
+   Deep petals = bigger, blurrier, more water-tinted = the
+   "floating disc / depth blur" feeling from the reference.
+   ============================================================ */
+let petals=[];
+let driftA=rnd(-0.4,0.4)+Math.PI*0.5; // gentle global current direction
+
+function makePetal(initial){
+  const depth=Math.pow(Math.random(),0.7); // bias toward deeper
+  const col=PETAL_COLORS[(Math.random()*PETAL_COLORS.length)|0];
+  const baseLen=DIAG*rnd(0.020,0.052);
+  return {
+    x:rnd(-0.05,1.05)*W,
+    y: initial ? rnd(-0.05,1.05)*H : (Math.random()<0.5? rnd(-0.08,-0.02)*H : rnd(-0.05,1.05)*H),
+    depth,
+    len: baseLen*(1.0+(1-depth)*0.9),      // deeper -> larger silhouette
+    rot: rnd(0,TAU),
+    spin: rnd(-0.22,0.22)*(0.4+depth),     // surface petals turn a touch faster
+    flip: rnd(0.3,1),                      // for the curled-petal foreshorten
+    flipPh: rnd(0,TAU),
+    flipSp: rnd(0.25,0.7),
+    col,
+    // per-petal drift: follows global current + slight individual wander
+    driftAng: driftA+rnd(-0.5,0.5),
+    speed: DIAG*rnd(0.0026,0.0072)*(0.45+depth*0.85), // sharper(surface) drift slightly faster
+    wobPh: rnd(0,TAU),
+    wobSp: rnd(0.3,0.8),
+    wobAmp: rnd(0.2,0.7),
+  };
+}
+
+function seedPetals(){
+  petals=[];
+  const target=Math.round(clamp(W*H/42000,16,54));
+  for(let i=0;i<target;i++)petals.push(makePetal(true));
+  // sort by depth so deep (blurred) ones draw first, surface ones on top
+  petals.sort((a,b)=>a.depth-b.depth);
+}
+
+/* draw a single sakura petal shape centered at origin, length L along +x */
+function petalPath(c,L){
+  const w=L*0.62;
+  c.beginPath();
+  c.moveTo(-L*0.5,0);
+  c.bezierCurveTo(-L*0.18,-w*0.5, L*0.22,-w*0.5, L*0.5,-w*0.10);
+  // notched tip (sakura signature)
+  c.bezierCurveTo(L*0.40, w*0.02, L*0.44, w*0.06, L*0.5, w*0.12);
+  c.bezierCurveTo(L*0.42, w*0.05, L*0.40, w*0.02, L*0.46, w*0.16);
+  c.bezierCurveTo(L*0.22, w*0.5, -L*0.18, w*0.5, -L*0.5,0);
+  c.closePath();
+}
+
+function drawPetal(c,p,t){
+  const onSurf=p.depth;                       // 0..1
+  // foreshorten via gentle vertical squash that breathes over time (floating curl)
+  const curl=0.55+0.45*Math.sin(t*p.flipSp+p.flipPh);
+  const L=p.len;
+  c.save();
+  c.translate(p.x,p.y);
+  c.rotate(p.rot);
+  c.scale(1, p.flip*curl);
+
+  // soft drop shadow / submerged darkening cast onto water (offset, depth-scaled)
+  if(onSurf>0.45){
+    c.save();
+    c.translate(L*0.10, L*0.16);
+    petalPath(c,L*1.02);
+    c.fillStyle='rgba(54,66,60,'+(0.10*onSurf).toFixed(3)+')';
+    c.fill();
+    c.restore();
+  }
+
+  // body gradient
+  const g=c.createLinearGradient(-L*0.5,-L*0.3, L*0.5,L*0.3);
+  g.addColorStop(0,p.col[2]);
+  g.addColorStop(0.5,p.col[1]);
+  g.addColorStop(1,p.col[0]);
+  petalPath(c,L);
+  c.fillStyle=g; c.fill();
+
+  // inner luminous core highlight
+  const hg=c.createRadialGradient(-L*0.08,-L*0.04,0, 0,0,L*0.55);
+  hg.addColorStop(0,'rgba(255,250,250,0.5)');
+  hg.addColorStop(1,'rgba(255,250,250,0)');
+  petalPath(c,L);
+  c.fillStyle=hg; c.fill();
+
+  // faint vein
+  c.strokeStyle='rgba(180,120,140,0.18)';
+  c.lineWidth=Math.max(0.4,L*0.014);
+  c.beginPath();
+  c.moveTo(-L*0.42,0); c.lineTo(L*0.40,0);
+  c.stroke();
+
+  c.restore();
+}
+
+/* ============================================================
+   SUBMERGED SOFT DISCS — faint blurred petal "ghosts" deep in
+   the water, echoing the reference's translucent floating discs.
+   Pre-blurred via radial gradient (no canvas filter cost).
+   ============================================================ */
+let discs=[];
+function seedDiscs(){
+  discs=[];
+  const n=Math.round(clamp(W*H/90000,7,18));
+  for(let i=0;i<n;i++){
+    discs.push({
+      x:rnd(0,W), y:rnd(0,H),
+      r:DIAG*rnd(0.030,0.078),
+      tint: Math.random()<0.66
+        ? 'rgba(233,201,212,'   // pinkish ghost (submerged petal cluster)
+        : 'rgba(198,212,196,',  // green ghost
+      a: rnd(0.10,0.22),
+      dx: Math.cos(driftA)*DIAG*rnd(0.0008,0.0022),
+      dy: Math.sin(driftA)*DIAG*rnd(0.0008,0.0022),
+      ph: rnd(0,TAU), psp: rnd(0.15,0.4),
+    });
+  }
+}
+function drawDisc(c,d,t){
+  const r=d.r*(1+0.06*Math.sin(t*d.psp+d.ph));
+  const g=c.createRadialGradient(d.x,d.y,0,d.x,d.y,r);
+  const a=d.a*(0.7+0.3*Math.sin(t*d.psp+d.ph));
+  g.addColorStop(0,d.tint+(a).toFixed(3)+')');
+  g.addColorStop(0.6,d.tint+(a*0.5).toFixed(3)+')');
+  g.addColorStop(1,d.tint+'0)');
+  c.fillStyle=g;
+  c.beginPath(); c.arc(d.x,d.y,r,0,TAU); c.fill();
+}
+
+/* ============================================================
+   LAYOUT
+   ============================================================ */
+function resize(){
+  W=window.innerWidth; H=window.innerHeight;
+  DPR=Math.min(window.devicePixelRatio||1,2);
+  DIAG=Math.hypot(W,H);
+  cv.width=Math.round(W*DPR); cv.height=Math.round(H*DPR);
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  // bg rendered slightly larger so we can drift it without showing edges
+  bgCan.width=Math.round(W*1.08);
+  bgCan.height=Math.round(H*1.08);
+  paintBackground();
+  seedDiscs();
+  seedPetals();
+}
+window.addEventListener('resize',resize);
+
+/* ============================================================
+   MAIN LOOP — slow, calm ambient motion
+   ============================================================ */
+let last=0;
+function frame(ts){
+  requestAnimationFrame(frame);
+  const t=ts/1000;
+  let dt=t-last; last=t;
+  if(dt>0.05)dt=0.05; if(dt<0)dt=0;
+
+  // --- background: very slow parallax breathing drift ---
+  const bxo=Math.sin(t*0.05)*W*0.035 - W*0.04;
+  const byo=Math.cos(t*0.04)*H*0.03  - H*0.04;
+  ctx.drawImage(bgCan,bxo,byo);
+
+  // depth haze pass: a translucent water film to push everything into murk
+  ctx.fillStyle='rgba(120,140,130,0.10)';
+  ctx.fillRect(0,0,W,H);
+
+  // --- submerged ghost discs (deep, blurred) ---
+  for(const d of discs){
+    d.x+=d.dx; d.y+=d.dy;
+    if(d.x<-d.r)d.x=W+d.r; if(d.x>W+d.r)d.x=-d.r;
+    if(d.y<-d.r)d.y=H+d.r; if(d.y>H+d.r)d.y=-d.r;
+    drawDisc(ctx,d,t);
+  }
+
+  // --- petals: deep(blurred) first, surface(sharp) last ---
+  for(const p of petals){
+    // drift along current with gentle wobble
+    const wob=Math.sin(t*p.wobSp+p.wobPh)*p.wobAmp;
+    const ang=p.driftAng+wob*0.12;
+    p.x+=Math.cos(ang)*p.speed + Math.cos(t*p.wobSp+p.wobPh)*p.wobAmp*0.18;
+    p.y+=Math.sin(ang)*p.speed + Math.sin(t*p.wobSp*0.7+p.wobPh)*p.wobAmp*0.18;
+    p.rot+=p.spin*dt;
+
+    // wrap-around so the field never empties
+    const M=p.len*1.5;
+    if(p.x<-M)p.x=W+M; else if(p.x>W+M)p.x=-M;
+    if(p.y<-M)p.y=H+M; else if(p.y>H+M)p.y=-M;
+
+    // DEPTH BLUR: deeper petals get canvas blur + water-tint overlay.
+    const blurAmt=(1-p.depth)*3.6; // px, in CSS units
+    ctx.save();
+    if(blurAmt>0.4){
+      ctx.filter='blur('+blurAmt.toFixed(1)+'px)';
+      ctx.globalAlpha=0.62+0.38*p.depth;
+    }else{
+      ctx.globalAlpha=1;
+    }
+    drawPetal(ctx,p,t);
+    ctx.restore();
+
+    // water-tint over deep petals (muted, submerged look) — cheap rect-free overlay
+    if(p.depth<0.5){
+      ctx.save();
+      ctx.translate(p.x,p.y);
+      ctx.rotate(p.rot);
+      ctx.scale(1,p.flip);
+      petalPath(ctx,p.len*1.04);
+      ctx.fillStyle='rgba(120,142,132,'+((0.5-p.depth)*0.5).toFixed(3)+')';
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // --- gentle surface sheen sweeping across (slow light on water) ---
+  const sx=((t*0.012)%1.6-0.3)*W;
+  const sg=ctx.createLinearGradient(sx,0,sx+W*0.5,H);
+  sg.addColorStop(0,'rgba(255,255,250,0)');
+  sg.addColorStop(0.5,'rgba(255,255,250,0.05)');
+  sg.addColorStop(1,'rgba(255,255,250,0)');
+  ctx.fillStyle=sg; ctx.fillRect(0,0,W,H);
+
+  // --- film grain ---
+  ctx.save();
+  ctx.globalAlpha=0.5;
+  const gp=ctx.createPattern(grainCan,'repeat');
+  ctx.fillStyle=gp; ctx.fillRect(0,0,W,H);
+  ctx.restore();
+
+  // --- final soft vignette on top ---
+  const vg=ctx.createRadialGradient(W*0.5,H*0.46,Math.min(W,H)*0.30, W*0.5,H*0.5,Math.max(W,H)*0.70);
+  vg.addColorStop(0,'rgba(40,52,46,0)');
+  vg.addColorStop(1,'rgba(40,52,46,0.30)');
+  ctx.fillStyle=vg; ctx.fillRect(0,0,W,H);
+}
+
+/* ---------- boot ---------- */
+resize();
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

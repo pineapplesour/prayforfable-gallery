@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>HOLLOW CATHEDRAL — fractal flight</title>
+<style>
+  html,body{margin:0;height:100%;background:#04040a;overflow:hidden;
+    font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;color:#cfe6ff;
+    -webkit-tap-highlight-color:transparent;cursor:crosshair;}
+  #gl{display:block;width:100vw;height:100vh;}
+  .ui{position:fixed;pointer-events:none;z-index:5;mix-blend-mode:screen;}
+  #title{top:26px;left:30px;}
+  #title h1{margin:0;font-size:13px;letter-spacing:.62em;font-weight:600;
+    text-transform:uppercase;color:#9ad7ff;text-shadow:0 0 18px rgba(110,200,255,.55);}
+  #title p{margin:7px 0 0;font-size:10px;letter-spacing:.34em;color:#5f7da0;
+    text-transform:uppercase;}
+  #hud{bottom:24px;left:30px;font-size:10px;letter-spacing:.22em;line-height:1.9;
+    color:#5d83ad;text-transform:uppercase;}
+  #hud b{color:#a9e0ff;font-weight:600;}
+  #hint{bottom:26px;right:30px;text-align:right;font-size:9.5px;letter-spacing:.26em;
+    color:#48688c;text-transform:uppercase;line-height:1.9;}
+  #vig{position:fixed;inset:0;z-index:4;pointer-events:none;
+    background:radial-gradient(130% 100% at 50% 44%,transparent 38%,rgba(2,2,8,.62) 100%);}
+  @media (max-width:560px){
+    #title{top:18px;left:18px;} #title h1{font-size:11px;letter-spacing:.4em;}
+    #title p{letter-spacing:.24em;}
+    #hud{left:18px;bottom:18px;letter-spacing:.16em;}
+    #hint{right:18px;bottom:18px;font-size:8.5px;letter-spacing:.18em;}
+  }
+  #noscript{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+    color:#7aa;font-size:13px;}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="vig"></div>
+<div id="title" class="ui">
+  <h1>Hollow Cathedral</h1>
+  <p>raymarched fractal flight · no end</p>
+</div>
+<div id="hud" class="ui">
+  WARP <b id="hWarp">1.00×</b> &nbsp;·&nbsp; DEPTH <b id="hDepth">0</b> &nbsp;·&nbsp; <b id="hFps">— fps</b>
+</div>
+<div id="hint" class="ui">
+  move — steer<br>drag / hold — dive<br>scroll / pinch — warp<br>click — pulse
+</div>
+<noscript><div id="noscript">WebGL required.</div></noscript>
+<script>
+"use strict";
+(function(){
+const cv = document.getElementById("gl");
+const gl = cv.getContext("webgl",{antialias:false,alpha:false,depth:false,
+  powerPreference:"high-performance",preserveDrawingBuffer:true})
+  || cv.getContext("experimental-webgl");
+if(!gl){ document.body.innerHTML='<div id="noscript">WebGL not supported.</div>'; return; }
+
+/* ---------- shaders ---------- */
+const VERT = `
+attribute vec2 p;
+void main(){ gl_Position = vec4(p,0.0,1.0); }`;
+
+const FRAG = `
+precision highp float;
+uniform vec2  uRes;
+uniform float uTime;
+uniform float uDepth;    // accumulated flight distance
+uniform float uWarp;     // speed multiplier
+uniform vec2  uMouse;    // -1..1 steering
+uniform float uDive;     // 0..1 forward dive (drag/hold)
+uniform float uPulse;    // 0..1 click flash, decays
+
+#define PI 3.14159265359
+#define I_MAX 96
+#define FAR 26.0
+
+mat2 rot(float a){ float c=cos(a),s=sin(a); return mat2(c,-s,s,c); }
+
+// orbit trap accumulator (set inside DE)
+float gTrap;
+
+// Mandelbox-flavored distance estimator inside an INFINITE Z corridor.
+// Domain-repeat on Z makes endless varied fractal cells; per-cell rotation
+// + breathing scale keeps every chamber different and alive.
+const float CELL = 4.2;
+float map(vec3 p){
+  // infinite corridor: fold Z into repeating cells, keep a per-cell id
+  float id = floor(p.z / CELL);
+  p.z = mod(p.z + CELL*0.5, CELL) - CELL*0.5;
+
+  // per-cell character: each chamber twisted differently
+  float seed = id*1.3 + uTime*0.05;
+  p.xy *= rot(seed*0.6);
+  p.xz *= rot(sin(seed*0.5)*0.4);
+
+  // gentle global breathing so the structure feels alive
+  vec3 c = p;
+  float dr = 1.0;
+  float scale = -1.80 + 0.12*sin(uTime*0.11 + id);
+  float trap = 1e9;
+  vec3 z = p;
+
+  for(int i=0;i<8;i++){
+    // box fold
+    z = clamp(z, -1.0, 1.0)*2.0 - z;
+    // sphere fold
+    float r2 = dot(z,z);
+    if(r2 < 0.35){ float f=0.5/0.35; z*=f; dr*=f; }
+    else if(r2 < 1.0){ float f=1.0/r2; z*=f; dr*=f; }
+    z = z*scale + c;
+    dr = dr*abs(scale) + 1.0;
+    trap = min(trap, length(z) - 0.55); // orbit trap for color
+  }
+  gTrap = trap;
+  float box = (length(z) - 2.0) / abs(dr);
+  // carve a flyable hollow tube down the corridor center so we never collide instantly
+  float tube = length(p.xy) - 1.15;     // negative inside tube
+  return max(box, -tube*0.9);           // keep fractal walls, open the core
+}
+
+vec3 calcNormal(vec3 p){
+  vec2 e = vec2(0.0009, 0.0);
+  return normalize(vec3(
+    map(p+e.xyy)-map(p-e.xyy),
+    map(p+e.yxy)-map(p-e.yxy),
+    map(p+e.yyx)-map(p-e.yyx)));
+}
+
+// palette
+vec3 pal(float t){
+  vec3 a=vec3(0.34,0.42,0.56);
+  vec3 b=vec3(0.45,0.40,0.52);
+  vec3 c=vec3(1.0,0.92,0.78);
+  vec3 d=vec3(0.18,0.45,0.78);
+  return a + b*cos(6.28318*(c*t + d));
+}
+
+void main(){
+  vec2 uv = (gl_FragCoord.xy - 0.5*uRes) / uRes.y;
+
+  // camera flies forward through the infinite fractal corridor.
+  // XY stays inside the hollow tube (radius ~1.15) so we glide, not crash.
+  float fly = uDepth;
+  vec3 path = vec3( sin(fly*0.21)*0.55, cos(fly*0.17)*0.45, fly );
+  vec3 ro = path;
+
+  // look-ahead target, steered by mouse
+  vec3 ta = vec3( sin((fly+2.0)*0.21)*0.55, cos((fly+2.0)*0.17)*0.45, fly+2.0 );
+  vec3 fwd = normalize(ta - ro);
+  vec3 up0 = vec3(0.0,1.0,0.0);
+  vec3 rgt = normalize(cross(fwd, up0));
+  vec3 up  = cross(rgt, fwd);
+
+  // mouse steer + subtle roll
+  float roll = uMouse.x*0.5 + sin(uTime*0.13)*0.12;
+  vec2 m = uMouse * 0.55;
+  mat2 rl = rot(roll);
+  vec2 sxy = uv;
+  sxy = rl*sxy;
+
+  vec3 dir = normalize(fwd*(1.35 - uDive*0.35)
+                      + rgt*(sxy.x + m.x)
+                      + up *(sxy.y + m.y));
+
+  // raymarch
+  float dTot = 0.0;
+  float glow = 0.0;
+  float trapCol = 0.0;
+  float hit = -1.0;
+  vec3 hp;
+  for(int i=0;i<I_MAX;i++){
+    vec3 pos = ro + dir*dTot;
+    float d = map(pos);
+    // accumulate volumetric glow near surfaces
+    glow += exp(-d*7.0) * 0.014;
+    if(d < 0.0012*dTot + 0.0009){ hit = dTot; hp=pos; trapCol=gTrap; break; }
+    dTot += d*0.85;
+    if(dTot > FAR) break;
+  }
+
+  vec3 col = vec3(0.0);
+  // deep-space backdrop with faint nebula bands
+  vec3 bg = mix(vec3(0.015,0.02,0.05), vec3(0.04,0.02,0.07),
+                0.5+0.5*sin(uv.y*3.0+uTime*0.1));
+  bg += 0.02*vec3(0.4,0.6,1.0)*smoothstep(0.6,0.0,length(uv));
+  col = bg;
+
+  if(hit > 0.0){
+    vec3 n = calcNormal(hp);
+    vec3 lp = ro + fwd*0.4;          // headlight from camera
+    vec3 ld = normalize(lp - hp);
+    vec3 ld2= normalize(rgt*0.6 + up*0.5 + fwd*0.2); // cool key from upper-right
+    float dif = clamp(dot(n,ld),0.0,1.0);
+    float dif2= clamp(dot(n,ld2),0.0,1.0);
+    float fres = pow(1.0 - clamp(dot(n,-dir),0.0,1.0), 3.5);
+
+    // specular sparkle
+    vec3 h1 = normalize(ld - dir);
+    float spec = pow(clamp(dot(n,h1),0.0,1.0), 42.0);
+
+    float depthFade = exp(-hit*0.085);
+
+    // color from orbit trap + flight depth
+    float ct = trapCol*0.9 + fly*0.012 + uTime*0.02;
+    vec3 base = pal(ct);
+    base = mix(base, base.brg, 0.3);             // hue twist
+    base = mix(vec3(dot(base,vec3(0.33))), base, 1.28); // boost saturation
+
+    vec3 warmKey = vec3(1.0,0.86,0.62);
+    vec3 coolKey = vec3(0.55,0.78,1.0);
+
+    vec3 lit = base*(0.10 + 0.85*dif)*warmKey;   // warm headlight
+    lit += base*0.45*dif2*coolKey;               // cool fill rim
+    lit += fres * pal(ct+0.3) * 1.5;             // iridescent fresnel
+    lit += spec * coolKey * 0.9;                 // sharp sparkle
+    lit *= depthFade;
+    col = lit;
+  }
+
+  // additive glow & pulse
+  col += glow * pal(fly*0.01 + uTime*0.03) * (1.0 + uWarp*0.25);
+  col += uPulse * 0.5 * pal(0.6) * (1.0/(1.0+length(uv)*3.0));
+
+  // speed streak from warp (radial blur feel via center bias)
+  float speedGlow = uWarp*0.04 / (length(uv)+0.18);
+  col += speedGlow * vec3(0.5,0.7,1.0);
+
+  // tone + grade
+  col = col / (col + vec3(0.78));     // reinhard-ish
+  col = pow(col, vec3(0.80));
+  // subtle teal-orange cinematic grade
+  col = mix(col, col*vec3(1.06,1.0,0.94) + vec3(0.0,0.01,0.03), 0.5);
+  col *= 1.10;
+
+  // vignette + grain
+  col *= 1.0 - 0.35*dot(uv,uv);
+  float g = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898,78.233))+uTime)*43758.5453);
+  col += (g-0.5)*0.025;
+
+  gl_FragColor = vec4(clamp(col,0.0,1.0), 1.0);
+}`;
+
+/* ---------- compile ---------- */
+function sh(type,src){
+  const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){
+    console.error(gl.getShaderInfoLog(s)); throw new Error("shader");
+  }
+  return s;
+}
+const prog=gl.createProgram();
+gl.attachShader(prog,sh(gl.VERTEX_SHADER,VERT));
+gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,FRAG));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog,gl.LINK_STATUS)){
+  console.error(gl.getProgramInfoLog(prog));
+}
+gl.useProgram(prog);
+
+const buf=gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 3,-1, -1,3]),gl.STATIC_DRAW);
+const locP=gl.getAttribLocation(prog,"p");
+gl.enableVertexAttribArray(locP);
+gl.vertexAttribPointer(locP,2,gl.FLOAT,false,0,0);
+
+const U={};
+["uRes","uTime","uDepth","uWarp","uMouse","uDive","uPulse"].forEach(n=>{
+  U[n]=gl.getUniformLocation(prog,n);
+});
+
+/* ---------- sizing (DPR capped for perf) ---------- */
+let DPR=1;
+function resize(){
+  DPR=Math.min(window.devicePixelRatio||1, 1.6);
+  // extra cap on big screens so fill-rate stays sane
+  const area = window.innerWidth*window.innerHeight;
+  if(area > 1600*900) DPR=Math.min(DPR,1.35);
+  const w=Math.floor(window.innerWidth*DPR);
+  const h=Math.floor(window.innerHeight*DPR);
+  cv.width=w; cv.height=h;
+  cv.style.width=window.innerWidth+"px";
+  cv.style.height=window.innerHeight+"px";
+  gl.viewport(0,0,w,h);
+}
+window.addEventListener("resize",resize); resize();
+
+/* ---------- interaction ---------- */
+const state={
+  mx:0,my:0, tmx:0,tmy:0,        // steering (smoothed -> target)
+  warp:1.0, twarp:1.0,
+  dive:0, tdive:0,
+  pulse:0,
+  depth:0,
+  dragging:false
+};
+function setPointer(x,y){
+  state.tmx = (x/window.innerWidth)*2-1;
+  state.tmy = -((y/window.innerHeight)*2-1);
+}
+window.addEventListener("mousemove",e=>setPointer(e.clientX,e.clientY));
+window.addEventListener("mousedown",e=>{ state.dragging=true; state.pulse=1.0; setPointer(e.clientX,e.clientY); });
+window.addEventListener("mouseup",()=>{ state.dragging=false; });
+window.addEventListener("wheel",e=>{
+  state.twarp = Math.min(6.0, Math.max(0.25, state.twarp * (e.deltaY<0?1.12:0.89)));
+  e.preventDefault();
+},{passive:false});
+
+// touch
+let pinchD=0;
+window.addEventListener("touchstart",e=>{
+  if(e.touches.length===1){ state.dragging=true; state.pulse=1.0; setPointer(e.touches[0].clientX,e.touches[0].clientY); }
+  if(e.touches.length===2){ pinchD=touchDist(e); }
+},{passive:false});
+window.addEventListener("touchmove",e=>{
+  if(e.touches.length===1){ setPointer(e.touches[0].clientX,e.touches[0].clientY); }
+  if(e.touches.length===2){
+    const d=touchDist(e);
+    if(pinchD>0){ state.twarp=Math.min(6.0,Math.max(0.25, state.twarp*(pinchD/d))); }
+    pinchD=d;
+  }
+  e.preventDefault();
+},{passive:false});
+window.addEventListener("touchend",e=>{ if(e.touches.length===0){ state.dragging=false; pinchD=0; } },{passive:false});
+function touchDist(e){
+  const a=e.touches[0],b=e.touches[1];
+  return Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);
+}
+
+/* ---------- HUD ---------- */
+const hWarp=document.getElementById("hWarp");
+const hDepth=document.getElementById("hDepth");
+const hFps=document.getElementById("hFps");
+let fpsAcc=0,fpsN=0,fpsT=0;
+
+/* ---------- loop ---------- */
+const t0=performance.now();
+let last=t0;
+let running=true;
+document.addEventListener("visibilitychange",()=>{ running=!document.hidden; if(running){ last=performance.now(); requestAnimationFrame(frame);} });
+
+function frame(now){
+  if(!running) return;
+  let dt=(now-last)/1000; last=now;
+  if(dt>0.05) dt=0.05; // clamp after stalls
+  const time=(now-t0)/1000;
+
+  // smoothing
+  state.tdive = state.dragging?1.0:0.0;
+  state.dive += (state.tdive-state.dive)*Math.min(1,dt*5);
+  state.warp += (state.twarp-state.warp)*Math.min(1,dt*3);
+  state.mx += (state.tmx-state.mx)*Math.min(1,dt*4);
+  state.my += (state.tmy-state.my)*Math.min(1,dt*4);
+  state.pulse *= Math.exp(-dt*3.0);
+
+  // forward motion: base + warp + dive
+  const speed = (0.55 + state.dive*1.1) * state.warp;
+  state.depth += speed*dt;
+
+  gl.uniform2f(U.uRes,cv.width,cv.height);
+  gl.uniform1f(U.uTime,time);
+  gl.uniform1f(U.uDepth,state.depth);
+  gl.uniform1f(U.uWarp,state.warp);
+  gl.uniform2f(U.uMouse,state.mx,state.my);
+  gl.uniform1f(U.uDive,state.dive);
+  gl.uniform1f(U.uPulse,state.pulse);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+
+  // hud (throttled)
+  fpsAcc+=dt; fpsN++; fpsT+=dt;
+  if(fpsT>0.4){
+    hFps.textContent=Math.round(fpsN/fpsAcc)+" fps";
+    fpsAcc=0;fpsN=0;fpsT=0;
+    hWarp.textContent=state.warp.toFixed(2)+"×";
+    hDepth.textContent=Math.floor(state.depth);
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// expose for self-test
+window.__art={state};
+})();
+</script>
+</body>
+</html>

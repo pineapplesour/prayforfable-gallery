@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<title>枯山水 — Karesansui</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b0a09;overflow:hidden;cursor:none;
+    font-family:"Hiragino Mincho ProN","Yu Mincho",Georgia,serif;-webkit-tap-highlight-color:transparent;}
+  #c{display:block;width:100vw;height:100vh;touch-action:none;}
+  #hud{position:fixed;left:18px;bottom:14px;color:rgba(40,34,28,.62);font-size:11px;
+    letter-spacing:.18em;pointer-events:none;mix-blend-mode:multiply;user-select:none;line-height:1.7;}
+  #title{position:fixed;right:20px;top:16px;text-align:right;color:rgba(36,30,24,.5);
+    pointer-events:none;mix-blend-mode:multiply;user-select:none;}
+  #title b{font-size:15px;letter-spacing:.5em;font-weight:400;display:block;}
+  #title span{font-size:9.5px;letter-spacing:.34em;opacity:.7;}
+  .k{color:rgba(40,34,28,.78);}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="title"><b>枯山水</b><span>KARESANSUI · DRY GARDEN</span></div>
+<div id="hud">
+  <span class="k">DRAG</span> 갈퀴질 &nbsp;·&nbsp; <span class="k">CLICK</span> 돌 놓기 &nbsp;·&nbsp;
+  <span class="k">SPACE</span> 바람 &nbsp;·&nbsp; <span class="k">C</span> 비질 &nbsp;·&nbsp; <span class="k">1·2·3</span> 모래색
+</div>
+<script>
+(() => {
+"use strict";
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d', { alpha:false });
+let W=0,H=0,DPR=1, S=0; // S = field cell size (logical px)
+let cols=0, rows=0;
+
+// height field: how much sand displaced (the furrow depth). Two buffers for diffusion/relaxation.
+let h=null, h2=null, settle=null;
+// palette
+const PALS = [
+  { name:'shironuno', sand:[226,219,205], deep:[150,140,120], lit:[252,249,240], bg:[19,17,15], stone:[58,55,52], moss:[96,112,72] },
+  { name:'sumi',      sand:[60,58,56],   deep:[18,17,16],     lit:[150,146,140], bg:[8,8,9],    stone:[200,196,190], moss:[120,138,86] },
+  { name:'kogane',    sand:[214,178,120],deep:[120,86,44],    lit:[247,224,168], bg:[28,20,12], stone:[70,52,38],  moss:[128,134,70] }
+];
+let pal = 0;
+
+function alloc(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = Math.round(W*DPR); cv.height = Math.round(H*DPR);
+  cv.style.width=W+'px'; cv.style.height=H+'px';
+  // resolution cap: aim ~ 150-200 cells across the long edge
+  const long = Math.max(W,H);
+  S = Math.max(5, Math.round(long/190));
+  cols = Math.ceil(W/S)+1; rows = Math.ceil(H/S)+1;
+  h  = new Float32Array(cols*rows);
+  h2 = new Float32Array(cols*rows);
+  settle = new Float32Array(cols*rows);
+  // seed an ambient combed texture so first paint is already a garden
+  seedGarden();
+}
+const idx = (x,y)=> y*cols+x;
+
+// ----- procedural seed: long parallel rake furrows with gentle waver -----
+function seedGarden(){
+  const baseDir = Math.random()*Math.PI*2;
+  const dx = Math.cos(baseDir), dy = Math.sin(baseDir);
+  const period = 7.5;            // furrow spacing in cells
+  const waver = 2.2;
+  for(let y=0;y<rows;y++){
+    for(let x=0;x<cols;x++){
+      // distance along the perpendicular axis -> ridge pattern
+      const proj = (x*(-dy) + y*(dx));
+      const w = Math.sin((x*0.21)+(y*0.13))*waver + Math.sin(y*0.05)*1.4;
+      const ridge = Math.sin((proj+w)/period*Math.PI*2);
+      h[idx(x,y)] = ridge*0.5;
+      settle[idx(x,y)] = ridge*0.5; // memory the garden relaxes back toward
+    }
+  }
+}
+
+// ----- stones -----
+const stones = []; // {x,y,r,seed}
+function addStone(px,py){
+  const cx = px/S, cy = py/S;
+  const r = 2.6 + Math.random()*3.2;
+  const st={x:cx,y:cy,r,seed:Math.random()*99,born:perfNow()};
+  stones.push(st);
+  if(stones.length>14) stones.shift();
+  // place a raised mound under the stone and carve a couple of concentric
+  // raked rings around it (sand parts around the rock — true karesansui)
+  const R0=r*1.7, ringGap=S*1.6/S; // in cells
+  const ix0=Math.max(1,Math.floor(cx-R0*2.4)), ix1=Math.min(cols-2,Math.ceil(cx+R0*2.4));
+  const iy0=Math.max(1,Math.floor(cy-R0*2.4)), iy1=Math.min(rows-2,Math.ceil(cy+R0*2.4));
+  for(let y=iy0;y<=iy1;y++) for(let x=ix0;x<=ix1;x++){
+    const d=Math.hypot(x-cx,y-cy);
+    if(d<r*1.2){ const f=1-d/(r*1.2); h[idx(x,y)]+=f*1.6; settle[idx(x,y)]+=f*1.2; } // mound
+    else if(d<R0*2.4){
+      // concentric ring furrows radiating outward
+      const ring=Math.sin((d-r*1.2)/2.0*Math.PI*2);
+      const fall=1-((d-r*1.2)/(R0*2.4-r*1.2));
+      h[idx(x,y)] = h[idx(x,y)]*0.4 + ring*0.7*fall;
+      settle[idx(x,y)] = settle[idx(x,y)]*0.4 + ring*0.55*fall;
+    }
+  }
+}
+
+// ----- rake -----
+const TEETH = 7;
+const rake = { x:0,y:0, px:0,py:0, has:false, down:false, vx:0,vy:0 };
+let lastMove = perfNow();
+
+function perfNow(){ return performance.now(); }
+
+// carve furrows: drag the multi-tooth rake. Each tooth offset perpendicular to motion.
+function carve(x0,y0,x1,y1,strength){
+  let ddx = x1-x0, ddy = y1-y0;
+  const len = Math.hypot(ddx,ddy);
+  if(len<0.001) return;
+  let nx = -ddy/len, ny = ddx/len; // perpendicular
+  const steps = Math.max(1, Math.ceil(len/(S*0.55)));
+  const spacing = S*1.55; // tooth spacing (logical px)
+  for(let s=0;s<=steps;s++){
+    const t=s/steps;
+    const cxp = x0+ddx*t, cyp = y0+ddy*t;
+    for(let k=0;k<TEETH;k++){
+      const off = (k-(TEETH-1)/2)*spacing;
+      const px = (cxp + nx*off)/S, py=(cyp+ny*off)/S;
+      stampTooth(px,py,strength);
+    }
+  }
+}
+function stampTooth(px,py,strength){
+  const rad = 2.2;
+  const ix0=Math.max(1,Math.floor(px-rad)), ix1=Math.min(cols-2,Math.ceil(px+rad));
+  const iy0=Math.max(1,Math.floor(py-rad)), iy1=Math.min(rows-2,Math.ceil(py+rad));
+  for(let y=iy0;y<=iy1;y++) for(let x=ix0;x<=ix1;x++){
+    const d=Math.hypot(x-px,y-py);
+    if(d<rad){
+      const f=(1-d/rad);
+      // tooth digs a trough (negative) with raised lips handled by relaxation
+      h[idx(x,y)] -= f*f*strength;
+    }
+  }
+}
+
+// relaxation: slowly pull height toward the seeded "settle" memory (sand settles),
+// plus mild diffusion so edges of furrows soften (avalanche feel).
+function relax(){
+  const dif=0.12, ret=0.012;
+  for(let y=1;y<rows-1;y++){
+    for(let x=1;x<cols-1;x++){
+      const i=idx(x,y);
+      const lap=(h[i-1]+h[i+1]+h[i-cols]+h[i+cols])*0.25 - h[i];
+      h2[i]=h[i]+lap*dif + (settle[i]-h[i])*ret;
+    }
+  }
+  // copy interior
+  const t=h; h=h2; h2=t;
+  // keep borders synced to avoid seams
+  for(let x=0;x<cols;x++){ h[idx(x,0)]=h[idx(x,1)]; h[idx(x,rows-1)]=h[idx(x,rows-2)]; }
+  for(let y=0;y<rows;y++){ h[idx(0,y)]=h[idx(1,y)]; h[idx(cols-1,y)]=h[idx(cols-2,y)]; }
+}
+
+// wind: add a directional traveling wave that nudges the whole field (Space)
+let windT=0, windOn=false, windDir=0;
+function applyWind(){
+  if(!windOn) return;
+  windT += 0.05;
+  const dx=Math.cos(windDir), dy=Math.sin(windDir);
+  const amp=0.05;
+  for(let y=1;y<rows-1;y++) for(let x=1;x<cols-1;x++){
+    const phase=(x*dx+y*dy)*0.5 - windT*4;
+    h[idx(x,y)] += Math.sin(phase)*amp;
+  }
+}
+
+// sweep clean (C): relax the field rapidly back to a fresh uniform comb
+let sweeping=0;
+function sweep(){
+  if(sweeping<=0) return;
+  sweeping-=1;
+  for(let i=0;i<h.length;i++){ h[i]+=(settle[i]-h[i])*0.18; }
+  if(sweeping<=0){ /* reseed a brand new direction for variety */ }
+}
+
+// ----- rendering: shade by gradient (slope) of height -> illuminated furrows -----
+let img=null, buf=null;
+function ensureImg(){
+  if(!img || img.width!==cv.width || img.height!==cv.height){
+    img = ctx.createImageData(cv.width, cv.height);
+    buf = img.data;
+  }
+}
+function lerp(a,b,t){ return a+(b-a)*t; }
+
+function render(){
+  ensureImg();
+  const P=PALS[pal];
+  const [sr,sg,sb]=P.sand, [dr,dg,db]=P.deep, [lr,lg,lb]=P.lit;
+  const w=cv.width, hgt=cv.height;
+  const sx = w/(W);   // device px per logical px
+  const sy = hgt/(H);
+  // light direction in cell space
+  const lxN=0.55, lyN=-0.83;
+  for(let py=0; py<hgt; py++){
+    // map device y -> cell
+    const fy = (py/sy)/S;
+    let cy0 = fy|0; if(cy0<0)cy0=0; if(cy0>rows-2)cy0=rows-2;
+    const ty = fy-cy0;
+    const rowBase = py*w;
+    for(let px=0; px<w; px++){
+      const fx=(px/sx)/S;
+      let cx0=fx|0; if(cx0<0)cx0=0; if(cx0>cols-2)cx0=cols-2;
+      const tx=fx-cx0;
+      const i=idx(cx0,cy0);
+      // bilinear height
+      const h00=h[i], h10=h[i+1], h01=h[i+cols], h11=h[i+cols+1];
+      const ha=lerp(h00,h10,tx), hb=lerp(h01,h11,tx);
+      const hv=lerp(ha,hb,ty);
+      // slope from neighbouring cells (gradient)
+      const gx=lerp(h[i+1]-h[i], h[i+cols+1]-h[i+cols], ty);
+      const gy=lerp(h[i+cols]-h[i], h[i+cols+1]-h[i+1], tx);
+      // lambert-ish shading
+      let lambert = gx*lxN + gy*lyN; // bright where slope faces light
+      // base sand color modulated by depth + slope highlight
+      const depthT = Math.max(0,Math.min(1, 0.5 - hv*0.55)); // lower=deeper furrow
+      let R=lerp(sr,dr,depthT), G=lerp(sg,dg,depthT), B=lerp(sb,db,depthT);
+      const hl=Math.max(-1,Math.min(1,lambert*3.4));
+      if(hl>0){ R=lerp(R,lr,hl*0.85); G=lerp(G,lg,hl*0.85); B=lerp(B,lb,hl*0.85); }
+      else { const k=-hl*0.6; R=lerp(R,dr,k); G=lerp(G,dg,k); B=lerp(B,db,k); }
+      const o=(rowBase+px)<<2;
+      buf[o]=R; buf[o+1]=G; buf[o+2]=B; buf[o+3]=255;
+    }
+  }
+  ctx.putImageData(img,0,0);
+  drawStones(P);
+  drawRake();
+  drawVignette();
+}
+
+function drawStones(P){
+  const sx=cv.width/W, sy=cv.height/H;
+  ctx.save();
+  ctx.scale(sx,sy);
+  for(const st of stones){
+    const cx=st.x*S, cy=st.y*S, r=st.r*S;
+    // moss-ish ground shadow ring
+    const g=ctx.createRadialGradient(cx,cy,r*0.2,cx,cy,r*1.8);
+    g.addColorStop(0,'rgba(0,0,0,0.0)');
+    g.addColorStop(0.7,'rgba(0,0,0,0.0)');
+    g.addColorStop(1,'rgba(0,0,0,0.22)');
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(cx,cy,r*1.8,0,7); ctx.fill();
+    // stone body (irregular)
+    ctx.beginPath();
+    const N=11;
+    for(let k=0;k<=N;k++){
+      const a=k/N*Math.PI*2;
+      const rr=r*(0.82+0.26*Math.sin(a*2+st.seed)+0.1*Math.sin(a*3+st.seed*2));
+      const xx=cx+Math.cos(a)*rr, yy=cy+Math.sin(a)*rr*0.92;
+      if(k===0)ctx.moveTo(xx,yy); else ctx.lineTo(xx,yy);
+    }
+    ctx.closePath();
+    const sg2=ctx.createRadialGradient(cx-r*0.4,cy-r*0.5,r*0.1,cx,cy,r*1.3);
+    sg2.addColorStop(0,`rgb(${P.stone[0]+40},${P.stone[1]+40},${P.stone[2]+40})`);
+    sg2.addColorStop(1,`rgb(${P.stone[0]},${P.stone[1]},${P.stone[2]})`);
+    ctx.fillStyle=sg2; ctx.fill();
+    // tiny moss fleck
+    ctx.fillStyle=`rgba(${P.moss[0]},${P.moss[1]},${P.moss[2]},0.5)`;
+    ctx.beginPath(); ctx.ellipse(cx-r*0.3,cy+r*0.35,r*0.3,r*0.18,st.seed,0,7); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawRake(){
+  if(!rake.has) return;
+  const x=rake.x, y=rake.y;
+  ctx.save();
+  ctx.scale(cv.width/W, cv.height/H);
+  // rake cursor: a glowing comb perpendicular to motion
+  let vx=rake.vx, vy=rake.vy;
+  const sp=Math.hypot(vx,vy);
+  let ang = sp>0.3 ? Math.atan2(vy,vx) : (rake._a||0);
+  rake._a=ang;
+  const nx=-Math.sin(ang), ny=Math.cos(ang);
+  const span=S*1.55*(TEETH-1)/2;
+  ctx.globalCompositeOperation='lighter';
+  for(let k=0;k<TEETH;k++){
+    const off=(k-(TEETH-1)/2)*S*1.55;
+    const tx=x+nx*off, ty=y+ny*off;
+    ctx.beginPath();
+    ctx.arc(tx,ty,2.2,0,7);
+    ctx.fillStyle='rgba(255,250,235,'+(rake.down?0.55:0.28)+')';
+    ctx.fill();
+  }
+  ctx.globalCompositeOperation='source-over';
+  // soft halo
+  const g=ctx.createRadialGradient(x,y,0,x,y,span+10);
+  g.addColorStop(0,'rgba(255,250,235,0.06)');
+  g.addColorStop(1,'rgba(255,250,235,0)');
+  ctx.fillStyle=g; ctx.beginPath(); ctx.arc(x,y,span+10,0,7); ctx.fill();
+  ctx.restore();
+}
+
+let vigCache=null,vigW=0,vigH=0;
+function drawVignette(){
+  if(!vigCache||vigW!==cv.width||vigH!==cv.height){
+    vigW=cv.width; vigH=cv.height;
+    vigCache=ctx.createRadialGradient(cv.width/2,cv.height/2,cv.height*0.25,cv.width/2,cv.height/2,cv.height*0.85);
+    vigCache.addColorStop(0,'rgba(0,0,0,0)');
+    vigCache.addColorStop(1,'rgba(0,0,0,0.34)');
+  }
+  ctx.fillStyle=vigCache;
+  ctx.fillRect(0,0,cv.width,cv.height);
+}
+
+// ----- input -----
+function setRake(px,py){
+  rake.px=rake.x; rake.py=rake.y;
+  rake.x=px; rake.y=py; rake.has=true;
+  rake.vx=rake.x-rake.px; rake.vy=rake.y-rake.py;
+  lastMove=perfNow();
+  if(rake.down){
+    const str = 0.9 + Math.min(2.0, Math.hypot(rake.vx,rake.vy)/S);
+    carve(rake.px,rake.py,rake.x,rake.y,str*0.6);
+  }
+}
+cv.addEventListener('pointermove',e=>{ setRake(e.clientX,e.clientY); });
+cv.addEventListener('pointerdown',e=>{
+  rake.down=true; rake.x=e.clientX; rake.y=e.clientY; rake.px=e.clientX; rake.py=e.clientY; rake.has=true;
+  cv.setPointerCapture(e.pointerId);
+});
+cv.addEventListener('pointerup',e=>{ rake.down=false; });
+cv.addEventListener('pointerleave',()=>{ rake.has=false; rake.down=false; });
+// double-action: a quick tap that doesn't drag drops a stone
+let downAt=0, downX=0, downY=0;
+cv.addEventListener('pointerdown',e=>{ downAt=perfNow(); downX=e.clientX; downY=e.clientY; });
+cv.addEventListener('pointerup',e=>{
+  const dt=perfNow()-downAt, dd=Math.hypot(e.clientX-downX,e.clientY-downY);
+  if(dt<240 && dd<6){ addStone(e.clientX,e.clientY); }
+});
+
+window.addEventListener('keydown',e=>{
+  const k=e.key.toLowerCase();
+  if(k===' '){ e.preventDefault(); windOn=true; windDir=Math.random()*Math.PI*2; setTimeout(()=>windOn=false,1400); }
+  else if(k==='c'){ sweeping=40; }
+  else if(k==='1'){ pal=0; } else if(k==='2'){ pal=1; } else if(k==='3'){ pal=2; }
+});
+
+window.addEventListener('resize',()=>{ alloc(); });
+
+// ----- main loop -----
+let acc=0, last=perfNow();
+function frame(){
+  const now=perfNow(); let dt=now-last; last=now;
+  // physics fixed steps
+  acc+=dt; let steps=0;
+  while(acc>16 && steps<3){ relax(); applyWind(); sweep(); acc-=16; steps++; }
+  // decay rake velocity when idle
+  if(now-lastMove>60){ rake.vx*=0.8; rake.vy*=0.8; }
+  render();
+  // expose state for verification
+  window.__zen = {
+    cells: cols*rows, stones: stones.length, pal, windOn, sweeping,
+    energy: (()=>{let s=0; for(let i=0;i<h.length;i+=37)s+=Math.abs(h[i]); return s;})()
+  };
+  requestAnimationFrame(frame);
+}
+
+// hooks for headless verification
+window.__zenAPI = {
+  carveLine:(x0,y0,x1,y1)=>{ carve(x0,y0,x1,y1,1.4); },
+  drop:(x,y)=>addStone(x,y),
+  wind:()=>{ windOn=true; windDir=0.5; setTimeout(()=>windOn=false,800); },
+  setPal:(p)=>{ pal=p; },
+  fieldHash:()=>{ let s=0; for(let i=0;i<h.length;i+=11) s+=h[i]*(i%7+1); return s; }
+};
+
+alloc();
+frame();
+})();
+</script>
+</body>
+</html>

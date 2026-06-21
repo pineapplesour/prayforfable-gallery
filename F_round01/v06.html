@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>霧の野 ─ 群れ</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#c9c4b8;}
+  #scene{position:fixed;inset:0;width:100%;height:100%;display:block;}
+  #cap{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);
+    color:rgba(56,52,46,.62);
+    font:300 11px/1.5 "JetBrains Mono","SFMono-Regular",ui-monospace,monospace;
+    letter-spacing:.30em;background:rgba(232,228,219,.30);
+    padding:7px 18px;border-radius:99px;backdrop-filter:blur(5px);
+    -webkit-backdrop-filter:blur(5px);pointer-events:none;white-space:nowrap;
+    text-transform:lowercase;user-select:none;}
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<div id="cap">霧の野 ─ 渡りの群れ</div>
+<script>
+'use strict';
+(()=>{
+const TAU=Math.PI*2;
+const cv=document.getElementById('scene');
+const ctx=cv.getContext('2d');
+
+let W=0,H=0,dpr=1;
+
+/* ---- palette: muted, hazy dawn over fields ---- */
+// sampled to feel cousin to the pond: soft, desaturated, low contrast
+const SKY_TOP   =[206,205,196];  // pale warm grey-green sky
+const SKY_HORIZ =[223,217,203];  // brighter hazy band at horizon
+const FIELD_FAR =[197,194,176];  // far field dissolving into mist
+const FIELD_NEAR=[150,150,124];  // muted olive-tan foreground
+
+const lerp=(a,b,t)=>a+(b-a)*t;
+const mix=(c1,c2,t)=>[lerp(c1[0],c2[0],t),lerp(c1[1],c2[1],t),lerp(c1[2],c2[2],t)];
+const rgb=(c,a)=>'rgba('+(c[0]|0)+','+(c[1]|0)+','+(c[2]|0)+','+(a===undefined?1:a)+')';
+const rand=(a,b)=>a+Math.random()*(b-a);
+
+/* ===================================================================
+   STATIC BACKGROUND — painted once per resize onto an offscreen layer:
+   vertical gradient sky -> hazy horizon glow -> soft field that blurs
+   into the mist. Plus low rolling tone bands (like the pond's silt
+   blooms) and a fine paper grain pass.
+   =================================================================== */
+const bgCan=document.createElement('canvas');
+const bgx=bgCan.getContext('2d');
+let horizonY=0;
+
+function paintBackground(){
+  bgCan.width=cv.width; bgCan.height=cv.height;
+  bgx.setTransform(dpr,0,0,dpr,0,0);
+  const w=W,h=H;
+  horizonY=h*0.60;
+
+  // --- sky gradient ---
+  const g=bgx.createLinearGradient(0,0,0,horizonY);
+  g.addColorStop(0,   rgb(SKY_TOP));
+  g.addColorStop(0.72,rgb(mix(SKY_TOP,SKY_HORIZ,0.55)));
+  g.addColorStop(1,   rgb(SKY_HORIZ));
+  bgx.fillStyle=g; bgx.fillRect(0,0,w,horizonY);
+
+  // --- soft sun bloom near horizon, off-centre ---
+  const sx=w*0.66, sy=horizonY*0.74, sr=Math.max(w,h)*0.5;
+  const sg=bgx.createRadialGradient(sx,sy,0,sx,sy,sr);
+  sg.addColorStop(0,'rgba(245,240,224,0.55)');
+  sg.addColorStop(0.4,'rgba(238,232,214,0.22)');
+  sg.addColorStop(1,'rgba(238,232,214,0)');
+  bgx.fillStyle=sg; bgx.fillRect(0,0,w,horizonY*1.15);
+
+  // --- field gradient ---
+  const fg=bgx.createLinearGradient(0,horizonY,0,h);
+  fg.addColorStop(0,   rgb(FIELD_FAR));
+  fg.addColorStop(0.18,rgb(mix(FIELD_FAR,FIELD_NEAR,0.45)));
+  fg.addColorStop(1,   rgb(FIELD_NEAR));
+  bgx.fillStyle=fg; bgx.fillRect(0,horizonY,w,h-horizonY);
+
+  // --- rolling tonal blooms in the field (silt-like) ---
+  for(let i=0;i<10;i++){
+    const x=rand(0,w), y=rand(horizonY+10,h), r=rand(120,360);
+    const a=rand(0.05,0.14);
+    const dark=Math.random()<0.5;
+    const bc=dark?[120,122,96]:[210,205,184];
+    const bg2=bgx.createRadialGradient(x,y,0,x,y,r);
+    bg2.addColorStop(0,rgb(bc,a));
+    bg2.addColorStop(1,rgb(bc,0));
+    bgx.fillStyle=bg2; bgx.beginPath(); bgx.ellipse(x,y,r,r*0.55,0,0,TAU); bgx.fill();
+  }
+
+  // --- faint hedgerow / tree silhouettes melting into mist at horizon ---
+  bgx.save();
+  for(let i=0;i<7;i++){
+    const x=rand(0,w);
+    const hh=rand(h*0.02,h*0.07);
+    const ww=rand(20,80);
+    const a=rand(0.04,0.12);
+    bgx.fillStyle=rgb([110,112,90],a);
+    bgx.beginPath();
+    bgx.ellipse(x,horizonY-hh*0.3,ww,hh,0,0,TAU);
+    bgx.fill();
+  }
+  bgx.restore();
+
+  // --- horizon haze veil: a soft bright band that erases the seam ---
+  const hz=bgx.createLinearGradient(0,horizonY-h*0.13,0,horizonY+h*0.12);
+  hz.addColorStop(0,'rgba(228,223,209,0)');
+  hz.addColorStop(0.5,'rgba(231,226,212,0.62)');
+  hz.addColorStop(1,'rgba(228,223,209,0)');
+  bgx.fillStyle=hz; bgx.fillRect(0,horizonY-h*0.13,w,h*0.25);
+
+  paintGrain(bgx,w,h,0.045);
+}
+
+/* fine film grain, drawn with tiny random dots (matches pond's speckle) */
+function paintGrain(c,w,h,strength){
+  const n=Math.round(w*h/2600);
+  for(let i=0;i<n;i++){
+    const x=Math.random()*w, y=Math.random()*h;
+    const light=Math.random()<0.5;
+    const a=Math.random()*strength;
+    c.fillStyle=light?'rgba(255,252,242,'+a.toFixed(3)+')'
+                     :'rgba(40,40,30,'+a.toFixed(3)+')';
+    c.fillRect(x,y,1,1);
+  }
+}
+
+/* ===================================================================
+   BIRDS — a flock distributed across depth layers.
+   depth 0 = farthest (tiny, blurred, desaturated, slow apparent speed)
+   depth 1 = nearest (larger, sharper, faster wingbeat)
+   Each bird is a soft painted "M/V" silhouette, never a hard line.
+   =================================================================== */
+const FLOCK=[];
+function buildFlock(){
+  FLOCK.length=0;
+  const count=Math.round(Math.min(46, Math.max(22, W/34)));
+  for(let i=0;i<count;i++){
+    const depth=Math.pow(Math.random(),1.4); // bias toward far
+    FLOCK.push(makeBird(depth));
+  }
+  // sort far->near so near birds paint on top
+  FLOCK.sort((a,b)=>a.depth-b.depth);
+}
+function makeBird(depth){
+  const span = lerp(7, 46, depth);          // wingspan px (css)
+  const speed= lerp(7, 26, depth);          // px/s drift (parallax)
+  const dir  = -1;                          // drift left (migrating)
+  // far birds cluster high near horizon; near birds range wider/higher
+  const bandTop = horizonY*lerp(0.10,0.05,depth);
+  const bandBot = horizonY*lerp(0.62,0.86,depth);
+  return {
+    depth, span, speed, dir,
+    x: rand(-0.1, 1.1)*W,
+    y: rand(bandTop, bandBot),
+    flap: Math.random()*TAU,
+    flapRate: lerp(2.2, 6.5, depth) + rand(-0.4,0.4),
+    bob: Math.random()*TAU,
+    bobRate: rand(0.3,0.7),
+    bobAmp: lerp(3, 11, depth),
+    tone: lerp(0.55, 0.92, depth),          // contrast vs sky
+    blur: lerp(3.2, 0.4, depth),            // far = more blur
+    alpha: lerp(0.30, 0.80, depth),
+  };
+}
+function updateBird(b,dt,t){
+  b.x += b.dir*b.speed*dt;
+  // gentle vertical sway of the whole bird
+  b.bob += b.bobRate*dt;
+  b.flap += b.flapRate*dt;
+  // recycle off left edge -> reappear on the right with fresh y
+  if(b.x < -0.15*W){
+    b.x = 1.15*W;
+    const nb=makeBird(b.depth);
+    b.y=nb.y; b.span=nb.span; b.speed=nb.speed;
+  }
+}
+function drawBird(c,b,t){
+  const yy = b.y + Math.sin(b.bob)*b.bobAmp;
+  const s  = b.span;
+  // wingbeat: 0 = wings flat/down, 1 = wings raised
+  const beat = Math.sin(b.flap);
+  const raise = beat*0.5;            // -0.5..0.5
+  const col = [
+    lerp(96,70,b.tone), lerp(98,72,b.tone), lerp(86,62,b.tone)
+  ];
+  c.save();
+  c.translate(b.x, yy);
+  c.globalAlpha = b.alpha;
+  c.filter = b.blur>0.2 ? 'blur('+b.blur.toFixed(2)+'px)' : 'none';
+  c.fillStyle = rgb(col);
+  c.strokeStyle = rgb(col);
+  c.lineWidth = Math.max(1, s*0.07);
+  c.lineCap='round';
+  c.lineJoin='round';
+
+  // half-wing geometry: from body(0,0) out to tip, with a mid elbow that
+  // rises/falls with the wingbeat. Painted as a tapered filled shape.
+  const tipX = s*0.5;
+  const tipY = -s*(0.10 + raise*0.55);
+  const elbX = s*0.24;
+  const elbY = -s*(0.02 + raise*0.32);
+  const thick= s*0.10*(1.0 - Math.abs(raise)*0.3);
+
+  // right wing
+  c.beginPath();
+  c.moveTo(0, 0);
+  c.quadraticCurveTo(elbX, elbY, tipX, tipY);
+  c.quadraticCurveTo(elbX, elbY+thick, 0, thick*0.6);
+  c.closePath();
+  c.fill();
+  // left wing (mirror)
+  c.beginPath();
+  c.moveTo(0, 0);
+  c.quadraticCurveTo(-elbX, elbY, -tipX, tipY);
+  c.quadraticCurveTo(-elbX, elbY+thick, 0, thick*0.6);
+  c.closePath();
+  c.fill();
+  // tiny body lozenge
+  c.beginPath();
+  c.ellipse(0, thick*0.3, s*0.07, s*0.13, 0, 0, TAU);
+  c.fill();
+
+  c.restore();
+}
+
+/* ===================================================================
+   MIST WISPS — slow translucent horizontal smears that drift and erase,
+   giving the painterly depth-of-field haze (cousin to pond bubbles' soft
+   floating discs + depth blur).
+   =================================================================== */
+const WISPS=[];
+function buildWisps(){
+  WISPS.length=0;
+  const n=Math.round(Math.min(20,Math.max(9,W/110)));
+  for(let i=0;i<n;i++) WISPS.push(makeWisp());
+}
+function makeWisp(){
+  const yBias=Math.random();
+  return {
+    x: rand(0,W),
+    y: lerp(horizonY*0.45, H*0.98, yBias),
+    w: rand(W*0.22, W*0.6),
+    h: rand(28, 90)*lerp(0.6,1.6,yBias),
+    spd: rand(4,16),
+    dir: Math.random()<0.5?-1:1,
+    a: rand(0.05,0.16)*lerp(0.7,1.3,yBias),
+    ph: Math.random()*TAU,
+    phr: rand(0.1,0.35),
+  };
+}
+function drawWisp(c,m,t){
+  const yy=m.y+Math.sin(m.ph)*8;
+  const g=c.createRadialGradient(m.x,yy,0,m.x,yy,m.w*0.5);
+  const tint=yy<horizonY?[233,228,214]:[224,220,202];
+  g.addColorStop(0,rgb(tint,m.a));
+  g.addColorStop(0.6,rgb(tint,m.a*0.5));
+  g.addColorStop(1,rgb(tint,0));
+  c.fillStyle=g;
+  c.beginPath();
+  c.ellipse(m.x,yy,m.w*0.5,m.h*0.5,0,0,TAU);
+  c.fill();
+}
+function updateWisp(m,dt){
+  m.x += m.dir*m.spd*dt;
+  m.ph += m.phr*dt;
+  if(m.dir<0 && m.x < -m.w*0.6){ Object.assign(m,makeWisp()); m.x=W+m.w*0.5; }
+  if(m.dir>0 && m.x >  W+m.w*0.6){ Object.assign(m,makeWisp()); m.x=-m.w*0.5; }
+}
+
+/* ===================================================================
+   LIGHT MOTES — sparse soft glowing discs drifting up slowly through the
+   field, the direct analog of the pond's floating bubble-discs.
+   =================================================================== */
+const MOTES=[];
+function buildMotes(){
+  MOTES.length=0;
+  const n=Math.round(Math.min(26,Math.max(12,W/70)));
+  for(let i=0;i<n;i++){ MOTES.push(makeMote()); MOTES[i].y=rand(horizonY*0.5,H); }
+}
+function makeMote(){
+  const depth=Math.random();
+  return {
+    x: rand(0,W),
+    y: H+rand(0,60),
+    r: lerp(2,10,depth),
+    spd: lerp(5,16,depth),
+    drift: rand(-6,6),
+    a: lerp(0.06,0.22,depth),
+    blur: lerp(2.5,0.5,depth),
+    ph: Math.random()*TAU,
+    phr: rand(0.4,1.0),
+  };
+}
+function drawMote(c,p,t){
+  const xx=p.x+Math.sin(p.ph)*10;
+  c.save();
+  c.filter=p.blur>0.2?'blur('+p.blur.toFixed(2)+'px)':'none';
+  const g=c.createRadialGradient(xx,p.y,0,xx,p.y,p.r);
+  g.addColorStop(0,'rgba(248,244,230,'+(p.a).toFixed(3)+')');
+  g.addColorStop(0.5,'rgba(244,238,222,'+(p.a*0.5).toFixed(3)+')');
+  g.addColorStop(1,'rgba(244,238,222,0)');
+  c.fillStyle=g;
+  c.beginPath();c.arc(xx,p.y,p.r,0,TAU);c.fill();
+  // faint rim, like a soda-bubble disc
+  c.globalAlpha=p.a*0.5;
+  c.strokeStyle='rgba(255,253,246,0.5)';
+  c.lineWidth=Math.max(0.5,p.r*0.12);
+  c.beginPath();c.arc(xx,p.y,p.r*0.86,0,TAU);c.stroke();
+  c.restore();
+}
+function updateMote(p,dt){
+  p.y -= p.spd*dt;
+  p.x += p.drift*dt;
+  p.ph += p.phr*dt;
+  if(p.y < horizonY*0.3-20){ Object.assign(p,makeMote()); p.y=H+rand(0,40); }
+}
+
+/* ===================================================================
+   COMPOSITION
+   =================================================================== */
+let last=0;
+function frame(ts){
+  requestAnimationFrame(frame);
+  const t=ts/1000;
+  let dt=t-last; last=t;
+  if(!(dt>0)||dt>0.1) dt=0.016;
+
+  // draw static background layer (pre-rendered, includes its own grain)
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.drawImage(bgCan,0,0);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+
+  // far mist behind the deep birds
+  ctx.globalCompositeOperation='source-over';
+  for(const m of WISPS){ if(m.y<horizonY){ updateWisp(m,dt); drawWisp(ctx,m,t);} }
+
+  // birds: far -> near (already sorted)
+  for(const b of FLOCK){
+    updateBird(b,dt,t);
+    drawBird(ctx,b,t);
+  }
+  // reset filter that birds may have left on
+  ctx.filter='none'; ctx.globalAlpha=1;
+
+  // near/ground mist over the foreground birds for depth fog
+  for(const m of WISPS){ if(m.y>=horizonY){ updateWisp(m,dt); drawWisp(ctx,m,t);} }
+
+  // floating motes on top
+  for(const p of MOTES){ updateMote(p,dt); drawMote(ctx,p,t); }
+  ctx.filter='none'; ctx.globalAlpha=1;
+
+  // soft vignette to seat the whole frame (matches pond)
+  const vg=ctx.createRadialGradient(W*0.5,H*0.46,Math.min(W,H)*0.25,
+                                    W*0.5,H*0.5,Math.max(W,H)*0.72);
+  vg.addColorStop(0,'rgba(0,0,0,0)');
+  vg.addColorStop(1,'rgba(40,38,30,0.26)');
+  ctx.fillStyle=vg; ctx.fillRect(0,0,W,H);
+
+  // gentle breathing haze overlay across the whole scene
+  const breathe=0.04+0.025*Math.sin(t*0.18);
+  ctx.fillStyle='rgba(230,226,212,'+breathe.toFixed(3)+')';
+  ctx.fillRect(0,0,W,H);
+}
+
+/* ---------------- layout ---------------- */
+function resize(){
+  W=window.innerWidth; H=window.innerHeight;
+  dpr=Math.min(window.devicePixelRatio||1,2);
+  cv.width=Math.round(W*dpr); cv.height=Math.round(H*dpr);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  paintBackground();
+  buildFlock();
+  buildWisps();
+  buildMotes();
+}
+window.addEventListener('resize',()=>{ resize(); });
+resize();
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

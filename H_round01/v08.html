@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>marble on sand — liquid glass lens</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#2a2018;cursor:none;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+  #gl{position:fixed;inset:0;width:100vw;height:100vh;display:block;touch-action:none}
+  #hint{position:fixed;left:50%;bottom:max(22px,env(safe-area-inset-bottom));transform:translateX(-50%);
+    font:11px/1.4 "SF Mono",ui-monospace,Menlo,monospace;letter-spacing:.18em;
+    color:rgba(255,250,238,.62);text-shadow:0 1px 7px rgba(40,26,12,.9);
+    pointer-events:none;transition:opacity 1.4s;text-transform:uppercase;white-space:nowrap}
+  @media (max-width:480px){ #hint{font-size:9px;letter-spacing:.12em} }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="hint">move mouse · hold to press down · right-drag to tilt</div>
+<script>
+'use strict';
+/* ==================================================================
+   "marble on sand" — a photoreal liquid-glass marble resting on a
+   sun-lit beach, filmed handheld. The content layer (sand surface,
+   ripples, shells, footprints) is drawn with canvas2d; the optics
+   (spherical refraction, magnification, edge prism, caustic, rim
+   speculars, contact shadow, camera post) live in a webgl shader.
+   Lineage: glass-on-monitor, re-imagined as a glass sphere on sand.
+   ================================================================== */
+
+const DPR = Math.min(window.devicePixelRatio || 1, 1.9);
+let W = 0, H = 0;
+
+const glCanvas = document.getElementById('gl');
+const gl = glCanvas.getContext('webgl', { antialias:false, preserveDrawingBuffer:false });
+if (!gl) document.body.innerHTML =
+  '<p style="color:#caa;font:14px sans-serif;padding:2em">WebGL unavailable.</p>';
+
+/* ------------------------------------------------------------------
+   CONTENT LAYER — the beach. A warm sand plane raked by low sun:
+   grain noise, wind ripples, a damp tide line, scattered shells,
+   pebbles and a soft footprint. Drawn in device space so the shader
+   samples it 1:1.
+   ------------------------------------------------------------------ */
+const scene = document.createElement('canvas');
+const sx = scene.getContext('2d');
+
+/* tiny deterministic PRNG so the beach is the same every paint */
+function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0;
+  let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t;
+  return ((t^t>>>14)>>>0)/4294967296; }; }
+
+/* value-noise grain rendered once into an offscreen tile, tiled over sand */
+let grainTile = null;
+function buildGrain(){
+  const T = 256;
+  const g = document.createElement('canvas'); g.width = T; g.height = T;
+  const gc = g.getContext('2d');
+  const img = gc.createImageData(T, T);
+  const rnd = mulberry32(20260620);
+  for (let i = 0; i < T*T; i++){
+    // clustered speckle: mostly mid, occasional bright/dark sand grains
+    let v = rnd();
+    let n = 0.5 + (v - 0.5) * 0.5;
+    if (v > 0.93) n += 0.32 * rnd();        // glinting quartz grains
+    if (v < 0.06) n -= 0.30 * rnd();        // dark mineral grains
+    const c = Math.max(0, Math.min(255, (n * 255)|0));
+    const o = i*4; img.data[o]=c; img.data[o+1]=c; img.data[o+2]=c; img.data[o+3]=255;
+  }
+  gc.putImageData(img, 0, 0);
+  grainTile = g;
+}
+
+function rr(c,x,y,w,h,r){ c.beginPath();
+  c.moveTo(x+r,y); c.arcTo(x+w,y,x+w,y+h,r); c.arcTo(x+w,y+h,x,y+h,r);
+  c.arcTo(x,y+h,x,y,r); c.arcTo(x,y,x+w,y,r); c.closePath(); }
+
+/* an elliptical shell / pebble with a soft sun-side rim and cast shadow */
+function pebble(c, x, y, rx, ry, rot, base, light, shadow){
+  // contact shadow (offset away from the sun, sun is upper-left)
+  c.save();
+  c.translate(x + rx*0.32, y + ry*0.42);
+  c.rotate(rot);
+  c.scale(rx, ry);
+  c.beginPath(); c.arc(0,0,1,0,7);
+  c.fillStyle = shadow; c.filter = 'blur(0px)'; c.fill();
+  c.restore();
+  // body
+  c.save(); c.translate(x,y); c.rotate(rot); c.scale(rx,ry);
+  const g = c.createRadialGradient(-0.45,-0.5,0.05, 0,0,1.25);
+  g.addColorStop(0, light); g.addColorStop(0.55, base);
+  g.addColorStop(1, shadow);
+  c.fillStyle = g; c.beginPath(); c.arc(0,0,1,0,7); c.fill();
+  // tiny specular dot
+  c.fillStyle = 'rgba(255,252,240,0.55)';
+  c.beginPath(); c.arc(-0.42,-0.48,0.16,0,7); c.fill();
+  c.restore();
+}
+
+/* a ridged scallop shell */
+function shell(c, x, y, s, rot, base, light, dark){
+  c.save(); c.translate(x,y); c.rotate(rot);
+  // shadow
+  c.save(); c.translate(s*0.22, s*0.30); c.scale(1, 0.62);
+  c.beginPath(); c.arc(0, -s*0.1, s*0.95, Math.PI*0.05, Math.PI*0.95);
+  c.lineTo(0, s*0.55); c.closePath();
+  c.fillStyle = 'rgba(60,40,22,0.30)'; c.fill(); c.restore();
+  // fan body
+  c.save(); c.scale(1, 0.66);
+  const g = c.createRadialGradient(-s*0.2,-s*0.25,s*0.05, 0,0,s*1.1);
+  g.addColorStop(0, light); g.addColorStop(0.6, base); g.addColorStop(1, dark);
+  c.beginPath(); c.moveTo(0, s*0.45);
+  c.arc(0, -s*0.05, s, Math.PI*0.08, Math.PI*0.92);
+  c.closePath(); c.fillStyle = g; c.fill();
+  // ribs
+  c.strokeStyle = 'rgba(120,80,46,0.35)'; c.lineWidth = s*0.035;
+  for (let i=1;i<=7;i++){ const a = Math.PI*0.08 + (Math.PI*0.84)*(i/8);
+    c.beginPath(); c.moveTo(0, s*0.42);
+    c.lineTo(Math.cos(a)*s*0.96, -s*0.05 + Math.sin(a)*s*0.96); c.stroke(); }
+  c.restore();
+  c.restore();
+}
+
+function drawScene(){
+  scene.width = W; scene.height = H;
+  const c = sx;
+  const rnd = mulberry32(424242);
+
+  // ---- base sand: warm radial wash, brighter where the sun pools ----
+  const lightPx = { x: W*0.30, y: H*0.18 };  // sun direction (upper-left)
+  const bg = c.createRadialGradient(lightPx.x, lightPx.y, H*0.05,
+                                    W*0.5, H*0.62, Math.hypot(W,H)*0.8);
+  bg.addColorStop(0.00, '#f0d9a8');
+  bg.addColorStop(0.32, '#e3c489');
+  bg.addColorStop(0.66, '#cda163');
+  bg.addColorStop(1.00, '#9a7440');
+  c.fillStyle = bg; c.fillRect(0,0,W,H);
+
+  // gentle damp-sand patch toward the lower-right (tide-darkened)
+  const damp = c.createRadialGradient(W*0.78,H*0.92,H*0.05, W*0.78,H*0.92,H*0.9);
+  damp.addColorStop(0, 'rgba(96,68,38,0.42)');
+  damp.addColorStop(0.5, 'rgba(120,88,52,0.14)');
+  damp.addColorStop(1, 'rgba(120,88,52,0)');
+  c.fillStyle = damp; c.fillRect(0,0,W,H);
+
+  // ---- wind ripples: soft sinusoidal dune ridges, lit from upper-left.
+  // Drawn as alternating light crest / dark trough bands following a
+  // slowly curving wave, in a slightly tilted (raking) direction.       ----
+  c.save();
+  c.translate(W*0.5, H*0.5);
+  c.rotate(-0.20);              // ripples run across, raked
+  c.translate(-W*0.5, -H*0.5);
+  const period = Math.max(34, Math.min(W,H)*0.052);
+  for (let yy = -H*0.4; yy < H*1.4; yy += period){
+    for (let band=0; band<2; band++){
+      c.beginPath();
+      const lit = band===0;
+      let first = true;
+      for (let xx = -W*0.3; xx <= W*1.3; xx += 14){
+        const wob = Math.sin(xx*0.0042 + yy*0.010) * period*0.34
+                  + Math.sin(xx*0.011 + yy*0.006 + 1.3) * period*0.18;
+        const py = yy + wob + (lit ? 0 : period*0.5);
+        if (first){ c.moveTo(xx, py); first=false; } else c.lineTo(xx, py);
+      }
+      c.lineWidth = period * (lit ? 0.42 : 0.5);
+      c.strokeStyle = lit ? 'rgba(255,238,200,0.20)' : 'rgba(78,52,26,0.20)';
+      c.stroke();
+    }
+  }
+  c.restore();
+
+  // ---- grain overlay: tile the speckle texture with overlay blend ----
+  if (!grainTile) buildGrain();
+  const pat = c.createPattern(grainTile, 'repeat');
+  c.save(); c.globalAlpha = 0.30; c.globalCompositeOperation = 'overlay';
+  c.fillStyle = pat; c.fillRect(0,0,W,H);
+  c.globalCompositeOperation = 'soft-light'; c.globalAlpha = 0.22;
+  c.fillStyle = pat; c.fillRect(0,0,W,H);
+  c.restore();
+
+  // ---- a soft footprint pressed into the sand (upper area) ----
+  function footprint(fx, fy, s, rot){
+    c.save(); c.translate(fx,fy); c.rotate(rot);
+    // depression: dark inner, light sun-facing rim of pushed-up sand
+    function part(ox, oy, w, h){
+      c.save(); c.translate(ox,oy); c.scale(w,h);
+      const g = c.createRadialGradient(-0.3,-0.3,0.1, 0,0,1.1);
+      g.addColorStop(0,'rgba(70,46,22,0.40)');
+      g.addColorStop(0.7,'rgba(90,62,32,0.22)');
+      g.addColorStop(1,'rgba(255,238,200,0.10)');
+      c.fillStyle = g; c.beginPath(); c.arc(0,0,1,0,7); c.fill();
+      c.restore();
+    }
+    part(0,0, s, s*1.35);                 // ball of foot
+    for (let i=0;i<5;i++){                  // toes
+      part((i-2)*s*0.42, -s*1.55, s*0.22 - i*0.012*s, s*0.30);
+    }
+    part(s*0.05, s*1.9, s*0.55, s*0.6);    // heel
+    c.restore();
+  }
+  footprint(W*0.20, H*0.30, Math.min(W,H)*0.045, 0.5);
+
+  // ---- scattered shells, pebbles, sea glass bits ----
+  const palB = ['#caa06a','#b98f5c','#d8b27e','#a9824f','#c39966'];
+  const palL = ['#f3dcae','#ecd09a','#f6e2bb','#e3c48f'];
+  const palS = ['rgba(86,58,30,0.5)','rgba(72,48,24,0.5)','rgba(96,66,34,0.5)'];
+  const N = Math.max(14, Math.round((W*H)/55000));
+  for (let i=0;i<N;i++){
+    const x = rnd()*W, y = H*0.18 + rnd()*H*0.78;
+    const rad = (3 + rnd()*9) * (Math.min(W,H)/700);
+    pebble(c, x, y, rad*(0.7+rnd()*0.6), rad*(0.5+rnd()*0.5), rnd()*Math.PI,
+      palB[(rnd()*palB.length)|0], palL[(rnd()*palL.length)|0],
+      palS[(rnd()*palS.length)|0]);
+  }
+  // a couple of scallop shells as hero props
+  shell(c, W*0.74, H*0.34, Math.min(W,H)*0.055, -0.4, '#e8cda0', '#f7e8c8', '#b98f5c');
+  shell(c, W*0.16, H*0.70, Math.min(W,H)*0.040, 2.4, '#dcc398', '#f1dfba', '#ad8456');
+  // a pale sea-glass shard catching the sun (will read nicely refracted)
+  c.save(); c.translate(W*0.62, H*0.66); c.rotate(0.7);
+  c.fillStyle = 'rgba(120,180,170,0.55)';
+  rr(c, -14, -9, 28, 18, 6); c.fill();
+  c.fillStyle = 'rgba(220,245,240,0.5)'; rr(c,-9,-5,9,6,2); c.fill();
+  c.restore();
+
+  // ---- low-sun warm grade + corner falloff baked into content ----
+  const warm = c.createLinearGradient(0,0,W,H);
+  warm.addColorStop(0,'rgba(255,210,140,0.10)');
+  warm.addColorStop(1,'rgba(40,24,10,0.16)');
+  c.fillStyle = warm; c.fillRect(0,0,W,H);
+}
+
+/* ------------------------------------------------------------------
+   OPTICS — webgl. A glass sphere refracts a thin layer of sand just
+   beneath it. Approximated with: strong central magnification, a hard
+   inverting/compressing edge, fresnel-bright rim, a hot specular
+   highlight, internal caustic focus dot below the marble, chromatic
+   fringe at the rim, ambient-occlusion contact shadow on the sand,
+   tilt foreshortening, and handheld-camera post.
+   ------------------------------------------------------------------ */
+const VS = `
+attribute vec2 aP;
+void main(){ gl_Position = vec4(aP, 0.0, 1.0); }`;
+
+const FS = `
+precision highp float;
+uniform sampler2D uScene;
+uniform vec2  uRes, uGlass, uShake, uTilt, uLight;
+uniform float uR, uTime, uPress, uBlur, uExpo, uRot;
+
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
+
+vec3 scn(vec2 uv){
+  return texture2D(uScene, clamp(uv / uRes, vec2(0.002), vec2(0.998))).rgb;
+}
+/* handheld camera: rotate + slight barrel + shake on source coords */
+vec2 cam(vec2 v){
+  vec2 cen = uRes * 0.5;
+  vec2 p = v - cen;
+  float ca = cos(uRot), sa = sin(uRot);
+  p = vec2(ca*p.x - sa*p.y, sa*p.x + ca*p.y);
+  float rr = dot(p, p) / dot(cen, cen);
+  p *= 1.0 + 0.04 * rr;
+  return cen + p + uShake;
+}
+float gband(float x, float c, float w){ float d = (x - c) / w; return exp(-d*d); }
+
+void main(){
+  vec2 fc = gl_FragCoord.xy;
+  vec2 d  = fc - uGlass;
+
+  /* tilt: a sphere seen at an angle reads as an ellipse */
+  float tA = length(uTilt);
+  vec2 tD = tA > 0.001 ? uTilt / tA : vec2(1.0, 0.0);
+  vec2 pD = vec2(-tD.y, tD.x);
+  float squash = 1.0 - 0.34 * tA;
+  vec2 ds = tD * (dot(d, tD) / squash) + pD * dot(d, pD);
+  float r = length(ds);
+  vec2 dir = r > 0.5 ? ds / r : vec2(1.0, 0.0);
+  vec2 tdir = vec2(-dir.y, dir.x);
+  float x = r / uR;                       // 0 center .. 1 silhouette
+
+  /* zones */
+  float innerX = 0.86;
+  float w    = smoothstep(innerX - 0.06, innerX + 0.02, x);  // bright rim weight
+  float wOut = smoothstep(1.0, 1.05, x);                     // outside the marble
+  float q = clamp(x / innerX, 0.0, 1.0);
+
+  /* SPHERICAL refraction of the sand directly under the marble.
+     A real ball lens magnifies the small disc of ground beneath it:
+     center pulled in (magnified), edge sampling races outward and
+     compresses, giving the classic dome look. We sample a *local*
+     patch around the marble, not the whole scene, so it reads as the
+     sand right under the glass. */
+  float magA = mix(0.30, 0.24, uPress);   // tighter when pressed down
+  float q5 = q*q*q*q*q;
+  float rsG = uR * (magA * q + (1.02 - magA) * q5);
+  /* tilted sphere: asymmetric magnification + prism deviation toward tilt */
+  float asym = 1.0 + 0.30 * tA * dot(dir, tD);
+  vec2 refr = dir * mix(rsG, uR * 1.02, w) * asym + uTilt * uR * 0.42;
+
+  /* anisotropic blur (DOF + glass softening), source-space px */
+  float q4 = q*q*q*q;
+  float radial = mix(mix(q4 * uR * 0.12, uR * 0.018, w), 0.0, wOut) + uBlur + 0.7;
+  float tang   = mix(mix(q*q*q * uR * 0.045, uR * 0.18, w), 0.0, wOut) + uBlur + 0.7;
+
+  vec2 srcBase = uGlass + mix(refr, d, wOut);
+  vec3 col = vec3(0.0);
+  #define TAP(rx, ty) col += scn(cam(srcBase + dir*((rx)*radial) + tdir*((ty)*tang)));
+  TAP( 0.00, 0.00) TAP( 0.62, 0.25) TAP(-0.58, 0.30) TAP( 0.21,-0.64)
+  TAP(-0.25,-0.61) TAP( 0.45, 0.68) TAP(-0.70,-0.15) TAP( 0.86,-0.18)
+  TAP(-0.41, 0.74) TAP( 0.05, 0.94) TAP(-0.88, 0.35) TAP( 0.33, 0.13)
+  TAP(-0.18, 0.20) TAP( 0.69,-0.55)
+  col /= 14.0;
+
+  float inG = (1.0 - wOut);          // inside the marble (incl. rim)
+  float inI = inG * (1.0 - w);       // inner refraction zone only
+
+  /* chromatic aberration at the rim (stronger when tilted) */
+  float caW = 0.45 * smoothstep(0.30, 1.0, x) * (1.0 + 1.2*tA) * inG;
+  caW = min(caW, 0.8);
+  if (caW > 0.01){
+    vec3 cR = scn(cam(uGlass + refr * 0.975));
+    vec3 cB = scn(cam(uGlass + refr * 1.025));
+    col.r = mix(col.r, cR.r, caW);
+    col.b = mix(col.b, cB.b, caW);
+  }
+
+  /* clear glass: keep it crisp & slightly cooler than milky tumbler.
+     A faint cool tint + tiny center bloom of focused sunlight. */
+  col = mix(col, col*vec3(0.97,0.99,1.04), 0.20*inG);
+  col += inI * 0.05 * (1.0 - x*x);                         // soft focused bloom
+  col = mix(col, col*1.06 + 0.02, inI*0.5);                // gentle contrast lift
+
+  /* internal caustic: focused-light streaks swirling inside the ball */
+  float th = atan(d.y, d.x);
+  float cau = 0.5*sin(th*11.0 + 1.5) + 0.5*sin(th*23.0 + 0.4) + 0.3*sin(th*5.0 - 1.0);
+  col += cau * 0.055 * q4 * inI;
+
+  /* FRESNEL RIM: a glass sphere has a brilliant bright edge ring */
+  float rim = w * (1.0 - wOut);
+  // darken the very thin glass wall, then lay bright concentric speculars
+  col = mix(col, col*0.55, rim*0.5);
+  float bands = gband(x, 0.890, 0.020) * 0.55
+              + gband(x, 0.945, 0.014) * 0.85
+              + gband(x, 0.990, 0.009) * 1.00;
+  // the rim catches the sky/sun, brightest on the sun-side arc
+  vec2 Ldir = normalize(uLight - uGlass);
+  float sunArc = pow(max(dot(dir, Ldir), 0.0), 2.0);
+  float arc = pow(max(cos(th - 2.3), 0.0), 5.0)
+            + 0.7*pow(max(cos(th + 0.6), 0.0), 9.0)
+            + 0.5*pow(max(cos(th - 4.2), 0.0), 13.0);
+  col += rim * bands * (0.18 + 0.9*sunArc + 0.45*arc);
+  col += inI * 0.10 * gband(x, 0.845, 0.016);              // bright inner ring
+
+  /* HOT SPECULAR highlight: the sun reflected as a sharp dot, upper-left,
+     plus a secondary softer sky reflection. Positioned with tilt. */
+  vec2 hp = uGlass + (vec2(-0.34, 0.40) + uTilt*0.5) * uR;
+  vec2 hd = fc - hp;
+  float spec = exp(-dot(hd,hd) / (uR*uR*0.010));           // tight sun glint
+  float specSoft = exp(-dot(hd,hd) / (uR*uR*0.10));        // soft sky sheen
+  col += (spec*1.1 + specSoft*0.16) * inG * (0.9 + 0.25*uPress);
+  // a small secondary sparkle lower-right (back-of-room reflection)
+  vec2 hp2 = uGlass + vec2(0.42, -0.30) * uR;
+  vec2 hd2 = fc - hp2;
+  col += exp(-dot(hd2,hd2)/(uR*uR*0.012)) * inG * 0.35;
+
+  /* dark outer silhouette lip just inside the edge */
+  col *= mix(1.0, 0.62, rim * gband(x, 1.0, 0.014));
+
+  /* ---- on the SAND outside the marble ---- */
+  /* CONTACT SHADOW: ambient-occlusion ring hugging the ball, thrown
+     away from the sun (lower-right). */
+  vec2 shoff = -Ldir * uR * 0.30;
+  vec2 dsh = fc - (uGlass + shoff);
+  float xsh = length(dsh) / uR;
+  float contact = gband(xsh, 1.18, 0.18) * smoothstep(0.98, 1.02, x);
+  col *= 1.0 - 0.34 * contact * (1.0 - 0.2*uPress);
+  // tight dark core where glass meets sand
+  col *= 1.0 - 0.22 * gband(x, 1.02, 0.03) * wOut;
+
+  /* CAUSTIC on the sand: the marble focuses sunlight into a bright
+     crescent on the shadow-opposite side (toward the sun-cast). */
+  vec2 cpos = uGlass + Ldir * uR * 0.85;     // focused light lands sun-ward? no:
+  // light passes through and focuses on the FAR side from sun -> use -Ldir
+  cpos = uGlass - Ldir * uR * 0.62;
+  vec2 dc = fc - cpos;
+  float xc = length(dc) / uR;
+  float caustic = gband(xc, 0.55, 0.16) * wOut;
+  // crescent shaping: brightest along an arc
+  float caTh = atan(dc.y, dc.x);
+  float crescent = 0.5 + 0.5*cos(caTh - atan(-Ldir.y, -Ldir.x));
+  col += vec3(1.0, 0.94, 0.78) * caustic * crescent * 0.5;
+  // faint secondary caustic glow ring
+  col += vec3(1.0,0.95,0.82) * gband(x, 1.12, 0.05) * wOut * 0.10;
+
+  /* ---- camera post ---- */
+  col *= uExpo;
+  col *= vec3(1.02, 1.0, 0.97);                            // warm beach grade
+  vec2 vc = (fc - uRes*0.5) / (uRes*0.5);
+  col *= 1.0 - 0.30 * pow(dot(vc,vc)*0.55, 1.4);           // vignette
+  float gn = hash(fc + fract(uTime*7.0)*113.0);
+  col += (gn - 0.5) * 0.035;                               // luma grain
+  col.r += (hash(fc.yx + 7.7 + fract(uTime*5.0)*51.0) - 0.5) * 0.016;
+  col.b += (hash(fc + 3.1 + fract(uTime*3.0)*77.0) - 0.5) * 0.014;
+  col = clamp(col, 0.0, 1.0);
+  col = pow(col, vec3(0.95));                              // slight cam lift
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
+function compile(type, src){
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+const aP = gl.getAttribLocation(prog, 'aP');
+gl.enableVertexAttribArray(aP);
+gl.vertexAttribPointer(aP, 2, gl.FLOAT, false, 0, 0);
+
+const U = {};
+for (const n of ['uScene','uRes','uGlass','uShake','uTilt','uLight','uR','uTime','uPress','uBlur','uExpo','uRot'])
+  U[n] = gl.getUniformLocation(prog, n);
+
+function makeTex(unit){
+  const t = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0 + unit);
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  return t;
+}
+const sceneTex = makeTex(0);
+gl.uniform1i(U.uScene, 0);
+function uploadScene(){
+  gl.activeTexture(gl.TEXTURE0);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, scene);
+}
+
+/* ------------------------------------------------------------ state */
+const mouse = { x: 0, y: 0 };
+const glass = { x: 0, y: 0 };
+const tilt = { x: 0, y: 0 };
+const tiltManual = { x: 0, y: 0 };
+const tiltVel = { x: 0, y: 0 };
+let rightDrag = null;
+let pressTarget = 0, press = 0;
+let needScene = true;
+const light = { x: 0, y: 0 };   // sun position in device px (y-up)
+
+function resize(){
+  W = Math.round(innerWidth * DPR); H = Math.round(innerHeight * DPR);
+  glCanvas.width = W; glCanvas.height = H;
+  gl.viewport(0, 0, W, H);
+  if (!mouse.x){ mouse.x = innerWidth*0.5; mouse.y = innerHeight*0.5;
+    glass.x = W*0.5; glass.y = H*0.5; }
+  // sun (content draws light upper-left at 0.30,0.18 in y-down) -> y-up here
+  light.x = W*0.30; light.y = H*(1.0 - 0.18);
+  needScene = true;
+}
+addEventListener('resize', resize); resize();
+
+addEventListener('contextmenu', e => e.preventDefault());
+addEventListener('pointermove', e => {
+  mouse.x = e.clientX; mouse.y = e.clientY;
+  if (rightDrag){
+    tiltManual.x = rightDrag.tx + (e.clientX - rightDrag.x) * 0.0035;
+    tiltManual.y = rightDrag.ty + (rightDrag.y - e.clientY) * 0.0035;
+    const m = Math.hypot(tiltManual.x, tiltManual.y);
+    if (m > 0.5){ tiltManual.x *= 0.5/m; tiltManual.y *= 0.5/m; }
+  }
+});
+addEventListener('pointerdown', e => {
+  if (e.button === 2) rightDrag = { x:e.clientX, y:e.clientY, tx:tiltManual.x, ty:tiltManual.y };
+  else pressTarget = 1;
+});
+addEventListener('pointerup', e => {
+  if (e.button === 2) rightDrag = null;
+  else pressTarget = 0;
+});
+setTimeout(() => { const h=document.getElementById('hint'); if(h) h.style.opacity='0'; }, 5200);
+
+/* autofocus hunts: every few seconds the camera briefly loses focus */
+let huntT0 = 1800 + Math.random()*3000;
+function focusHunt(now){
+  const dt = now - huntT0;
+  if (dt > 900){ huntT0 = now + 2600 + Math.random()*4800; return 0; }
+  if (dt < 0) return 0;
+  const ph = dt / 900;
+  return Math.sin(ph * Math.PI) * (3.4 + Math.random()*0.6);
+}
+
+let started = false;
+function frame(tms){
+  const t = tms * 0.001;
+  if (needScene){ drawScene(); uploadScene(); needScene = false; }
+
+  // marble follows the mouse with lag + a faint grip tremor
+  const tx = mouse.x*DPR + Math.sin(t*8.7)*1.3*DPR + Math.sin(t*13.1+2.0)*0.7*DPR;
+  const ty = (innerHeight - mouse.y)*DPR + Math.cos(t*9.4+1.0)*1.2*DPR;
+  const pgx = glass.x, pgy = glass.y;
+  glass.x += (tx - glass.x) * 0.17;
+  glass.y += (ty - glass.y) * 0.17;
+  press += (pressTarget - press) * 0.09;
+
+  // tilt: leans against its own motion + manual right-drag
+  const vk = -0.009 / DPR;
+  tiltVel.x += ((glass.x - pgx)*vk - tiltVel.x) * 0.18;
+  tiltVel.y += ((glass.y - pgy)*vk - tiltVel.y) * 0.18;
+  if (!rightDrag){ tiltManual.x *= 0.95; tiltManual.y *= 0.95; }
+  let ttx = tiltManual.x + tiltVel.x, tty = tiltManual.y + tiltVel.y;
+  const tm = Math.hypot(ttx, tty);
+  if (tm > 0.5){ ttx *= 0.5/tm; tty *= 0.5/tm; }
+  tilt.x += (ttx - tilt.x) * 0.12;
+  tilt.y += (tty - tilt.y) * 0.12;
+
+  const R = Math.min(W, H) * (0.27 + press*0.02);
+
+  const shx = (Math.sin(t*1.3)*2.4 + Math.sin(t*0.7+1.7)*3.2 + Math.sin(t*3.1+0.5)*1.0 + Math.sin(t*7.3)*0.4)*DPR;
+  const shy = (Math.cos(t*1.1+0.4)*2.6 + Math.sin(t*0.5+2.6)*3.4 + Math.cos(t*2.7+1.2)*1.1 + Math.cos(t*8.1)*0.4)*DPR;
+  const rot = 0.004*Math.sin(t*0.45) + 0.0018*Math.sin(t*1.7+1.0);
+
+  const blur = Math.max(0.0, 0.8 + 0.7*Math.sin(t*0.8) + 0.5*Math.sin(t*2.3+0.7))*DPR + focusHunt(tms)*DPR;
+  const expo = 1.0 + 0.04*Math.sin(t*0.4) + 0.025*Math.sin(t*1.1+2.2) - press*0.04;
+
+  gl.uniform2f(U.uRes, W, H);
+  gl.uniform2f(U.uGlass, glass.x, glass.y);
+  gl.uniform2f(U.uShake, shx, shy);
+  gl.uniform2f(U.uTilt, tilt.x, tilt.y);
+  gl.uniform2f(U.uLight, light.x, light.y);
+  gl.uniform1f(U.uR, R);
+  gl.uniform1f(U.uTime, t);
+  gl.uniform1f(U.uPress, press);
+  gl.uniform1f(U.uBlur, blur);
+  gl.uniform1f(U.uExpo, expo);
+  gl.uniform1f(U.uRot, rot);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  started = true;
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

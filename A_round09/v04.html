@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>FERROFLUID // spike field</title>
+<style>
+  :root { --ink:#e7e9ef; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { height:100%; overflow:hidden; background:#04050a; }
+  body {
+    font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    color:var(--ink);
+    -webkit-tap-highlight-color: transparent;
+    cursor: crosshair;
+  }
+  #stage { position:fixed; inset:0; display:block; width:100vw; height:100vh; }
+  .hud {
+    position:fixed; z-index:5; pointer-events:none;
+    font-size:11px; letter-spacing:.32em; text-transform:uppercase;
+    color:rgba(231,233,239,.42); mix-blend-mode:screen;
+    text-shadow:0 0 18px rgba(120,150,255,.25);
+  }
+  #title  { top:26px; left:30px; font-weight:600; letter-spacing:.5em; }
+  #title b { color:rgba(231,233,239,.9); }
+  #sub    { top:48px; left:30px; font-size:9.5px; letter-spacing:.42em; color:rgba(231,233,239,.3); }
+  #meta   { bottom:26px; left:30px; line-height:1.9; font-size:9.5px; }
+  #meta span { color:rgba(150,180,255,.75); }
+  #hint   { bottom:26px; right:30px; text-align:right; line-height:1.9; font-size:9.5px;
+            opacity:0; transition:opacity 1.2s ease; }
+  #hint.show { opacity:1; }
+  #hint b { color:rgba(180,200,255,.85); }
+  #flash  { position:fixed; inset:0; z-index:4; pointer-events:none; background:#fff; opacity:0; }
+  @media (max-width:520px){
+    #title{ top:18px; left:18px; letter-spacing:.34em; font-size:10px; }
+    #sub{ top:36px; left:18px; }
+    #meta{ bottom:18px; left:18px; }
+    #hint{ bottom:18px; right:18px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="flash"></div>
+<div class="hud" id="title"><b>FERRO</b>FLUID</div>
+<div class="hud" id="sub">magnetic spike field // v04</div>
+<div class="hud" id="meta">
+  spikes <span id="mSpk">0</span><br>
+  field&nbsp;&nbsp;<span id="mFld">idle</span><br>
+  fps&nbsp;&nbsp;&nbsp;&nbsp;<span id="mFps">0</span>
+</div>
+<div class="hud" id="hint">
+  move &mdash; bend the field<br>
+  press/hold &mdash; surge<br>
+  scroll &mdash; viscosity &middot; <b>tap</b> &mdash; pulse
+</div>
+
+<script>
+(() => {
+"use strict";
+
+const cv = document.getElementById("stage");
+const gl = cv.getContext("webgl", { antialias:false, alpha:false, premultipliedAlpha:false,
+                                    preserveDrawingBuffer:true, powerPreference:"high-performance" });
+
+if (!gl) { fallback2D(); return; }
+
+/* ===================== SHADERS ===================== */
+const VERT = `
+attribute vec2 p;
+void main(){ gl_Position = vec4(p, 0.0, 1.0); }
+`;
+
+const FRAG = `
+precision highp float;
+
+uniform vec2  iRes;
+uniform float iTime;
+uniform vec2  iMouse;     // shader space, y-up, origin center
+uniform float iPress;     // 0..1 surge
+uniform float iVisc;      // viscosity 0..1
+uniform float iPulse;     // decaying tap pulse (shockwave)
+uniform float iSpeed;     // pointer speed
+
+#define PI 3.14159265359
+
+float hash(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
+float noise(vec2 p){
+  vec2 i=floor(p), f=fract(p);
+  float a=hash(i), b=hash(i+vec2(1,0)), c=hash(i+vec2(0,1)), d=hash(i+vec2(1,1));
+  vec2 u=f*f*(3.0-2.0*f);
+  return mix(mix(a,b,u.x),mix(c,d,u.x),u.y);
+}
+float fbm(vec2 p){
+  float v=0.0, a=0.5; mat2 m=mat2(1.6,1.2,-1.2,1.6);
+  for(int i=0;i<5;i++){ v+=a*noise(p); p=m*p; a*=0.5; }
+  return v;
+}
+
+// distance from point p to segment a-b, plus param t (0..1) along it
+float segDist(vec2 p, vec2 a, vec2 b, out float t){
+  vec2  pa = p-a, ba = b-a;
+  t = clamp(dot(pa,ba)/dot(ba,ba), 0.0, 1.0);
+  return length(pa - ba*t);
+}
+
+// Metaball field. Returns scalar field; higher = more "inside".
+float field(vec2 q){
+  float t = iTime;
+  float f = 0.0;
+
+  // central pool — solid root mass the spikes grow from
+  float r0 = 0.30;
+  f += (r0*r0)/(dot(q,q) + 0.0008);
+
+  vec2 md = iMouse;
+  vec2 mn = md/(length(md)+1e-4);
+  float mAmt = clamp(length(md)*1.15, 0.0, 1.35);
+
+  const int N = 14;
+  for(int i=0;i<N;i++){
+    float fi = float(i);
+    float ang = (fi/float(N))*2.0*PI;
+    float wob = sin(t*1.6 + fi*2.3)*0.09 + (noise(vec2(fi*7.1, t*0.45))-0.5)*0.28;
+    ang += wob;
+    vec2 dir = vec2(cos(ang), sin(ang));
+
+    float breathe = 0.5 + 0.5*sin(t*2.0 + fi*1.7);
+    // base spike length — modest at rest, grows with press + tap shockwave
+    float len = 0.10 + 0.16*breathe*(0.5 + iPress*1.4) + iPulse*0.50;
+    // magnetic pull toward mouse: spikes facing the cursor reach further
+    float align = max(dot(dir, mn), 0.0);
+    len += align*align*mAmt*0.55;
+    // viscosity: shorter, fatter, slower
+    len *= mix(1.0, 0.55, iVisc);
+
+    // continuous tapered spike: capsule from inside the pool to the tip,
+    // curved toward the cursor -> one smooth fused liquid-metal cone
+    vec2 root = dir * 0.12;                         // buried in the pool
+    vec2 tip  = dir * (0.20 + len) + mn*(mAmt*0.10);
+    // sample two segments to approximate the slight curve toward cursor
+    vec2 mid  = mix(root, tip, 0.5) + mn*(mAmt*0.05);
+    float t1, t2;
+    float d1 = segDist(q, root, mid, t1);
+    float d2 = segDist(q, mid,  tip, t2);
+    // radius tapers along the whole spike (t in 0..1 over both halves)
+    float tA = t1*0.5,        rA = mix(0.150, 0.075, tA);
+    float tB = 0.5 + t2*0.5,  rB = mix(0.075, 0.012, t2);
+    rA *= mix(1.0,1.4,iVisc); rB *= mix(1.0,1.4,iVisc);
+    f += (rA*rA)/(d1*d1 + 0.00035);
+    f += (rB*rB)/(d2*d2 + 0.00035);
+  }
+  return f;
+}
+
+// analytic-ish gradient via small offsets (for normals)
+vec2 grad(vec2 q, float eps){
+  float fx = field(q+vec2(eps,0.0)) - field(q-vec2(eps,0.0));
+  float fy = field(q+vec2(0.0,eps)) - field(q-vec2(0.0,eps));
+  return vec2(fx,fy)/(2.0*eps);
+}
+
+void main(){
+  vec2 uv = (gl_FragCoord.xy - 0.5*iRes) / iRes.y; // y-up
+  vec2 q = uv;
+
+  float f = field(q);
+  float thr = 1.0;
+
+  // crisp surface: tight AA band around the isoline
+  float aa = 2.0/iRes.y;
+  vec2 gr = grad(q, aa*2.0);
+  float glen = length(gr) + 1e-4;
+  // signed distance estimate to surface
+  float sd = (f - thr)/glen;
+  float mask = smoothstep(-aa*1.5, aa*1.5, sd);
+
+  // ---------------- liquid-metal surface shading ----------------
+  vec2 g = gr/glen;
+  // height proxy: how deep inside the body
+  float depth = clamp((f-thr)*0.5, 0.0, 1.0);
+  float bump  = clamp(sd*120.0, 0.0, 1.0);  // 0 at rim, 1 deep in
+  vec3 nrm = normalize(vec3(-g*(1.0-bump*0.65), 0.30 + 0.70*bump));
+
+  vec3 V  = vec3(0.0,0.0,1.0);
+  vec3 L1 = normalize(vec3( 0.45, 0.75, 0.65));
+  vec3 L2 = normalize(vec3(-0.70,-0.35, 0.55));
+  vec3 L3 = normalize(vec3( 0.10,-0.80, 0.50)); // bottom kicker
+
+  float diff1 = max(dot(nrm,L1),0.0);
+  float diff2 = max(dot(nrm,L2),0.0);
+  float diff3 = max(dot(nrm,L3),0.0);
+
+  vec3 H1 = normalize(L1+V), H2 = normalize(L2+V);
+  float spec1 = pow(max(dot(nrm,H1),0.0), 110.0);
+  float spec2 = pow(max(dot(nrm,H2),0.0),  48.0);
+  float fres  = pow(1.0 - max(dot(nrm,V),0.0), 3.5);
+
+  // obsidian base — near-black liquid metal
+  vec3 base = vec3(0.006,0.008,0.014);
+
+  // iridescent thin-film rim, hue rides fresnel + depth + time
+  float hue = fres*2.6 + depth*1.4 + iTime*0.18;
+  vec3 irid = 0.5 + 0.5*cos(6.2831*(hue + vec3(0.0,0.36,0.68)));
+  irid = pow(irid, vec3(1.6));
+
+  // subtle ambient occlusion: darker the deeper inside (keeps body inky)
+  float ao = 0.35 + 0.65*(1.0-bump);
+
+  vec3 col = base;
+  col += diff1 * vec3(0.07,0.10,0.18) * 0.5 * ao;
+  col += diff2 * vec3(0.16,0.05,0.22) * 0.4 * ao;
+  col += diff3 * vec3(0.03,0.08,0.16) * 0.4 * ao;
+  // hard cold specular slivers (the wet-metal pop) + warm secondary
+  col += spec1 * vec3(0.80,0.90,1.0) * 2.2;
+  col += spec2 * vec3(0.95,0.55,0.72) * 0.55;
+  // electric iridescent edge — concentrated at the rim, vivid thin-film
+  float rimBand = fres * smoothstep(0.0, 0.4, fres);
+  col += rimBand * irid * (1.25 + iPress*1.2);
+  // thin bright catch-line right at the silhouette
+  col += pow(fres, 6.0) * vec3(0.7,0.85,1.1) * 0.9;
+
+  // fine iron-grain on the metal
+  float grain = fbm(q*28.0 + iTime*0.25);
+  col *= 0.78 + 0.40*grain;
+
+  // tight glossy contact point under the cursor (the magnet tip)
+  float ml = length(q - iMouse);
+  col += exp(-ml*16.0) * vec3(0.5,0.7,1.0) * 0.7;
+
+  vec3 surf = col;
+
+  // ---------------- background magnetic field (kept dark) ----------------
+  vec3 bg = vec3(0.006,0.008,0.018);
+  // tight body halo only near the surface
+  float glow = smoothstep(1.9, 1.0, f) * smoothstep(0.55, 1.0, f);
+  // animated flux contours radiating out — thin & faint
+  float flux = sin(f*8.0 - iTime*1.1);
+  flux = smoothstep(0.90, 1.0, flux) * smoothstep(0.9, 0.4, f);
+  bg += flux * vec3(0.05,0.10,0.26) * (0.4 + iPress*0.8);
+  // tap shockwave ring expanding outward
+  float ring = abs(length(q) - (1.0-iPulse)*0.95);
+  bg += smoothstep(0.04,0.0,ring) * iPulse * vec3(0.30,0.50,1.0);
+  // very subtle drifting nebula
+  bg += vec3(0.020,0.026,0.060) * fbm(uv*1.8 + iTime*0.05) * smoothstep(1.3,0.4,length(uv)) * 0.5;
+  // colored body halo, concentrated at the rim
+  bg += glow * mix(vec3(0.06,0.11,0.30), irid*0.6, 0.5) * (0.9 + iPulse*1.0);
+  // strong vignette -> black corners
+  float vig = smoothstep(1.15, 0.10, length(uv));
+  bg *= vig;
+
+  // ---------------- composite ----------------
+  col = mix(bg, surf, mask);
+
+  // soft contact shadow under the body onto the bg
+  col = mix(col, col*0.6, smoothstep(1.6, 1.0, f)*(1.0-mask)*0.5);
+
+  // grade
+  col = col / (col + vec3(1.0));        // reinhard
+  col = pow(col, vec3(0.82));           // lift
+  col = mix(col, col*vec3(0.93,0.97,1.07), 0.5); // cool shadows
+
+  // dither
+  col += (hash(gl_FragCoord.xy + iTime) - 0.5)/255.0;
+
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+function sh(type, src){
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+    console.error(gl.getShaderInfoLog(s)); throw new Error("shader");
+  }
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, sh(gl.VERTEX_SHADER, VERT));
+gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FRAG));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog, gl.LINK_STATUS)){
+  console.error(gl.getProgramInfoLog(prog)); fallback2D(); return;
+}
+gl.useProgram(prog);
+
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+const ploc = gl.getAttribLocation(prog, "p");
+gl.enableVertexAttribArray(ploc);
+gl.vertexAttribPointer(ploc, 2, gl.FLOAT, false, 0, 0);
+
+const U = {};
+["iRes","iTime","iMouse","iPress","iVisc","iPulse","iSpeed"].forEach(n=>{
+  U[n] = gl.getUniformLocation(prog, n);
+});
+
+/* ===================== resize w/ pixel cap ===================== */
+let W=0,H=0,DPR=1;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 1.75);
+  const maxPix = 2.0e6;
+  let w = window.innerWidth, h = window.innerHeight;
+  let pw = w*DPR, ph = h*DPR;
+  const tot = pw*ph;
+  if(tot > maxPix){ const s=Math.sqrt(maxPix/tot); pw*=s; ph*=s; }
+  W = Math.max(2,Math.floor(pw)); H = Math.max(2,Math.floor(ph));
+  cv.width = W; cv.height = H;
+  cv.style.width = w+"px"; cv.style.height = h+"px";
+  gl.viewport(0,0,W,H);
+}
+window.addEventListener("resize", resize);
+resize();
+
+/* ===================== interaction ===================== */
+let mx=0,my=0, tmx=0,tmy=0;
+let press=0,tpress=0;
+let visc=0,tvisc=0;
+let pulse=0;
+let speed=0, vx=0,vy=0;
+
+function toShader(cx, cy){
+  const x = (cx - window.innerWidth/2)/window.innerHeight;
+  const y = (window.innerHeight/2 - cy)/window.innerHeight;
+  return [x,y];
+}
+function move(cx, cy){
+  const [x,y] = toShader(cx, cy);
+  vx = x-tmx; vy = y-tmy;
+  speed = Math.min(Math.hypot(vx,vy)*8.0, 1.0);
+  tmx = x; tmy = y;
+}
+window.addEventListener("mousemove", e=> move(e.clientX, e.clientY));
+window.addEventListener("mousedown", ()=> tpress=1);
+window.addEventListener("mouseup",   ()=> tpress=0);
+window.addEventListener("touchstart", e=>{ tpress=1; if(e.touches[0]) move(e.touches[0].clientX,e.touches[0].clientY); }, {passive:true});
+window.addEventListener("touchmove",  e=>{ if(e.touches[0]) move(e.touches[0].clientX,e.touches[0].clientY); }, {passive:true});
+window.addEventListener("touchend",   ()=> tpress=0);
+window.addEventListener("wheel", e=>{
+  tvisc = Math.max(0, Math.min(1, tvisc + (e.deltaY>0?0.08:-0.08)));
+}, {passive:true});
+
+function tap(){
+  pulse = 1.0;
+  const fl = document.getElementById("flash");
+  fl.style.transition="none"; fl.style.opacity="0.10";
+  requestAnimationFrame(()=>{ fl.style.transition="opacity .5s ease"; fl.style.opacity="0"; });
+}
+window.addEventListener("click", tap);
+window.addEventListener("touchend", tap);
+
+const hint = document.getElementById("hint");
+setTimeout(()=>hint.classList.add("show"), 700);
+setTimeout(()=>hint.classList.remove("show"), 8000);
+
+const elSpk=document.getElementById("mSpk");
+const elFld=document.getElementById("mFld");
+const elFps=document.getElementById("mFps");
+
+/* ===================== loop ===================== */
+let t0 = performance.now();
+let frames=0, fpsT=performance.now(), fps=0;
+
+function frame(now){
+  const t = (now - t0)/1000;
+  mx += (tmx-mx)*0.12;  my += (tmy-my)*0.12;
+  press += (tpress-press)*0.10;
+  visc  += (tvisc-visc)*0.06;
+  pulse *= 0.945;
+  speed *= 0.90;
+
+  gl.uniform2f(U.iRes, W, H);
+  gl.uniform1f(U.iTime, t);
+  gl.uniform2f(U.iMouse, mx, my);
+  gl.uniform1f(U.iPress, press);
+  gl.uniform1f(U.iVisc, visc);
+  gl.uniform1f(U.iPulse, pulse);
+  gl.uniform1f(U.iSpeed, speed);
+
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  frames++;
+  if(now - fpsT > 500){ fps = Math.round(frames*1000/(now-fpsT)); frames=0; fpsT=now;
+    elFps.textContent = fps;
+    elSpk.textContent = 14 + Math.round(press*8 + pulse*6);
+    elFld.textContent = press>0.5 ? "SURGE" : (visc>0.5 ? "VISCOUS" : (speed>0.18?"BENT":"idle"));
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+/* ===================== 2D fallback ===================== */
+function fallback2D(){
+  const c = document.getElementById("stage");
+  const x = c.getContext("2d");
+  let w,h;
+  function rs(){ w=c.width=innerWidth; h=c.height=innerHeight; }
+  rs(); addEventListener("resize",rs);
+  let mxx=innerWidth/2,myy=innerHeight/2;
+  addEventListener("mousemove",e=>{mxx=e.clientX;myy=e.clientY;});
+  (function loop(tm){
+    const t=tm/1000, cx=w/2, cy=h/2;
+    x.fillStyle="#04050a"; x.fillRect(0,0,w,h);
+    x.globalCompositeOperation="lighter";
+    for(let i=0;i<14;i++){
+      const a=i/14*Math.PI*2 + Math.sin(t*0.5+i)*0.2;
+      const len=70+Math.sin(t*2+i)*45;
+      const px=cx+Math.cos(a)*len, py=cy+Math.sin(a)*len;
+      const g=x.createRadialGradient(px,py,0,px,py,60);
+      g.addColorStop(0,"rgba(90,120,255,.6)"); g.addColorStop(1,"rgba(8,8,24,0)");
+      x.fillStyle=g; x.beginPath(); x.arc(px,py,60,0,7); x.fill();
+    }
+    const g=x.createRadialGradient(cx,cy,0,cx,cy,110);
+    g.addColorStop(0,"rgba(35,45,110,.9)"); g.addColorStop(1,"rgba(4,5,10,0)");
+    x.fillStyle=g; x.beginPath(); x.arc(cx,cy,110,0,7); x.fill();
+    x.globalCompositeOperation="source-over";
+    requestAnimationFrame(loop);
+  })(0);
+}
+
+})();
+</script>
+</body>
+</html>

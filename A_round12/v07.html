@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>AEOLIAN — vibrating strings & organ harmonics</title>
+<style>
+  :root{ color-scheme: dark; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#05060a; }
+  body{
+    font-family:"SF Mono",ui-monospace,"Cascadia Mono",Menlo,Consolas,monospace;
+    -webkit-tap-highlight-color:transparent; cursor:crosshair;
+    touch-action:none; overscroll-behavior:none;
+  }
+  #stage{ position:fixed; inset:0; display:block; }
+  /* HUD */
+  #hud{
+    position:fixed; left:0; right:0; top:0; padding:18px 22px;
+    display:flex; justify-content:space-between; align-items:flex-start;
+    pointer-events:none; z-index:5; mix-blend-mode:screen;
+  }
+  #title{ line-height:1.15; }
+  #title .b{
+    font-weight:700; letter-spacing:.42em; font-size:13px;
+    color:#dfe9ff; text-shadow:0 0 18px rgba(120,170,255,.55);
+  }
+  #title .s{
+    margin-top:4px; font-size:10px; letter-spacing:.26em;
+    color:rgba(150,170,210,.62);
+  }
+  #read{ text-align:right; font-size:10px; letter-spacing:.14em; color:rgba(150,170,210,.66); line-height:1.7; }
+  #read b{ color:#9fd6ff; font-weight:600; }
+  #hint{
+    position:fixed; left:0; right:0; bottom:16px; text-align:center;
+    font-size:10.5px; letter-spacing:.22em; color:rgba(150,170,210,.5);
+    pointer-events:none; z-index:5; transition:opacity 1.4s ease;
+  }
+  /* palette swatches */
+  #pal{
+    position:fixed; right:20px; bottom:18px; z-index:6;
+    display:flex; gap:9px; pointer-events:auto;
+  }
+  #pal button{
+    width:18px; height:18px; border-radius:50%; border:1px solid rgba(255,255,255,.22);
+    cursor:pointer; padding:0; transition:transform .18s ease, box-shadow .18s ease; outline:none;
+  }
+  #pal button:hover{ transform:scale(1.22); }
+  #pal button[aria-pressed="true"]{ box-shadow:0 0 0 2px rgba(255,255,255,.85), 0 0 16px currentColor; transform:scale(1.18); }
+  #sound{
+    position:fixed; left:20px; bottom:16px; z-index:6; pointer-events:auto;
+    font-family:inherit; font-size:9.5px; letter-spacing:.18em; color:rgba(160,180,220,.72);
+    background:rgba(20,28,48,.42); border:1px solid rgba(120,150,210,.3);
+    border-radius:20px; padding:6px 13px; cursor:pointer; backdrop-filter:blur(4px);
+    transition:color .2s, border-color .2s;
+  }
+  #sound:hover{ color:#bfe0ff; border-color:rgba(150,190,255,.6); }
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <div id="hud">
+    <div id="title">
+      <div class="b">AEOLIAN</div>
+      <div class="s">VIBRATING&nbsp;STRINGS&nbsp;·&nbsp;ORGAN&nbsp;HARMONICS</div>
+    </div>
+    <div id="read">
+      <div>PLUCK <b id="rNote">—</b></div>
+      <div>HARMONIC <b id="rHarm">1</b></div>
+      <div>RESONANCE <b id="rRes">0%</b></div>
+    </div>
+  </div>
+  <div id="hint">DRAG ACROSS THE STRINGS TO PLUCK · HOLD A PIPE TO SUSTAIN · SCROLL TO TILT · DOUBLE&#8209;TAP FOR A CHORD</div>
+  <button id="sound">♪ SOUND&nbsp;OFF</button>
+  <div id="pal" aria-label="palette"></div>
+
+<script>
+/* ============================================================
+   AEOLIAN — single-file generative sound-wave instrument
+   Standing-wave strings + sympathetic organ pipes.
+   First paint IS the artwork. WebAudio is opt-in (gesture).
+   ============================================================ */
+(()=>{
+'use strict';
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', { alpha:false });
+const TAU = Math.PI*2;
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const lerp=(a,b,t)=>a+(b-a)*t;
+const rand=(a,b)=>a+Math.random()*(b-a);
+
+/* ---- responsive sizing with DPR + particle cap ---- */
+let W=0,H=0,DPR=1, SMALL=false;
+function resize(){
+  const w=window.innerWidth, h=window.innerHeight;
+  SMALL = w < 680;
+  DPR = Math.min(window.devicePixelRatio||1, SMALL?2:2);
+  W=w; H=h;
+  cv.width = Math.round(w*DPR); cv.height = Math.round(h*DPR);
+  cv.style.width=w+'px'; cv.style.height=h+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  buildLayout();
+}
+window.addEventListener('resize', resize, {passive:true});
+
+/* ---- palettes (hue-coherent, cinematic) ---- */
+const PALETTES = [
+  { name:'aurora', bg1:'#04060d', bg2:'#0a1326', dot:'#8fd0ff',
+    cols:['#5ff0c8','#48b8ff','#9a7bff','#ff79c6','#ffd86b'] },
+  { name:'ember',  bg1:'#0a0506', bg2:'#1c0a0c', dot:'#ffb98f',
+    cols:['#ff5d5d','#ff944d','#ffcc4d','#ff6fae','#b06bff'] },
+  { name:'abyss',  bg1:'#02040a', bg2:'#06122a', dot:'#7fbfff',
+    cols:['#2effd5','#37a6ff','#6f8bff','#46e0ff','#a0fff0'] },
+  { name:'bloom',  bg1:'#080410', bg2:'#1a0a2a', dot:'#e3a8ff',
+    cols:['#ff79c6','#c084fc','#7c5cff','#5fb0ff','#ff9ed8'] },
+];
+let palI=0, PAL=PALETTES[0];
+
+/* ---- string model: a row of strings (the "instrument") ---- */
+/* Each string has a base pitch; plucking excites a fundamental + overtones.
+   We render the physical standing wave: sum of sine modes with decaying amps. */
+const NOTE_NAMES=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+function midiToName(m){ return NOTE_NAMES[((m%12)+12)%12] + (Math.floor(m/12)-1); }
+function midiToFreq(m){ return 440*Math.pow(2,(m-69)/12); }
+
+let strings=[];   // horizontal strings
+let pipes=[];     // organ pipes along the bottom
+let dust=[];      // ambient depth particles in the void
+let marginX=0, topY=0, botY=0, fieldH=0, spacing=0;
+
+function buildLayout(){
+  strings.length=0; pipes.length=0; dust.length=0;
+  const ND = SMALL?70:150;
+  for(let i=0;i<ND;i++){
+    dust.push({ x:Math.random(), y:Math.random(), z:rand(0.2,1),
+      tw:rand(0,TAU), sp:rand(0.3,1.1) });
+  }
+  // pentatonic-ish ascending scale so random plucks always sound musical
+  const scale=[0,2,4,7,9];                 // major pentatonic intervals
+  const NS = SMALL ? 11 : 17;              // count of strings
+  marginX = SMALL? 26 : Math.max(60, W*0.06);
+  topY = (SMALL?92:104);
+  botY = H - (SMALL?108:120);
+  fieldH = botY - topY;
+  spacing = fieldH/(NS-1);
+  const baseMidi = 48; // C3 region
+  for(let i=0;i<NS;i++){
+    const oct = Math.floor(i/scale.length);
+    const midi = baseMidi + oct*12 + scale[i%scale.length];
+    strings.push({
+      idx:i,
+      y: topY + i*spacing,
+      midi, freq: midiToFreq(midi), name: midiToName(midi),
+      amp:0,            // current envelope amplitude
+      phase:0,          // running phase of vibration
+      pluckX:0.5,       // where it was plucked (0..1) -> shapes overtone weights
+      harm:1,           // dominant harmonic shown
+      decay:0,          // per-pluck decay rate
+      hueShift:i/NS,
+      // sympathetic resonance buildup (0..1)
+      sym:0,
+    });
+  }
+  // organ pipes: vertical resonators at the bottom, widths -> pitch
+  const NP = SMALL? 7 : 11;
+  const pipeBandTop = botY + (SMALL?14:18);
+  const pipeBandBot = H - 4;
+  const gap = (W-2*marginX)/NP;
+  for(let p=0;p<NP;p++){
+    // lower pipes = taller = lower pitch
+    const t = p/(NP-1);
+    const midi = 40 + Math.round(t*22);
+    const hRatio = lerp(SMALL?0.5:0.42, SMALL?0.95:0.92, 1-t); // taller on left
+    pipes.push({
+      idx:p,
+      x: marginX + gap*(p+0.5),
+      w: gap*0.56,
+      top: lerp(pipeBandBot, pipeBandTop, hRatio),
+      bot: pipeBandBot,
+      midi, freq: midiToFreq(midi), name:midiToName(midi),
+      breath: rand(0,TAU),   // idle breathing phase
+      excite:0,              // resonance envelope
+      held:false,
+    });
+  }
+}
+
+/* ---- WebAudio engine (opt-in) ---- */
+let AC=null, master=null, reverb=null, soundOn=false, audioReady=false;
+function makeReverb(ac){
+  const len = ac.sampleRate*2.6;
+  const buf = ac.createBuffer(2,len,ac.sampleRate);
+  for(let ch=0;ch<2;ch++){
+    const d=buf.getChannelData(ch);
+    for(let i=0;i<len;i++){
+      d[i]=(Math.random()*2-1)*Math.pow(1-i/len,2.6);
+    }
+  }
+  const c=ac.createConvolver(); c.buffer=buf; return c;
+}
+function initAudio(){
+  if(audioReady) return;
+  const AcC = window.AudioContext||window.webkitAudioContext;
+  if(!AcC) return;
+  AC=new AcC();
+  master=AC.createGain(); master.gain.value=0.0;
+  reverb=makeReverb(AC);
+  const wet=AC.createGain(); wet.gain.value=0.32;
+  const dry=AC.createGain(); dry.gain.value=0.85;
+  master.connect(dry).connect(AC.destination);
+  master.connect(reverb); reverb.connect(wet).connect(AC.destination);
+  audioReady=true;
+}
+function setSound(on){
+  soundOn=on;
+  if(on){ initAudio(); if(AC&&AC.state==='suspended') AC.resume(); }
+  if(master) master.gain.setTargetAtTime(on?0.9:0.0, AC?AC.currentTime:0, 0.05);
+  const b=document.getElementById('sound');
+  b.textContent = on? '♪ SOUND ON' : '♪ SOUND OFF';
+  b.style.color = on? '#bfe0ff':'rgba(160,180,220,.72)';
+}
+// pluck tone: rich additive partials with fast attack / long decay
+function playString(s, vel){
+  if(!soundOn||!audioReady) return;
+  const t=AC.currentTime, f=s.freq;
+  const g=AC.createGain();
+  const peak = clamp(0.16*vel,0.02,0.3);
+  g.gain.setValueAtTime(0.0001,t);
+  g.gain.exponentialRampToValueAtTime(peak, t+0.006);
+  g.gain.exponentialRampToValueAtTime(0.0001, t+1.8+vel*1.4);
+  g.connect(master);
+  // additive partials weighted by pluck position (sin(n*pi*p))
+  const P = s.pluckX;
+  const N = 6;
+  for(let n=1;n<=N;n++){
+    const w = Math.abs(Math.sin(n*Math.PI*P))/n;
+    if(w<0.02) continue;
+    const o=AC.createOsc?AC.createOsc():AC.createOscillator();
+    o.type = n===1?'triangle':'sine';
+    o.frequency.value=f*n*(1+ (n-1)*0.0007); // slight inharmonicity
+    const og=AC.createGain(); og.gain.value=w;
+    o.connect(og).connect(g);
+    o.start(t); o.stop(t+2.0+vel*1.6);
+  }
+}
+function playPipe(p, hold){
+  if(!soundOn||!audioReady) return;
+  const t=AC.currentTime, f=p.freq;
+  const g=AC.createGain();
+  g.gain.setValueAtTime(0.0001,t);
+  g.gain.exponentialRampToValueAtTime(0.11, t+0.09);
+  if(!hold){ g.gain.exponentialRampToValueAtTime(0.0001, t+1.3); }
+  g.connect(master);
+  const o=AC.createOscillator(); o.type='sawtooth';
+  o.frequency.value=f;
+  const lp=AC.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=f*5; lp.Q.value=0.7;
+  const sub=AC.createOscillator(); sub.type='sine'; sub.frequency.value=f*2;
+  const sg=AC.createGain(); sg.gain.value=0.4;
+  o.connect(lp).connect(g);
+  sub.connect(sg).connect(g);
+  o.start(t); sub.start(t);
+  return {o,sub,g,lp,
+    release(){ const tt=AC.currentTime; g.gain.cancelScheduledValues(tt);
+      g.gain.setValueAtTime(g.gain.value,tt); g.gain.exponentialRampToValueAtTime(0.0001,tt+0.6);
+      o.stop(tt+0.7); sub.stop(tt+0.7); }};
+}
+
+/* ---- interaction state ---- */
+let pointer={x:-999,y:-999,down:false,id:null};
+let tilt=0, tiltTarget=0;         // scroll-driven 3D pitch
+let lastPluckIdx=-1;
+let glints=[];                    // burst particles on pluck
+let ripples=[];                   // expanding sympathetic ripples
+let heldPipe=null, heldPipeVoice=null;
+let lastTapT=0;
+
+function pluck(s, atX, vel){
+  s.amp = clamp(s.amp + 0.7 + vel*0.5, 0, 1.4);
+  s.pluckX = clamp(atX, 0.04, 0.96);
+  s.phase = 0;
+  s.decay = lerp(0.45, 0.9, 1 - s.idx/strings.length); // higher strings decay faster-ish
+  s.harm = 1 + (Math.round(1/ (Math.min(s.pluckX,1-s.pluckX)+0.0001)/4) % 5);
+  playString(s, clamp(vel,0.4,1.6));
+  // visual burst
+  const px = lerp(marginX, W-marginX, atX);
+  const col = PAL.cols[s.idx % PAL.cols.length];
+  const n = SMALL?10:16;
+  for(let i=0;i<n;i++){
+    const a=rand(0,TAU), sp=rand(0.6,3.6)*(0.6+vel);
+    glints.push({x:px,y:s.y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp-0.4,
+      life:1,col,sz:rand(1,2.6)});
+  }
+  ripples.push({x:px,y:s.y,r:0,max:rand(120,260),life:1,col});
+  // sympathetic excitation: neighbors & harmonic relatives
+  for(const o of strings){
+    if(o===s) continue;
+    const ratio = o.freq/s.freq;
+    const nearHarm = Math.abs(ratio-Math.round(ratio))<0.03 || Math.abs(1/ratio-Math.round(1/ratio))<0.03;
+    const dist = Math.abs(o.idx-s.idx);
+    if(nearHarm){ o.sym = clamp(o.sym+0.5,0,1); o.amp=clamp(o.amp+0.18,0,1.2); }
+    else if(dist<=2){ o.sym=clamp(o.sym+0.18/dist,0,1); }
+  }
+  // pipes resonate too
+  for(const p of pipes){
+    const ratio=p.freq/s.freq;
+    if(Math.abs(ratio-Math.round(ratio))<0.04 || Math.abs(1/ratio-Math.round(1/ratio))<0.04){
+      p.excite=clamp(p.excite+0.55,0,1);
+    }
+  }
+  lastPluckIdx=s.idx;
+  // readout
+  document.getElementById('rNote').textContent=s.name;
+  document.getElementById('rHarm').textContent=s.harm;
+}
+
+function nearestStringTo(y){
+  let best=null,bd=1e9;
+  for(const s of strings){ const d=Math.abs(s.y-y); if(d<bd){bd=d;best=s;} }
+  return {s:best,d:bd};
+}
+function pipeAt(x,y){
+  for(const p of pipes){
+    if(x>p.x-p.w/2 && x<p.x+p.w/2 && y>p.top-8 && y<p.bot+6) return p;
+  }
+  return null;
+}
+
+/* perspective projection for tilt: map a world point to screen with vanishing */
+function project(x,y){
+  if(Math.abs(tilt)<0.0008) return {x,y,sc:1};
+  const cy=H*0.46;
+  const dy=y-cy;
+  // tilt pushes far rows up & shrinks them
+  const depth = dy/H;                      // -.. to +..
+  const persp = 1/(1 + tilt*depth*1.9);
+  const sx = (x-W/2)*persp + W/2;
+  const sy = cy + dy*persp;
+  return {x:sx,y:sy,sc:persp};
+}
+
+/* ---- pointer plumbing (mouse + touch) ---- */
+function evXY(e){
+  const r=cv.getBoundingClientRect();
+  const t=e.touches&&e.touches[0]?e.touches[0]:e;
+  return {x:(t.clientX-r.left), y:(t.clientY-r.top)};
+}
+let dragPrevY=null;
+function onDown(e){
+  e.preventDefault();
+  const {x,y}=evXY(e);
+  pointer.x=x; pointer.y=y; pointer.down=true; dragPrevY=y;
+  // double tap -> chord
+  const now=performance.now();
+  if(now-lastTapT<320){ playChord(y); lastTapT=0; }
+  else lastTapT=now;
+  // pipe?
+  const p=pipeAt(x,y);
+  if(p){ p.held=true; heldPipe=p; p.excite=1; heldPipeVoice=playPipe(p,true); fadeHint(); return; }
+  // string?
+  const {s,d}=nearestStringTo(y);
+  if(s && d<spacing*0.6){ pluck(s, (x-marginX)/(W-2*marginX), 1); }
+  fadeHint();
+}
+function onMove(e){
+  const {x,y}=evXY(e);
+  pointer.x=x; pointer.y=y;
+  if(!pointer.down) return;
+  if(heldPipe){ return; }
+  // crossing strings while dragging -> harp glissando
+  if(dragPrevY!=null){
+    const a=Math.min(dragPrevY,y), b=Math.max(dragPrevY,y);
+    for(const s of strings){
+      if(s.y>a-2 && s.y<b+2 && Math.abs(s.y - s._lastCross||999) ){
+        const speed=clamp(Math.abs(y-dragPrevY)/spacing,0.3,1.6);
+        if(s._cool===undefined||performance.now()-s._cool>70){
+          pluck(s,(x-marginX)/(W-2*marginX), 0.6+speed*0.4);
+          s._cool=performance.now();
+        }
+      }
+    }
+  }
+  dragPrevY=y;
+}
+function onUp(){
+  pointer.down=false; dragPrevY=null;
+  if(heldPipe){ heldPipe.held=false; heldPipe=null;
+    if(heldPipeVoice){ heldPipeVoice.release(); heldPipeVoice=null; } }
+}
+function playChord(y){
+  const {s}=nearestStringTo(y);
+  const root=s?s.idx:Math.floor(strings.length/2);
+  [0,2,4].forEach((off,k)=>{
+    const tgt=strings[clamp(root+off,0,strings.length-1)];
+    setTimeout(()=>pluck(tgt, 0.5+ (Math.random()*0.2-0.1), 0.9), k*55);
+  });
+}
+function fadeHint(){ const h=document.getElementById('hint'); h.style.opacity='0'; }
+
+cv.addEventListener('mousedown',onDown);
+window.addEventListener('mousemove',onMove,{passive:false});
+window.addEventListener('mouseup',onUp);
+cv.addEventListener('touchstart',onDown,{passive:false});
+window.addEventListener('touchmove',onMove,{passive:false});
+window.addEventListener('touchend',onUp);
+window.addEventListener('wheel',(e)=>{
+  tiltTarget = clamp(tiltTarget + e.deltaY*0.0009, -0.9, 0.9);
+},{passive:true});
+
+/* sound toggle */
+document.getElementById('sound').addEventListener('click',(e)=>{
+  e.stopPropagation(); setSound(!soundOn);
+});
+
+/* palette UI */
+const palWrap=document.getElementById('pal');
+PALETTES.forEach((p,i)=>{
+  const b=document.createElement('button');
+  b.style.background=`radial-gradient(circle at 35% 30%, ${p.cols[0]}, ${p.cols[2]})`;
+  b.style.color=p.cols[0];
+  b.setAttribute('aria-pressed', i===0?'true':'false');
+  b.title=p.name;
+  b.addEventListener('click',(e)=>{ e.stopPropagation(); setPalette(i); });
+  palWrap.appendChild(b);
+});
+function setPalette(i){
+  palI=i; PAL=PALETTES[i];
+  [...palWrap.children].forEach((c,k)=>c.setAttribute('aria-pressed',k===i?'true':'false'));
+}
+
+/* ---- ambient idle: gentle auto-pluck so it's alive without input ---- */
+let idleT=0, lastInput=performance.now();
+['mousedown','touchstart','wheel','keydown'].forEach(ev=>
+  window.addEventListener(ev,()=>{lastInput=performance.now();},{passive:true}));
+
+/* ============================================================
+   RENDER
+   ============================================================ */
+let t0=performance.now(), frame=0, fps=60, fpsAcc=0, fpsN=0;
+function draw(now){
+  const dt=Math.min(40, now-t0)/16.667; t0=now; frame++;
+  // smooth tilt
+  tilt = lerp(tilt, tiltTarget, 0.07);
+
+  // ---- background gradient + vignette ----
+  const g=ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,PAL.bg1); g.addColorStop(1,PAL.bg2);
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  // soft glow from center
+  const rg=ctx.createRadialGradient(W/2,H*0.42,0,W/2,H*0.42,Math.max(W,H)*0.7);
+  rg.addColorStop(0,'rgba(80,120,200,0.10)'); rg.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=rg; ctx.fillRect(0,0,W,H);
+
+  // ---- ambient dust (depth, drifts with tilt) ----
+  ctx.globalCompositeOperation='lighter';
+  for(const dp of dust){
+    const px = dp.x*W;
+    const py = dp.y*H + Math.sin(now*0.0002*dp.sp + dp.tw)*6*dp.z;
+    const pr=project(px,py);
+    const tw=0.25+0.55*(0.5+0.5*Math.sin(now*0.001*dp.sp+dp.tw));
+    ctx.beginPath();
+    ctx.arc(pr.x,pr.y, dp.z*1.3*pr.sc, 0, TAU);
+    ctx.fillStyle=hexA(PAL.dot, tw*0.4*dp.z);
+    ctx.fill();
+  }
+  ctx.globalCompositeOperation='source-over';
+
+  // ---- idle life ----
+  if(now-lastInput>4200 && now-idleT>1500){
+    idleT=now;
+    const s=strings[Math.floor(rand(0,strings.length))];
+    pluck(s, rand(0.2,0.8), 0.55);
+  }
+
+  ctx.globalCompositeOperation='lighter';
+
+  // ---- ORGAN PIPES (draw first, behind strings) ----
+  for(const p of pipes){
+    p.breath += 0.012*dt;
+    p.excite = Math.max(0, p.excite - 0.012*dt);
+    const breathe = 1 + Math.sin(p.breath)*0.012;
+    const exc = p.excite;
+    const col = PAL.cols[(p.idx) % PAL.cols.length];
+    const a=project(p.x, p.top), b=project(p.x, p.bot);
+    const w = p.w*0.5*(a.sc);
+    // pipe body
+    const pg=ctx.createLinearGradient(0,a.y,0,b.y);
+    pg.addColorStop(0, hexA(col, 0.04+exc*0.5));
+    pg.addColorStop(0.5, hexA(col, 0.02+exc*0.22));
+    pg.addColorStop(1, hexA(PAL.dot, 0.10+exc*0.3));
+    ctx.fillStyle=pg;
+    ctx.beginPath();
+    roundRectTop(ctx, p.x-w, a.y, w*2, (b.y-a.y), w*0.9);
+    ctx.fill();
+    // glowing rim
+    ctx.lineWidth=1+exc*2;
+    ctx.strokeStyle=hexA(col, 0.18+exc*0.7);
+    ctx.stroke();
+    // standing wave inside the pipe when excited
+    if(exc>0.02){
+      ctx.beginPath();
+      const len=b.y-a.y;
+      const modes = 1 + (p.idx%3);
+      for(let i=0;i<=24;i++){
+        const tt=i/24;
+        const yy=a.y+tt*len;
+        const env=Math.sin(tt*Math.PI*modes);
+        const xx=p.x + env*Math.sin(now*0.012*p.freq*0.02 + p.breath)*w*0.7*exc;
+        if(i===0)ctx.moveTo(xx,yy); else ctx.lineTo(xx,yy);
+      }
+      ctx.strokeStyle=hexA(PAL.dot, 0.35+exc*0.5);
+      ctx.lineWidth=1.4; ctx.stroke();
+    }
+    // breath puff at mouth
+    if(exc>0.05||Math.sin(p.breath)>0.96){
+      ctx.beginPath();
+      ctx.arc(p.x, a.y, w*(0.5+exc), 0, TAU);
+      ctx.fillStyle=hexA(col, 0.06+exc*0.18);
+      ctx.fill();
+    }
+  }
+
+  // ---- STRINGS ----
+  let maxRes=0;
+  for(const s of strings){
+    // envelope decay
+    if(s.amp>0.0008) s.amp *= Math.pow(0.985, dt*(0.6+s.decay));
+    else s.amp=0;
+    s.sym = Math.max(0, s.sym - 0.006*dt);
+    s.phase += dt*(0.18 + (s.midi-40)*0.012);
+    const A = s.amp;
+    const sym=s.sym;
+    maxRes=Math.max(maxRes, sym, A*0.5);
+    const col = PAL.cols[s.idx % PAL.cols.length];
+    const segs = SMALL?46:80;
+    const x0=marginX, x1=W-marginX, len=x1-x0;
+    // overtone content depends on pluck position
+    const P=s.pluckX;
+    // string baseline glow
+    const baseGlow = 0.05 + sym*0.25 + A*0.18;
+
+    // draw the vibrating string as standing-wave superposition
+    ctx.beginPath();
+    let prev=null;
+    for(let i=0;i<=segs;i++){
+      const u=i/segs;
+      const x = x0 + u*len;
+      // sum of first few modes; amplitude per mode from pluck shape
+      let disp=0;
+      const NM=5;
+      for(let n=1;n<=NM;n++){
+        const modeAmp = (Math.abs(Math.sin(n*Math.PI*P))/(n*n)) ;
+        disp += modeAmp * Math.sin(n*Math.PI*u) * Math.cos(s.phase*n + n*0.3);
+      }
+      // idle shimmer (always alive) + sympathetic pulse
+      const idle = Math.sin(u*Math.PI*(2+s.idx%3) + now*0.0016 + s.idx)*0.5
+                 + Math.sin(u*Math.PI*4 - now*0.0009 + s.idx*1.7)*0.28;
+      const y = s.y + disp*spacing*1.7*A + idle*spacing*0.18*(0.55+sym) ;
+      const pr=project(x,y);
+      if(i===0)ctx.moveTo(pr.x,pr.y);
+      else ctx.lineTo(pr.x,pr.y);
+    }
+    // luminous stroke (three passes: bloom halo + wide soft + thin bright)
+    if(A>0.04){
+      ctx.strokeStyle = hexA(col, A*0.10 + sym*0.05);
+      ctx.lineWidth = 12 + A*22;
+      ctx.lineCap='round';
+      ctx.stroke();
+    }
+    ctx.strokeStyle = hexA(col, baseGlow*0.6);
+    ctx.lineWidth = 5 + A*7;
+    ctx.lineCap='round';
+    ctx.stroke();
+    ctx.strokeStyle = hexA(col, 0.35 + A*0.6 + sym*0.3);
+    ctx.lineWidth = 1.1 + A*1.8;
+    ctx.stroke();
+
+    // harmonic nodes: bright dots at antinodes when ringing
+    if(A>0.06){
+      const NM=Math.min(5, s.harm+1);
+      for(let n=1;n<=NM;n++){
+        for(let k=1;k<n;k++){
+          const u=k/n; const x=x0+u*len;
+          const pr=project(x,s.y);
+          const pulse=0.5+0.5*Math.sin(now*0.01*n + k);
+          ctx.beginPath();
+          ctx.arc(pr.x,pr.y,(1.4+A*2.4)*pulse*pr.sc,0,TAU);
+          ctx.fillStyle=hexA(PAL.dot, A*0.5*pulse);
+          ctx.fill();
+        }
+      }
+    }
+    // endpoint anchors (the "frame" of the instrument)
+    for(const ex of [x0,x1]){
+      const pr=project(ex,s.y);
+      ctx.beginPath();
+      ctx.arc(pr.x,pr.y,2.2*pr.sc,0,TAU);
+      ctx.fillStyle=hexA(col, 0.5+A*0.5);
+      ctx.fill();
+    }
+  }
+
+  // ---- ripples (sympathetic shockwaves) ----
+  ctx.lineWidth=1.2;
+  for(let i=ripples.length-1;i>=0;i--){
+    const r=ripples[i];
+    r.r += (3.0+ r.r*0.04)*dt; r.life -= 0.016*dt;
+    if(r.life<=0){ ripples.splice(i,1); continue; }
+    const pr=project(r.x,r.y);
+    ctx.beginPath();
+    ctx.arc(pr.x,pr.y,r.r*pr.sc,0,TAU);
+    ctx.strokeStyle=hexA(r.col, r.life*0.4);
+    ctx.lineWidth=1.4*r.life;
+    ctx.stroke();
+  }
+
+  // ---- glints (pluck sparks) ----
+  for(let i=glints.length-1;i>=0;i--){
+    const p=glints[i];
+    p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy+=0.06*dt; p.vx*=0.97; p.life-=0.022*dt;
+    if(p.life<=0){ glints.splice(i,1); continue; }
+    const pr=project(p.x,p.y);
+    ctx.beginPath();
+    ctx.arc(pr.x,pr.y, p.sz*p.life*pr.sc,0,TAU);
+    ctx.fillStyle=hexA(p.col, p.life*0.9);
+    ctx.fill();
+  }
+
+  // ---- pointer aura ----
+  if(pointer.x>-900){
+    const pr={x:pointer.x,y:pointer.y};
+    const ar=ctx.createRadialGradient(pr.x,pr.y,0,pr.x,pr.y,46);
+    ar.addColorStop(0,hexA(PAL.dot,0.16)); ar.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=ar; ctx.beginPath(); ctx.arc(pr.x,pr.y,46,0,TAU); ctx.fill();
+  }
+
+  ctx.globalCompositeOperation='source-over';
+
+  // ---- readout: resonance ----
+  document.getElementById('rRes').textContent = Math.round(clamp(maxRes,0,1)*100)+'%';
+
+  // fps meter (lightweight, for cap awareness)
+  fpsAcc+=1000/Math.max(1,(now-(draw._p||now))); draw._p=now; fpsN++;
+  if(fpsN>=30){ fps=fpsAcc/fpsN; fpsAcc=0; fpsN=0; }
+
+  requestAnimationFrame(draw);
+}
+
+/* ---- small canvas helpers ---- */
+function hexA(hex,a){
+  // hex like #rrggbb
+  const h=hex.replace('#','');
+  const r=parseInt(h.substr(0,2),16),
+        g=parseInt(h.substr(2,2),16),
+        b=parseInt(h.substr(4,2),16);
+  return `rgba(${r},${g},${b},${clamp(a,0,1)})`;
+}
+function roundRectTop(c,x,y,w,h,r){
+  r=Math.min(r,w/2);
+  c.moveTo(x,y+h);
+  c.lineTo(x,y+r);
+  c.quadraticCurveTo(x,y, x+r,y);
+  c.lineTo(x+w-r,y);
+  c.quadraticCurveTo(x+w,y, x+w,y+r);
+  c.lineTo(x+w,y+h);
+  c.closePath();
+}
+
+/* ---- boot ---- */
+resize();
+// first-paint seed: a soft chord so the very first frame is rich & alive
+[2,4,6,8,10].forEach((i,k)=>{
+  if(strings[i]){ strings[i].amp=lerp(0.9,0.4,k/4); strings[i].sym=0.5; strings[i].pluckX=0.5; }
+});
+pipes.forEach((p,i)=>{ if(i%2===0) p.excite=0.4; });
+requestAnimationFrame(draw);
+
+/* ---- verification hooks (no effect on visuals) ---- */
+window.__aeolian = {
+  state(){ return {
+    strings:strings.length, pipes:pipes.length,
+    tilt:+tilt.toFixed(3), tiltTarget:+tiltTarget.toFixed(3),
+    soundOn, palette:PAL.name, palI,
+    maxAmp:Math.max(...strings.map(s=>s.amp)),
+    pluckIdx:lastPluckIdx, fps:Math.round(fps),
+    glints:glints.length, ripples:ripples.length,
+  };},
+  pluckAt(yFrac, xFrac=0.5){ const y=topY+yFrac*fieldH; const {s}=nearestStringTo(y); pluck(s,xFrac,1); return s.name; },
+  pluckIndex(i,xFrac=0.5){ const s=strings[clamp(i,0,strings.length-1)]; pluck(s,xFrac,1); return s.name; },
+  scroll(d){ tiltTarget=clamp(tiltTarget+d,-0.9,0.9); return tiltTarget; },
+  setPalette, setSound,
+  holdPipe(i){ const p=pipes[clamp(i,0,pipes.length-1)]; p.excite=1; p.held=true; return p.name; },
+};
+})();
+</script>
+</body>
+</html>

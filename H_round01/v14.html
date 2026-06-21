@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>liquid glass paperweight</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0a0907;cursor:none}
+  #gl{position:fixed;inset:0;width:100vw;height:100vh;display:block;touch-action:none}
+  #hint{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);
+    font:11px/1.4 ui-monospace,"SF Mono",Menlo,monospace;letter-spacing:.16em;
+    color:rgba(60,48,32,.7);text-shadow:0 1px 2px rgba(255,250,240,.6);
+    pointer-events:none;transition:opacity 1.2s;text-transform:uppercase;
+    mix-blend-mode:multiply;z-index:5}
+  @media (max-width:480px){#hint{font-size:9px;letter-spacing:.1em;bottom:16px}}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="hint">move · hold to press · right-drag to tilt · scroll page</div>
+<script>
+'use strict';
+/* ============================================================
+   "liquid glass paperweight" — a heavy round glass paperweight
+   resting on a sheet of handwritten manuscript paper, lit from
+   a window. content = canvas2d (the paper), optics = webgl.
+   variation on "glass on a monitor": surface is paper, lens is
+   a domed paperweight that magnifies & refracts the page.
+   ============================================================ */
+
+const DPR = Math.min(window.devicePixelRatio || 1, 1.75);
+let W = 0, H = 0;
+
+const glCanvas = document.getElementById('gl');
+const gl = glCanvas.getContext('webgl', { antialias:false, preserveDrawingBuffer:false });
+if (!gl) document.body.innerHTML = '<p style="color:#888;font:14px sans-serif;padding:2em">WebGL unavailable.</p>';
+
+/* ------------------------------------------------------------
+   SCENE — the page. logical 1600x1100, cover-scaled, faintly
+   tilted like a sheet photographed on a desk. handwritten
+   manuscript: title, ruled lines of ink "writing", a margin
+   doodle, a wax seal / red stamp, coffee ring, paperclip.
+   ------------------------------------------------------------ */
+const scene = document.createElement('canvas');
+const sx = scene.getContext('2d');
+const LW = 1600, LH = 1100;
+let scrollY = 0;
+const SCROLL_MAX = 760;
+
+function tw(c, text, x, y, size, color, font, align){
+  c.fillStyle = color;
+  c.font = (font || ('400 ' + size + 'px')) + ' Georgia,"Times New Roman",serif';
+  c.textAlign = align || 'left';
+  c.fillText(text, x, y);
+  c.textAlign = 'left';
+}
+function rr(c, x, y, w, h, r){
+  c.beginPath();
+  c.moveTo(x+r, y); c.arcTo(x+w, y, x+w, y+h, r); c.arcTo(x+w, y+h, x, y+h, r);
+  c.arcTo(x, y+h, x, y, r); c.arcTo(x, y, x+w, y, r); c.closePath();
+}
+
+/* deterministic rng for stable, reproducible ink strokes */
+function mkRand(seed){ let s = seed >>> 0; return () => (s = (s*1664525 + 1013904223) >>> 0) / 4294967296; }
+
+/* a single wobbly "handwritten" ink line built from cursive arcs */
+function inkLine(c, x, y, w, amp, rnd, col, lw){
+  c.strokeStyle = col; c.lineWidth = lw; c.lineCap = 'round'; c.lineJoin = 'round';
+  c.beginPath();
+  let cx = x, baseY = y;
+  c.moveTo(cx, baseY);
+  const step = 13 + rnd()*5;
+  while (cx < x + w){
+    const up = baseY - (amp*0.6 + rnd()*amp);
+    const dn = baseY + (rnd()*amp*0.5);
+    const midx = cx + step*0.5;
+    c.quadraticCurveTo(midx, up, cx + step, baseY - rnd()*2);
+    c.quadraticCurveTo(midx + step*0.3, dn, cx + step*1.0, baseY);
+    cx += step;
+  }
+  c.stroke();
+}
+
+/* a block of ruled "writing" lines, returns bottom y */
+function inkParagraph(c, x, y, width, lines, rnd, indentFirst){
+  const lh = 46;
+  for (let i = 0; i < lines; i++){
+    const ly = y + i*lh;
+    // last line of a paragraph is short
+    const lastShort = (i === lines-1) ? (0.35 + rnd()*0.35) : (0.86 + rnd()*0.12);
+    const xoff = (i === 0 && indentFirst) ? 48 : 0;
+    inkLine(c, x + xoff, ly, (width - xoff) * lastShort, 6.5, rnd, 'rgba(30,38,66,0.82)', 2.0);
+  }
+  return y + lines*lh;
+}
+
+function drawScene(){
+  scene.width = W; scene.height = H;
+  const c = sx;
+
+  // ---- desk surface behind the paper (dark walnut) ----
+  const dg = c.createLinearGradient(0, 0, W, H);
+  dg.addColorStop(0, '#2a1d12'); dg.addColorStop(0.5, '#3a2818'); dg.addColorStop(1, '#1d1409');
+  c.fillStyle = dg; c.fillRect(0, 0, W, H);
+  // wood grain streaks
+  c.globalAlpha = 0.10;
+  const wr = mkRand(7);
+  for (let i = 0; i < 60; i++){
+    c.strokeStyle = wr() > 0.5 ? '#000' : '#6b4a2a';
+    c.lineWidth = 0.6 + wr()*2.4;
+    const yy = wr()*H;
+    c.beginPath(); c.moveTo(0, yy);
+    c.bezierCurveTo(W*0.33, yy + (wr()-0.5)*40, W*0.66, yy + (wr()-0.5)*40, W, yy + (wr()-0.5)*30);
+    c.stroke();
+  }
+  c.globalAlpha = 1;
+
+  // cover-scale logical page onto canvas with a slight tilt (filmed on desk)
+  const sc = Math.max(W / LW, H / LH) * 1.02;
+  c.save();
+  c.translate(W/2, H/2); c.rotate(-0.018); c.scale(sc, sc); c.translate(-LW/2, -LH/2);
+
+  // ---- the sheet of paper ----
+  const PX = 120, PY = 70, PW = LW - 240, PH = LH - 140;
+  // drop shadow of paper on desk
+  c.save();
+  c.shadowColor = 'rgba(0,0,0,0.55)'; c.shadowBlur = 60; c.shadowOffsetX = 18; c.shadowOffsetY = 40;
+  rr(c, PX, PY, PW, PH, 6);
+  c.fillStyle = '#efe7d4'; c.fill();
+  c.restore();
+
+  // paper base: warm aged cream with vertical fibre gradient
+  const pg = c.createLinearGradient(PX, PY, PX, PY + PH);
+  pg.addColorStop(0, '#fbf5e6'); pg.addColorStop(0.5, '#f6efdc'); pg.addColorStop(1, '#efe6cf');
+  rr(c, PX, PY, PW, PH, 6); c.save(); c.clip();
+  c.fillStyle = pg; c.fillRect(PX, PY, PW, PH);
+
+  // subtle paper grain / fibre mottle
+  const fr = mkRand(101);
+  c.globalAlpha = 0.05;
+  for (let i = 0; i < 900; i++){
+    const gx = PX + fr()*PW, gy = PY + fr()*PH;
+    c.fillStyle = fr() > 0.5 ? '#000' : '#c9a';
+    c.fillRect(gx, gy, 1 + fr()*2, 1 + fr()*2);
+  }
+  c.globalAlpha = 1;
+
+  // aging vignette on the paper edges (foxing)
+  const ag = c.createRadialGradient(PX+PW/2, PY+PH/2, PH*0.35, PX+PW/2, PY+PH/2, PH*0.85);
+  ag.addColorStop(0, 'rgba(180,140,90,0)'); ag.addColorStop(1, 'rgba(150,110,60,0.22)');
+  c.fillStyle = ag; c.fillRect(PX, PY, PW, PH);
+
+  // foxing spots
+  const xr = mkRand(53);
+  for (let i = 0; i < 22; i++){
+    const fx = PX + 30 + xr()*(PW-60), fy = PY + 30 + xr()*(PH-60), frr = 4 + xr()*16;
+    const fg = c.createRadialGradient(fx, fy, 0, fx, fy, frr);
+    fg.addColorStop(0, 'rgba(150,95,40,0.18)'); fg.addColorStop(1, 'rgba(150,95,40,0)');
+    c.fillStyle = fg; c.beginPath(); c.arc(fx, fy, frr, 0, 7); c.fill();
+  }
+
+  // red left margin rule + light blue horizontal rules (manuscript / notebook)
+  const contentTop = PY + 60 - scrollY;
+  c.strokeStyle = 'rgba(70,120,200,0.28)'; c.lineWidth = 1.2;
+  for (let yy = contentTop + 30; yy < PY + PH - 20; yy += 46){
+    if (yy < PY + 100) continue;
+    c.beginPath(); c.moveTo(PX + 40, yy); c.lineTo(PX + PW - 40, yy); c.stroke();
+  }
+  const marginX = PX + 130;
+  c.strokeStyle = 'rgba(190,70,70,0.45)'; c.lineWidth = 1.6;
+  c.beginPath(); c.moveTo(marginX, PY + 20); c.lineTo(marginX, PY + PH - 20); c.stroke();
+
+  // ---- ink content (scrolls) ----
+  c.save();
+  c.beginPath(); c.rect(PX + 8, PY + 90, PW - 16, PH - 110); c.clip();
+
+  const COLX = marginX + 36, COLW = PX + PW - 60 - COLX;
+  let y = contentTop + 56;
+
+  // title — large serif, hand-inked feel
+  tw(c, 'On the Optics of Still Water', COLX, y, 54, 'rgba(28,34,58,0.92)', '600 54px');
+  y += 26;
+  c.strokeStyle = 'rgba(28,34,58,0.5)'; c.lineWidth = 2;
+  c.beginPath(); c.moveTo(COLX, y); c.lineTo(COLX + 440, y); c.stroke();
+  y += 18;
+  tw(c, 'a manuscript, pressed beneath glass', COLX, y, 22, 'rgba(120,90,60,0.85)', 'italic 400 22px');
+  y += 46;
+
+  // body paragraphs of "handwriting"
+  const r1 = mkRand(2026);
+  y = inkParagraph(c, COLX, y, COLW, 5, r1, true);  y += 24;
+  y = inkParagraph(c, COLX, y, COLW, 4, r1, true);  y += 24;
+
+  // a small inline diagram: a lens with refraction rays
+  (function diagram(dx, dy){
+    c.strokeStyle = 'rgba(40,60,110,0.7)'; c.lineWidth = 1.6; c.lineCap = 'round';
+    // lens (ellipse)
+    c.beginPath(); c.ellipse(dx, dy, 16, 46, 0, 0, 7); c.stroke();
+    // incoming + refracted rays
+    for (let i = -2; i <= 2; i++){
+      const ry = dy + i*18;
+      c.beginPath(); c.moveTo(dx - 120, ry); c.lineTo(dx, ry);
+      c.lineTo(dx + 130, dy + i*5); c.stroke();
+    }
+    // focal point
+    c.fillStyle = 'rgba(190,70,70,0.8)';
+    c.beginPath(); c.arc(dx + 130, dy, 3.5, 0, 7); c.fill();
+    tw(c, 'fig. 1 — convergence', dx - 110, dy + 78, 16, 'rgba(120,90,60,0.8)', 'italic 400 16px');
+  })(COLX + COLW*0.5, y + 56);
+  y += 150;
+
+  y = inkParagraph(c, COLX, y, COLW, 6, r1, true);  y += 24;
+  y = inkParagraph(c, COLX, y, COLW, 3, r1, false);
+
+  c.restore(); // unclip content
+  c.restore(); // unclip paper
+
+  // ---- objects ON the paper (don't scroll: they sit on the surface) ----
+  // wax seal / red stamp, lower-right of page
+  (function stamp(cx, cy){
+    c.save();
+    c.translate(cx, cy); c.rotate(-0.12);
+    // ink ring (double circle)
+    c.strokeStyle = 'rgba(170,40,40,0.78)'; c.lineWidth = 5;
+    c.beginPath(); c.arc(0, 0, 56, 0, 7); c.stroke();
+    c.lineWidth = 2.4; c.beginPath(); c.arc(0, 0, 46, 0, 7); c.stroke();
+    // star in center
+    c.fillStyle = 'rgba(170,40,40,0.72)';
+    c.beginPath();
+    for (let i = 0; i < 10; i++){
+      const a = -Math.PI/2 + i*Math.PI/5, r = (i%2 ? 12 : 26);
+      const px = Math.cos(a)*r, py = Math.sin(a)*r;
+      i ? c.lineTo(px, py) : c.moveTo(px, py);
+    }
+    c.closePath(); c.fill();
+    // arc text feel
+    c.fillStyle = 'rgba(170,40,40,0.7)';
+    c.font = '700 13px Georgia,serif';
+    c.textAlign = 'center';
+    for (const [i, ch] of [...'· APPROVED ·'].entries()){
+      const a = -Math.PI/2 + (i - 5.5) * 0.22;
+      c.save(); c.rotate(a); c.translate(0, -38); c.fillText(ch, 0, 0); c.restore();
+    }
+    c.textAlign = 'left';
+    c.restore();
+  })(PX + PW - 200, PY + PH - 160);
+
+  // coffee ring stain, upper area
+  (function coffee(cx, cy, rad){
+    c.save();
+    c.strokeStyle = 'rgba(120,80,40,0.30)'; c.lineWidth = 9;
+    c.beginPath(); c.arc(cx, cy, rad, 0, 7); c.stroke();
+    c.strokeStyle = 'rgba(140,95,50,0.16)'; c.lineWidth = 18;
+    c.beginPath(); c.arc(cx, cy, rad-2, 0.6, 4.0); c.stroke();
+    const cg = c.createRadialGradient(cx, cy, rad*0.4, cx, cy, rad);
+    cg.addColorStop(0, 'rgba(150,100,55,0)'); cg.addColorStop(1, 'rgba(150,100,55,0.07)');
+    c.fillStyle = cg; c.beginPath(); c.arc(cx, cy, rad, 0, 7); c.fill();
+    c.restore();
+  })(PX + 180, PY + 150, 64);
+
+  // metal paperclip on top-right corner of the page
+  (function clip(cx, cy){
+    c.save();
+    c.translate(cx, cy); c.rotate(0.18);
+    c.strokeStyle = '#9aa1a8'; c.lineWidth = 5; c.lineCap = 'round';
+    c.shadowColor = 'rgba(0,0,0,0.3)'; c.shadowBlur = 6; c.shadowOffsetY = 3;
+    c.beginPath();
+    c.moveTo(0, -28); c.lineTo(0, 28); c.arc(8, 28, 8, Math.PI, 0, false);
+    c.lineTo(16, -20); c.arc(8, -20, 8, 0, Math.PI, true);
+    c.lineTo(8, 22);
+    c.stroke();
+    c.strokeStyle = '#cdd3d8'; c.lineWidth = 1.5; c.shadowBlur = 0;
+    c.beginPath(); c.moveTo(-1.5, -24); c.lineTo(-1.5, 24); c.stroke();
+    c.restore();
+  })(PX + PW - 120, PY + 30);
+
+  // window light wash falling across the page (warm, from upper-left)
+  const lw = c.createLinearGradient(PX, PY, PX + PW*0.9, PY + PH*0.9);
+  lw.addColorStop(0, 'rgba(255,245,210,0.22)');
+  lw.addColorStop(0.4, 'rgba(255,245,210,0.04)');
+  lw.addColorStop(1, 'rgba(40,30,10,0.10)');
+  c.fillStyle = lw;
+  rr(c, PX, PY, PW, PH, 6); c.fill();
+
+  c.restore(); // untilt
+}
+
+/* ------------------------------------------------------------
+   WEBGL — the optics of a domed glass paperweight:
+   strong magnification toward center, edge compression,
+   refraction ring, specular highlights, caustics on the paper,
+   thick-glass body shading, contact shadow, soft DOF.
+   ------------------------------------------------------------ */
+const VS = `
+attribute vec2 aP;
+void main(){ gl_Position = vec4(aP, 0.0, 1.0); }`;
+
+const FS = `
+precision highp float;
+uniform sampler2D uScene;
+uniform vec2  uRes, uGlass, uTilt;
+uniform float uR, uTime, uPress, uBlur, uExpo, uLightX, uLightY;
+
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+
+vec3 scn(vec2 uv){
+  return texture2D(uScene, clamp(uv / uRes, vec2(0.002), vec2(0.998))).rgb;
+}
+float gband(float x, float c, float w){ float d = (x - c) / w; return exp(-d * d); }
+
+void main(){
+  vec2 fc = gl_FragCoord.xy;
+  vec2 d  = fc - uGlass;
+
+  /* tilt: a paperweight seen at an angle foreshortens to an ellipse */
+  float tA = length(uTilt);
+  vec2 tD = tA > 0.001 ? uTilt / tA : vec2(1.0, 0.0);
+  vec2 pD = vec2(-tD.y, tD.x);
+  float squash = 1.0 - 0.38 * tA;
+  vec2 ds = tD * (dot(d, tD) / squash) + pD * dot(d, pD);
+  float r = length(ds);
+  vec2 dir = r > 0.5 ? ds / r : vec2(1.0, 0.0);
+  vec2 tdir = vec2(-dir.y, dir.x);
+  float x = r / uR;
+
+  float innerX = 0.84;
+  float w    = smoothstep(innerX - 0.06, innerX + 0.04, x);   // rim weight
+  float wOut = smoothstep(1.0, 1.06, x);                      // outside weight
+  float q = clamp(x / innerX, 0.0, 1.0);
+
+  /* domed-glass magnification: strong, smooth in the center,
+     compressing hard toward the rim (a sphere/dome lens) */
+  float magA = mix(0.30, 0.24, uPress);          // central magnification (smaller = bigger)
+  float q5 = q*q*q*q*q;
+  float rsG = uR * (magA * q + (1.04 - magA) * q5);
+  /* tilted dome: asymmetric magnification + prism deviation toward tilt */
+  float asym = 1.0 + 0.34 * tA * dot(dir, tD);
+  vec2 refr = dir * mix(rsG, uR * 1.04, w) * asym + uTilt * uR * 0.5;
+
+  /* anisotropic DOF blur (source-space px): page seen through thick glass */
+  float q4 = q*q*q*q;
+  float radial = mix(mix(q4 * uR * 0.10, uR * 0.018, w), 0.0, wOut) + uBlur + 0.6;
+  float tang   = mix(mix(q*q*q * uR * 0.04, uR * 0.16, w), 0.0, wOut) + uBlur + 0.6;
+
+  vec2 srcBase = uGlass + mix(refr, d, wOut);
+  vec3 col = vec3(0.0);
+  #define TAP(rx, ty) col += scn(srcBase + dir * ((rx) * radial) + tdir * ((ty) * tang));
+  TAP( 0.00,  0.00) TAP( 0.62,  0.25) TAP(-0.58,  0.30) TAP( 0.21, -0.64)
+  TAP(-0.25, -0.61) TAP( 0.45,  0.68) TAP(-0.70, -0.15) TAP( 0.86, -0.18)
+  TAP(-0.41,  0.74) TAP( 0.05,  0.94) TAP(-0.88,  0.35) TAP( 0.33,  0.13)
+  TAP(-0.18,  0.20) TAP( 0.69, -0.55)
+  col /= 14.0;
+
+  float inG = (1.0 - wOut);          // inside glass (incl. rim)
+  float inI = inG * (1.0 - w);       // inner refraction zone only
+
+  /* chromatic aberration, growing toward the rim and when tilted */
+  float caW = 0.45 * smoothstep(0.28, 1.0, x) * (1.0 + 1.3 * tA) * inG;
+  caW = min(caW, 0.8);
+  if (caW > 0.01){
+    vec3 cR = scn(uGlass + refr * 0.975);
+    vec3 cB = scn(uGlass + refr * 1.025);
+    col.r = mix(col.r, cR.r, caW);
+    col.b = mix(col.b, cB.b, caW);
+  }
+
+  /* glass tint: very slightly cool & brighter (clear crystal, not milky) */
+  col = mix(col, col * 1.04 + vec3(0.01, 0.012, 0.02), inG);
+  col += inI * 0.05 * (1.0 - x * x);            // soft center bloom (lens gather)
+
+  /* faint radial caustic streaks inside, converging to center */
+  float th = atan(d.y, d.x);
+  float cau = 0.5 * sin(th * 11.0 + 1.6) + 0.5 * sin(th * 27.0 + 0.4) + 0.35 * sin(th * 6.0 - 1.0);
+  col += cau * 0.045 * q4 * inI;
+
+  /* rim: thick glass wall — concentric refraction rings + specular arcs */
+  float rim = w * (1.0 - wOut);
+  col = mix(col, col * 0.40, rim * 0.85);                       // darker dense glass at the wall
+  float bands = gband(x, 0.870, 0.018) * 0.80
+              + gband(x, 0.935, 0.013) * 0.55
+              + gband(x, 0.985, 0.009) * 0.80;
+  /* specular arcs from the window, biased to upper-left (light dir) */
+  float la = atan(uLightY, uLightX);
+  float arc = pow(max(cos(th - la), 0.0), 6.0)
+            + 0.7 * pow(max(cos(th - la + 0.6), 0.0), 12.0)
+            + 0.45 * pow(max(cos(th - la - 2.6), 0.0), 14.0);
+  col += rim * bands * (0.14 + 0.70 * arc);
+  col *= mix(1.0, 0.55, rim * gband(x, 1.0, 0.012));            // dark outer lip
+  col += inI * 0.16 * gband(x, 0.835, 0.012);                   // bright inner ring (total internal refl.)
+
+  /* big soft window-reflection highlight on the dome, toward the light */
+  vec2 hp = uGlass + vec2(uLightX, uLightY) * uR * 0.42 + uTilt * uR * 0.5;
+  vec2 hd = fc - hp;
+  col += exp(-dot(hd, hd) / (uR * uR * 0.10)) * (0.30 + 0.10 * uPress) * inG;
+  /* tiny hot specular pinpoint */
+  vec2 hp2 = uGlass + vec2(uLightX, uLightY) * uR * 0.55;
+  vec2 hd2 = fc - hp2;
+  col += exp(-dot(hd2, hd2) / (uR * uR * 0.0025)) * 0.9 * inG;
+
+  /* a thin crescent of brightness on the far rim (glass edge catching light) */
+  col += inG * 0.22 * gband(x, 0.96, 0.03) * pow(max(cos(th - la + 3.14159), 0.0), 4.0);
+
+  /* ---- caustic + contact shadow CAST ON THE PAPER (outside the glass) ---- */
+  /* soft drop shadow hugging the glass, offset away from the light */
+  vec2 sdc = uGlass - vec2(uLightX, uLightY) * uR * 0.18;
+  float sdr = length(fc - sdc) / uR;
+  col *= 1.0 - (0.34 - 0.10 * uPress) * gband(sdr, 1.06, 0.10) * wOut;
+  /* bright focused caustic ring just outside, on the light side */
+  vec2 cac = uGlass + vec2(uLightX, uLightY) * uR * 0.10;
+  float cacr = length(fc - cac) / uR;
+  col += vec3(1.02, 0.99, 0.86) * 0.16 * gband(cacr, 1.12, 0.05) * wOut
+                                  * pow(max(cos(th - la), 0.0), 1.5);
+  /* shimmering caustic speckle on the lit side just outside the rim */
+  float spk = gband(x, 1.14, 0.10) * wOut * smoothstep(0.0, 0.5, cos(th - la));
+  float sp = sin(th*22.0 + uTime*1.6) * sin(x*60.0 - uTime) * 0.5 + 0.5;
+  col += vec3(1.0, 0.96, 0.82) * 0.10 * spk * sp;
+
+  /* ---- gentle camera post (still photo on a desk) ---- */
+  col *= uExpo;
+  vec2 vc = (fc - uRes * 0.5) / (uRes * 0.5);
+  col *= 1.0 - 0.26 * pow(dot(vc, vc) * 0.55, 1.3);            // vignette
+  float gn = hash(fc + fract(uTime * 0.21) * 13.0);
+  col += (gn - 0.5) * 0.022;                                    // fine film grain
+  col = clamp(col, 0.0, 1.0);
+  col = pow(col, vec3(0.96));                                   // slight lift
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
+function compile(type, src){
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+const aP = gl.getAttribLocation(prog, 'aP');
+gl.enableVertexAttribArray(aP);
+gl.vertexAttribPointer(aP, 2, gl.FLOAT, false, 0, 0);
+
+const U = {};
+for (const n of ['uScene','uRes','uGlass','uTilt','uR','uTime','uPress','uBlur','uExpo','uLightX','uLightY'])
+  U[n] = gl.getUniformLocation(prog, n);
+
+function makeTex(unit){
+  const t = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0 + unit);
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  return t;
+}
+const sceneTex = makeTex(0);
+gl.uniform1i(U.uScene, 0);
+
+function uploadScene(){
+  gl.activeTexture(gl.TEXTURE0);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, scene);
+}
+
+/* ------------------------------------------------------------ state */
+const mouse = { x: 0, y: 0 };          // CSS px, y-down
+const glass = { x: 0, y: 0 };          // device px, y-up
+const tilt = { x: 0, y: 0 };
+const tiltManual = { x: 0, y: 0 };
+const tiltVel = { x: 0, y: 0 };
+let rightDrag = null;
+let pressTarget = 0, press = 0;
+let needScene = true;
+// light direction (upper-left), normalized-ish in screen space (y-up)
+const LIGHT = { x: -0.62, y: 0.78 };
+
+function resize(){
+  W = Math.round(innerWidth * DPR); H = Math.round(innerHeight * DPR);
+  glCanvas.width = W; glCanvas.height = H;
+  gl.viewport(0, 0, W, H);
+  if (!mouse.x){ mouse.x = innerWidth * 0.5; mouse.y = innerHeight * 0.5; glass.x = W * 0.5; glass.y = H * 0.5; }
+  needScene = true;
+}
+addEventListener('resize', resize); resize();
+
+addEventListener('contextmenu', e => e.preventDefault());
+addEventListener('pointermove', e => {
+  mouse.x = e.clientX; mouse.y = e.clientY;
+  if (rightDrag){
+    tiltManual.x = rightDrag.tx + (e.clientX - rightDrag.x) * 0.0035;
+    tiltManual.y = rightDrag.ty + (rightDrag.y - e.clientY) * 0.0035;
+    const m = Math.hypot(tiltManual.x, tiltManual.y);
+    if (m > 0.5){ tiltManual.x *= 0.5 / m; tiltManual.y *= 0.5 / m; }
+  }
+});
+addEventListener('pointerdown', e => {
+  if (e.button === 2) rightDrag = { x: e.clientX, y: e.clientY, tx: tiltManual.x, ty: tiltManual.y };
+  else pressTarget = 1;
+});
+addEventListener('pointerup', e => {
+  if (e.button === 2) rightDrag = null;
+  else pressTarget = 0;
+});
+addEventListener('wheel', e => {
+  scrollY = Math.max(0, Math.min(SCROLL_MAX, scrollY + e.deltaY * 0.7));
+  needScene = true;
+}, { passive: true });
+setTimeout(() => { const h = document.getElementById('hint'); if (h) h.style.opacity = '0'; }, 5200);
+
+function frame(tms){
+  const t = tms * 0.001;
+  if (needScene){ drawScene(); uploadScene(); needScene = false; }
+
+  // glass follows the mouse with a little physical lag (heavy object)
+  const tx = mouse.x * DPR;
+  const ty = (innerHeight - mouse.y) * DPR;
+  const pgx = glass.x, pgy = glass.y;
+  glass.x += (tx - glass.x) * 0.14;
+  glass.y += (ty - glass.y) * 0.14;
+  press += (pressTarget - press) * 0.10;
+
+  // tilt: glass leans against its motion + manual right-drag
+  const vk = -0.008 / DPR;
+  tiltVel.x += ((glass.x - pgx) * vk - tiltVel.x) * 0.16;
+  tiltVel.y += ((glass.y - pgy) * vk - tiltVel.y) * 0.16;
+  if (!rightDrag){ tiltManual.x *= 0.95; tiltManual.y *= 0.95; }
+  let ttx = tiltManual.x + tiltVel.x, tty = tiltManual.y + tiltVel.y;
+  const tm = Math.hypot(ttx, tty);
+  if (tm > 0.5){ ttx *= 0.5 / tm; tty *= 0.5 / tm; }
+  tilt.x += (ttx - tilt.x) * 0.12;
+  tilt.y += (tty - tilt.y) * 0.12;
+
+  const R = Math.min(W, H) * (0.30 + press * 0.02);
+
+  // very gentle focus breathing (still object, almost steady)
+  const blur = Math.max(0.0, 0.5 + 0.4 * Math.sin(t * 0.5)) * DPR;
+  // exposure barely re-metering
+  const expo = 1.0 + 0.02 * Math.sin(t * 0.35) - press * 0.04;
+
+  gl.uniform2f(U.uRes, W, H);
+  gl.uniform2f(U.uGlass, glass.x, glass.y);
+  gl.uniform2f(U.uTilt, tilt.x, tilt.y);
+  gl.uniform1f(U.uR, R);
+  gl.uniform1f(U.uTime, t);
+  gl.uniform1f(U.uPress, press);
+  gl.uniform1f(U.uBlur, blur);
+  gl.uniform1f(U.uExpo, expo);
+  gl.uniform1f(U.uLightX, LIGHT.x);
+  gl.uniform1f(U.uLightY, LIGHT.y);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>夜 — Fireworks</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#04060f; }
+  body { font-family: "Helvetica Neue", -apple-system, sans-serif; -webkit-user-select:none; user-select:none; touch-action:none; }
+  #stage { position:fixed; inset:0; display:block; }
+  /* hint UI — part of first paint, fades on first interaction */
+  #hud {
+    position:fixed; left:0; right:0; bottom:22px; text-align:center;
+    pointer-events:none; z-index:5;
+    color:rgba(255,255,255,.62); letter-spacing:.34em; font-size:11px;
+    text-transform:uppercase; font-weight:300;
+    transition:opacity 1.4s ease; mix-blend-mode:screen;
+  }
+  #hud b { color:rgba(255,255,255,.9); font-weight:400; }
+  #sig {
+    position:fixed; top:20px; left:24px; z-index:5; pointer-events:none;
+    color:rgba(255,255,255,.5); font-size:12px; letter-spacing:.5em;
+    font-weight:300; mix-blend-mode:screen;
+  }
+  #sig small { display:block; font-size:9px; letter-spacing:.32em; margin-top:5px; color:rgba(255,255,255,.3); }
+  .dim { opacity:0 !important; }
+  @media (max-width:520px){
+    #hud { font-size:9px; letter-spacing:.22em; bottom:16px; }
+    #sig { font-size:10px; top:16px; left:16px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="sig">夜 · YORU<small>FIREWORKS OVER STILL WATER</small></div>
+<div id="hud"><b>탭 / 클릭</b> 으로 쏘아올리기 &nbsp;·&nbsp; <b>드래그</b> 로 중력 휘기 &nbsp;·&nbsp; <b>스크롤</b> 로 하늘 기울이기</div>
+<script>
+(() => {
+"use strict";
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', { alpha:false });
+const hud = document.getElementById('hud');
+
+let W=0,H=0,DPR=1, horizon=0;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = Math.floor(W*DPR); cv.height = Math.floor(H*DPR);
+  cv.style.width = W+'px'; cv.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  horizon = H*0.74;           // water line for reflection
+  buildStars();
+}
+window.addEventListener('resize', resize);
+
+// ---------- utilities ----------
+const TAU = Math.PI*2;
+const rnd = (a=1,b)=> b===undefined ? Math.random()*a : a+Math.random()*(b-a);
+const pick = a => a[(Math.random()*a.length)|0];
+const clamp = (v,a,b)=> v<a?a:v>b?b:v;
+
+// HSL helpers — we keep colors as [h,s,l] and convert lazily
+function hsl(h,s,l,a){ return `hsla(${h|0},${s|0}%,${l|0}%,${a})`; }
+
+// ---------- palettes (curated, shift over time) ----------
+const PALETTES = [
+  { name:'sakura', hues:[330,348,8,300,42], sat:90 },
+  { name:'aurora', hues:[150,180,200,260,95], sat:88 },
+  { name:'ember',  hues:[14,28,40,52,2], sat:96 },
+  { name:'royal',  hues:[265,225,290,200,330], sat:90 },
+  { name:'gold',   hues:[44,38,50,30,55], sat:95 },
+  { name:'ice',    hues:[195,210,225,180,260], sat:82 },
+];
+let palIdx = (Math.random()*PALETTES.length)|0;
+let palT = 0;
+
+// ---------- star field (parallax) ----------
+let stars=[];
+function buildStars(){
+  stars.length=0;
+  const n = Math.min(260, Math.floor((W*H)/7000));
+  for(let i=0;i<n;i++){
+    stars.push({
+      x: rnd(W), y: rnd(horizon),
+      z: rnd(0.2,1),               // depth → parallax + size
+      tw: rnd(TAU), ts: rnd(0.6,2.2)
+    });
+  }
+}
+
+// ---------- interaction state ----------
+const pointer = { x:-1e4, y:-1e4, active:false, down:false, vx:0, vy:0, lx:0, ly:0 };
+let tilt = 0, tiltTarget = 0;     // scroll-driven sky tilt
+let interacted = false;
+function firstTouch(){ if(!interacted){ interacted=true; hud.classList.add('dim'); } }
+
+// ---------- particle pools ----------
+const sparks = [];   // burst particles
+const trails = [];   // rocket trails (rising)
+const rockets = [];  // ascending shells
+const embers = [];   // floating ground glow / smoke
+const flashes = [];  // burst light flashes
+
+const MAX_SPARKS = 2600;
+
+// ---------- audio (procedural, lazy) ----------
+let AC=null, master=null;
+function audioInit(){
+  if(AC) return;
+  try{
+    AC = new (window.AudioContext||window.webkitAudioContext)();
+    master = AC.createGain(); master.gain.value = 0.55; master.connect(AC.destination);
+  }catch(e){ AC=null; }
+}
+let noiseBuf=null;
+function getNoise(){
+  if(noiseBuf) return noiseBuf;
+  const len = AC.sampleRate*1.2;
+  noiseBuf = AC.createBuffer(1,len,AC.sampleRate);
+  const d = noiseBuf.getChannelData(0);
+  for(let i=0;i<len;i++) d[i]=Math.random()*2-1;
+  return noiseBuf;
+}
+function boom(power){
+  if(!AC) return;
+  const t = AC.currentTime;
+  // low thump
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type='sine'; o.frequency.setValueAtTime(120,t); o.frequency.exponentialRampToValueAtTime(38,t+0.32);
+  g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(0.9*power,t+0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001,t+0.5);
+  o.connect(g); g.connect(master); o.start(t); o.stop(t+0.55);
+  // crackle / noise burst
+  const src = AC.createBufferSource(); src.buffer=getNoise();
+  const bp = AC.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=1700; bp.Q.value=0.7;
+  const ng = AC.createGain();
+  ng.gain.setValueAtTime(0.0001,t); ng.gain.exponentialRampToValueAtTime(0.5*power,t+0.02);
+  ng.gain.exponentialRampToValueAtTime(0.0001,t+0.9);
+  src.connect(bp); bp.connect(ng); ng.connect(master); src.start(t); src.stop(t+1.0);
+}
+function launchSfx(){
+  if(!AC) return;
+  const t=AC.currentTime;
+  const o=AC.createOscillator(), g=AC.createGain();
+  o.type='triangle'; o.frequency.setValueAtTime(360,t); o.frequency.exponentialRampToValueAtTime(1200,t+0.5);
+  g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(0.06,t+0.05);
+  g.gain.exponentialRampToValueAtTime(0.0001,t+0.6);
+  o.connect(g); g.connect(master); o.start(t); o.stop(t+0.62);
+}
+
+// ---------- launch a rocket ----------
+function launch(tx, ty){
+  const sx = tx!==undefined ? tx + rnd(-30,30) : rnd(W*0.15, W*0.85);
+  const targetY = ty!==undefined ? ty : rnd(H*0.12, H*0.44);
+  const startY = horizon - rnd(2,20);
+  // velocity so apex roughly hits targetY
+  const dist = startY - targetY;
+  const vy = -Math.sqrt(2*0.06*dist) - rnd(0.4,1.4);
+  rockets.push({
+    x:sx, y:startY, px:sx, py:startY,
+    vx: (tx!==undefined? (tx - sx)*0.012 : rnd(-0.5,0.5)),
+    vy: vy,
+    targetY, life:0,
+    hue: pick(PALETTES[palIdx].hues),
+    type: pick(['peony','willow','chrys','ring','peony','peony','double','heart','strobe'])
+  });
+  launchSfx();
+}
+
+// ---------- explosion shapes ----------
+function explode(x,y,hue,type){
+  const pal = PALETTES[palIdx];
+  const power = clamp((H-y)/H + 0.4, 0.4, 1.2);
+  boom(power);
+  flashes.push({x,y,r:0,max:rnd(120,200)*power,life:0,hue});
+
+  const baseSpeed = rnd(3.2, 5.2);
+  let count = 110;
+  const add = (ang, spd, opt={}) => {
+    if(sparks.length>=MAX_SPARKS) return;
+    const h = opt.hue!==undefined?opt.hue:hue;
+    sparks.push({
+      x, y,
+      vx: Math.cos(ang)*spd + (opt.dvx||0),
+      vy: Math.sin(ang)*spd + (opt.dvy||0),
+      life:0, max: opt.max!==undefined?opt.max:rnd(70,118),
+      hue:h, sat: opt.sat!==undefined?opt.sat:pal.sat,
+      lum: opt.lum!==undefined?opt.lum:rnd(58,74),
+      sz: opt.sz!==undefined?opt.sz:rnd(1.1,2.4),
+      drag: opt.drag!==undefined?opt.drag:0.965,
+      grav: opt.grav!==undefined?opt.grav:0.024,
+      twk: rnd(0.05,0.18),                    // flicker speed
+      twp: rnd(TAU),
+      glow: opt.glow!==undefined?opt.glow:1,
+      tail: opt.tail!==undefined?opt.tail:1
+    });
+  };
+
+  if(type==='peony'){
+    count = 160;
+    for(let i=0;i<count;i++){
+      const a = (i/count)*TAU + rnd(-0.05,0.05);
+      const s = baseSpeed*rnd(0.45,1.0);
+      add(a,s,{ hue: hue + rnd(-12,12), lum: rnd(56,72) });
+    }
+  } else if(type==='chrys'){       // chrysanthemum — long sparkly tails
+    count = 140;
+    for(let i=0;i<count;i++){
+      const a=(i/count)*TAU+rnd(-0.04,0.04);
+      const s=baseSpeed*rnd(0.6,1.05);
+      add(a,s,{ max:rnd(95,140), drag:0.975, grav:0.03, tail:2.2, sz:rnd(1.4,2.6) });
+    }
+  } else if(type==='willow'){      // willow — slow falling, gold drip
+    count=90;
+    const wh = pick([42,40,46,38]);
+    for(let i=0;i<count;i++){
+      const a=(i/count)*TAU;
+      const s=baseSpeed*rnd(0.5,0.85);
+      add(a,s,{ hue:wh+rnd(-6,8), max:rnd(150,210), drag:0.97, grav:0.05, lum:rnd(60,76), tail:1.6, sz:rnd(1.3,2.2) });
+    }
+  } else if(type==='ring'){        // perfect expanding ring
+    count=120;
+    const tilt=rnd(0,TAU), squash=rnd(0.28,0.55);
+    for(let i=0;i<count;i++){
+      const a=(i/count)*TAU;
+      const dx=Math.cos(a), dy=Math.sin(a)*squash;
+      const ca=Math.cos(tilt), sa=Math.sin(tilt);
+      const rx=dx*ca-dy*sa, ry=dx*sa+dy*ca;
+      const s=baseSpeed*0.95;
+      sparks.push({x,y,vx:rx*s,vy:ry*s,life:0,max:rnd(80,110),hue:hue+rnd(-8,8),sat:pal.sat,lum:rnd(60,72),sz:rnd(1.4,2.2),drag:0.965,grav:0.02,twk:rnd(.05,.16),twp:rnd(TAU),glow:1,tail:1.2});
+    }
+  } else if(type==='double'){      // two-color nested shell
+    const h2 = pick(pal.hues);
+    for(let i=0;i<120;i++){ const a=(i/120)*TAU; add(a, baseSpeed*0.55*rnd(.8,1), {hue:hue,max:rnd(70,100)}); }
+    for(let i=0;i<150;i++){ const a=(i/150)*TAU; add(a, baseSpeed*rnd(.9,1.15), {hue:h2,lum:rnd(60,76),max:rnd(90,120)}); }
+  } else if(type==='strobe'){      // glittering strobe
+    count=130;
+    for(let i=0;i<count;i++){
+      const a=(i/count)*TAU+rnd(-0.06,0.06);
+      const s=baseSpeed*rnd(0.4,1.0);
+      add(a,s,{ max:rnd(80,130), twk:rnd(0.3,0.6), lum:rnd(55,85), sz:rnd(1.0,2.0) });
+    }
+  } else if(type==='heart'){       // heart curve
+    count=130;
+    for(let i=0;i<count;i++){
+      const t=(i/count)*TAU;
+      const hx = 16*Math.pow(Math.sin(t),3);
+      const hy = -(13*Math.cos(t)-5*Math.cos(2*t)-2*Math.cos(3*t)-Math.cos(4*t));
+      const s=baseSpeed*0.085;
+      add(0,0,{ dvx:hx*s+rnd(-.2,.2), dvy:hy*s+rnd(-.2,.2), hue:pick([348,330,6])+rnd(-6,6), max:rnd(85,120), grav:0.022, sz:rnd(1.3,2.3) });
+    }
+  }
+
+  // secondary fine sparkle dust for every shell
+  const dust = Math.min(60, MAX_SPARKS - sparks.length);
+  for(let i=0;i<dust;i++){
+    const a=rnd(TAU), s=baseSpeed*rnd(0.1,0.5);
+    add(a,s,{ max:rnd(40,70), sz:rnd(0.6,1.2), lum:rnd(72,92), tail:0.6, glow:0.6, hue:hue+rnd(-20,20) });
+  }
+}
+
+// ---------- main update ----------
+let last=performance.now(), acc=0, autoTimer=0, autoGap=rnd(0.7,1.4);
+let fpsAvg=60;
+
+function step(dt){
+  // palette drift
+  palT += dt;
+  if(palT>11){ palT=0; palIdx=(palIdx+1)%PALETTES.length; }
+
+  // tilt easing
+  tilt += (tiltTarget - tilt)*Math.min(1, dt*4);
+  tiltTarget *= 0.94;
+
+  // pointer velocity decay
+  pointer.vx*=0.8; pointer.vy*=0.8;
+
+  // auto-launch (the show runs itself — no gate)
+  autoTimer += dt;
+  const density = clamp(1 - sparks.length/1600, 0.25, 1);
+  if(autoTimer>autoGap){
+    autoTimer=0;
+    autoGap = rnd(0.55,1.5)/ (interacted?1:1.25);
+    if(rockets.length<6 && sparks.length<MAX_SPARKS*0.8){
+      launch();
+      if(Math.random()<0.22) launch();   // occasional pair
+    }
+  }
+
+  // rockets
+  for(let i=rockets.length-1;i>=0;i--){
+    const r=rockets[i];
+    r.px=r.x; r.py=r.y;
+    r.vy += 0.045;            // gravity decel
+    r.x += r.vx; r.y += r.vy;
+    r.life += dt;
+    // sparkly trail
+    trails.push({x:r.x+rnd(-1,1), y:r.y, life:0, max:rnd(14,26), hue:r.hue, sz:rnd(1.0,2.0)});
+    if(Math.random()<0.5) trails.push({x:r.x+rnd(-2,2), y:r.y+rnd(0,3), life:0, max:rnd(10,18), hue:50, sz:rnd(0.6,1.2)});
+    if(r.vy>=-0.6 || r.y<=r.targetY){
+      explode(r.x,r.y,r.hue,r.type);
+      rockets.splice(i,1);
+    }
+  }
+
+  // trails
+  for(let i=trails.length-1;i>=0;i--){
+    const t=trails[i]; t.life++; t.y+=0.3; if(t.life>=t.max) trails.splice(i,1);
+  }
+
+  // gravity well from pointer drag
+  const wellActive = pointer.down;
+  const wx=pointer.x, wy=pointer.y;
+  const wellStrength = 1400;
+
+  // sparks
+  for(let i=sparks.length-1;i>=0;i--){
+    const p=sparks[i];
+    p.life++;
+    if(p.life>=p.max){ sparks.splice(i,1); continue; }
+    // store prev for tail
+    p._px=p.x; p._py=p.y;
+    p.vx*=p.drag; p.vy*=p.drag;
+    p.vy += p.grav;
+    // pointer gravity well (attract while dragging, gentle swirl)
+    if(wellActive){
+      const dx=wx-p.x, dy=wy-p.y; const d2=dx*dx+dy*dy+400;
+      const f=wellStrength/d2;
+      p.vx += dx*f*0.0016; p.vy += dy*f*0.0016;
+      // tangential swirl
+      p.vx += -dy*f*0.0009; p.vy += dx*f*0.0009;
+    } else {
+      // air current from pointer motion
+      const dx=p.x-wx, dy=p.y-wy; const d2=dx*dx+dy*dy;
+      if(d2<22000){ const f=1-d2/22000; p.vx+=pointer.vx*0.04*f; p.vy+=pointer.vy*0.04*f; }
+    }
+    p.x+=p.vx; p.y+=p.vy;
+  }
+
+  // flashes
+  for(let i=flashes.length-1;i>=0;i--){
+    const f=flashes[i]; f.life++; f.r += (f.max-f.r)*0.28;
+    if(f.life>14) flashes.splice(i,1);
+  }
+
+  // embers/smoke from explosions occasionally drift up near horizon — skip for perf, handled by spark fade
+
+  // stars twinkle
+  for(const s of stars){ s.tw += s.ts*dt; }
+}
+
+// ---------- render ----------
+function render(){
+  // sky gradient (cached background via fillRect with low alpha for trails)
+  // fade previous frame -> motion blur trails
+  ctx.globalCompositeOperation='source-over';
+  // gradient sky
+  const g = ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,   'rgba(6,8,20,0.30)');
+  g.addColorStop(0.5, 'rgba(8,10,26,0.30)');
+  g.addColorStop(horizon/H, 'rgba(10,14,34,0.34)');
+  g.addColorStop(1,   'rgba(4,8,22,0.40)');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+
+  // water shimmer band darken slightly
+  ctx.fillStyle='rgba(2,4,12,0.10)';
+  ctx.fillRect(0,horizon,W,H-horizon);
+
+  // ---- stars (parallax with tilt) ----
+  ctx.globalCompositeOperation='lighter';
+  const par = tilt*40;
+  for(const s of stars){
+    const tw = 0.4+0.6*Math.abs(Math.sin(s.tw));
+    const sx = s.x + par*s.z;
+    const a = tw*(0.4+0.6*s.z);
+    const r = s.z*1.3*tw;
+    ctx.fillStyle = `rgba(${200+30*s.z|0},${210+20*s.z|0},255,${a.toFixed(3)})`;
+    ctx.fillRect(sx, s.y, r, r);
+  }
+
+  // ---- helper to draw a glowing point ----
+  function drawSpark(p, yMul, alphaMul, yBase){
+    const k = 1 - p.life/p.max;
+    const flick = 0.6 + 0.4*Math.sin(p.life*p.twk + p.twp);
+    let a = clamp(k*1.15,0,1) * flick * alphaMul;
+    if(a<=0.01) return;
+    const y = yBase!==undefined ? yBase + (yBase - p.y) /*reflection*/ : p.y;
+    const yy = yMul===-1 ? (2*horizon - p.y) : p.y;
+    const px = p.x;
+    const lum = p.lum;
+    // tail streak
+    if(p._px!==undefined && p.tail>0){
+      const tpx=p._px, tpy = yMul===-1 ? (2*horizon - p._py) : p._py;
+      ctx.strokeStyle = hsl(p.hue,p.sat,lum, (a*0.5).toFixed(3));
+      ctx.lineWidth = p.sz*0.9;
+      ctx.beginPath(); ctx.moveTo(tpx,tpy); ctx.lineTo(px,yy); ctx.stroke();
+    }
+    // core + halo
+    ctx.fillStyle = hsl(p.hue,p.sat, clamp(lum+12,0,96), (a).toFixed(3));
+    ctx.beginPath(); ctx.arc(px,yy,p.sz*(0.7+0.5*flick),0,TAU); ctx.fill();
+    if(p.glow>0.7 && a>0.25){
+      ctx.fillStyle = hsl(p.hue,p.sat,lum,(a*0.16).toFixed(3));
+      ctx.beginPath(); ctx.arc(px,yy,p.sz*3.4,0,TAU); ctx.fill();
+    }
+  }
+
+  // ---- trails (rocket) with reflection ----
+  for(const t of trails){
+    const a=(1-t.life/t.max)*0.9;
+    ctx.fillStyle=hsl(t.hue,90,72,(a).toFixed(3));
+    ctx.beginPath(); ctx.arc(t.x,t.y,t.sz,0,TAU); ctx.fill();
+    // reflection (dim)
+    if(t.y<horizon){
+      ctx.fillStyle=hsl(t.hue,80,55,(a*0.22).toFixed(3));
+      ctx.beginPath(); ctx.arc(t.x+ (Math.sin(t.y*0.05)*2), 2*horizon-t.y, t.sz*0.9,0,TAU); ctx.fill();
+    }
+  }
+
+  // ---- flashes ----
+  for(const f of flashes){
+    const a=(1-f.life/14)*0.5;
+    const rg=ctx.createRadialGradient(f.x,f.y,0,f.x,f.y,f.r);
+    rg.addColorStop(0, hsl(f.hue,80,90,(a).toFixed(3)));
+    rg.addColorStop(0.4, hsl(f.hue,90,70,(a*0.4).toFixed(3)));
+    rg.addColorStop(1, hsl(f.hue,90,60,0));
+    ctx.fillStyle=rg; ctx.beginPath(); ctx.arc(f.x,f.y,f.r,0,TAU); ctx.fill();
+  }
+
+  // ---- sparks: real + water reflection ----
+  for(const p of sparks){
+    // reflection first (below horizon, mirrored, dimmer, wavy)
+    if(p.y<horizon){
+      const ref = { ...p };
+      // wavy horizontal displacement on water
+      const wave = Math.sin(p.y*0.06 + performance.now()*0.002)*3;
+      const saved = p.x;
+      // draw mirrored
+      const k=1-p.life/p.max;
+      const flick=0.6+0.4*Math.sin(p.life*p.twk+p.twp);
+      let a=clamp(k*1.15,0,1)*flick*0.30;
+      if(a>0.01){
+        const yy=2*horizon-p.y;
+        ctx.fillStyle=hsl(p.hue,p.sat,p.lum,(a).toFixed(3));
+        ctx.beginPath(); ctx.arc(p.x+wave,yy,p.sz*0.9,0,TAU); ctx.fill();
+      }
+    }
+  }
+  // real sparks on top
+  for(const p of sparks){ drawSpark(p,1,1); }
+
+  // ---- pointer gravity well visual ----
+  if(pointer.down){
+    const t=performance.now()*0.004;
+    const rg=ctx.createRadialGradient(pointer.x,pointer.y,0,pointer.x,pointer.y,90);
+    rg.addColorStop(0,'rgba(160,200,255,0.16)');
+    rg.addColorStop(1,'rgba(160,200,255,0)');
+    ctx.fillStyle=rg; ctx.beginPath(); ctx.arc(pointer.x,pointer.y,90,0,TAU); ctx.fill();
+    ctx.strokeStyle='rgba(180,210,255,0.35)';
+    ctx.lineWidth=1;
+    ctx.beginPath(); ctx.arc(pointer.x,pointer.y, 26+6*Math.sin(t),0,TAU); ctx.stroke();
+  }
+
+  // subtle horizon glow line
+  ctx.globalCompositeOperation='lighter';
+  const hg=ctx.createLinearGradient(0,horizon-30,0,horizon+30);
+  hg.addColorStop(0,'rgba(40,60,120,0)');
+  hg.addColorStop(0.5,'rgba(60,90,160,0.10)');
+  hg.addColorStop(1,'rgba(20,40,90,0)');
+  ctx.fillStyle=hg; ctx.fillRect(0,horizon-30,W,60);
+
+  ctx.globalCompositeOperation='source-over';
+}
+
+// ---------- loop ----------
+function frame(now){
+  let dt=(now-last)/1000; last=now;
+  if(dt>0.05) dt=0.05;            // clamp big gaps
+  fpsAvg = fpsAvg*0.95 + (1/Math.max(dt,0.0001))*0.05;
+  step(dt);
+  render();
+  requestAnimationFrame(frame);
+}
+
+// ---------- input ----------
+function setPointer(x,y){
+  pointer.vx = x-pointer.lx; pointer.vy = y-pointer.ly;
+  pointer.lx=x; pointer.ly=y; pointer.x=x; pointer.y=y;
+}
+cv.addEventListener('pointerdown', e=>{
+  audioInit(); if(AC&&AC.state==='suspended') AC.resume();
+  firstTouch();
+  pointer.down=true; pointer.lx=e.clientX; pointer.ly=e.clientY;
+  setPointer(e.clientX,e.clientY);
+  launch(e.clientX, e.clientY);
+});
+cv.addEventListener('pointermove', e=>{
+  setPointer(e.clientX,e.clientY);
+  pointer.active=true;
+});
+window.addEventListener('pointerup', ()=>{ pointer.down=false; });
+window.addEventListener('pointerleave', ()=>{ pointer.down=false; pointer.active=false; });
+window.addEventListener('wheel', e=>{
+  firstTouch();
+  tiltTarget += clamp(e.deltaY,-120,120)*0.0012;
+  tiltTarget = clamp(tiltTarget,-1.2,1.2);
+}, {passive:true});
+// keyboard fun
+window.addEventListener('keydown', e=>{
+  if(e.code==='Space'){ firstTouch(); audioInit(); if(AC&&AC.state==='suspended')AC.resume();
+    for(let i=0;i<5;i++) setTimeout(launch, i*90); }
+});
+
+// ---------- boot ----------
+resize();
+// instant first paint: a couple of shells already in the air
+for(let i=0;i<3;i++) setTimeout(()=>launch(rnd(W*0.25,W*0.75), rnd(H*0.18,H*0.4)), i*220);
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

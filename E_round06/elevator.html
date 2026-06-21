@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OTIS.486 — DITHER LIFT</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#1a0f14;
+    --panel:#241319;
+    --panel2:#2e1820;
+    --ink:#f4d9b0;
+    --ink-dim:#b98a6a;
+    --line:#5a2f33;
+    --line-bright:#8a4a44;
+    --amber:#ffb84d;
+    --teal:#3fb6a8;
+    --red:#e0563f;
+    --gold:#ffd27a;
+    --crt:#0d0708;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:
+      radial-gradient(ellipse at 50% 30%, #2a161c 0%, #150b10 60%, #0c0609 100%);
+    color:var(--ink);
+    font-family:'VT323',monospace;
+    display:flex;align-items:center;justify-content:center;
+    min-height:100vh;
+    padding:24px;
+    overflow-x:hidden;
+    -webkit-font-smoothing:none;
+  }
+
+  /* ---------- WINDOW SHELL ---------- */
+  .app{
+    width:100%;max-width:1180px;
+    background:var(--panel);
+    border:2px solid var(--line-bright);
+    border-radius:4px;
+    box-shadow:
+      0 0 0 2px #120a0d,
+      0 24px 60px rgba(0,0,0,.7),
+      inset 0 0 0 1px #3a2026;
+    overflow:hidden;
+    position:relative;
+  }
+  /* title bar */
+  .titlebar{
+    display:flex;align-items:center;gap:10px;
+    background:linear-gradient(#3a1f26,#2a151b);
+    border-bottom:2px solid var(--line);
+    padding:6px 10px;
+    font-family:'Press Start 2P',monospace;
+    font-size:9px;letter-spacing:.5px;
+    color:var(--gold);
+  }
+  .dots{display:flex;gap:5px}
+  .dots i{width:10px;height:10px;border-radius:50%;display:block;border:1px solid #1d0f12}
+  .dots i:nth-child(1){background:var(--red)}
+  .dots i:nth-child(2){background:var(--amber)}
+  .dots i:nth-child(3){background:var(--teal)}
+  .titlebar .t{flex:1;text-shadow:1px 1px 0 #1a0d10}
+  .titlebar .ver{color:var(--ink-dim);font-family:'VT323';font-size:15px;letter-spacing:0}
+  /* menu strip */
+  .menustrip{
+    display:flex;gap:0;flex-wrap:wrap;
+    background:#1d1014;
+    border-bottom:2px solid var(--line);
+    font-family:'Press Start 2P',monospace;
+    font-size:7.5px;letter-spacing:.5px;
+  }
+  .menustrip span{
+    padding:7px 11px;color:var(--ink-dim);
+    border-right:1px solid #2e191f;cursor:default;
+  }
+  .menustrip span:hover{color:var(--amber);background:#2a151b}
+  .menustrip .mr{margin-left:auto;color:var(--teal);border-right:none}
+
+  /* ---------- BODY GRID ---------- */
+  .body{
+    display:grid;
+    grid-template-columns:1fr 268px;
+    gap:0;
+  }
+
+  /* ---------- STAGE (cabin + scene) ---------- */
+  .stage{
+    position:relative;
+    background:var(--crt);
+    border-right:2px solid var(--line);
+    min-height:430px;
+    overflow:hidden;
+  }
+  /* the dithered scene canvas */
+  #scene{
+    position:absolute;inset:0;width:100%;height:100%;
+    image-rendering:pixelated;image-rendering:crisp-edges;
+    display:block;
+  }
+  /* doorway frame over scene */
+  .shaft-frame{
+    position:absolute;inset:0;pointer-events:none;
+    box-shadow:
+      inset 0 0 0 10px #1a0d10,
+      inset 0 0 0 12px #5a2f33,
+      inset 0 0 70px rgba(0,0,0,.55);
+  }
+  /* elevator doors */
+  .door{
+    position:absolute;top:10px;bottom:10px;width:calc(50% - 10px);
+    background:
+      repeating-linear-gradient(90deg,#2a161c 0 6px,#311a20 6px 12px),
+      linear-gradient(#3a2026,#241319);
+    border:2px solid #6a3a3a;
+    transition:transform .9s cubic-bezier(.7,0,.2,1);
+    z-index:4;
+    box-shadow:inset 0 0 30px rgba(0,0,0,.6);
+  }
+  .door .seam{position:absolute;top:0;bottom:0;width:3px;background:#120a0d}
+  .door.left{left:10px;border-right:1px solid #120a0d}
+  .door.left .seam{right:-2px}
+  .door.right{right:10px;border-left:1px solid #120a0d}
+  .door.right .seam{left:-2px}
+  .door .handle{
+    position:absolute;top:50%;transform:translateY(-50%);
+    width:8px;height:80px;background:var(--amber);
+    border:1px solid #1a0d10;box-shadow:0 0 8px rgba(255,184,77,.4);
+  }
+  .door.left .handle{right:14px}
+  .door.right .handle{left:14px}
+  .stage.open .door.left{transform:translateX(-100%)}
+  .stage.open .door.right{transform:translateX(100%)}
+
+  /* floor caption inside stage */
+  .caption{
+    position:absolute;left:18px;bottom:16px;z-index:5;
+    font-family:'Press Start 2P',monospace;font-size:9px;
+    color:var(--gold);text-shadow:2px 2px 0 #120a0d,0 0 10px rgba(255,210,122,.4);
+    pointer-events:none;
+  }
+  .caption b{display:block;color:var(--teal);font-size:7px;margin-top:6px;letter-spacing:1px}
+  /* arriving badge */
+  .arrive{
+    position:absolute;top:16px;left:50%;transform:translateX(-50%);
+    z-index:6;background:#1a0d10cc;border:1px solid var(--amber);
+    padding:5px 12px;font-family:'Press Start 2P';font-size:8px;color:var(--amber);
+    letter-spacing:1px;opacity:0;transition:opacity .3s;
+    text-shadow:0 0 8px rgba(255,184,77,.6);
+  }
+  .stage.moving .arrive{opacity:1;animation:blink 1s steps(2) infinite}
+  @keyframes blink{50%{opacity:.35}}
+
+  /* CRT scanlines + flicker over everything in stage */
+  .scan{
+    position:absolute;inset:0;z-index:7;pointer-events:none;
+    background:
+      repeating-linear-gradient(0deg,rgba(0,0,0,.18) 0 1px,transparent 1px 3px);
+    mix-blend-mode:multiply;
+  }
+  .scan::after{
+    content:"";position:absolute;inset:0;
+    background:radial-gradient(ellipse at 50% 45%,transparent 55%,rgba(0,0,0,.5) 100%);
+  }
+  .vig-flicker{
+    position:absolute;inset:0;z-index:8;pointer-events:none;
+    background:rgba(255,225,180,.025);animation:flick 6s steps(20) infinite;
+  }
+  @keyframes flick{0%,97%{opacity:0}98%{opacity:1}100%{opacity:0}}
+
+  /* ---------- CONTROL PANEL ---------- */
+  .panel{
+    background:linear-gradient(#241319,#1d1014);
+    padding:12px 12px 16px;
+    display:flex;flex-direction:column;gap:12px;
+    font-size:16px;
+  }
+  .pblock{border:1px solid var(--line);background:#1d1014;border-radius:3px}
+  .phead{
+    font-family:'Press Start 2P';font-size:7px;color:var(--gold);
+    background:#2a151b;border-bottom:1px solid var(--line);
+    padding:6px 8px;letter-spacing:1px;
+  }
+  .pbody{padding:8px 9px}
+
+  /* floor indicator (7-seg style) */
+  .indi{display:flex;align-items:center;gap:10px}
+  .seg{
+    font-family:'Press Start 2P';font-size:34px;line-height:1;
+    color:var(--amber);
+    background:#0d0708;border:1px solid var(--line);
+    padding:8px 12px;border-radius:3px;min-width:64px;text-align:center;
+    text-shadow:0 0 12px rgba(255,184,77,.55);
+    position:relative;
+  }
+  .seg::before{
+    content:"88";position:absolute;inset:8px 12px;color:#3a1c12;z-index:0;
+  }
+  .seg span{position:relative;z-index:1}
+  .indi .dir{display:flex;flex-direction:column;gap:6px;font-size:22px}
+  .indi .dir b{
+    color:#5a3a30;line-height:.9;transition:color .2s,text-shadow .2s;
+  }
+  .indi .dir b.on{color:var(--teal);text-shadow:0 0 8px rgba(63,182,168,.7)}
+
+  /* stat rows */
+  .row{display:flex;justify-content:space-between;align-items:center;
+    padding:3px 0;border-bottom:1px dotted #3a2026;line-height:1.1}
+  .row:last-child{border-bottom:none}
+  .row .k{color:var(--ink-dim);letter-spacing:.5px}
+  .row .v{color:var(--ink)}
+  .row .v.t{color:var(--teal)}
+  .row .v.a{color:var(--amber)}
+
+  /* palette swatches */
+  .pal{display:flex;gap:0;height:22px;border:1px solid var(--line);margin-top:2px}
+  .pal i{flex:1;display:block;
+    image-rendering:pixelated;
+    background-image:var(--sw);background-size:6px 6px;
+  }
+
+  /* floor buttons grid */
+  .floors{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+  .fbtn{
+    font-family:'Press Start 2P';font-size:10px;
+    color:var(--ink-dim);background:#0d0708;
+    border:1px solid var(--line);border-radius:3px;
+    padding:10px 0;cursor:pointer;text-align:center;
+    transition:all .12s;letter-spacing:0;
+  }
+  .fbtn:hover{color:var(--amber);border-color:var(--line-bright)}
+  .fbtn.active{
+    color:var(--crt);background:var(--amber);border-color:var(--gold);
+    box-shadow:0 0 12px rgba(255,184,77,.5);
+  }
+  /* up/down */
+  .updown{display:flex;gap:8px}
+  .ud{
+    flex:1;font-family:'Press Start 2P';font-size:9px;
+    background:#2a151b;color:var(--teal);border:1px solid var(--line);
+    padding:10px 0;cursor:pointer;border-radius:3px;text-align:center;
+    transition:all .12s;
+  }
+  .ud:hover{background:var(--teal);color:var(--crt)}
+  .ud:active{transform:translateY(1px)}
+
+  /* status bar */
+  .statusbar{
+    display:flex;gap:14px;align-items:center;
+    background:#1d1014;border-top:2px solid var(--line);
+    padding:6px 12px;font-family:'Press Start 2P';font-size:7px;
+    color:var(--ink-dim);letter-spacing:.5px;
+  }
+  .statusbar .led{width:8px;height:8px;border-radius:50%;background:var(--teal);
+    box-shadow:0 0 6px var(--teal);animation:pulse 1.4s infinite}
+  @keyframes pulse{50%{opacity:.3}}
+  .statusbar .sr{margin-left:auto;color:var(--gold)}
+
+  /* ---------- RESPONSIVE 390 ---------- */
+  @media (max-width:760px){
+    body{padding:10px}
+    .body{grid-template-columns:1fr}
+    .stage{border-right:none;border-bottom:2px solid var(--line);min-height:300px}
+    .menustrip span{padding:6px 7px;font-size:7px}
+    .menustrip span.hidem{display:none}
+    .seg{font-size:28px;min-width:54px}
+    .panel{font-size:15px}
+    .titlebar{font-size:8px}
+  }
+  @media (max-width:420px){
+    .menustrip span:not(.keepm):not(.mr){display:none}
+  }
+</style>
+</head>
+<body>
+  <div class="app" id="app">
+    <!-- title bar -->
+    <div class="titlebar">
+      <div class="dots"><i></i><i></i><i></i></div>
+      <div class="t">OTIS.486</div>
+      <div class="ver">VERTICAL TRANSIT OS &nbsp;v4.86 &nbsp;[DITHER]</div>
+    </div>
+    <!-- menu -->
+    <div class="menustrip">
+      <span class="keepm">FILE</span>
+      <span>VIEW</span>
+      <span class="hidem">CABIN</span>
+      <span class="hidem">SHAFT</span>
+      <span class="hidem">PALETTE</span>
+      <span>SCAN</span>
+      <span class="mr">● ONLINE</span>
+    </div>
+
+    <div class="body">
+      <!-- STAGE -->
+      <div class="stage open" id="stage">
+        <canvas id="scene" width="320" height="215"></canvas>
+        <div class="shaft-frame"></div>
+        <div class="arrive" id="arrive">▲ MOVING ▲</div>
+        <div class="caption" id="cap">
+          LOBBY
+          <b id="capsub">GROUND FLOOR</b>
+        </div>
+        <!-- doors -->
+        <div class="door left"><div class="seam"></div><div class="handle"></div></div>
+        <div class="door right"><div class="seam"></div><div class="handle"></div></div>
+        <div class="scan"></div>
+        <div class="vig-flicker"></div>
+      </div>
+
+      <!-- CONTROL PANEL -->
+      <div class="panel">
+        <div class="pblock">
+          <div class="phead">FLOOR INDICATOR</div>
+          <div class="pbody">
+            <div class="indi">
+              <div class="seg"><span id="segnum">G</span></div>
+              <div class="dir">
+                <b id="dup">▲</b>
+                <b id="ddn">▼</b>
+              </div>
+              <div style="flex:1">
+                <div class="row"><span class="k">CAR</span><span class="v t">A&middot;01</span></div>
+                <div class="row"><span class="k">SPEED</span><span class="v a" id="spd">0.0 m/s</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="pblock">
+          <div class="phead">FLOOR DATA</div>
+          <div class="pbody">
+            <div class="row"><span class="k">NAME</span><span class="v" id="dname">LOBBY</span></div>
+            <div class="row"><span class="k">ZONE</span><span class="v t" id="dzone">ATRIUM</span></div>
+            <div class="row"><span class="k">TEMP</span><span class="v a" id="dtemp">21°C</span></div>
+            <div class="row"><span class="k">STATUS</span><span class="v t" id="dstat">DOORS OPEN</span></div>
+          </div>
+        </div>
+
+        <div class="pblock">
+          <div class="phead">PALETTE / DITHER 4×4</div>
+          <div class="pbody">
+            <div class="pal" id="pal">
+              <i></i><i></i><i></i><i></i><i></i><i></i>
+            </div>
+            <div class="row" style="margin-top:6px"><span class="k">MODE</span><span class="v" id="dmode">BAYER 4×4</span></div>
+            <div class="row"><span class="k">COLORS</span><span class="v a" id="dcols">6</span></div>
+          </div>
+        </div>
+
+        <div class="pblock">
+          <div class="phead">SELECT FLOOR</div>
+          <div class="pbody">
+            <div class="floors" id="floors"></div>
+            <div class="updown" style="margin-top:8px">
+              <div class="ud" id="udUp">▲ UP</div>
+              <div class="ud" id="udDn">▼ DOWN</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- status bar -->
+    <div class="statusbar">
+      <span class="led"></span>
+      <span>CAR A&middot;01</span>
+      <span class="hidem">LOAD 38%</span>
+      <span class="hidem">DITHER ON</span>
+      <span class="sr" id="sclock">00:00:00</span>
+    </div>
+  </div>
+
+<script>
+/* ============================================================
+   REAL BAYER ORDERED DITHERING ENGINE
+   - Build a low-res scene per floor with simple primitives
+   - Quantize each pixel to the nearest palette color using
+     a 4x4 (or 8x8) Bayer threshold matrix => dot mosaic
+   - Canvas is upscaled via CSS image-rendering:pixelated
+   ============================================================ */
+
+const cv = document.getElementById('scene');
+const ctx = cv.getContext('2d', { willReadFrequently:true });
+const W = cv.width, H = cv.height;
+
+/* 4x4 Bayer matrix (values 0..15) -> normalized 0..1 thresholds */
+const BAYER4 = [
+  [ 0, 8, 2,10],
+  [12, 4,14, 6],
+  [ 3,11, 1, 9],
+  [15, 7,13, 5]
+];
+/* 8x8 Bayer for finer floors */
+function makeBayer8(){
+  const b4=BAYER4, m=[];
+  for(let y=0;y<8;y++){m.push([]);for(let x=0;x<8;x++){
+    const q=b4[y%4][x%4];
+    const add=( (y<4?0:0) ); // build proper 8x8 via recursion
+    m[y][x]=0;
+  }}
+  // proper recursive expansion: M8 = [[4*M4, 4*M4+2],[4*M4+3,4*M4+1]]
+  for(let y=0;y<8;y++){for(let x=0;x<8;x++){
+    const base=4*BAYER4[y%4][x%4];
+    let off;
+    const qy=y<4?0:1, qx=x<4?0:1;
+    if(qy===0&&qx===0)off=0; else if(qy===0&&qx===1)off=2;
+    else if(qy===1&&qx===0)off=3; else off=1;
+    m[y][x]=base+off; // 0..63
+  }}
+  return m;
+}
+const BAYER8 = makeBayer8();
+
+/* color helpers */
+function hex(h){h=h.replace('#','');return [parseInt(h.substr(0,2),16),parseInt(h.substr(2,2),16),parseInt(h.substr(4,2),16)];}
+function lum(r,g,b){return 0.2126*r+0.7152*g+0.0722*b;}
+
+/* Quantize the current canvas buffer to a palette with Bayer dithering.
+   palette: array of [r,g,b]; matrix: 4 or 8; spread: dither strength */
+function dither(palette, matrix, spread){
+  const img = ctx.getImageData(0,0,W,H);
+  const d = img.data;
+  const N = matrix.length;
+  const maxv = N*N;          // 16 or 64
+  // pre-sort palette by luminance for threshold ramp on luma,
+  // but we keep full-color nearest match with a per-pixel offset.
+  for(let y=0;y<H;y++){
+    for(let x=0;x<W;x++){
+      const i=(y*W+x)*4;
+      const t = (matrix[y%N][x%N]+0.5)/maxv - 0.5; // -0.5..0.5
+      const off = t*spread;
+      let r=d[i]+off, g=d[i+1]+off, b=d[i+2]+off;
+      // nearest palette color
+      let best=0,bd=1e9;
+      for(let p=0;p<palette.length;p++){
+        const pc=palette[p];
+        const dr=r-pc[0],dg=g-pc[1],db=b-pc[2];
+        const dist=dr*dr*0.5+dg*dg*0.7+db*db*0.3;
+        if(dist<bd){bd=dist;best=p;}
+      }
+      const pc=palette[best];
+      d[i]=pc[0];d[i+1]=pc[1];d[i+2]=pc[2];d[i+3]=255;
+    }
+  }
+  ctx.putImageData(img,0,0);
+}
+
+/* ----- vertical gradient fill helper (raw, pre-dither) ----- */
+function vgrad(stops){ // stops: [pos0..1, '#rgb']
+  const g=ctx.createLinearGradient(0,0,0,H);
+  stops.forEach(s=>g.addColorStop(s[0],s[1]));
+  ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+}
+function rect(x,y,w,h,c){ctx.fillStyle=c;ctx.fillRect(x,y,w,h);}
+function circle(x,y,r,c){ctx.fillStyle=c;ctx.beginPath();ctx.arc(x,y,r,0,7);ctx.fill();}
+
+/* ============================================================
+   FLOOR DEFINITIONS  — each draws a DIFFERENT dithered lobby
+   Palettes are constrained (5-6 colors). Scenes deliberately
+   range away from sunset/water: arcade, server hall, greenhouse,
+   night observatory, brutalist atrium, sub-level depot.
+   ============================================================ */
+
+const FLOORS = [
+  /* ---- B  SUB-LEVEL DEPOT (cool teal/steel) ---- */
+  {
+    key:'B', label:'SUB-LEVEL', sub:'CARGO DEPOT',
+    name:'DEPOT', zone:'B-LEVEL', temp:'14°C',
+    pal:['#0c1418','#16313a','#27606a','#3fb6a8','#9fe6d8','#ffb84d'],
+    mode:'BAYER 8×8', matrix:8, spread:120,
+    draw(p){
+      vgrad([[0,'#16313a'],[1,'#0c1418']]);
+      // overhead pipes
+      for(let i=0;i<5;i++){rect(0,18+i*8,W,3,'#27606a');}
+      // floor grid (perspective)
+      const hz=120;
+      ctx.strokeStyle='#27606a';ctx.lineWidth=1;
+      for(let i=-6;i<=6;i++){ctx.beginPath();ctx.moveTo(W/2,hz);ctx.lineTo(W/2+i*60,H);ctx.stroke();}
+      for(let r=0;r<7;r++){const yy=hz+(H-hz)*(r/7)*(r/7);ctx.beginPath();ctx.moveTo(0,yy);ctx.lineTo(W,yy);ctx.stroke();}
+      // cargo crates
+      rect(36,128,54,46,'#3fb6a8'); rect(36,128,54,8,'#9fe6d8');
+      rect(206,140,60,40,'#27606a'); rect(206,140,60,7,'#3fb6a8');
+      // hazard lamp glow
+      circle(250,40,10,'#ffb84d'); circle(250,40,5,'#9fe6d8');
+    }
+  },
+  /* ---- G  GRAND ATRIUM (warm amber, brutalist) ---- */
+  {
+    key:'G', label:'LOBBY', sub:'GRAND ATRIUM',
+    name:'ATRIUM', zone:'GROUND', temp:'21°C',
+    pal:['#1a0d10','#5a2f24','#a85a32','#ffb84d','#ffe3a8','#3fb6a8'],
+    mode:'BAYER 4×4', matrix:4, spread:90,
+    draw(p){
+      vgrad([[0,'#ffe3a8'],[0.45,'#ffb84d'],[1,'#a85a32']]);
+      // skylight beams
+      ctx.globalAlpha=.35;
+      for(let i=0;i<6;i++){ctx.fillStyle='#ffe3a8';
+        ctx.beginPath();ctx.moveTo(40+i*45,0);ctx.lineTo(70+i*45,0);ctx.lineTo(120+i*45,H);ctx.lineTo(60+i*45,H);ctx.closePath();ctx.fill();}
+      ctx.globalAlpha=1;
+      // columns
+      for(let i=0;i<5;i++){const x=20+i*70;rect(x,40,22,H-40,'#5a2f24');rect(x,40,8,H-40,'#a85a32');}
+      // floor
+      rect(0,168,W,H-168,'#5a2f24');
+      // reception desk
+      rect(110,150,100,28,'#a85a32'); rect(110,150,100,5,'#ffb84d');
+      // potted plant accents (teal)
+      circle(96,150,10,'#3fb6a8'); circle(224,150,10,'#3fb6a8');
+    }
+  },
+  /* ---- 7  NEON ARCADE (magenta/cyan but quantized to limited) ---- */
+  {
+    key:'7', label:'AMUSEMENT', sub:'NEON ARCADE',
+    name:'ARCADE', zone:'LEISURE', temp:'24°C',
+    pal:['#120a18','#3a1a4a','#e0563f','#ffb84d','#3fb6a8','#ffe3a8'],
+    mode:'BAYER 4×4', matrix:4, spread:130,
+    draw(p){
+      vgrad([[0,'#3a1a4a'],[1,'#120a18']]);
+      // carpet pattern
+      for(let y=150;y<H;y+=10)for(let x=0;x<W;x+=20){rect(x+((y/10)%2?10:0),y,9,4,'#3a1a4a');rect(x+((y/10)%2?10:0)+9,y,9,4,'#e0563f');}
+      // arcade cabinets row
+      for(let i=0;i<5;i++){const x=18+i*62;
+        rect(x,70,46,84,'#1a0d10');
+        rect(x+6,80,34,26,i%2?'#3fb6a8':'#ffb84d'); // screen
+        rect(x+6,112,34,8,'#e0563f');               // panel
+      }
+      // glowing marquee
+      rect(10,40,W-20,18,'#e0563f'); rect(10,40,W-20,5,'#ffb84d');
+      // floating score blips
+      circle(60,30,3,'#ffe3a8');circle(150,24,3,'#3fb6a8');circle(250,32,3,'#ffb84d');
+    }
+  },
+  /* ---- 12 GREENHOUSE / SKY GARDEN (greens via teal+amber+cream) ---- */
+  {
+    key:'12', label:'SKY GARDEN', sub:'GREENHOUSE',
+    name:'BIOSPHERE', zone:'GARDEN', temp:'26°C',
+    pal:['#0e1a12','#1f4a32','#3fb6a8','#9ad17a','#ffe3a8','#ffb84d'],
+    mode:'BAYER 8×8', matrix:8, spread:100,
+    draw(p){
+      vgrad([[0,'#ffe3a8'],[0.4,'#9ad17a'],[1,'#1f4a32']]);
+      // glass roof lattice
+      ctx.strokeStyle='#1f4a32';ctx.lineWidth=1;
+      for(let i=0;i<12;i++){ctx.beginPath();ctx.moveTo(i*30,0);ctx.lineTo(i*30-30,70);ctx.stroke();
+        ctx.beginPath();ctx.moveTo(i*30,0);ctx.lineTo(i*30+30,70);ctx.stroke();}
+      // soft sun
+      circle(245,46,22,'#ffb84d'); circle(245,46,30,'#ffe3a8'); // halo handled by dither
+      circle(245,46,18,'#ffe3a8');
+      // foliage blobs
+      const blobs=[[40,150,34],[100,168,40],[180,160,46],[250,170,38],[300,150,30]];
+      blobs.forEach(b=>{circle(b[0],b[1],b[2],'#1f4a32');circle(b[0]-6,b[1]-6,b[2]*.6,'#3fb6a8');circle(b[0]+8,b[1]-2,b[2]*.4,'#9ad17a');});
+      // path
+      ctx.fillStyle='#ffe3a8';ctx.beginPath();ctx.moveTo(140,H);ctx.lineTo(180,H);ctx.lineTo(166,150);ctx.lineTo(154,150);ctx.closePath();ctx.fill();
+    }
+  },
+  /* ---- 23 DATA HALL / SERVER FARM (cool steel + amber LEDs) ---- */
+  {
+    key:'23', label:'DATA HALL', sub:'SERVER FARM',
+    name:'CORE', zone:'SECURE', temp:'18°C',
+    pal:['#0a0f14','#13263a','#27536a','#3fb6a8','#ffb84d','#e0563f'],
+    mode:'BAYER 8×8', matrix:8, spread:110,
+    draw(p){
+      vgrad([[0,'#13263a'],[1,'#0a0f14']]);
+      // perspective server racks
+      const rows=[[20,80,40,110],[ -10,84,42,118]];
+      for(let side=0;side<2;side++){
+        for(let i=0;i<4;i++){
+          const sx = side? W-20-i*46 : 4+i*46;
+          const sk = side? -1:1;
+          const x=sx, y=70+i*3, w=40, h=120-i*4;
+          rect(x,y,w,h,'#13263a'); rect(x,y,w,h>0?h:0,'#13263a');
+          rect(x,y,w,2,'#27536a');
+          // blinking led columns
+          for(let r=0;r<10;r++){
+            const lc = (i+r)%3===0?'#ffb84d':((i+r)%3===1?'#3fb6a8':'#e0563f');
+            rect(x+4, y+8+r*((h-12)/10), w-8, 3, lc);
+          }
+        }
+      }
+      // central glowing column
+      rect(W/2-14,40,28,H-40,'#27536a'); rect(W/2-8,40,16,H-40,'#3fb6a8');
+      // floor reflection band
+      rect(0,180,W,4,'#27536a');
+    }
+  },
+  /* ---- 48 OBSERVATORY (night sky, cool blues + amber stars) ---- */
+  {
+    key:'48', label:'OBSERVATORY', sub:'NIGHT DECK',
+    name:'SUMMIT', zone:'ROOF', temp:'9°C',
+    pal:['#06080f','#0e1830','#274a7a','#3fb6a8','#ffe3a8','#ffb84d'],
+    mode:'BAYER 4×4', matrix:4, spread:140,
+    draw(p){
+      vgrad([[0,'#06080f'],[0.55,'#0e1830'],[1,'#274a7a']]);
+      // stars
+      for(let i=0;i<90;i++){const x=(i*53)%W,y=(i*97)%140;rect(x,y,1,1,(i%5? '#ffe3a8':'#3fb6a8'));}
+      // moon
+      circle(70,46,18,'#ffe3a8'); circle(78,40,16,'#0e1830');
+      // city skyline silhouette at bottom
+      let x=0;while(x<W){const bw=12+(x*7%18),bh=30+(x*13%60);rect(x,H-bh,bw-2,bh,'#0e1830');
+        // a few lit windows (amber)
+        for(let wy=H-bh+6;wy<H-6;wy+=10){if((x+wy)%3===0)rect(x+3,wy,3,3,'#ffb84d');}
+        x+=bw;}
+      // telescope dome arc
+      ctx.fillStyle='#274a7a';ctx.beginPath();ctx.arc(245,150,40,Math.PI,0);ctx.fill();
+      rect(243,120,4,30,'#3fb6a8'); // telescope barrel
+    }
+  }
+];
+
+/* ============================================================
+   RENDER + STATE
+   ============================================================ */
+let cur = 1;              // start at G (index 1)
+let busy = false;
+
+function setCSSVarPalette(pal){
+  // build a tiny dithered swatch strip showing the floor palette
+  const el = document.getElementById('pal');
+  el.innerHTML='';
+  pal.forEach(c=>{const i=document.createElement('i');i.style.background=c;el.appendChild(i);});
+  document.getElementById('dcols').textContent = pal.length;
+}
+
+function renderFloor(idx){
+  const f = FLOORS[idx];
+  const pal = f.pal.map(hex);
+  // 1) draw raw scene
+  ctx.imageSmoothingEnabled=false;
+  ctx.clearRect(0,0,W,H);
+  f.draw(pal);
+  // 2) apply REAL ordered dithering with the floor's palette
+  dither(pal, f.matrix===8?BAYER8:BAYER4, f.spread);
+  // 3) panel updates
+  document.getElementById('segnum').textContent = f.key;
+  document.getElementById('cap').firstChild.textContent = f.label;
+  document.getElementById('capsub').textContent = f.sub;
+  document.getElementById('dname').textContent = f.name;
+  document.getElementById('dzone').textContent = f.zone;
+  document.getElementById('dtemp').textContent = f.temp;
+  document.getElementById('dmode').textContent = f.mode;
+  setCSSVarPalette(f.pal);
+  // active button
+  document.querySelectorAll('.fbtn').forEach(b=>b.classList.toggle('active', +b.dataset.i===idx));
+}
+
+/* build floor buttons */
+const floorsEl = document.getElementById('floors');
+FLOORS.forEach((f,i)=>{
+  const b=document.createElement('div');
+  b.className='fbtn';b.textContent=f.key;b.dataset.i=i;
+  b.addEventListener('click',()=>goTo(i));
+  floorsEl.appendChild(b);
+});
+
+/* ---- elevator travel sequence ---- */
+const stage = document.getElementById('stage');
+function goTo(idx){
+  if(busy || idx===cur) return;
+  busy=true;
+  const dir = idx>cur ? 1 : -1;
+  // direction arrows
+  document.getElementById('dup').classList.toggle('on', dir>0);
+  document.getElementById('ddn').classList.toggle('on', dir<0);
+  document.getElementById('dstat').textContent = 'DOORS CLOSING';
+  // 1) close doors
+  stage.classList.remove('open');
+  setTimeout(()=>{
+    stage.classList.add('moving');
+    document.getElementById('dstat').textContent = dir>0?'ASCENDING':'DESCENDING';
+    // animate the 7-seg counting through floors + speed
+    travel(idx, dir);
+  }, 920);
+}
+
+function travel(target, dir){
+  const steps = Math.abs(target-cur);
+  let n=0;
+  document.getElementById('spd').textContent = '2.4 m/s';
+  const tick = setInterval(()=>{
+    n++;
+    cur += dir;
+    document.getElementById('segnum').textContent = FLOORS[cur].key;
+    if(cur===target || n>=steps){
+      clearInterval(tick);
+      arrive(target);
+    }
+  }, 520);
+}
+
+function arrive(idx){
+  cur=idx;
+  document.getElementById('spd').textContent = '0.0 m/s';
+  document.getElementById('dup').classList.remove('on');
+  document.getElementById('ddn').classList.remove('on');
+  document.getElementById('dstat').textContent='ARRIVED';
+  renderFloor(idx);                 // paint new dithered lobby BEHIND closed doors
+  stage.classList.remove('moving');
+  setTimeout(()=>{                  // open doors to reveal
+    stage.classList.add('open');
+    document.getElementById('dstat').textContent='DOORS OPEN';
+    busy=false;
+  }, 360);
+}
+
+/* up / down step buttons */
+document.getElementById('udUp').addEventListener('click',()=>{if(cur<FLOORS.length-1)goTo(cur+1);});
+document.getElementById('udDn').addEventListener('click',()=>{if(cur>0)goTo(cur-1);});
+
+/* status clock */
+function clock(){
+  const d=new Date();
+  const p=n=>String(n).padStart(2,'0');
+  document.getElementById('sclock').textContent=`${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+setInterval(clock,1000);clock();
+
+/* FIRST PAINT = dithered floor (no gate / no loading screen) */
+renderFloor(cur);
+
+/* re-render current floor on resize for crispness (canvas is fixed-res so cheap) */
+let rt;
+window.addEventListener('resize',()=>{clearTimeout(rt);rt=setTimeout(()=>renderFloor(cur),150);});
+</script>
+</body>
+</html>

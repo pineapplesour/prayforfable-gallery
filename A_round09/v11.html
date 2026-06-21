@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>CRYST — 결정 눈송이</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #02040b; }
+  body {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    cursor: crosshair;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+  }
+  #stage { position: fixed; inset: 0; display: block; }
+  /* layered canvases: glow underneath, crystal on top */
+  canvas { position: fixed; inset: 0; display: block; }
+  #glow { filter: blur(0px); }
+
+  .hud {
+    position: fixed;
+    z-index: 10;
+    color: #bfe3ff;
+    text-shadow: 0 0 12px rgba(120,200,255,.55);
+    pointer-events: none;
+    user-select: none;
+    letter-spacing: .04em;
+  }
+  #title {
+    left: clamp(16px, 3.2vw, 46px);
+    top: clamp(16px, 3vw, 40px);
+    font-size: clamp(15px, 1.7vw, 24px);
+    font-weight: 700;
+  }
+  #title small {
+    display: block;
+    font-weight: 400;
+    font-size: .52em;
+    letter-spacing: .42em;
+    opacity: .62;
+    margin-top: .5em;
+  }
+  #readout {
+    left: clamp(16px, 3.2vw, 46px);
+    bottom: clamp(16px, 3vw, 40px);
+    font-size: clamp(10px, 1vw, 12.5px);
+    line-height: 1.7;
+    opacity: .8;
+  }
+  #readout b { color: #eaf6ff; font-weight: 600; }
+  #help {
+    right: clamp(16px, 3.2vw, 46px);
+    bottom: clamp(16px, 3vw, 40px);
+    font-size: clamp(9.5px, .95vw, 12px);
+    line-height: 1.85;
+    text-align: right;
+    opacity: .66;
+    max-width: 46vw;
+  }
+  #help kbd {
+    display: inline-block;
+    border: 1px solid rgba(160,210,255,.35);
+    border-radius: 5px;
+    padding: 0 .42em;
+    margin: 0 .12em;
+    font-size: .92em;
+    color: #dff0ff;
+    background: rgba(120,180,255,.07);
+  }
+  /* subtle vignette + grain feel */
+  #vignette {
+    position: fixed; inset: 0; z-index: 5; pointer-events: none;
+    background:
+      radial-gradient(120% 120% at 50% 42%, rgba(0,0,0,0) 52%, rgba(0,2,8,.62) 100%);
+    mix-blend-mode: multiply;
+  }
+  @media (max-width: 560px) {
+    #help { display: none; }
+  }
+</style>
+</head>
+<body>
+  <canvas id="glow"></canvas>
+  <canvas id="stage"></canvas>
+  <div id="vignette"></div>
+
+  <div class="hud" id="title">CRYST<small>결정 · 눈송이 · 대칭 프랙탈</small></div>
+  <div class="hud" id="readout">
+    <div>SYMMETRY <b id="rSym">6</b>-fold</div>
+    <div>ARMS <b id="rArms">0</b> · ZOOM <b id="rZoom">1.00×</b></div>
+    <div>SEED <b id="rSeed">drift</b></div>
+  </div>
+  <div class="hud" id="help">
+    <div><kbd>move</kbd> 성장 방향 유도</div>
+    <div><kbd>click</kbd> 새 결정 개화</div>
+    <div><kbd>drag</kbd> 격자 회전 · <kbd>wheel</kbd> 줌</div>
+    <div><kbd>1‥9</kbd> 대칭 차수 · <kbd>space</kbd> 재결정</div>
+  </div>
+
+<script>
+(() => {
+  "use strict";
+
+  // ---------- canvases ----------
+  const glow  = document.getElementById('glow');
+  const stage = document.getElementById('stage');
+  const gctx  = glow.getContext('2d', { alpha: true });
+  const ctx   = stage.getContext('2d', { alpha: true });
+
+  let W = 0, H = 0, DPR = 1, CX = 0, CY = 0, R = 0;
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2); // resolution cap for perf
+    W = window.innerWidth; H = window.innerHeight;
+    for (const c of [glow, stage]) {
+      c.width  = Math.round(W * DPR);
+      c.height = Math.round(H * DPR);
+      c.style.width  = W + 'px';
+      c.style.height = H + 'px';
+    }
+    gctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    CX = W / 2; CY = H / 2;
+    R  = Math.min(W, H) * 0.46;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---------- state ----------
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const TAU = Math.PI * 2;
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+
+  let symmetry = 6;          // n-fold rotational symmetry (mirrored => 2n)
+  let zoom = 1;              // smoothed
+  let zoomTarget = 1;
+  let rot = 0;              // lattice rotation (smoothed)
+  let rotTarget = 0;
+  let dragging = false, lastX = 0, lastY = 0;
+
+  // pointer in *lattice space* (unrotated, unzoomed, centered, normalized to R)
+  const pointer = { x: 9999, y: 9999, active: false, sx: 9999, sy: 9999 };
+
+  // ---------- the crystal ----------
+  // A crystal is a tree of segments grown by DLA-flavored branching.
+  // We store nodes in ONE canonical wedge; symmetry draws the rest.
+  // Each node: {x,y, px,py, depth, w(width), hue, born, alive, kids}
+  let nodes = [];
+  let tips = [];            // active growing tips
+  let growthAccum = 0;
+  let totalArms = 0;
+  let seedDriftAngle = rand(0, TAU);
+
+  // hexagonal lattice growth angles (favor 60° steps => snowflake feel)
+  const hexAngles = [];
+  for (let i = 0; i < 6; i++) hexAngles.push(i * Math.PI / 3);
+
+  function newSeed() {
+    nodes = [];
+    tips = [];
+    totalArms = 0;
+    growthAccum = 0;
+    seedDriftAngle = rand(0, TAU);
+
+    const baseHue = rand(172, 196); // start cyan/azure; sweeps to violet outward
+    // start a few primary arms pointing "up" within the wedge
+    const wedge = TAU / symmetry;          // canonical wedge angle
+    const primary = Math.max(1, Math.round(symmetry <= 6 ? 1 : 1));
+    // single primary spine up the middle of the wedge for clean snowflake
+    const root = makeNode(0, 0, 0, 0, 0, 6.2, baseHue);
+    root.isRoot = true;
+    // primary spine grows straight "up" (angle = -PI/2 mapped into lattice y-up)
+    spawnTip(root, -Math.PI / 2, 6.2, baseHue, 0);
+    return baseHue;
+  }
+
+  function makeNode(x, y, px, py, depth, w, hue) {
+    const n = { x, y, px, py, depth, w, hue, born: performance.now(), kids: 0 };
+    nodes.push(n);
+    return n;
+  }
+
+  function spawnTip(parentNode, angle, width, hue, depth) {
+    tips.push({
+      node: parentNode,
+      angle,
+      width,
+      hue,
+      depth,
+      life: rand(0.55, 1.0),       // how far it grows before it can branch/stop
+      grown: 0,
+      step: rand(5.5, 8.5),
+      branchAt: rand(0.14, 0.34),  // fraction of life between branches
+      nextBranch: rand(0.10, 0.28),
+      ribAt: rand(0.05, 0.10),     // small side spikes (snowflake ribs)
+      nextRib: rand(0.04, 0.09),
+    });
+    totalArms++;
+  }
+
+  // grow tips a little each frame
+  function growStep(dt, bias) {
+    if (tips.length === 0) return;
+    const maxR = R * 0.96 / Math.max(0.0001, zoom); // stop near edge of unit field
+    const newTips = [];
+    const dead = [];
+
+    for (let ti = 0; ti < tips.length; ti++) {
+      const t = tips[ti];
+      const p = t.node;
+
+      // direction bias: gently steer toward pointer (frost seed) when active,
+      // else drift. Keep mostly along hex-aligned directions for crystalline look.
+      let a = t.angle;
+      if (bias) {
+        // angle from current node to pointer in lattice space
+        const da = Math.atan2(pointer.y - p.y, pointer.x - p.x);
+        let diff = ((da - a + Math.PI) % TAU + TAU) % TAU - Math.PI;
+        a += diff * 0.06; // soft pull
+      } else {
+        a += Math.sin((performance.now() * 0.0003) + p.depth) * 0.012;
+      }
+
+      // step
+      const stepLen = t.step * (0.85 + t.life * 0.4);
+      const nx = p.x + Math.cos(a) * stepLen;
+      const ny = p.y + Math.sin(a) * stepLen;
+
+      // width tapers with depth + along the tip's life
+      const w = Math.max(0.45, t.width * (1 - t.grown * 0.16) * (1 - t.depth * 0.12));
+      const node = makeNode(nx, ny, p.x, p.y, t.depth, w, t.hue);
+      p.kids++;
+      t.node = node;
+      t.angle = a;
+      t.grown += 0.06 + Math.random() * 0.02;
+
+      // distance from center => stop if too far
+      const distC = Math.hypot(nx, ny);
+      const tooFar = distC > maxR;
+
+      // RIBS: small perpendicular spikes -> the classic snowflake feathering
+      if (t.grown >= t.nextRib && t.depth < 4 && !tooFar) {
+        t.nextRib = t.grown + t.ribAt;
+        const ribLen = t.width * rand(1.4, 2.4);
+        for (const s of [-1, 1]) {
+          const ra = a + s * (Math.PI / 3) * rand(0.85, 1.05); // ~60° ribs
+          const rx = nx + Math.cos(ra) * ribLen;
+          const ry = ny + Math.sin(ra) * ribLen;
+          const rn = makeNode(rx, ry, nx, ny, t.depth + 2, Math.max(0.4, w * 0.55), t.hue);
+          node.kids++;
+        }
+      }
+
+      // BRANCH: spawn secondary arms at hex angles
+      if (t.grown >= t.nextBranch && t.depth < 3 && !tooFar && t.life > 0.35) {
+        t.nextBranch = t.grown + t.branchAt;
+        for (const s of [-1, 1]) {
+          const ba = a + s * (Math.PI / 3) * rand(0.9, 1.0); // 60° branch
+          newTips.push({
+            node,
+            angle: ba,
+            width: w * 0.62,
+            hue: t.hue + rand(-4, 4),
+            depth: t.depth + 1,
+            life: t.life * rand(0.5, 0.72),
+            grown: 0,
+            step: t.step * rand(0.7, 0.9),
+            branchAt: rand(0.18, 0.4),
+            nextBranch: rand(0.16, 0.34),
+            ribAt: rand(0.05, 0.11),
+            nextRib: rand(0.05, 0.1),
+          });
+        }
+      }
+
+      // terminate?
+      if (t.grown >= t.life || tooFar || node.w <= 0.5) {
+        // tiny terminal star
+        node.terminal = true;
+        dead.push(ti);
+      }
+    }
+
+    // remove dead (reverse) then add new
+    for (let i = dead.length - 1; i >= 0; i--) tips.splice(dead[i], 1);
+    for (const nt of newTips) { tips.push(nt); totalArms++; }
+  }
+
+  // ---------- rendering ----------
+  let bloomFlash = 0; // brief bright flash on new seed/branch burst
+
+  function frame(now) {
+    requestAnimationFrame(frame);
+    const dt = 1; // logical
+
+    // smooth camera
+    zoom = lerp(zoom, zoomTarget, 0.08);
+    // rotation w/ drag inertia handled in pointer; smooth toward target
+    rot  = lerp(rot, rotTarget, 0.10);
+
+    // growth pacing
+    const bias = pointer.active;
+    growthAccum += 1;
+    if (tips.length > 0) {
+      // a few steps per frame, scaled so it feels alive but smooth
+      const stepsThisFrame = clamp(Math.round(2 + tips.length * 0.04), 1, 6);
+      for (let s = 0; s < stepsThisFrame; s++) growStep(dt, bias);
+    } else {
+      // idle: occasionally re-crystallize a fresh flake for endless life
+      if (Math.random() < 0.006) { newSeedAndFlash(); }
+    }
+
+    bloomFlash *= 0.92;
+
+    // ---- clear with trailing fade (gives shimmering motion trails) ----
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = 'rgba(2,4,11,0.30)';
+    ctx.fillRect(0, 0, W, H);
+
+    gctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    gctx.globalCompositeOperation = 'source-over';
+    gctx.fillStyle = 'rgba(2,4,11,0.22)';
+    gctx.fillRect(0, 0, W, H);
+
+    drawCrystal(now);
+    drawCore(now);
+
+    // hud
+    rSym.textContent  = symmetry;
+    rArms.textContent = totalArms;
+    rZoom.textContent = zoom.toFixed(2) + '×';
+    rSeed.textContent = pointer.active ? 'guided' : 'drift';
+  }
+
+  function drawCrystal(now) {
+    const segs = symmetry;
+    const wedge = TAU / segs;
+
+    // background field: faint rotating hex grid lines for "frozen air"
+    drawField(now);
+
+    // draw each node as a segment from (px,py)->(x,y), replicated across symmetry
+    // We pre-rotate the whole pattern by `rot`, scale by `zoom`.
+    const baseS = R * zoom * 0.012; // node coords are in step-pixels; bring into screen scale
+    // Actually node coords already in pixels (lattice px). Convert: lattice px * zoom.
+    // We'll just multiply coords by zoom and rotate, centered at CX,CY.
+
+    // glow pass (additive, thicker, blurred-feel via low alpha big strokes)
+    gctx.globalCompositeOperation = 'lighter';
+    ctx.globalCompositeOperation  = 'lighter';
+
+    const cosR = Math.cos(rot), sinR = Math.sin(rot);
+
+    for (let k = 0; k < segs; k++) {
+      const a = k * wedge;
+      const ca = Math.cos(a + rot), sa = Math.sin(a + rot);
+      // mirrored copy too -> 2n-fold dihedral symmetry (true snowflake)
+      for (let m = 0; m < 2; m++) {
+        const mir = m === 0 ? 1 : -1;
+
+        for (let i = 0; i < nodes.length; i++) {
+          const n = nodes[i];
+          if (n.isRoot) continue;
+          // transform node + parent
+          let x1 = n.px, y1 = n.py * mir;
+          let x2 = n.x,  y2 = n.y  * mir;
+          // rotate by wedge angle a, then global rot already folded into ca/sa?
+          // We rotate point (x,y) by (a+rot):
+          const rx1 = x1 * ca - y1 * sa;
+          const ry1 = x1 * sa + y1 * ca;
+          const rx2 = x2 * ca - y2 * sa;
+          const ry2 = x2 * sa + y2 * ca;
+
+          const sx1 = CX + rx1 * zoom;
+          const sy1 = CY + ry1 * zoom;
+          const sx2 = CX + rx2 * zoom;
+          const sy2 = CY + ry2 * zoom;
+
+          // cull offscreen-ish
+          if ((sx2 < -40 && sx1 < -40) || (sx2 > W + 40 && sx1 > W + 40) ||
+              (sy2 < -40 && sy1 < -40) || (sy2 > H + 40 && sy1 > H + 40)) continue;
+
+          const age = (now - n.born);
+          const fadeIn = clamp(age / 360, 0, 1);
+          const dist = Math.hypot(n.x, n.y);
+          const distN = clamp(dist / (R * 0.95 / Math.max(zoom, .001)), 0, 1);
+
+          // Color: a refracting ice prism. Core = pale azure, mid = electric cyan,
+          // rim = deep sapphire shifting to violet. Shimmer animates the hue band.
+          const shimmer = Math.sin(now * 0.0011 + dist * 0.018 + n.depth * 0.6);
+          const hue = n.hue + distN * 64 + shimmer * 10;   // wide cyan->blue->violet sweep
+          const sat = 86 + distN * 12;
+          // keep lightness AWAY from 100 so additive blend lands on saturated color,
+          // not blown-out white. Inner is a touch brighter than rim.
+          const baseLight = 46 + (1 - distN) * 14;
+          const w = n.w * zoom;
+
+          // GLOW stroke (fat, very low alpha) — chromatic halo, color-rich
+          gctx.lineCap = 'round';
+          gctx.strokeStyle = `hsla(${hue}, ${sat}%, ${baseLight + 6}%, ${0.075 * fadeIn})`;
+          gctx.lineWidth = Math.max(0.6, w * 4.0);
+          gctx.beginPath();
+          gctx.moveTo(sx1, sy1);
+          gctx.lineTo(sx2, sy2);
+          gctx.stroke();
+
+          // CRISP stroke — saturated color, NOT white. Thin bright filament inside.
+          ctx.lineCap = 'round';
+          const a1 = (0.34 + 0.30 * (1 - distN)) * fadeIn;
+          ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${baseLight + 10}%, ${a1})`;
+          ctx.lineWidth = Math.max(0.6, w * 1.15);
+          ctx.beginPath();
+          ctx.moveTo(sx1, sy1);
+          ctx.lineTo(sx2, sy2);
+          ctx.stroke();
+
+          // inner highlight filament (thin, brighter) — gives the icy facet glint
+          ctx.strokeStyle = `hsla(${hue + 10}, 100%, 82%, ${0.28 * fadeIn})`;
+          ctx.lineWidth = Math.max(0.35, w * 0.42);
+          ctx.beginPath();
+          ctx.moveTo(sx1, sy1);
+          ctx.lineTo(sx2, sy2);
+          ctx.stroke();
+
+          // terminal sparkle — prismatic star at branch tips
+          if (n.terminal) {
+            const tw = (1.0 + 1.8 * (1 - distN)) * zoom;
+            const sg = ctx.createRadialGradient(sx2, sy2, 0, sx2, sy2, tw * 3.2);
+            sg.addColorStop(0, `hsla(${hue + 14}, 100%, 90%, ${0.7 * fadeIn})`);
+            sg.addColorStop(0.5, `hsla(${hue}, 100%, 66%, ${0.35 * fadeIn})`);
+            sg.addColorStop(1, `hsla(${hue - 10}, 100%, 50%, 0)`);
+            ctx.fillStyle = sg;
+            ctx.beginPath();
+            ctx.arc(sx2, sy2, tw * 3.2, 0, TAU);
+            ctx.fill();
+            // 4-point glint cross
+            ctx.strokeStyle = `hsla(${hue + 18}, 100%, 92%, ${0.5 * fadeIn})`;
+            ctx.lineWidth = Math.max(0.4, 0.7 * zoom);
+            const gl = tw * 2.6;
+            ctx.beginPath();
+            ctx.moveTo(sx2 - gl, sy2); ctx.lineTo(sx2 + gl, sy2);
+            ctx.moveTo(sx2, sy2 - gl); ctx.lineTo(sx2, sy2 + gl);
+            ctx.stroke();
+          }
+        }
+      }
+    }
+
+    ctx.globalCompositeOperation = 'source-over';
+    gctx.globalCompositeOperation = 'source-over';
+  }
+
+  function drawField(now) {
+    // very faint concentric hex rings + dust to make the void feel cold/alive
+    gctx.save();
+    gctx.globalCompositeOperation = 'lighter';
+    gctx.translate(CX, CY);
+    gctx.rotate(rot * 0.5);
+    const rings = 5;
+    for (let i = 1; i <= rings; i++) {
+      const rr = (R * zoom) * (i / rings) * (0.45 + 0.55 * (1 + Math.sin(now*0.0006 + i)) / 2);
+      gctx.beginPath();
+      for (let s = 0; s <= 6; s++) {
+        const a = s * Math.PI / 3;
+        const x = Math.cos(a) * rr, y = Math.sin(a) * rr;
+        s === 0 ? gctx.moveTo(x, y) : gctx.lineTo(x, y);
+      }
+      gctx.strokeStyle = `hsla(200, 80%, 60%, ${0.018})`;
+      gctx.lineWidth = 1;
+      gctx.stroke();
+    }
+    gctx.restore();
+  }
+
+  function drawCore(now) {
+    // glowing central seed where all arms meet
+    const pulse = 0.6 + 0.4 * Math.sin(now * 0.002) + bloomFlash;
+    const r0 = (10 + 8 * pulse) * (0.6 + zoom * 0.5);
+    ctx.globalCompositeOperation = 'lighter';
+    const g = ctx.createRadialGradient(CX, CY, 0, CX, CY, r0 * 3);
+    g.addColorStop(0, `hsla(188,100%,86%,${0.75})`);
+    g.addColorStop(0.32, `hsla(200,100%,64%,${0.42})`);
+    g.addColorStop(1, `hsla(214,100%,52%,0)`);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(CX, CY, r0 * 3, 0, TAU);
+    ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+
+    // pointer frost-seed indicator (in screen space)
+    if (pointer.active) {
+      ctx.globalCompositeOperation = 'lighter';
+      const pr = 7 + 4 * Math.sin(now * 0.006);
+      const pg = ctx.createRadialGradient(pointer.sx, pointer.sy, 0, pointer.sx, pointer.sy, pr * 4);
+      pg.addColorStop(0, 'hsla(190,100%,90%,.55)');
+      pg.addColorStop(1, 'hsla(200,100%,60%,0)');
+      ctx.fillStyle = pg;
+      ctx.beginPath();
+      ctx.arc(pointer.sx, pointer.sy, pr * 4, 0, TAU);
+      ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+    }
+  }
+
+  function newSeedAndFlash() {
+    const h = newSeed();
+    bloomFlash = 1.4;
+    // clear canvases harder so old flake doesn't ghost forever
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    ctx.globalCompositeOperation='source-over';
+    ctx.fillStyle='rgba(2,4,11,0.85)'; ctx.fillRect(0,0,W,H);
+    gctx.setTransform(DPR,0,0,DPR,0,0);
+    gctx.globalCompositeOperation='source-over';
+    gctx.fillStyle='rgba(2,4,11,0.85)'; gctx.fillRect(0,0,W,H);
+    return h;
+  }
+
+  // ---------- pointer -> lattice space ----------
+  function updatePointerLattice(clientX, clientY) {
+    pointer.sx = clientX; pointer.sy = clientY;
+    // invert: screen -> centered -> unrotate -> unzoom
+    let dx = (clientX - CX) / Math.max(zoom, 0.001);
+    let dy = (clientY - CY) / Math.max(zoom, 0.001);
+    const ca = Math.cos(-rot), sa = Math.sin(-rot);
+    pointer.x = dx * ca - dy * sa;
+    pointer.y = dx * sa + dy * ca;
+  }
+
+  // ---------- input ----------
+  window.addEventListener('pointermove', (e) => {
+    if (dragging) {
+      rotTarget += (e.clientX - lastX) * 0.005;
+      zoomTarget = clamp(zoomTarget * (1 - (e.clientY - lastY) * 0.002), 0.35, 3.2);
+      lastX = e.clientX; lastY = e.clientY;
+    }
+    pointer.active = true;
+    updatePointerLattice(e.clientX, e.clientY);
+  });
+  window.addEventListener('pointerdown', (e) => {
+    dragging = true; lastX = e.clientX; lastY = e.clientY;
+    pointer.active = true;
+    updatePointerLattice(e.clientX, e.clientY);
+  });
+  window.addEventListener('pointerup', (e) => {
+    // distinguish click (no real drag) -> spawn new bloom at pointer-ish
+    const moved = Math.hypot(e.clientX - lastX, e.clientY - lastY);
+    dragging = false;
+    // a tap (not a drag) => new crystal
+    newSeedAndFlash();
+    updatePointerLattice(e.clientX, e.clientY);
+  });
+  window.addEventListener('pointerleave', () => { pointer.active = false; dragging = false; });
+  window.addEventListener('pointercancel', () => { pointer.active = false; dragging = false; });
+
+  window.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    zoomTarget = clamp(zoomTarget * (1 - e.deltaY * 0.0012), 0.35, 3.2);
+  }, { passive: false });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === ' ') { e.preventDefault(); newSeedAndFlash(); return; }
+    const n = parseInt(e.key, 10);
+    if (!isNaN(n) && n >= 1 && n <= 9) {
+      symmetry = n;
+      newSeedAndFlash();
+    }
+  });
+
+  // ---------- go ----------
+  newSeed();
+  requestAnimationFrame(frame);
+
+  // expose for self-test
+  window.__cryst = () => ({ nodes: nodes.length, tips: tips.length, totalArms, symmetry, zoom });
+})();
+</script>
+</body>
+</html>

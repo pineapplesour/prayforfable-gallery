@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>VULPES — living ecosystem</title>
+<style>
+  :root{ --bg:#05070d; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:var(--bg);
+    font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace; cursor:none; -webkit-tap-highlight-color:transparent; }
+  #stage{ position:fixed; inset:0; display:block; }
+  /* overlay HUD */
+  .hud{ position:fixed; pointer-events:none; color:#cfe; mix-blend-mode:screen; z-index:5; }
+  #title{ left:clamp(14px,3vw,42px); top:clamp(12px,2.6vh,34px); }
+  #title h1{ font-size:clamp(15px,2.0vw,26px); letter-spacing:.42em; font-weight:600;
+    color:#eaf6ff; text-shadow:0 0 22px rgba(120,200,255,.45); }
+  #title h1 b{ color:#ff9f6e; font-weight:600; text-shadow:0 0 26px rgba(255,140,80,.6); }
+  #title p{ margin-top:7px; font-size:clamp(8.5px,.92vw,11px); letter-spacing:.22em;
+    color:#7fa6c4; opacity:.85; }
+  #legend{ right:clamp(12px,2.4vw,34px); top:clamp(12px,2.6vh,34px); text-align:right;
+    font-size:clamp(8px,.85vw,10.5px); letter-spacing:.12em; line-height:1.9; color:#9fbdd6; }
+  #legend .row{ display:flex; gap:8px; justify-content:flex-end; align-items:center; }
+  #legend .dot{ width:8px; height:8px; border-radius:50%; box-shadow:0 0 9px currentColor; }
+  #legend .fox{ color:#ff8a4c;} #legend .rab{ color:#bfe9ff;} #legend .grs{ color:#8df2a6;}
+  #hint{ left:50%; transform:translateX(-50%); bottom:clamp(10px,2.4vh,26px); text-align:center;
+    font-size:clamp(8px,.84vw,10.5px); letter-spacing:.2em; color:#7c9bb6; opacity:.0;
+    transition:opacity 1.2s ease; white-space:nowrap; }
+  #hint.show{ opacity:.82; }
+  #clock{ left:clamp(14px,3vw,42px); bottom:clamp(10px,2.4vh,26px);
+    font-size:clamp(8px,.82vw,10px); letter-spacing:.18em; color:#86a7c2; opacity:.8; }
+  @media (max-width:560px){
+    #hint{ white-space:normal; max-width:84vw; line-height:1.8; }
+    #legend{ line-height:1.7; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div class="hud" id="title">
+  <h1>VUL<b>P</b>ES</h1>
+  <p>A LIVING PREDATOR · PREY · GRASS ECOSYSTEM</p>
+</div>
+<div class="hud" id="legend">
+  <div class="row"><span>fox</span><span class="dot fox"></span></div>
+  <div class="row"><span>rabbit</span><span class="dot rab"></span></div>
+  <div class="row"><span>grass</span><span class="dot grs"></span></div>
+</div>
+<div class="hud" id="clock">DAWN · POP — · —</div>
+<div class="hud" id="hint">MOVE = hawk shadow · CLICK = scatter seeds · DRAG = wind · WHEEL = bend time · DBLCLICK = drop a fox</div>
+
+<script>
+"use strict";
+/* ============================================================================
+   VULPES — single-file generative predator/prey/grass ecosystem.
+   No deps. Canvas2D. Everything below is alive on first paint.
+============================================================================ */
+(()=>{
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', { alpha:false });
+const clockEl = document.getElementById('clock');
+const hintEl  = document.getElementById('hint');
+
+let W=0,H=0,DPR=1, DIAG=1;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = Math.floor(W*DPR); cv.height = Math.floor(H*DPR);
+  cv.style.width=W+'px'; cv.style.height=H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  DIAG = Math.hypot(W,H);
+  buildGrass();
+}
+window.addEventListener('resize', resize);
+
+/* ---------------- math helpers ---------------- */
+const rnd =(a=1,b=0)=> b + Math.random()*(a-b);
+const clamp=(v,a,b)=> v<a?a:v>b?b:v;
+const lerp =(a,b,t)=> a+(b-a)*t;
+const TAU = Math.PI*2;
+function hashNoise(x,y){ // cheap value noise
+  const s = Math.sin(x*127.1 + y*311.7)*43758.5453;
+  return s - Math.floor(s);
+}
+function vnoise(x,y){
+  const xi=Math.floor(x), yi=Math.floor(y);
+  const xf=x-xi, yf=y-yi;
+  const u=xf*xf*(3-2*xf), v=yf*yf*(3-2*yf);
+  const a=hashNoise(xi,yi), b=hashNoise(xi+1,yi);
+  const c=hashNoise(xi,yi+1), d=hashNoise(xi+1,yi+1);
+  return lerp(lerp(a,b,u), lerp(c,d,u), v);
+}
+
+/* ---------------- world params ---------------- */
+const P = {
+  rabbitStart: 64,
+  foxStart: 7,
+  rabbitMax: 220,
+  foxMax: 42,
+  grassCols: 0, grassRows: 0, grassCell: 26,
+};
+function tuneForSize(){
+  // scale population & grass density by area to keep ~60fps
+  const area = W*H;
+  const k = clamp(area/(1440*820), 0.34, 1.25);
+  P.rabbitStart = Math.round(60*k);
+  P.foxStart    = Math.max(4, Math.round(7*k));
+  P.rabbitMax   = Math.round(210*k);
+  P.foxMax      = Math.round(40*k);
+  P.grassCell   = W<560 ? 30 : 26;
+}
+
+/* ============================================================================
+   GRASS FIELD — a regrowing scalar field rendered as soft turf + blades.
+============================================================================ */
+let G, gPhase=0;
+function buildGrass(){
+  tuneForSize();
+  P.grassCols = Math.ceil(W/P.grassCell)+1;
+  P.grassRows = Math.ceil(H/P.grassCell)+1;
+  const n = P.grassCols*P.grassRows;
+  const next = new Float32Array(n);
+  for(let i=0;i<n;i++) next[i] = G ? (G.v[i]??1) : (0.55+0.45*Math.random());
+  G = { v: next, cols:P.grassCols, rows:P.grassRows, cell:P.grassCell };
+  gBuf=null; // force grass buffer rebuild at new dimensions
+}
+function grassAt(x,y){
+  const c = clamp(Math.floor(x/G.cell),0,G.cols-1);
+  const r = clamp(Math.floor(y/G.cell),0,G.rows-1);
+  return { i:r*G.cols+c, c, r };
+}
+function eatGrass(x,y,amt){
+  const {i}=grassAt(x,y);
+  const took = Math.min(G.v[i], amt);
+  G.v[i] -= took;
+  if(G.v[i]<0) G.v[i]=0;
+  return took;
+}
+function seedGrass(x,y,radius,power){
+  const c0=clamp(Math.floor((x-radius)/G.cell),0,G.cols-1);
+  const c1=clamp(Math.ceil((x+radius)/G.cell),0,G.cols-1);
+  const r0=clamp(Math.floor((y-radius)/G.cell),0,G.rows-1);
+  const r1=clamp(Math.ceil((y+radius)/G.cell),0,G.rows-1);
+  for(let r=r0;r<=r1;r++) for(let c=c0;c<=c1;c++){
+    const dx=c*G.cell-x, dy=r*G.cell-y;
+    const d=Math.hypot(dx,dy);
+    if(d<radius){ const i=r*G.cols+c; G.v[i]=clamp(G.v[i]+power*(1-d/radius),0,1.35); }
+  }
+}
+function growGrass(dt){
+  const v=G.v, n=v.length, rate=0.085*dt;
+  for(let i=0;i<n;i++){ if(v[i]<1){ v[i]+= rate*(0.25+v[i]); if(v[i]>1)v[i]=1; } }
+}
+
+/* ============================================================================
+   AGENTS
+============================================================================ */
+const rabbits=[], foxes=[], puffs=[]; // puffs = death/eat particle bursts
+let ripples=[];
+
+function spawnRabbit(x,y){
+  if(rabbits.length>=P.rabbitMax) return;
+  rabbits.push({
+    x:x??rnd(W), y:y??rnd(H), a:rnd(TAU),
+    vx:0, vy:0, sp:rnd(1.18,.78),
+    energy:rnd(1.0,.55), age:0, hop:rnd(TAU), fear:0,
+    size:rnd(1.12,.82), repro:0,
+  });
+}
+function spawnFox(x,y){
+  if(foxes.length>=P.foxMax) return;
+  foxes.push({
+    x:x??rnd(W), y:y??rnd(H), a:rnd(TAU),
+    vx:0, vy:0, sp:rnd(1.5,1.15),
+    hunger:rnd(.7,.35), age:0, lope:rnd(TAU),
+    size:rnd(1.18,.9), trail:[], target:-1, lastKill:0,
+  });
+}
+function initAgents(){
+  rabbits.length=0; foxes.length=0;
+  for(let i=0;i<P.rabbitStart;i++) spawnRabbit();
+  for(let i=0;i<P.foxStart;i++) spawnFox();
+}
+
+/* spatial hash for rabbit neighbour queries */
+const HASHCELL=60; let hash=new Map();
+function rehashRabbits(){
+  hash.clear();
+  for(let i=0;i<rabbits.length;i++){
+    const r=rabbits[i];
+    const k=(Math.floor(r.x/HASHCELL))+'_'+(Math.floor(r.y/HASHCELL));
+    let a=hash.get(k); if(!a){a=[];hash.set(k,a);} a.push(i);
+  }
+}
+function nearbyRabbits(x,y,out){
+  out.length=0;
+  const cx=Math.floor(x/HASHCELL), cy=Math.floor(y/HASHCELL);
+  for(let gx=cx-1;gx<=cx+1;gx++) for(let gy=cy-1;gy<=cy+1;gy++){
+    const a=hash.get(gx+'_'+gy); if(a) for(let i=0;i<a.length;i++) out.push(a[i]);
+  }
+  return out;
+}
+
+/* ============================================================================
+   INTERACTION STATE
+============================================================================ */
+const M = { x:-9999, y:-9999, px:-9999, py:-9999, active:false, down:false,
+            wind:{x:0,y:0}, windDecay:0, hawk:0 };
+let timeScale = 1;           // wheel bends time
+let dayT = 0.18;             // 0..1 day cycle, start at dawn
+const TARGET_DAY = 64;       // seconds per full day at scale 1
+
+function pointer(e){
+  const t = e.touches? e.touches[0] : e;
+  if(!t) return;
+  M.px=M.x; M.py=M.y;
+  M.x=t.clientX; M.y=t.clientY; M.active=true;
+  M.hawk = clamp(M.hawk+0.12,0,1);
+  if(M.down){
+    M.wind.x = lerp(M.wind.x, (M.x-M.px)*0.05, .4);
+    M.wind.y = lerp(M.wind.y, (M.y-M.py)*0.05, .4);
+    M.windDecay = 1;
+  }
+}
+cv.addEventListener('mousemove', pointer);
+cv.addEventListener('touchmove', e=>{ pointer(e); e.preventDefault(); }, {passive:false});
+cv.addEventListener('mousedown', e=>{ M.down=true; pointer(e); });
+window.addEventListener('mouseup', ()=> M.down=false);
+cv.addEventListener('touchstart', e=>{ M.down=true; pointer(e);
+  if(e.touches.length>1){ seedBurst(e.touches[0].clientX,e.touches[0].clientY); }
+}, {passive:true});
+window.addEventListener('touchend', ()=> M.down=false);
+cv.addEventListener('mouseleave', ()=>{ M.active=false; });
+
+function seedBurst(x,y){
+  seedGrass(x,y, 92, 0.9);
+  ripples.push({x,y,r:6,max:140,c:'#8df2a6',a:.9});
+  for(let i=0;i<22;i++){
+    const ang=rnd(TAU), s=rnd(2.4,.4);
+    puffs.push({x,y,vx:Math.cos(ang)*s,vy:Math.sin(ang)*s-0.6,life:1,r:rnd(3.4,1.4),col:[140,242,166]});
+  }
+}
+cv.addEventListener('click', e=> seedBurst(e.clientX,e.clientY));
+cv.addEventListener('dblclick', e=>{
+  spawnFox(e.clientX,e.clientY);
+  ripples.push({x:e.clientX,y:e.clientY,r:6,max:170,c:'#ff8a4c',a:.9});
+});
+window.addEventListener('wheel', e=>{
+  timeScale = clamp(timeScale + (e.deltaY>0? -0.18:0.18), 0.12, 4.0);
+  e.preventDefault();
+}, {passive:false});
+
+/* show hint briefly */
+setTimeout(()=> hintEl.classList.add('show'), 900);
+setTimeout(()=> hintEl.classList.remove('show'), 8200);
+
+/* ============================================================================
+   DAY/NIGHT SKY — rendered as the background each frame.
+============================================================================ */
+function skyGradient(){
+  // dayT: 0 dawn, .25 day, .5 dusk, .75 night
+  const t=dayT;
+  // build palette by phase using simple keyframes
+  const stops = [
+    // [pos, topR,topG,topB, botR,botG,botB]
+  ];
+  // top/bottom colors interpolated around the cycle
+  const KF = [
+    {t:0.00, top:[20,28,52],  bot:[58,40,46]},   // dawn
+    {t:0.22, top:[40,86,150], bot:[150,196,210]},// midday
+    {t:0.48, top:[58,40,80],  bot:[210,120,70]}, // dusk
+    {t:0.70, top:[8,10,26],   bot:[18,22,46]},   // night
+    {t:1.00, top:[20,28,52],  bot:[58,40,46]},   // dawn again
+  ];
+  let A=KF[0],B=KF[1];
+  for(let i=0;i<KF.length-1;i++){ if(t>=KF[i].t && t<=KF[i+1].t){A=KF[i];B=KF[i+1];break;} }
+  const tt=(t-A.t)/(B.t-A.t||1);
+  const top=[lerp(A.top[0],B.top[0],tt),lerp(A.top[1],B.top[1],tt),lerp(A.top[2],B.top[2],tt)];
+  const bot=[lerp(A.bot[0],B.bot[0],tt),lerp(A.bot[1],B.bot[1],tt),lerp(A.bot[2],B.bot[2],tt)];
+  return {top,bot};
+}
+
+/* ============================================================================
+   RENDER LAYERS
+============================================================================ */
+let stars=[];
+function buildStars(){
+  stars.length=0;
+  const n=Math.round(DIAG/9);
+  for(let i=0;i<n;i++) stars.push({x:rnd(W),y:rnd(H*0.7),r:rnd(1.4,.3),tw:rnd(TAU)});
+}
+
+function drawSky(sky, night){
+  const g=ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,`rgb(${sky.top[0]|0},${sky.top[1]|0},${sky.top[2]|0})`);
+  g.addColorStop(1,`rgb(${sky.bot[0]|0},${sky.bot[1]|0},${sky.bot[2]|0})`);
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  // stars at night
+  if(night>0.02){
+    ctx.save(); ctx.globalAlpha=night*0.9;
+    for(const s of stars){
+      const a=0.4+0.6*Math.sin(gPhase*1.3+s.tw);
+      ctx.globalAlpha=night*a*0.9;
+      ctx.fillStyle='#dfeeff';
+      ctx.beginPath(); ctx.arc(s.x,s.y,s.r,0,TAU); ctx.fill();
+    }
+    ctx.restore();
+  }
+  // sun / moon arc
+  const sx = W*0.5 + Math.cos((dayT*TAU)-Math.PI/2)*W*0.46;
+  const sy = H*0.86 + Math.sin((dayT*TAU)-Math.PI/2)*H*0.72;
+  const isMoon = dayT>0.5;
+  const cr = isMoon? 16:26;
+  const grd=ctx.createRadialGradient(sx,sy,0,sx,sy,cr*5);
+  if(isMoon){ grd.addColorStop(0,'rgba(220,232,255,.9)'); grd.addColorStop(1,'rgba(180,200,255,0)'); }
+  else      { grd.addColorStop(0,'rgba(255,238,200,.95)'); grd.addColorStop(.4,'rgba(255,190,120,.5)'); grd.addColorStop(1,'rgba(255,160,90,0)'); }
+  ctx.fillStyle=grd; ctx.beginPath(); ctx.arc(sx,sy,cr*5,0,TAU); ctx.fill();
+  ctx.fillStyle=isMoon?'#eef4ff':'#fff4dc';
+  ctx.beginPath(); ctx.arc(sx,sy,cr,0,TAU); ctx.fill();
+}
+
+/* turf — draw grass field as soft mounds + blades, color reacts to density */
+let bladePhase=0;
+/* low-res grass buffer: one pixel == one grass cell, then upscaled smooth */
+let gBuf, gBufCtx, gImg;
+function buildGrassBuf(){
+  gBuf=document.createElement('canvas'); gBuf.width=G.cols; gBuf.height=G.rows;
+  gBufCtx=gBuf.getContext('2d');
+  gImg=gBufCtx.createImageData(G.cols,G.rows);
+}
+function drawGrass(night){
+  if(!gBuf || gBuf.width!==G.cols || gBuf.height!==G.rows) buildGrassBuf();
+  bladePhase += 0.016*timeScale;
+  const dn = 1-night*0.60;
+  // 1) warm soil ground so eaten earth reads as dirt, never black
+  {
+    const g=ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0,`rgb(${30*dn|0},${44*dn|0},${34*dn|0})`);
+    g.addColorStop(1,`rgb(${50*dn|0},${42*dn|0},${30*dn|0})`);
+    ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  }
+  // 2) paint grass density into the tiny buffer (1px/cell), then smooth-upscale.
+  const d=gImg.data, cols=G.cols, rows=G.rows;
+  for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
+    const v=clamp(G.v[r*cols+c],0,1.3);
+    const i=(r*cols+c)*4;
+    const lit=Math.min(v,1), over=Math.max(0,v-1);
+    d[i  ]=(22+ 26*lit)*dn;
+    d[i+1]=(48+150*lit+40*over)*dn;
+    d[i+2]=(36+ 66*lit)*dn;
+    d[i+3]= (v<0.04)? 0 : (90+150*lit);   // alpha so soil shows through bare spots
+  }
+  gBufCtx.putImageData(gImg,0,0);
+  ctx.save();
+  ctx.imageSmoothingEnabled=true; ctx.imageSmoothingQuality='high';
+  // draw with half-cell offset so smoothing centers on cell centers (no hard grid)
+  ctx.drawImage(gBuf, -G.cell*0.5, -G.cell*0.5, W+G.cell, H+G.cell);
+  ctx.restore();
+  // 3) sparse animated blades only where lush (cheap, gives texture & wind)
+  ctx.lineCap='round';
+  const cell=G.cell;
+  const step = (W<560)?3:2;
+  for(let r=0;r<rows;r+=step){
+    for(let c=0;c<cols;c+=step){
+      const v=G.v[r*cols+c];
+      if(v<0.5) continue;
+      const x=c*cell, y=r*cell;
+      const sway = Math.sin(bladePhase + (x+y)*0.02 + vnoise(c*0.3,r*0.3)*6)*4*v
+                 + M.wind.x*8*(M.windDecay);
+      const h=(cell*0.6)*v, g=clamp(v,0,1);
+      ctx.strokeStyle=`rgba(${60+30*g|0},${160+80*g|0},${90+40*g|0},${0.26*g*(1-night*0.55)})`;
+      ctx.lineWidth=1.2*g;
+      ctx.beginPath();
+      ctx.moveTo(x,y+cell*0.5);
+      ctx.quadraticCurveTo(x+sway*0.5, y+cell*0.5-h*0.6, x+sway, y+cell*0.5-h);
+      ctx.stroke();
+    }
+  }
+  ctx.lineWidth=1;
+}
+
+/* ----- agent rendering ----- */
+function drawRabbit(r,night){
+  const x=r.x,y=r.y, s=r.size;
+  const hop = Math.max(0, Math.sin(r.hop))*5*s;      // vertical bounce
+  const yy = y - hop;
+  const dir = Math.atan2(r.vy, r.vx);
+  const fearGlow = r.fear;
+  // soft shadow
+  ctx.fillStyle='rgba(0,0,0,'+(0.18*(1-hop/(6*s)))+')';
+  ctx.beginPath(); ctx.ellipse(x,y+6, 6*s,2.6*s,0,0,TAU); ctx.fill();
+  ctx.save();
+  ctx.translate(x,yy);
+  ctx.rotate(dir);
+  // body glow
+  const bl = night*0.5 + fearGlow*0.6;
+  if(bl>0.05){
+    const gg=ctx.createRadialGradient(0,0,0,0,0,14*s);
+    gg.addColorStop(0,`rgba(${180+60*fearGlow|0},${230-120*fearGlow|0},255,${0.5*bl})`);
+    gg.addColorStop(1,'rgba(120,200,255,0)');
+    ctx.fillStyle=gg; ctx.beginPath(); ctx.arc(0,0,14*s,0,TAU); ctx.fill();
+  }
+  // body
+  const bodyCol = fearGlow>0.3? `rgb(${220},${200+30*(1-fearGlow)|0},${230})` : '#dff1ff';
+  ctx.fillStyle=bodyCol;
+  ctx.beginPath(); ctx.ellipse(0,0, 6.4*s,4.4*s,0,0,TAU); ctx.fill();
+  // head
+  ctx.beginPath(); ctx.arc(5.2*s,-1.2*s, 3.3*s,0,TAU); ctx.fill();
+  // ears (lean back with fear/speed)
+  const earBack = clamp(fearGlow*0.8 + Math.hypot(r.vx,r.vy)*0.2, 0, 1.2);
+  ctx.strokeStyle=bodyCol; ctx.lineWidth=1.8*s; ctx.lineCap='round';
+  for(const e of [-1.4,0.2]){
+    ctx.beginPath();
+    ctx.moveTo(5.4*s, e*s);
+    ctx.lineTo(5.4*s - earBack*4*s, e*s - 6.5*s);
+    ctx.stroke();
+  }
+  // eye
+  ctx.fillStyle = fearGlow>0.4? '#ff5d6e':'#15212e';
+  ctx.beginPath(); ctx.arc(6.4*s,-1.6*s, 0.9*s,0,TAU); ctx.fill();
+  // tail puff
+  ctx.fillStyle='#ffffff';
+  ctx.beginPath(); ctx.arc(-6*s,0, 1.8*s,0,TAU); ctx.fill();
+  ctx.restore();
+}
+
+function drawFox(f,night){
+  // trail
+  if(f.trail.length>1){
+    ctx.lineCap='round';
+    for(let i=1;i<f.trail.length;i++){
+      const a=f.trail[i-1], b=f.trail[i];
+      const t=i/f.trail.length;
+      ctx.strokeStyle=`rgba(255,${130+40*t|0},${70},${0.30*t})`;
+      ctx.lineWidth=(1+4*t)*f.size;
+      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+    }
+  }
+  const x=f.x,y=f.y,s=f.size;
+  const dir=Math.atan2(f.vy,f.vx);
+  const lope=Math.max(0,Math.sin(f.lope))*3*s;
+  const yy=y-lope;
+  // shadow
+  ctx.fillStyle='rgba(0,0,0,0.22)';
+  ctx.beginPath(); ctx.ellipse(x,y+7,9*s,3*s,0,0,TAU); ctx.fill();
+  ctx.save(); ctx.translate(x,yy); ctx.rotate(dir);
+  // hunt glow when hungry/chasing
+  const hot = clamp((0.6-f.hunger)*1.5 + (f.target>=0?0.5:0),0,1);
+  const gl = night*0.55 + hot*0.7;
+  if(gl>0.05){
+    const gg=ctx.createRadialGradient(0,0,0,0,0,22*s);
+    gg.addColorStop(0,`rgba(255,${150-60*hot|0},${70},${0.55*gl})`);
+    gg.addColorStop(1,'rgba(255,120,60,0)');
+    ctx.fillStyle=gg; ctx.beginPath(); ctx.arc(0,0,22*s,0,TAU); ctx.fill();
+  }
+  // tail (sweeping curve)
+  const sweep=Math.sin(f.lope*0.7)*0.5;
+  ctx.strokeStyle='#e8702f'; ctx.lineWidth=4.4*s; ctx.lineCap='round';
+  ctx.beginPath();
+  ctx.moveTo(-6*s,0);
+  ctx.quadraticCurveTo(-13*s, sweep*8*s, -18*s, -4*s+sweep*4*s);
+  ctx.stroke();
+  // white tail tip
+  ctx.strokeStyle='#fff'; ctx.lineWidth=3*s;
+  ctx.beginPath(); ctx.moveTo(-16*s,-3.4*s+sweep*4*s); ctx.lineTo(-18.5*s,-4.4*s+sweep*4*s); ctx.stroke();
+  // body
+  const bodyCol = hot>0.4? '#ff7a36':'#f08130';
+  ctx.fillStyle=bodyCol;
+  ctx.beginPath(); ctx.ellipse(0,0, 8.4*s,4.6*s,0,0,TAU); ctx.fill();
+  // belly
+  ctx.fillStyle='rgba(255,238,220,.85)';
+  ctx.beginPath(); ctx.ellipse(1*s,2.2*s,5.4*s,2*s,0,0,TAU); ctx.fill();
+  // head
+  ctx.fillStyle=bodyCol;
+  ctx.beginPath(); ctx.moveTo(7*s,-3.5*s); ctx.lineTo(15*s,-0.4*s); ctx.lineTo(7*s,3.5*s); ctx.closePath(); ctx.fill();
+  // ears
+  ctx.beginPath(); ctx.moveTo(6.5*s,-3.5*s); ctx.lineTo(8*s,-7.5*s); ctx.lineTo(9.6*s,-3.2*s); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(8.4*s,-2.8*s); ctx.lineTo(10.5*s,-6.4*s); ctx.lineTo(11.4*s,-2*s); ctx.closePath(); ctx.fill();
+  // snout + eye
+  ctx.fillStyle='#1c0f08'; ctx.beginPath(); ctx.arc(15*s,-0.4*s,1.1*s,0,TAU); ctx.fill();
+  ctx.fillStyle = hot>0.4?'#fff36b':'#21130a';
+  ctx.beginPath(); ctx.arc(9.6*s,-1.6*s,1.1*s,0,TAU); ctx.fill();
+  ctx.restore();
+}
+
+/* ============================================================================
+   SIMULATION STEP
+============================================================================ */
+const tmpN=[];
+let foxSightLen=150, foxSightCos=Math.cos(0.85);
+
+function step(dt){
+  const t = dt; // already scaled
+  rehashRabbits();
+
+  /* hawk shadow (mouse) — fear source */
+  const hawkActive = M.active && M.hawk>0.05;
+  const hx=M.x, hy=M.y, hawkR=Math.max(120, DIAG*0.10);
+
+  /* ---- RABBITS ---- */
+  for(let i=rabbits.length-1;i>=0;i--){
+    const r=rabbits[i];
+    r.age += t; r.hop += (0.18+Math.hypot(r.vx,r.vy)*0.12)*t*8;
+    let ax=0, ay=0;
+
+    // boids: cohesion/alignment/separation among nearby rabbits
+    nearbyRabbits(r.x,r.y,tmpN);
+    let cx=0,cy=0,sx=0,sy=0,ax2=0,ay2=0,cnt=0,sepN=0;
+    for(const j of tmpN){ if(j===i) continue; const o=rabbits[j];
+      const dx=o.x-r.x, dy=o.y-r.y, d2=dx*dx+dy*dy;
+      if(d2<60*60){ cx+=o.x; cy+=o.y; ax2+=o.vx; ay2+=o.vy; cnt++;
+        if(d2<26*26 && d2>0.001){ const d=Math.sqrt(d2); sx-=dx/d; sy-=dy/d; sepN++; }
+      }
+    }
+    if(cnt>0){ ax+=((cx/cnt)-r.x)*0.0006; ay+=((cy/cnt)-r.y)*0.0006;
+               ax+=(ax2/cnt)*0.02; ay+=(ay2/cnt)*0.02; }
+    if(sepN>0){ ax+=sx*0.06; ay+=sy*0.06; }
+
+    // graze toward grass gradient (sample a few cells)
+    let bestV=-1,bgx=0,bgy=0;
+    for(let k=0;k<4;k++){
+      const ang=r.a + (k-1.5)*0.6;
+      const px=r.x+Math.cos(ang)*40, py=r.y+Math.sin(ang)*40;
+      const {i:gi}=grassAt(px,py); const v=G.v[gi]||0;
+      if(v>bestV){bestV=v;bgx=px;bgy=py;}
+    }
+    if(bestV>0.2){ const dx=bgx-r.x,dy=bgy-r.y,d=Math.hypot(dx,dy)||1; ax+=dx/d*0.03*bestV; ay+=dy/d*0.03*bestV; }
+
+    // FEAR: foxes nearby + hawk shadow
+    r.fear *= Math.pow(0.92, t*8);
+    let fox_dx=0,fox_dy=0;
+    for(const f of foxes){
+      const dx=r.x-f.x, dy=r.y-f.y, d2=dx*dx+dy*dy;
+      if(d2<140*140 && d2>0.01){ const d=Math.sqrt(d2); const w=(1-d/140);
+        fox_dx+=dx/d*w; fox_dy+=dy/d*w; r.fear=Math.max(r.fear,w*0.9);
+      }
+    }
+    ax += fox_dx*0.22; ay += fox_dy*0.22;
+    if(hawkActive){
+      const dx=r.x-hx, dy=r.y-hy, d=Math.hypot(dx,dy);
+      if(d<hawkR){ const w=(1-d/hawkR)*M.hawk; ax+=dx/(d||1)*w*0.9; ay+=dy/(d||1)*w*0.9; r.fear=Math.max(r.fear,w); }
+    }
+
+    // wind
+    if(M.windDecay>0){ ax+=M.wind.x*0.4; ay+=M.wind.y*0.4; }
+
+    // wander
+    r.a += rnd(0.4,-0.4)*t*4;
+    ax += Math.cos(r.a)*0.012; ay += Math.sin(r.a)*0.012;
+
+    // integrate
+    const maxsp = r.sp*(1.0+r.fear*1.4);
+    r.vx=(r.vx+ax)*0.86; r.vy=(r.vy+ay)*0.86;
+    const sp=Math.hypot(r.vx,r.vy);
+    if(sp>maxsp){ r.vx=r.vx/sp*maxsp; r.vy=r.vy/sp*maxsp; }
+    r.x+=r.vx*t*60*0.55; r.y+=r.vy*t*60*0.55;
+    if(sp>0.05) r.a=Math.atan2(r.vy,r.vx);
+
+    // wrap with margin
+    const m=20;
+    if(r.x<-m)r.x=W+m; if(r.x>W+m)r.x=-m;
+    if(r.y<-m)r.y=H+m; if(r.y>H+m)r.y=-m;
+
+    // eat grass -> energy
+    const got=eatGrass(r.x,r.y, 0.5*t);
+    r.energy += got*1.2 - 0.045*t*(1+r.fear*0.6);
+
+    // reproduce when well fed and calm
+    r.repro += t*(r.energy>0.9 && r.fear<0.25 ? 1:0);
+    if(r.repro>3.2 && rabbits.length<P.rabbitMax){
+      r.repro=0; r.energy*=0.6;
+      spawnRabbit(r.x+rnd(14,-14), r.y+rnd(14,-14));
+      ripples.push({x:r.x,y:r.y,r:3,max:40,c:'#bfe9ff',a:.5});
+    }
+    // starve
+    if(r.energy<=0){ deathPuff(r.x,r.y,[200,225,255]); rabbits.splice(i,1); }
+  }
+
+  /* ---- FOXES ---- */
+  for(let i=foxes.length-1;i>=0;i--){
+    const f=foxes[i];
+    f.age+=t; f.lope+=(0.2+Math.hypot(f.vx,f.vy)*0.1)*t*8;
+    f.hunger += 0.028*t;     // grows hungry
+    let ax=0,ay=0;
+    f.lastKill+=t;
+
+    // find nearest rabbit in a forward-ish sight cone, else nearest overall
+    let best=-1,bestD=1e9, fwx=Math.cos(f.a),fwy=Math.sin(f.a);
+    for(let j=0;j<rabbits.length;j++){
+      const rb=rabbits[j]; const dx=rb.x-f.x,dy=rb.y-f.y,d=Math.hypot(dx,dy);
+      if(d>260) continue;
+      const dot=(dx*fwx+dy*fwy)/(d||1);
+      const score = d*(dot>0.2?0.7:1.3);
+      if(score<bestD){ bestD=score; best=j; }
+    }
+    f.target=best;
+    if(best>=0){
+      const rb=rabbits[best]; const dx=rb.x-f.x,dy=rb.y-f.y,d=Math.hypot(dx,dy)||1;
+      const eager = 0.05+ (0.6-f.hunger>0? (f.hunger):0.2)*0.06;
+      ax+=dx/d*eager; ay+=dy/d*eager;
+      // catch
+      if(d<11*f.size){
+        deathPuff(rb.x,rb.y,[255,130,90]);
+        rabbits.splice(best,1);
+        f.hunger=clamp(f.hunger-0.5,0,1); f.lastKill=0;
+        ripples.push({x:f.x,y:f.y,r:6,max:120,c:'#ff8a4c',a:.7});
+        // chance to reproduce when very well fed
+        if(f.hunger<0.15 && foxes.length<P.foxMax && Math.random()<0.5){
+          spawnFox(f.x+rnd(16,-16),f.y+rnd(16,-16));
+          f.hunger=0.6;
+        }
+      }
+    } else {
+      // wander / patrol
+      f.a += rnd(0.3,-0.3)*t*3;
+      ax+=Math.cos(f.a)*0.03; ay+=Math.sin(f.a)*0.03;
+    }
+
+    // foxes wary of hawk too (slight)
+    if(hawkActive){
+      const dx=f.x-hx,dy=f.y-hy,d=Math.hypot(dx,dy);
+      if(d<hawkR*0.7){ const w=(1-d/(hawkR*0.7))*M.hawk; ax+=dx/(d||1)*w*0.4; ay+=dy/(d||1)*w*0.4; }
+    }
+    if(M.windDecay>0){ ax+=M.wind.x*0.25; ay+=M.wind.y*0.25; }
+
+    const maxsp=f.sp*(1.0+(0.5-f.hunger>0?0:0.4)); // hungrier = faster burst
+    f.vx=(f.vx+ax)*0.88; f.vy=(f.vy+ay)*0.88;
+    const sp=Math.hypot(f.vx,f.vy);
+    const cap=f.sp*1.6;
+    if(sp>cap){ f.vx=f.vx/sp*cap; f.vy=f.vy/sp*cap; }
+    f.x+=f.vx*t*60*0.55; f.y+=f.vy*t*60*0.55;
+    if(sp>0.05) f.a=Math.atan2(f.vy,f.vx);
+
+    const m=24;
+    if(f.x<-m)f.x=W+m; if(f.x>W+m)f.x=-m;
+    if(f.y<-m)f.y=H+m; if(f.y>H+m)f.y=-m;
+
+    // trail
+    f.trail.push({x:f.x,y:f.y});
+    if(f.trail.length>14) f.trail.shift();
+
+    // starve
+    if(f.hunger>=1){ deathPuff(f.x,f.y,[255,140,90]); foxes.splice(i,1); }
+  }
+
+  /* keep a minimum so the ecosystem never flatlines to empty (gentle reseed) */
+  if(rabbits.length<3){ for(let k=0;k<6;k++) spawnRabbit(); }
+  if(foxes.length===0 && rabbits.length>40 && Math.random()<0.03){ spawnFox(); }
+
+  /* puffs */
+  for(let i=puffs.length-1;i>=0;i--){ const p=puffs[i];
+    p.x+=p.vx*t*40; p.y+=p.vy*t*40; p.vy+=0.04*t*40*0.02; p.vx*=0.96; p.vy*=0.96;
+    p.life-=t*1.1; if(p.life<=0) puffs.splice(i,1);
+  }
+  /* ripples */
+  for(let i=ripples.length-1;i>=0;i--){ const rp=ripples[i];
+    rp.r+=(rp.max-rp.r)*0.06*t*8; rp.a*=Math.pow(0.9,t*8);
+    if(rp.a<0.02||rp.r>rp.max-2) ripples.splice(i,1);
+  }
+
+  // wind & hawk decay
+  M.windDecay*=Math.pow(0.9,t*8);
+  M.wind.x*=0.95; M.wind.y*=0.95;
+  if(!M.down) M.hawk*=Math.pow(0.94,t*8);
+
+  growGrass(t);
+}
+
+function deathPuff(x,y,col){
+  ripples.push({x,y,r:4,max:70,c:`rgba(${col[0]},${col[1]},${col[2]},0.6)`,a:.6});
+  for(let i=0;i<14;i++){ const ang=rnd(TAU),s=rnd(2.6,.5);
+    puffs.push({x,y,vx:Math.cos(ang)*s,vy:Math.sin(ang)*s,life:1,r:rnd(3.2,1.2),col});
+  }
+}
+
+/* ============================================================================
+   POPULATION GRAPH (living sparkline, no frame)
+============================================================================ */
+const histR=[], histF=[], HMAX=260;
+let histTick=0;
+function pushHist(){
+  histR.push(rabbits.length); histF.push(foxes.length);
+  if(histR.length>HMAX){histR.shift();histF.shift();}
+}
+function drawGraph(){
+  if(histR.length<2) return;
+  const gw=Math.min(260,W*0.30), gh=Math.min(60,H*0.10);
+  const gx=W-gw-clamp(W*0.024,12,34), gy=H-gh-clamp(H*0.024,12,30);
+  const maxV=Math.max(P.rabbitMax*0.9, 20);
+  function line(arr,col,fill){
+    ctx.beginPath();
+    for(let i=0;i<arr.length;i++){
+      const x=gx+ (i/(HMAX-1))*gw;
+      const y=gy+gh - (arr[i]/maxV)*gh;
+      i?ctx.lineTo(x,y):ctx.moveTo(x,y);
+    }
+    if(fill){ ctx.lineTo(gx+((arr.length-1)/(HMAX-1))*gw,gy+gh); ctx.lineTo(gx,gy+gh); ctx.closePath();
+      ctx.fillStyle=fill; ctx.fill(); }
+    else { ctx.strokeStyle=col; ctx.lineWidth=1.6; ctx.stroke(); }
+  }
+  ctx.save(); ctx.globalCompositeOperation='screen';
+  line(histR,'#bfe9ff','rgba(120,200,255,0.10)'); line(histR,'#bfe9ff');
+  line(histF,'#ff8a4c','rgba(255,120,60,0.12)');  line(histF,'#ff8a4c');
+  ctx.restore();
+}
+
+/* ============================================================================
+   POST: vignette + film grain (subtle)
+============================================================================ */
+let grainCv, grainCtx, grainT=0;
+function buildGrain(){
+  grainCv=document.createElement('canvas'); grainCv.width=140; grainCv.height=140;
+  grainCtx=grainCv.getContext('2d');
+}
+function drawGrain(){
+  grainT+=1;
+  if(grainT%2===0){
+    const id=grainCtx.createImageData(140,140); const d=id.data;
+    for(let i=0;i<d.length;i+=4){ const v=Math.random()*255; d[i]=d[i+1]=d[i+2]=v; d[i+3]=12; }
+    grainCtx.putImageData(id,0,0);
+  }
+  ctx.save(); ctx.globalAlpha=0.05; ctx.globalCompositeOperation='overlay';
+  const pat=ctx.createPattern(grainCv,'repeat'); ctx.fillStyle=pat; ctx.fillRect(0,0,W,H);
+  ctx.restore();
+}
+/* atmosphere: tints the WHOLE scene by time-of-day so the meadow lives under
+   a single shifting light — warm dawn, neutral noon, amber dusk, blue night. */
+const ATMO=[
+  // t, [mulR,mulG,mulB] multiply light, [scrR,scrG,scrB,scrA] screen bloom
+  {t:0.00, mul:[150,120,140], scr:[80,40,60,0.10]},   // dawn
+  {t:0.22, mul:[255,250,235], scr:[0,0,0,0.0]},       // midday neutral
+  {t:0.40, mul:[255,200,150], scr:[255,140,50,0.14]}, // golden hour
+  {t:0.48, mul:[235,140,95],  scr:[255,90,30,0.22]},  // dusk amber (warm, dim)
+  {t:0.55, mul:[110,80,120],  scr:[120,50,100,0.14]}, // twilight
+  {t:0.75, mul:[40,55,110],   scr:[20,30,90,0.06]},   // night blue
+  {t:0.92, mul:[60,70,120],   scr:[20,30,90,0.05]},   // late night
+  {t:1.00, mul:[150,120,140], scr:[80,40,60,0.10]},   // back to dawn
+];
+function atmoNow(){
+  const t=dayT; let A=ATMO[0],B=ATMO[1];
+  for(let i=0;i<ATMO.length-1;i++){ if(t>=ATMO[i].t && t<=ATMO[i+1].t){A=ATMO[i];B=ATMO[i+1];break;} }
+  const k=(t-A.t)/((B.t-A.t)||1);
+  const mul=[lerp(A.mul[0],B.mul[0],k),lerp(A.mul[1],B.mul[1],k),lerp(A.mul[2],B.mul[2],k)];
+  const scr=[lerp(A.scr[0],B.scr[0],k),lerp(A.scr[1],B.scr[1],k),lerp(A.scr[2],B.scr[2],k),lerp(A.scr[3],B.scr[3],k)];
+  return {mul,scr};
+}
+function drawAtmosphere(){
+  const a=atmoNow();
+  // multiply the scene by the ambient light color (this is what sells dusk/night)
+  ctx.save();
+  ctx.globalCompositeOperation='multiply';
+  ctx.fillStyle=`rgb(${a.mul[0]|0},${a.mul[1]|0},${a.mul[2]|0})`;
+  ctx.fillRect(0,0,W,H);
+  ctx.restore();
+  // then a soft directional bloom (sun/moon side) for richness
+  if(a.scr[3]>0.005){
+    ctx.save(); ctx.globalCompositeOperation='screen';
+    const sx = W*0.5 + Math.cos((dayT*TAU)-Math.PI/2)*W*0.4;
+    const g=ctx.createRadialGradient(sx,H*0.1,0,sx,H*0.1,DIAG*0.9);
+    g.addColorStop(0,`rgba(${a.scr[0]|0},${a.scr[1]|0},${a.scr[2]|0},${a.scr[3]})`);
+    g.addColorStop(1,`rgba(${a.scr[0]|0},${a.scr[1]|0},${a.scr[2]|0},0)`);
+    ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+    ctx.restore();
+  }
+}
+function drawVignette(night){
+  const g=ctx.createRadialGradient(W/2,H/2,Math.min(W,H)*0.32, W/2,H/2,Math.max(W,H)*0.72);
+  g.addColorStop(0,'rgba(0,0,0,0)');
+  g.addColorStop(1,`rgba(0,0,0,${0.40+night*0.26})`);
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+}
+function drawHawk(){
+  if(!(M.active && M.hawk>0.04)) return;
+  // a circling shadow + cursor reticle
+  const r=Math.max(120,DIAG*0.10)*M.hawk;
+  const g=ctx.createRadialGradient(M.x,M.y,0,M.x,M.y,r);
+  g.addColorStop(0,'rgba(0,0,0,0.0)');
+  g.addColorStop(0.55,`rgba(10,4,6,${0.30*M.hawk})`);
+  g.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=g; ctx.beginPath(); ctx.arc(M.x,M.y,r,0,TAU); ctx.fill();
+  // wing-mark cursor
+  ctx.save(); ctx.translate(M.x,M.y); ctx.rotate(gPhase*0.6);
+  ctx.strokeStyle=`rgba(20,8,10,${0.6*M.hawk})`; ctx.lineWidth=3;
+  ctx.beginPath();
+  ctx.moveTo(-16,0); ctx.quadraticCurveTo(0,-8,16,0); ctx.quadraticCurveTo(0,8,-16,0);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/* ============================================================================
+   FRAME LOOP
+============================================================================ */
+function drawPuffs(){
+  for(const p of puffs){
+    ctx.fillStyle=`rgba(${p.col[0]},${p.col[1]},${p.col[2]},${0.6*p.life})`;
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.r*(0.6+p.life*0.6),0,TAU); ctx.fill();
+  }
+}
+function drawRipples(){
+  for(const rp of ripples){
+    ctx.strokeStyle=(typeof rp.c==='string'&&rp.c.startsWith('rgba'))? rp.c.replace(/[\d.]+\)$/, rp.a+')') : rp.c;
+    ctx.globalAlpha=rp.a; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.arc(rp.x,rp.y,rp.r,0,TAU); ctx.stroke();
+    ctx.globalAlpha=1;
+  }
+}
+
+const PHASES=['DAWN','MORNING','MIDDAY','AFTERNOON','DUSK','NIGHT','MIDNIGHT','PREDAWN'];
+let last=performance.now(), acc=0, fpsSmooth=60;
+function frame(now){
+  let raw=(now-last)/1000; last=now;
+  if(raw>0.05) raw=0.05;                 // clamp big gaps
+  fpsSmooth = lerp(fpsSmooth, 1/Math.max(raw,1e-3), 0.1);
+  const dt = raw*timeScale;
+
+  // advance day
+  dayT += (raw/TARGET_DAY)*timeScale; if(dayT>=1) dayT-=1;
+  gPhase += raw*timeScale;
+  bladePhase; // noop ref
+
+  // night amount: smooth bell peaking around dayT ~0.78 (deep night)
+  const nightF = clamp(Math.cos((dayT-0.80)*TAU)*0.5+0.5, 0, 1);
+
+  // ---- simulate (sub-step for stability at high timeScale) ----
+  let steps = dt>0.024? 2:1;
+  for(let s=0;s<steps;s++) step(dt/steps);
+
+  // ---- render ----
+  // background sky + grass, then bathe both in time-of-day light (multiply),
+  // THEN draw creatures (their glows sit on top, so they shine at night).
+  const sky=skyGradient();
+  drawSky(sky, nightF);
+  drawGrass(nightF);
+  drawAtmosphere();
+  drawRipples();
+  for(const r of rabbits) drawRabbit(r,nightF);
+  for(const f of foxes) drawFox(f,nightF);
+  drawPuffs();
+  drawHawk();
+  drawGraph();
+  drawVignette(nightF);
+  drawGrain();
+
+  // ---- HUD clock ----
+  histTick+=raw;
+  if(histTick>0.25){ histTick=0; pushHist(); }
+  const phase=PHASES[Math.floor(dayT*PHASES.length)%PHASES.length];
+  clockEl.textContent = `${phase} · POP ${rabbits.length} 🐰 ${foxes.length} 🦊 · TIME ×${timeScale.toFixed(2)} · ${fpsSmooth.toFixed(0)}fps`;
+
+  requestAnimationFrame(frame);
+}
+
+/* ---------------- boot ---------------- */
+resize();
+buildStars();
+buildGrain();
+initAgents();
+// seed a few lush patches so first paint reads instantly as a meadow
+for(let i=0;i<10;i++) seedGrass(rnd(W),rnd(H), rnd(140,60), 0.5);
+requestAnimationFrame(frame);
+window.addEventListener('resize', ()=>{ buildStars(); });
+
+// expose minimal state for self-verification
+window.__vulpes = {
+  state:()=>({ rabbits:rabbits.length, foxes:foxes.length, dayT, timeScale, fps:fpsSmooth }),
+  hawkAt:(x,y)=>{ M.active=true; M.x=x; M.y=y; M.hawk=1; },
+  click:(x,y)=> seedBurst(x,y),
+  fox:(x,y)=> spawnFox(x,y),
+  wheel:(d)=>{ timeScale=clamp(timeScale+(d>0?-0.5:0.5),0.12,4); },
+  setDay:(t)=>{ dayT=clamp(t,0,0.999); },
+  setScale:(s)=>{ timeScale=clamp(s,0.12,4); },
+};
+})();
+</script>
+</body>
+</html>

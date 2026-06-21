@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SUNSET//486 — DITHER TERMINAL</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    /* restricted warm-sunset 486 palette */
+    --c-maroon:   #2b0f1a;
+    --c-maroon2:  #471425;
+    --c-rust:     #8a2d1e;
+    --c-rust2:    #b8431f;
+    --c-orange:   #d9622a;
+    --c-amber:    #e88b3c;
+    --c-salmon:   #f0a06a;
+    --c-peach:    #f6c79a;
+    --c-cream:    #f7e3c6;
+    --c-teal:     #1f7a6b;
+    --c-teal2:    #2ea58c;
+    --c-mint:     #8fe0c8;
+    --c-ink:      #160810;
+
+    --panel-bg: rgba(28,12,18,0.62);
+    --panel-line: rgba(246,199,154,0.22);
+  }
+
+  *{ box-sizing:border-box; margin:0; padding:0; }
+
+  html,body{ height:100%; }
+  body{
+    background:var(--c-ink);
+    color:var(--c-peach);
+    font-family:'DM Mono','VT323',monospace;
+    overflow:hidden;
+    -webkit-font-smoothing:none;
+    image-rendering:pixelated;
+    text-rendering:geometricPrecision;
+  }
+
+  /* ---- stage / dither canvas ---- */
+  #stage{ position:fixed; inset:0; overflow:hidden; }
+  #scene{
+    position:absolute; inset:0;
+    width:100%; height:100%;
+    display:block;
+    image-rendering:pixelated;
+    image-rendering:crisp-edges;
+  }
+
+  /* CRT scanlines + grain overlays */
+  .crt-scan{
+    position:fixed; inset:0; pointer-events:none; z-index:40;
+    background:repeating-linear-gradient(
+      to bottom,
+      rgba(0,0,0,0.0) 0px,
+      rgba(0,0,0,0.0) 2px,
+      rgba(0,0,0,0.16) 3px,
+      rgba(0,0,0,0.16) 4px);
+    mix-blend-mode:multiply;
+    opacity:.55;
+    transition:opacity .2s;
+  }
+  .crt-vig{
+    position:fixed; inset:0; pointer-events:none; z-index:41;
+    background:radial-gradient(120% 120% at 50% 38%, rgba(0,0,0,0) 52%, rgba(0,0,0,.55) 100%);
+  }
+  body.no-crt .crt-scan{ opacity:0; }
+
+  /* ---- UI chrome layer ---- */
+  #ui{
+    position:fixed; inset:0; z-index:30;
+    padding:22px;
+    display:grid;
+    grid-template-columns: 318px 1fr;
+    grid-template-rows: auto 1fr auto;
+    grid-template-areas:
+      "topbar topbar"
+      "left   right"
+      "bottom bottom";
+    gap:18px;
+    pointer-events:none;
+  }
+  #ui > *{ pointer-events:auto; }
+
+  .mono{ font-family:'DM Mono',monospace; }
+  .pix{ font-family:'Press Start 2P',monospace; }
+  .vt{ font-family:'VT323',monospace; }
+
+  /* ---- panels ---- */
+  .panel{
+    background:var(--panel-bg);
+    border:1px solid var(--panel-line);
+    border-radius:14px;
+    backdrop-filter:blur(2px) saturate(.9);
+    box-shadow:0 0 0 1px rgba(0,0,0,.4), 0 10px 30px rgba(0,0,0,.45),
+               inset 0 1px 0 rgba(246,199,154,.10);
+    position:relative;
+  }
+  .panel::before{
+    /* corner ticks */
+    content:""; position:absolute; inset:6px; border-radius:9px;
+    border:1px dashed rgba(246,199,154,.10);
+    pointer-events:none;
+  }
+
+  /* ---- top bar ---- */
+  .topbar{
+    grid-area:topbar;
+    display:flex; align-items:center; gap:14px;
+    padding:12px 16px;
+  }
+  .logo{
+    font-family:'Press Start 2P',monospace;
+    font-size:13px; letter-spacing:1px; color:var(--c-cream);
+    text-shadow:0 0 6px rgba(232,139,60,.5);
+    line-height:1.5;
+    white-space:nowrap;
+  }
+  .logo b{ color:var(--c-amber); }
+  .topbar .spacer{ flex:1; }
+  .crumbs{
+    font-size:12px; letter-spacing:2px; text-transform:uppercase;
+    color:var(--c-salmon); opacity:.85; white-space:nowrap;
+  }
+
+  /* chip */
+  .chip{
+    display:inline-flex; align-items:center; gap:8px;
+    height:34px; padding:0 14px;
+    border-radius:18px;
+    background:linear-gradient(180deg, var(--c-teal2), var(--c-teal));
+    color:#04241e;
+    font-family:'DM Mono',monospace; font-weight:500;
+    font-size:11px; letter-spacing:2px; text-transform:uppercase;
+    border:1px solid rgba(143,224,200,.55);
+    box-shadow:0 2px 0 rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.35);
+    cursor:pointer; user-select:none;
+    transition:transform .07s, filter .12s;
+  }
+  .chip:hover{ filter:brightness(1.08); }
+  .chip:active{ transform:translateY(2px); box-shadow:0 0 0 rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.35); }
+  .chip .dot{ width:8px; height:8px; border-radius:50%; background:#04241e; box-shadow:0 0 6px #8fe0c8; }
+  .chip.alt{
+    background:linear-gradient(180deg, var(--c-amber), var(--c-orange));
+    color:#2b0f0a; border-color:rgba(246,199,154,.6);
+  }
+  .chip.ghost{
+    background:rgba(31,122,107,.0);
+    color:var(--c-mint); border:1px solid rgba(46,165,140,.55);
+    box-shadow:inset 0 0 0 1px rgba(0,0,0,.25);
+  }
+  .chip.ghost .dot{ background:var(--c-mint); box-shadow:0 0 6px var(--c-mint); }
+
+  /* ---- left control panel ---- */
+  .left{ grid-area:left; padding:16px; display:flex; flex-direction:column; gap:14px; overflow:auto; }
+  .ph{
+    display:flex; align-items:center; gap:8px;
+    font-family:'Press Start 2P',monospace; font-size:9px; letter-spacing:1px;
+    color:var(--c-mint); text-transform:uppercase;
+    padding-bottom:8px; border-bottom:1px solid var(--panel-line);
+  }
+  .ph .led{ width:7px;height:7px;border-radius:50%;background:var(--c-teal2);box-shadow:0 0 8px var(--c-teal2); }
+
+  .field{ display:flex; flex-direction:column; gap:7px; }
+  .field label{
+    font-size:11px; letter-spacing:2px; text-transform:uppercase; color:var(--c-salmon);
+    display:flex; justify-content:space-between;
+  }
+  .field label .val{ color:var(--c-cream); }
+
+  input[type=range]{
+    -webkit-appearance:none; appearance:none;
+    width:100%; height:10px; border-radius:6px;
+    background:linear-gradient(90deg,var(--c-rust),var(--c-amber));
+    border:1px solid rgba(0,0,0,.4);
+    box-shadow:inset 0 1px 2px rgba(0,0,0,.5);
+    outline:none;
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none; appearance:none;
+    width:16px; height:22px; border-radius:4px;
+    background:linear-gradient(180deg,var(--c-mint),var(--c-teal2));
+    border:1px solid #04241e;
+    box-shadow:0 2px 0 rgba(0,0,0,.5);
+    cursor:pointer;
+  }
+  input[type=range]::-moz-range-thumb{
+    width:16px; height:22px; border-radius:4px;
+    background:linear-gradient(180deg,var(--c-mint),var(--c-teal2));
+    border:1px solid #04241e; cursor:pointer;
+  }
+
+  .seg{ display:flex; gap:6px; }
+  .seg button{
+    flex:1; height:30px; cursor:pointer;
+    font-family:'DM Mono',monospace; font-size:11px; letter-spacing:1px;
+    color:var(--c-peach);
+    background:rgba(71,20,37,.55);
+    border:1px solid var(--panel-line); border-radius:8px;
+    transition:.12s;
+  }
+  .seg button:hover{ background:rgba(138,45,30,.6); color:var(--c-cream); }
+  .seg button.on{
+    background:linear-gradient(180deg,var(--c-teal2),var(--c-teal));
+    color:#04241e; border-color:rgba(143,224,200,.55);
+    text-shadow:none;
+  }
+
+  .swatches{ display:flex; gap:5px; flex-wrap:wrap; }
+  .swatches i{ width:18px; height:18px; border-radius:3px; border:1px solid rgba(0,0,0,.4); display:block; }
+
+  /* ---- right zone ---- */
+  .right{ grid-area:right; display:flex; flex-direction:column; gap:18px; min-height:0; }
+  .rtop{ flex:1; min-height:0; }   /* leave the scene visible */
+  .meters{ display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+  .meter{ padding:12px 14px; }
+  .meter .k{ font-size:10px; letter-spacing:2px; text-transform:uppercase; color:var(--c-salmon); }
+  .meter .v{ font-family:'Press Start 2P',monospace; font-size:18px; color:var(--c-cream);
+             margin-top:8px; text-shadow:0 0 8px rgba(232,139,60,.4); }
+  .meter .v small{ font-family:'DM Mono',monospace; font-size:11px; color:var(--c-amber); letter-spacing:1px; }
+  .bar{ height:8px; margin-top:10px; border-radius:4px; background:rgba(0,0,0,.4);
+        border:1px solid rgba(0,0,0,.5); overflow:hidden; }
+  .bar > span{ display:block; height:100%;
+        background:repeating-linear-gradient(90deg,var(--c-amber) 0 6px, var(--c-orange) 6px 8px); }
+
+  /* console log */
+  .console{
+    grid-area:bottom;
+    padding:12px 16px;
+    height:118px; overflow:hidden;
+    display:flex; flex-direction:column; gap:6px;
+  }
+  .console .chead{ display:flex; align-items:center; gap:10px; }
+  .logwrap{ flex:1; overflow:hidden; position:relative; }
+  #log{
+    font-family:'VT323',monospace; font-size:16px; line-height:1.18;
+    color:var(--c-salmon); white-space:pre-wrap;
+  }
+  #log .t{ color:var(--c-mint); }
+  #log .w{ color:var(--c-amber); }
+  #log .ok{ color:var(--c-teal2); }
+  .cursor{ display:inline-block; width:9px; height:15px; background:var(--c-mint);
+           vertical-align:-2px; animation:blink 1s steps(1) infinite; }
+  @keyframes blink{ 50%{ opacity:0; } }
+
+  /* corner telemetry (over scene, like ref) */
+  .tele{ position:fixed; z-index:35; font-family:'DM Mono',monospace;
+         font-size:10px; letter-spacing:2px; color:rgba(246,199,154,.6);
+         text-transform:uppercase; pointer-events:none; }
+  .tele.tl{ left:30px; top:74px; }
+  .tele.br{ right:30px; bottom:150px; text-align:right; }
+  .tele b{ color:var(--c-mint); }
+
+  /* responsive — mobile 390 */
+  @media (max-width:760px){
+    #ui{
+      grid-template-columns:1fr;
+      grid-template-rows:auto auto 1fr auto;
+      grid-template-areas:
+        "topbar"
+        "right"
+        "left"
+        "bottom";
+      padding:12px; gap:12px;
+      overflow:auto;
+    }
+    .topbar{ flex-wrap:wrap; gap:8px; padding:10px 12px; }
+    .logo{ font-size:10px; }
+    .crumbs{ display:none; }
+    .meters{ grid-template-columns:repeat(3,1fr); gap:8px; }
+    .meter .v{ font-size:13px; }
+    .left{ max-height:none; }
+    .console{ height:96px; }
+    .tele{ display:none; }
+    .rtop{ display:none; }   /* scene shows through via background canvas */
+    #ui{ background:linear-gradient(180deg, rgba(22,8,16,.0), rgba(22,8,16,.35)); }
+  }
+  @media (max-width:760px){
+    body{ overflow:auto; }
+  }
+</style>
+</head>
+<body>
+  <div id="stage">
+    <canvas id="scene"></canvas>
+  </div>
+  <div class="crt-vig"></div>
+  <div class="crt-scan"></div>
+
+  <!-- corner telemetry like reference -->
+  <div class="tele tl">SUNSET.SYS<br>X 042 · Y 168 · Z —<br>RENDER · ORDERED</div>
+  <div class="tele br">FRAME <b id="t-frame">0000</b><br>HEAT <b id="t-heat">61%</b><br>SIGNAL <b>NOMINAL</b></div>
+
+  <div id="ui">
+    <!-- TOP BAR -->
+    <div class="topbar panel">
+      <div class="logo">SUNSET<b>//486</b> <span style="font-family:'DM Mono';font-size:10px;letter-spacing:2px;color:var(--c-salmon);opacity:.8"> DITHER&nbsp;TERMINAL</span></div>
+      <div class="spacer"></div>
+      <div class="crumbs">NODE&nbsp;·&nbsp;GOLDEN-GATE&nbsp;·&nbsp;DAEMON&nbsp;ONLINE</div>
+      <div class="chip ghost" id="btn-crt"><span class="dot"></span>CRT</div>
+      <div class="chip" id="btn-control"><span class="dot"></span>CONTROL</div>
+    </div>
+
+    <!-- LEFT CONTROL PANEL -->
+    <div class="left panel">
+      <div class="ph"><span class="led"></span>CONTROL&nbsp;//&nbsp;DITHER&nbsp;ENGINE</div>
+
+      <div class="field">
+        <label>SCENE<span class="val" id="v-scene">GOLDEN GATE</span></label>
+        <div class="seg" id="seg-scene">
+          <button data-scene="0" class="on">GATE</button>
+          <button data-scene="1">DESERT</button>
+          <button data-scene="2">HARBOR</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>DITHER MATRIX<span class="val" id="v-mat">BAYER 8×8</span></label>
+        <div class="seg" id="seg-mat">
+          <button data-mat="2">4×4</button>
+          <button data-mat="3" class="on">8×8</button>
+          <button data-mat="0">OFF</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>PIXEL SCALE<span class="val" id="v-px">3×</span></label>
+        <input id="r-px" type="range" min="1" max="6" step="1" value="3">
+      </div>
+
+      <div class="field">
+        <label>PALETTE DEPTH<span class="val" id="v-depth">12 COL</span></label>
+        <input id="r-depth" type="range" min="4" max="16" step="2" value="12">
+      </div>
+
+      <div class="field">
+        <label>HEAT / BIAS<span class="val" id="v-heat">+0.30</span></label>
+        <input id="r-heat" type="range" min="-50" max="60" step="5" value="30">
+      </div>
+
+      <div class="field">
+        <label>ACTIVE PALETTE</label>
+        <div class="swatches" id="sw"></div>
+      </div>
+
+      <div class="field">
+        <div class="seg">
+          <button id="btn-snap" style="font-family:'Press Start 2P';font-size:8px">SNAPSHOT</button>
+          <button id="btn-reroll" style="font-family:'Press Start 2P';font-size:8px">RE-ROLL</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: leave scene visible + meters -->
+    <div class="right">
+      <div class="rtop"></div>
+      <div class="meters">
+        <div class="meter panel">
+          <div class="k">PIXELS DITHERED</div>
+          <div class="v" id="m-px">0<small>K</small></div>
+          <div class="bar"><span id="b-px" style="width:64%"></span></div>
+        </div>
+        <div class="meter panel">
+          <div class="k">PALETTE LOCK</div>
+          <div class="v" id="m-pal">12<small>/16</small></div>
+          <div class="bar"><span id="b-pal" style="width:75%"></span></div>
+        </div>
+        <div class="meter panel">
+          <div class="k">FRAME TIME</div>
+          <div class="v" id="m-ft">0<small>MS</small></div>
+          <div class="bar"><span id="b-ft" style="width:40%"></span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- BOTTOM CONSOLE -->
+    <div class="console panel">
+      <div class="chead">
+        <div class="ph" style="border:0;padding:0"><span class="led"></span>CONSOLE&nbsp;//&nbsp;TTY0</div>
+        <div class="spacer" style="flex:1"></div>
+        <div class="crumbs">RET 0 · 38400 BAUD</div>
+      </div>
+      <div class="logwrap"><div id="log"></div></div>
+    </div>
+  </div>
+
+<script>
+"use strict";
+
+/* =========================================================
+   486 DITHER TERMINAL — real ordered (Bayer) dithering
+   Procedural scene -> low-res buffer -> palette quantize w/
+   Bayer threshold -> upscale (nearest) onto display canvas.
+   ========================================================= */
+
+const cv  = document.getElementById('scene');
+const ctx = cv.getContext('2d', { willReadFrequently:true });
+
+/* --- restricted warm sunset palette (RGB) --- */
+const PALETTE_FULL = [
+  [22,8,16],     [43,15,26],    [71,20,37],    [138,45,30],
+  [184,67,31],   [217,98,42],   [232,139,60],  [240,160,106],
+  [246,199,154], [247,227,198], [31,122,107],  [46,165,140],
+  [143,224,200], [120,40,55],   [90,28,42],    [200,120,70]
+];
+
+/* Bayer matrices (values 0..n²-1) normalized to 0..1 */
+function bayer(n){
+  if(n===1) return [[0]];
+  const s = bayer(n/2), out = [];
+  const m = n/2, m2 = (n*n);
+  for(let y=0;y<n;y++){ out[y]=[]; for(let x=0;x<n;x++){
+    const q = (x<m?(y<m?0:3):(y<m?2:1));
+    out[y][x] = 4*s[y%m][x%m] + q;
+  }}
+  return out;
+}
+const BAYER = { 2: bayer(2), 3: bayer(4), 4: bayer(8) }; // key->matrix; "3"=4x4,"4"=8x8
+// remap: matrix mode value 2 -> 4x4 ; 3 -> 8x8 ; 0 -> off
+const MAT_MODE = { 0:null, 2:bayer(4), 3:bayer(8) };
+function normBayer(mat){
+  if(!mat) return null;
+  const n=mat.length, denom=n*n, out=[];
+  for(let y=0;y<n;y++){ out[y]=[]; for(let x=0;x<n;x++) out[y][x]=(mat[y][x]+0.5)/denom - 0.5; }
+  return { n, m:out };
+}
+
+/* ---- state ---- */
+const S = {
+  scene:0, mat:3, px:3, depth:12, heat:0.30,
+  paletteN:12, frame:0, t0:performance.now(),
+  paused:false
+};
+
+/* nearest palette color (within first N entries) */
+function nearest(r,g,b,N){
+  let bi=0,bd=1e12;
+  for(let i=0;i<N;i++){
+    const p=PALETTE_FULL[i];
+    const d=(r-p[0])**2+(g-p[1])**2+(b-p[2])**2;
+    if(d<bd){bd=d;bi=i;}
+  }
+  return PALETTE_FULL[bi];
+}
+
+/* ---------- procedural scenes drawn into a low-res buffer ---------- */
+function drawScene(c, w, h, time){
+  const g = c;
+  // sky gradient (warm sunset)
+  const sky = g.createLinearGradient(0,0,0,h*0.78);
+  if(S.scene===0){ // golden gate
+    sky.addColorStop(0,'#7a2a1f'); sky.addColorStop(.35,'#b8431f');
+    sky.addColorStop(.62,'#d9622a'); sky.addColorStop(.85,'#e88b3c'); sky.addColorStop(1,'#f0a06a');
+  } else if(S.scene===1){ // desert
+    sky.addColorStop(0,'#471425'); sky.addColorStop(.4,'#8a2d1e');
+    sky.addColorStop(.7,'#d9622a'); sky.addColorStop(1,'#f6c79a');
+  } else { // harbor (cooler, teal sky band)
+    sky.addColorStop(0,'#2b0f1a'); sky.addColorStop(.35,'#8a2d1e');
+    sky.addColorStop(.7,'#d9622a'); sky.addColorStop(1,'#e88b3c');
+  }
+  g.fillStyle=sky; g.fillRect(0,0,w,h);
+
+  // sun
+  const sunX = w*0.50 + Math.sin(time*0.0002)*w*0.02;
+  const sunY = h*0.42;
+  const sunR = h*0.14;
+  const sg = g.createRadialGradient(sunX,sunY,0,sunX,sunY,sunR);
+  sg.addColorStop(0,'#f7e3c6'); sg.addColorStop(.55,'#f6c79a');
+  sg.addColorStop(1,'rgba(246,199,154,0)');
+  g.fillStyle=sg; g.beginPath(); g.arc(sunX,sunY,sunR,0,7); g.fill();
+  g.fillStyle='#f7e3c6'; g.beginPath(); g.arc(sunX,sunY,sunR*0.55,0,7); g.fill();
+
+  // water / ground horizon
+  const horiz = h*0.72;
+  if(S.scene!==1){
+    const wg = g.createLinearGradient(0,horiz,0,h);
+    wg.addColorStop(0,'#b8431f'); wg.addColorStop(.4,'#8a2d1e'); wg.addColorStop(1,'#2b0f1a');
+    g.fillStyle=wg; g.fillRect(0,horiz,w,h-horiz);
+    // sun reflection shimmer
+    for(let i=0;i<26;i++){
+      const yy=horiz + (i/26)*(h-horiz);
+      const ww=(sunR*1.6)*(1-i/30) + Math.sin(time*0.004+i)*4;
+      g.fillStyle = i%2? 'rgba(247,227,198,.30)':'rgba(246,199,154,.18)';
+      g.fillRect(sunX-ww/2, yy, ww, Math.max(2,(h-horiz)/30));
+    }
+  } else {
+    // desert dunes
+    const dg=g.createLinearGradient(0,horiz,0,h);
+    dg.addColorStop(0,'#8a2d1e'); dg.addColorStop(1,'#2b0f1a');
+    g.fillStyle=dg; g.fillRect(0,horiz,w,h-horiz);
+    g.fillStyle='#471425';
+    for(let k=0;k<3;k++){
+      g.beginPath(); g.moveTo(0,h);
+      for(let x=0;x<=w;x+=8){
+        const yy=horiz + 18 + k*22 + Math.sin(x*0.02+k*1.7)*16;
+        g.lineTo(x,yy);
+      }
+      g.lineTo(w,h); g.closePath(); g.fill();
+    }
+  }
+
+  // foreground silhouette by scene
+  g.save();
+  if(S.scene===0){
+    drawBridge(g,w,h,horiz);
+  } else if(S.scene===2){
+    drawHarbor(g,w,h,horiz);
+  } else {
+    drawCactus(g,w,h,horiz);
+  }
+  g.restore();
+
+  // soft haze band
+  const hz=g.createLinearGradient(0,horiz-h*0.06,0,horiz+h*0.04);
+  hz.addColorStop(0,'rgba(246,199,154,0)'); hz.addColorStop(.5,'rgba(246,199,154,.20)');
+  hz.addColorStop(1,'rgba(246,199,154,0)');
+  g.fillStyle=hz; g.fillRect(0,horiz-h*0.06,w,h*0.10);
+}
+
+function drawBridge(g,w,h,horiz){
+  g.fillStyle='#2b0f1a';
+  const towerW=Math.max(6,w*0.040), baseY=h;
+  const tx1=w*0.28, tx2=w*0.72, topY=h*0.14;
+  const deckY=horiz-6;
+  const cableTop=topY+towerW*0.4;            // y of cable at tower tops
+  const midSag = cableTop + (deckY-cableTop)*0.42; // lowest point of mid span
+
+  // continuous cable height: parabola anchored to towers, sagging to deck at edges
+  function cableY(x){
+    if(x<=tx1){ const t=x/tx1; return lerp(deckY, cableTop, t*t); }     // side span rises to tower
+    if(x>=tx2){ const t=(x-tx2)/(w-tx2); return lerp(cableTop, deckY, t*t); }
+    const t=(x-tx1)/(tx2-tx1);                                          // main span
+    const sag=(midSag-cableTop);
+    return cableTop + sag*(1 - Math.pow(2*t-1,2));                      // parabola dipping at center
+  }
+
+  // suspenders first (behind towers visually fine)
+  g.strokeStyle='#2b0f1a'; g.lineWidth=Math.max(1.4,w*0.0016); g.lineCap='butt';
+  for(let x=4;x<=w;x+=Math.max(6,w*0.012)){
+    const cy=cableY(x);
+    if(cy<deckY-3){ g.beginPath(); g.moveTo(x,cy); g.lineTo(x,deckY); g.stroke(); }
+  }
+
+  // main cable stroke (sampled)
+  g.lineWidth=Math.max(3,w*0.004); g.lineCap='round';
+  g.beginPath(); g.moveTo(0,cableY(0));
+  for(let x=0;x<=w;x+=4) g.lineTo(x,cableY(x));
+  g.stroke();
+
+  // towers (drawn over cable joins)
+  [tx1,tx2].forEach(tx=>{
+    g.fillRect(tx-towerW/2, topY, towerW, baseY-topY);
+    g.fillRect(tx-towerW*0.95, topY+(deckY-topY)*0.20, towerW*1.9, Math.max(4,h*0.008));
+    g.fillRect(tx-towerW*0.95, topY+(deckY-topY)*0.52, towerW*1.9, Math.max(4,h*0.008));
+    g.fillRect(tx-towerW*0.7, topY-Math.max(3,h*0.006), towerW*1.4, Math.max(5,h*0.01));
+  });
+
+  // deck
+  g.fillRect(0, deckY, w, Math.max(6,h*0.012));
+}
+function lerp(a,b,t){return a+(b-a)*t;}
+
+function drawCactus(g,w,h,horiz){
+  g.fillStyle='#2b0f1a';
+  function cac(cx,scale){
+    const cw=14*scale, ch=120*scale;
+    g.fillRect(cx-cw/2, horiz-ch, cw, ch);
+    g.fillRect(cx-cw/2-26*scale, horiz-ch*0.55, 26*scale, cw);
+    g.fillRect(cx-cw/2-26*scale, horiz-ch*0.55-40*scale, cw, 40*scale);
+    g.fillRect(cx+cw/2, horiz-ch*0.7, 22*scale, cw);
+    g.fillRect(cx+cw/2+22*scale-cw, horiz-ch*0.7-50*scale, cw, 50*scale);
+  }
+  cac(w*0.22,1.0); cac(w*0.78,0.7); cac(w*0.55,0.45);
+}
+
+function drawHarbor(g,w,h,horiz){
+  g.fillStyle='#2b0f1a';
+  // distant skyline
+  let x=0;
+  while(x<w){
+    const bw= 10+ (Math.sin(x*0.3)*0.5+0.5)*36;
+    const bh= 24+ (Math.sin(x*0.13)*0.5+0.5)*90;
+    g.fillRect(x, horiz-bh, bw, bh);
+    // windows
+    x+=bw+4;
+  }
+  // crane
+  g.fillRect(w*0.66, horiz-150, 6, 150);
+  g.fillRect(w*0.66-60, horiz-150, 120, 6);
+  g.fillRect(w*0.66+54, horiz-150, 6, 30);
+  // boat
+  g.beginPath();
+  g.moveTo(w*0.14, horiz+18); g.lineTo(w*0.30, horiz+18);
+  g.lineTo(w*0.27, horiz+34); g.lineTo(w*0.17, horiz+34); g.closePath(); g.fill();
+  g.fillRect(w*0.21, horiz-30, 4, 48);
+}
+
+/* ---------- dithering pass ---------- */
+function ditherPass(img, w, h){
+  const d=img.data;
+  const bm=normBayer(MAT_MODE[ S.mat===2?2 : S.mat===3?3 : 0 ]);
+  const N=S.paletteN;
+  const heat=S.heat;
+  const amp = bm? 64 : 0;  // threshold amplitude
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      const i=(y*w+x)*4;
+      let r=d[i], gg=d[i+1], b=d[i+2];
+      // warm heat bias
+      r=clamp(r + heat*40); gg=clamp(gg + heat*14); b=clamp(b - heat*22);
+      if(bm){
+        const th = bm.m[y%bm.n][x%bm.n]*amp;
+        r=clamp(r+th); gg=clamp(gg+th); b=clamp(b+th);
+      }
+      const p=nearest(r,gg,b,N);
+      d[i]=p[0]; d[i+1]=p[1]; d[i+2]=p[2]; d[i+3]=255;
+    }
+  }
+  return img;
+}
+function clamp(v){ return v<0?0:v>255?255:v; }
+
+/* ---------- main render ---------- */
+let buf, bctx, bw, bh, dispW, dispH;
+function resize(){
+  dispW = window.innerWidth; dispH = window.innerHeight;
+  cv.width = dispW; cv.height = dispH;
+  bw = Math.max(80, Math.floor(dispW / S.px));
+  bh = Math.max(60, Math.floor(dispH / S.px));
+  buf = document.createElement('canvas'); buf.width=bw; buf.height=bh;
+  bctx = buf.getContext('2d', { willReadFrequently:true });
+  ctx.imageSmoothingEnabled=false;
+}
+window.addEventListener('resize', ()=>{ clearTimeout(window.__rt); window.__rt=setTimeout(resize,120); });
+
+let lastFT=0;
+function render(now){
+  const start=performance.now();
+  drawScene(bctx, bw, bh, now);
+  let img = bctx.getImageData(0,0,bw,bh);
+  img = ditherPass(img, bw, bh);
+  bctx.putImageData(img,0,0);
+  // upscale nearest to display
+  ctx.imageSmoothingEnabled=false;
+  ctx.clearRect(0,0,dispW,dispH);
+  ctx.drawImage(buf, 0,0,bw,bh, 0,0,dispW,dispH);
+
+  lastFT = performance.now()-start;
+  S.frame++;
+  if(S.frame%6===0) updateMeters();
+  requestAnimationFrame(render);
+}
+
+/* ---------- HUD updates ---------- */
+function updateMeters(){
+  const px=Math.round(bw*bh/1000);
+  document.getElementById('m-px').innerHTML = px+'<small>K</small>';
+  document.getElementById('b-px').style.width = Math.min(100, px/9)+'%';
+  document.getElementById('m-pal').innerHTML = S.paletteN+'<small>/16</small>';
+  document.getElementById('b-pal').style.width = (S.paletteN/16*100)+'%';
+  document.getElementById('m-ft').innerHTML = lastFT.toFixed(1)+'<small>MS</small>';
+  document.getElementById('b-ft').style.width = Math.min(100, lastFT*4)+'%';
+  document.getElementById('t-frame').textContent = String(S.frame).padStart(4,'0');
+  document.getElementById('t-heat').textContent = Math.round(50+S.heat*70)+'%';
+}
+
+/* swatches */
+function renderSwatches(){
+  const el=document.getElementById('sw'); el.innerHTML='';
+  for(let i=0;i<S.paletteN;i++){
+    const p=PALETTE_FULL[i]; const c=document.createElement('i');
+    c.style.background=`rgb(${p[0]},${p[1]},${p[2]})`;
+    el.appendChild(c);
+  }
+}
+
+/* ---------- console log typer ---------- */
+const LOG_LINES=[
+  ['t','> boot sunset//486 dither-core ............ '],['ok','OK\n'],
+  ['','> loading bayer matrix 8x8 ................. '],['ok','OK\n'],
+  ['','> quantize palette: '],['w','12 / 16 warm-sunset\n'],
+  ['','> scene GOLDEN-GATE rasterized @ '],['t','low-res buffer\n'],
+  ['','> ordered dither pass applied per-pixel\n'],
+  ['ok','> render daemon online — awaiting CONTROL\n'],
+];
+const logEl=document.getElementById('log');
+let li=0, ci=0, logText='';
+function typer(){
+  if(li>=LOG_LINES.length){ logEl.innerHTML=colorize(logText)+'<span class="cursor"></span>'; return; }
+  const [,txt]=LOG_LINES[li];
+  if(ci<txt.length){ logText+=txt[ci++]; }
+  else { li++; ci=0; }
+  logEl.innerHTML=colorize(logText)+'<span class="cursor"></span>';
+  // keep last lines visible
+  const lw=document.querySelector('.logwrap');
+  logEl.scrollTop=9999; lw.scrollTop=9999;
+  setTimeout(typer, 14+Math.random()*22);
+}
+function colorize(t){
+  // reconstruct spans by re-walking LOG_LINES against length consumed
+  let html='', consumed=0;
+  for(let k=0;k<LOG_LINES.length;k++){
+    const [cls,txt]=LOG_LINES[k];
+    const seg = t.slice(consumed, consumed+txt.length);
+    if(!seg) break;
+    html += cls? `<span class="${cls}">${esc(seg)}</span>` : esc(seg);
+    consumed+=txt.length;
+  }
+  return html;
+}
+function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
+
+function pushLog(line, cls){
+  logText += (cls?`__${cls}__`:'') ; // not used; simple append below
+}
+
+/* ---------- controls ---------- */
+function bindSeg(id, attr, cb){
+  const wrap=document.getElementById(id);
+  wrap.querySelectorAll('button').forEach(b=>{
+    b.addEventListener('click',()=>{
+      wrap.querySelectorAll('button').forEach(x=>x.classList.remove('on'));
+      b.classList.add('on'); cb(b.getAttribute(attr), b);
+    });
+  });
+}
+bindSeg('seg-scene','data-scene',(v,b)=>{ S.scene=+v;
+  document.getElementById('v-scene').textContent=b.textContent==='GATE'?'GOLDEN GATE':b.textContent;
+  flash('scene -> '+b.textContent);
+});
+bindSeg('seg-mat','data-mat',(v,b)=>{ S.mat=+v;
+  document.getElementById('v-mat').textContent = v==='2'?'BAYER 4×4': v==='3'?'BAYER 8×8':'NONE';
+  flash('dither matrix -> '+document.getElementById('v-mat').textContent);
+});
+document.getElementById('r-px').addEventListener('input',e=>{
+  S.px=+e.target.value; document.getElementById('v-px').textContent=S.px+'×'; resize();
+});
+document.getElementById('r-depth').addEventListener('input',e=>{
+  S.paletteN=+e.target.value; S.depth=S.paletteN;
+  document.getElementById('v-depth').textContent=S.paletteN+' COL'; renderSwatches();
+});
+document.getElementById('r-heat').addEventListener('input',e=>{
+  S.heat=(+e.target.value)/100; document.getElementById('v-heat').textContent=(S.heat>=0?'+':'')+S.heat.toFixed(2);
+});
+document.getElementById('btn-crt').addEventListener('click',function(){
+  document.body.classList.toggle('no-crt');
+  this.style.opacity = document.body.classList.contains('no-crt')? .5:1;
+});
+document.getElementById('btn-control').addEventListener('click',()=>{
+  document.querySelector('.left').animate(
+    [{boxShadow:'0 0 0 2px var(--c-mint)'},{boxShadow:'0 0 0 1px rgba(0,0,0,.4)'}],
+    {duration:600});
+  flash('control panel focused');
+});
+document.getElementById('btn-snap').addEventListener('click',()=>{
+  try{
+    const a=document.createElement('a');
+    a.download='sunset486_'+Date.now()+'.png';
+    a.href=cv.toDataURL('image/png'); a.click();
+    flash('snapshot saved -> png');
+  }catch(e){ flash('snapshot blocked (sandbox)'); }
+});
+document.getElementById('btn-reroll').addEventListener('click',()=>{
+  S.scene=(S.scene+1)%3;
+  document.querySelectorAll('#seg-scene button').forEach((b,i)=>b.classList.toggle('on',i===S.scene));
+  const names=['GOLDEN GATE','DESERT','HARBOR'];
+  document.getElementById('v-scene').textContent=names[S.scene];
+  flash('re-roll scene -> '+names[S.scene]);
+});
+
+/* transient flash line into console */
+let flashTimer;
+function flash(msg){
+  const extra='\n> '+msg;
+  // append a colored mint line at end and trim
+  logEl.innerHTML = colorize(logText) + `<span class="ok">${esc(extra)}</span>` + '<span class="cursor"></span>';
+  const lw=document.querySelector('.logwrap'); lw.scrollTop=9999;
+}
+
+/* ---------- go ---------- */
+resize();
+renderSwatches();
+updateMeters();
+typer();
+requestAnimationFrame(render);
+</script>
+</body>
+</html>

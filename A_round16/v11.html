@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>ABYSS — 해류의 지도</title>
+<style>
+  :root { --ink: #e8f4ff; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #02060e; }
+  body {
+    font-family: -apple-system, "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+    color: var(--ink);
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+    cursor: crosshair;
+  }
+  #stage { position: fixed; inset: 0; display: block; }
+
+  /* HUD */
+  .hud {
+    position: fixed; z-index: 5; pointer-events: none;
+    user-select: none; -webkit-user-select: none;
+    text-shadow: 0 1px 18px rgba(0,0,0,0.85);
+  }
+  .title {
+    top: clamp(18px, 3.4vh, 40px); left: clamp(18px, 3vw, 46px);
+    line-height: 1;
+  }
+  .title h1 {
+    font-weight: 200; letter-spacing: 0.42em;
+    font-size: clamp(26px, 6.2vw, 64px);
+    background: linear-gradient(95deg, #9ff0ff 0%, #6ea8ff 45%, #c8a8ff 100%);
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; color: transparent;
+    filter: drop-shadow(0 0 24px rgba(110,168,255,0.35));
+  }
+  .title .sub {
+    margin-top: clamp(8px, 1.4vh, 16px);
+    font-size: clamp(9px, 1.5vw, 12.5px);
+    letter-spacing: 0.34em; font-weight: 300;
+    color: rgba(180,210,255,0.62);
+    text-transform: uppercase;
+  }
+  .legend {
+    bottom: clamp(16px, 3vh, 34px); left: clamp(18px, 3vw, 46px);
+    font-size: clamp(8.5px, 1.4vw, 11px); letter-spacing: 0.26em;
+    font-weight: 300; color: rgba(170,205,255,0.5);
+    display: flex; align-items: center; gap: 12px;
+  }
+  .legend .bar {
+    width: clamp(90px, 22vw, 200px); height: 5px; border-radius: 4px;
+    background: linear-gradient(90deg, #1846a8, #19b6c9, #4ef0c0, #ffe27a, #ff7a59);
+    box-shadow: 0 0 16px rgba(80,180,255,0.4);
+  }
+  .hint {
+    right: clamp(16px, 3vw, 46px); bottom: clamp(16px, 3vh, 34px);
+    text-align: right; font-size: clamp(8.5px, 1.4vw, 11px);
+    letter-spacing: 0.22em; font-weight: 300; line-height: 1.9;
+    color: rgba(150,190,255,0.45); max-width: 60vw;
+    transition: opacity 1.1s ease; opacity: 1;
+  }
+  .hint.gone { opacity: 0; }
+  .season {
+    top: clamp(18px, 3.4vh, 40px); right: clamp(16px, 3vw, 46px);
+    text-align: right; font-size: clamp(9px, 1.5vw, 12px);
+    letter-spacing: 0.3em; font-weight: 300;
+  }
+  .season .val {
+    font-size: clamp(18px, 3.4vw, 30px); font-weight: 200;
+    letter-spacing: 0.16em;
+    color: #bfe2ff; margin-top: 4px;
+  }
+  @media (max-width: 480px) {
+    .hint { display: none; }
+    .title h1 { letter-spacing: 0.3em; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div class="hud title">
+  <h1>ABYSS</h1>
+  <div class="sub">대양 순환 · A Living Map of Ocean Currents</div>
+</div>
+<div class="hud season">
+  <div>FLOW PHASE</div>
+  <div class="val" id="seasonVal">— 高潮 —</div>
+</div>
+<div class="hud legend">
+  <span>심해</span><span class="bar"></span><span>난류</span>
+</div>
+<div class="hud hint" id="hint">
+  드래그 — 해류를 휘젓다<br>
+  클릭 — 소용돌이를 심다<br>
+  스크롤 — 조류의 위상을 돌리다
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const cv = document.getElementById("stage");
+  const ctx = cv.getContext("2d", { alpha: false });
+  const hintEl = document.getElementById("hint");
+  const seasonValEl = document.getElementById("seasonVal");
+
+  let W = 0, H = 0, DPR = 1, diag = 1;
+  // ---- tuning ----
+  const TWO_PI = Math.PI * 2;
+  let PARTICLE_COUNT = 2600;
+  const SPEED = 1.0;
+  let particles = [];
+  let eddies = [];          // user-dropped persistent vortices
+  const mouse = { x: -1e6, y: -1e6, px: -1e6, py: -1e6, down: false, active: false, vx: 0, vy: 0 };
+
+  let phase = 0;            // scroll-driven flow phase (radians)
+  let phaseTarget = 0;
+  let t = 0;                // time
+  let firstPaintDone = false;
+
+  // ---------- hashed value-noise (cheap, smooth) ----------
+  const P = new Uint8Array(512);
+  (() => {
+    const perm = [];
+    for (let i = 0; i < 256; i++) perm[i] = i;
+    let seed = 1337;
+    const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
+    for (let i = 255; i > 0; i--) {
+      const j = (rnd() * (i + 1)) | 0;
+      const tmp = perm[i]; perm[i] = perm[j]; perm[j] = tmp;
+    }
+    for (let i = 0; i < 512; i++) P[i] = perm[i & 255];
+  })();
+  const fade = (x) => x * x * x * (x * (x * 6 - 15) + 10);
+  const lerp = (a, b, x) => a + (b - a) * x;
+  function grad(h, x, y) {
+    switch (h & 3) {
+      case 0: return  x + y;
+      case 1: return -x + y;
+      case 2: return  x - y;
+      default: return -x - y;
+    }
+  }
+  // 2D perlin-ish in [-1,1]
+  function noise2(x, y) {
+    const X = Math.floor(x) & 255, Y = Math.floor(y) & 255;
+    x -= Math.floor(x); y -= Math.floor(y);
+    const u = fade(x), v = fade(y);
+    const aa = P[P[X] + Y], ab = P[P[X] + Y + 1];
+    const ba = P[P[X + 1] + Y], bb = P[P[X + 1] + Y + 1];
+    return lerp(
+      lerp(grad(aa, x, y), grad(ba, x - 1, y), u),
+      lerp(grad(ab, x, y - 1), grad(bb, x - 1, y - 1), u),
+      v
+    );
+  }
+
+  // ---------- the flow field ----------
+  // Returns {x,y} normalized-ish flow direction at world pixel (px,py).
+  // Combines: (1) global gyres (rotational cells, lat-dependent), (2) curl of
+  // animated noise for organic turbulence, (3) user eddies, (4) mouse stir.
+  const NSCALE = 0.0012;     // noise spatial frequency (lower = broader meanders)
+  function fieldAt(px, py, out) {
+    const nx = px / W, ny = py / H;        // 0..1 normalized
+    let fx = 0, fy = 0;
+
+    // (1) Global gyre system. Latitude bands alternate rotation like real
+    // subtropical/subpolar gyres; equator gets strong westward-then-east jet.
+    const lat = ny;                         // 0 top .. 1 bottom
+    // three horizontal bands of counter-rotating circulation
+    const band = Math.sin((lat * 3.0 - 0.5) * Math.PI + phase * 0.25);
+    // east-west base drift (trade-wind / westerly analog), latitude modulated
+    const drift = Math.cos(lat * Math.PI * 2.0 + phase * 0.6);
+    // rotational component: stream-like, swirl around band centers
+    const swirlPhase = (nx * 2.2 + phase * 0.15) * Math.PI;
+    fx += drift * 1.25 + Math.cos(swirlPhase) * band * 0.6;
+    fy += Math.sin(swirlPhase) * band * 0.95;
+    // two warm jets (subtropical + equatorial) keep the whole basin streaming
+    const eq = Math.exp(-Math.pow((lat - 0.5) * 4.2, 2));
+    fx += eq * (0.9 + 0.5 * Math.sin(nx * 6.0 + phase)) * 1.2;
+    const jet2 = Math.exp(-Math.pow((lat - 0.2) * 5.5, 2)) + Math.exp(-Math.pow((lat - 0.8) * 5.5, 2));
+    fx -= jet2 * (0.7 + 0.4 * Math.cos(nx * 5.0 - phase)) * 0.9;
+
+    // (2) Curl noise -> divergence-free turbulence (looks like eddies/meanders)
+    const e = 1.0;
+    const t1 = t * 0.06;
+    const n1 = noise2(px * NSCALE + 11.3, py * NSCALE - 4.7 + t1);
+    const n2 = noise2(px * NSCALE + 11.3, (py + e) * NSCALE - 4.7 + t1);
+    const n3 = noise2((px + e) * NSCALE + 11.3, py * NSCALE - 4.7 + t1);
+    const dndy = (n2 - n1);
+    const dndx = (n3 - n1);
+    // curl in 2D = (dPsi/dy, -dPsi/dx)
+    fx += dndy * 42.0;
+    fy += -dndx * 42.0;
+    // second octave for fine filaments
+    const m1 = noise2(px * NSCALE * 2.7 - 3.0, py * NSCALE * 2.7 + 9.0 - t1 * 1.6);
+    const m2 = noise2(px * NSCALE * 2.7 - 3.0, (py + e) * NSCALE * 2.7 + 9.0 - t1 * 1.6);
+    const m3 = noise2((px + e) * NSCALE * 2.7 - 3.0, py * NSCALE * 2.7 + 9.0 - t1 * 1.6);
+    fx += (m2 - m1) * 20.0;
+    fy += -(m3 - m1) * 20.0;
+
+    // (3) user eddies (persistent vortices), influence falls off w/ distance
+    for (let i = 0; i < eddies.length; i++) {
+      const ed = eddies[i];
+      const dx = px - ed.x, dy = py - ed.y;
+      const d2 = dx * dx + dy * dy;
+      const r2 = ed.r * ed.r;
+      if (d2 < r2 * 9) {
+        const inv = 1 / (1 + d2 / r2);
+        const s = ed.spin * inv * ed.life;
+        // tangential velocity (perpendicular to radius)
+        fx += -dy * s * 0.012;
+        fy +=  dx * s * 0.012;
+        // gentle outward push so particles orbit instead of draining into a void
+        const d = Math.sqrt(d2) + 1e-3;
+        const out2 = inv * ed.life * 0.6;
+        fx += (dx / d) * out2;
+        fy += (dy / d) * out2;
+      }
+    }
+
+    // (4) live mouse stir (vortex that follows pointer velocity)
+    if (mouse.active) {
+      const dx = px - mouse.x, dy = py - mouse.y;
+      const d2 = dx * dx + dy * dy;
+      const R = diag * 0.16;
+      const R2 = R * R;
+      if (d2 < R2 * 4) {
+        const inv = 1 / (1 + d2 / R2);
+        const spin = (mouse.vx * -dy + mouse.vy * dx); // curl-ish from drag
+        fx += (-dy * 0.9 + mouse.vx * 9.0) * inv * 0.02;
+        fy += ( dx * 0.9 + mouse.vy * 9.0) * inv * 0.02;
+        fx += spin * 0.000035 * inv;
+      }
+    }
+
+    // global energy lift so even the resting ocean visibly streams
+    out.x = fx * 1.5; out.y = fy * 1.5;
+  }
+
+  // ---------- particles ----------
+  function rand(a, b) { return a + Math.random() * (b - a); }
+  function spawn(p, fresh) {
+    p.x = Math.random() * W;
+    p.y = Math.random() * H;
+    p.life = fresh ? rand(0.2, 1) : 1;
+    p.maxLife = rand(220, 520);
+    p.age = fresh ? Math.random() * p.maxLife : 0;
+    p.w = rand(0.55, 1.7);
+    p.seed = Math.random();
+  }
+  function initParticles() {
+    particles.length = 0;
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      const p = {};
+      spawn(p, true);
+      particles.push(p);
+    }
+  }
+
+  // speed -> color (deep cold -> warm fast). Stops mirror the legend bar.
+  function colorFor(speed, lat, alpha) {
+    // normalize speed (field max ~6 after global lift)
+    let s = Math.min(1, speed / 5.6);
+    // warm boost near equatorial / surface drift bands handled implicitly by speed
+    let r, g, b;
+    if (s < 0.25) { const k = s / 0.25; r = lerp(34, 46, k); g = lerp(92, 150, k); b = lerp(168, 206, k); }
+    else if (s < 0.5) { const k = (s - 0.25) / 0.25; r = lerp(46, 90, k); g = lerp(150, 214, k); b = lerp(206, 198, k); }
+    else if (s < 0.75) { const k = (s - 0.5) / 0.25; r = lerp(90, 165, k); g = lerp(214, 244, k); b = lerp(198, 148, k); }
+    else { const k = (s - 0.75) / 0.25; r = lerp(165, 255, k); g = lerp(244, 156, k); b = lerp(148, 96, k); }
+    return "rgba(" + (r|0) + "," + (g|0) + "," + (b|0) + "," + alpha + ")";
+  }
+
+  // ---------- resize ----------
+  function resize() {
+    W = window.innerWidth; H = window.innerHeight;
+    diag = Math.hypot(W, H);
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    cv.width = Math.round(W * DPR);
+    cv.height = Math.round(H * DPR);
+    cv.style.width = W + "px";
+    cv.style.height = H + "px";
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    // particle budget scales with area, capped for perf
+    const area = W * H;
+    PARTICLE_COUNT = Math.max(1000, Math.min(3000, Math.round(area / 560)));
+    if (W < 520) PARTICLE_COUNT = Math.min(PARTICLE_COUNT, 1700);
+    initParticles();
+    paintBackground(true);
+  }
+
+  function paintBackground(full) {
+    // deep ocean radial gradient; on full repaint, lay solid base
+    const g = ctx.createRadialGradient(W * 0.5, H * 0.42, 0, W * 0.5, H * 0.5, diag * 0.72);
+    g.addColorStop(0, "#071324");
+    g.addColorStop(0.45, "#040c18");
+    g.addColorStop(1, "#01040a");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // ---------- main loop ----------
+  const fv = { x: 0, y: 0 };
+  function frame() {
+    t += 1;
+    // smooth phase toward scroll target
+    phase += (phaseTarget - phase) * 0.06;
+
+    // fade prior frame -> motion trails (instead of clearRect)
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = "rgba(3,8,18,0.05)";
+    ctx.fillRect(0, 0, W, H);
+
+    // subtle re-tint of background depth so trails settle into ocean color
+    // (kept very light to preserve trails)
+
+    ctx.globalCompositeOperation = "lighter";
+
+    // pointer velocity decay
+    mouse.vx *= 0.82; mouse.vy *= 0.82;
+
+    // age user eddies
+    for (let i = eddies.length - 1; i >= 0; i--) {
+      const ed = eddies[i];
+      ed.life -= ed.decay;
+      ed.r += 0.25;
+      if (ed.life <= 0) eddies.splice(i, 1);
+    }
+
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      fieldAt(p.x, p.y, fv);
+      const vx = fv.x * SPEED;
+      const vy = fv.y * SPEED;
+      const speed = Math.hypot(vx, vy);
+
+      const ox = p.x, oy = p.y;
+      p.x += vx;
+      p.y += vy;
+      p.age++;
+
+      // wrap / respawn
+      let dead = false;
+      if (p.x < -4 || p.x > W + 4 || p.y < -4 || p.y > H + 4) dead = true;
+      if (p.age > p.maxLife) dead = true;
+      if (speed < 0.02) dead = true;
+      if (dead) { spawn(p, false); continue; }
+
+      // fade in/out over life for organic appearance
+      const lifeFrac = p.age / p.maxLife;
+      let a = 1;
+      if (lifeFrac < 0.12) a = lifeFrac / 0.12;
+      else if (lifeFrac > 0.82) a = (1 - lifeFrac) / 0.18;
+      a = Math.max(0, Math.min(1, a));
+
+      const alpha = (0.32 + Math.min(0.5, speed * 0.11)) * a;
+      ctx.strokeStyle = colorFor(speed, p.y / H, alpha);
+      ctx.lineWidth = p.w;
+      ctx.beginPath();
+      ctx.moveTo(ox, oy);
+      ctx.lineTo(p.x, p.y);
+      ctx.stroke();
+
+      // bright glowing head on the fastest streams (soft bloom)
+      if (speed > 4.0 && p.seed > 0.5) {
+        const rad = p.w * 2.6;
+        const gg = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, rad);
+        gg.addColorStop(0, colorFor(speed, p.y / H, alpha * 0.85));
+        gg.addColorStop(1, colorFor(speed, p.y / H, 0));
+        ctx.fillStyle = gg;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, rad, 0, TWO_PI);
+        ctx.fill();
+      }
+    }
+
+    // draw faint vortex cores for dropped eddies
+    ctx.globalCompositeOperation = "lighter";
+    for (let i = 0; i < eddies.length; i++) {
+      const ed = eddies[i];
+      const rr = ed.r * 0.8;
+      const g = ctx.createRadialGradient(ed.x, ed.y, 0, ed.x, ed.y, rr);
+      const al = ed.life * 0.10;
+      g.addColorStop(0, "rgba(150,230,255," + al + ")");
+      g.addColorStop(1, "rgba(150,230,255,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(ed.x, ed.y, rr, 0, TWO_PI);
+      ctx.fill();
+    }
+
+    if (!firstPaintDone) firstPaintDone = true;
+    requestAnimationFrame(frame);
+  }
+
+  // ---------- interaction ----------
+  function setPointer(x, y) {
+    mouse.px = mouse.x; mouse.py = mouse.y;
+    if (mouse.px > -1e5) {
+      mouse.vx = x - mouse.px;
+      mouse.vy = y - mouse.py;
+    }
+    mouse.x = x; mouse.y = y;
+    mouse.active = true;
+  }
+  function dropEddy(x, y) {
+    // alternate spin direction for visual variety / gyre feel
+    const spin = (Math.random() < 0.5 ? 1 : -1) * rand(140, 280);
+    eddies.push({
+      x, y, r: diag * 0.05,
+      spin, life: 1, decay: rand(0.0018, 0.0032)
+    });
+    if (eddies.length > 14) eddies.shift();
+  }
+
+  cv.addEventListener("mousemove", (e) => setPointer(e.clientX, e.clientY));
+  cv.addEventListener("mouseleave", () => { mouse.active = false; });
+  cv.addEventListener("mousedown", (e) => {
+    mouse.down = true; setPointer(e.clientX, e.clientY);
+    dropEddy(e.clientX, e.clientY);
+    dismissHint();
+  });
+  window.addEventListener("mouseup", () => { mouse.down = false; });
+
+  cv.addEventListener("touchstart", (e) => {
+    const tch = e.changedTouches[0];
+    setPointer(tch.clientX, tch.clientY);
+    dropEddy(tch.clientX, tch.clientY);
+    dismissHint();
+  }, { passive: true });
+  cv.addEventListener("touchmove", (e) => {
+    const tch = e.changedTouches[0];
+    setPointer(tch.clientX, tch.clientY);
+  }, { passive: true });
+  cv.addEventListener("touchend", () => { mouse.active = false; }, { passive: true });
+
+  // scroll / wheel -> shift flow phase
+  const phaseNames = ["— 干潮 —", "— 上げ潮 —", "— 高潮 —", "— 引き潮 —"];
+  function updateSeasonLabel() {
+    const idx = ((Math.round(phaseTarget / (Math.PI / 2)) % 4) + 4) % 4;
+    seasonValEl.textContent = phaseNames[idx];
+  }
+  window.addEventListener("wheel", (e) => {
+    phaseTarget += e.deltaY * 0.0019;
+    updateSeasonLabel();
+    dismissHint();
+  }, { passive: true });
+
+  // touch vertical drag on empty also nudges phase a little via 2-finger? keep simple:
+  let lastTouchY = null;
+  window.addEventListener("touchmove", (e) => {
+    if (e.touches.length === 2) {
+      const y = e.touches[0].clientY;
+      if (lastTouchY != null) { phaseTarget += (y - lastTouchY) * 0.004; updateSeasonLabel(); }
+      lastTouchY = y;
+    }
+  }, { passive: true });
+  window.addEventListener("touchend", () => { lastTouchY = null; });
+
+  let hintTimer = setTimeout(dismissHint, 7000);
+  function dismissHint() {
+    hintEl.classList.add("gone");
+    clearTimeout(hintTimer);
+  }
+
+  window.addEventListener("resize", resize);
+
+  // ---------- boot ----------
+  resize();
+  paintBackground(true);
+  updateSeasonLabel();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

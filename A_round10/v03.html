@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>SORTSCAPE — pixel-sorted glitch horizon</title>
+<style>
+  html,body{margin:0;height:100%;background:#05060a;overflow:hidden;
+    font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;cursor:crosshair;
+    -webkit-tap-highlight-color:transparent;touch-action:none;}
+  #c{display:block;width:100vw;height:100vh;}
+  #ui{position:fixed;left:16px;top:14px;z-index:5;pointer-events:none;
+    color:#cfd6e6;mix-blend-mode:difference;}
+  #ui h1{margin:0;font-size:13px;letter-spacing:.42em;font-weight:600;}
+  #ui .sub{margin-top:5px;font-size:10px;letter-spacing:.16em;opacity:.62;line-height:1.7;}
+  #hint{position:fixed;right:16px;bottom:14px;z-index:5;pointer-events:none;
+    color:#cfd6e6;mix-blend-mode:difference;text-align:right;
+    font-size:10px;letter-spacing:.14em;line-height:1.8;opacity:.78;}
+  #hint b{font-weight:600;letter-spacing:.2em;}
+  #meta{position:fixed;left:16px;bottom:14px;z-index:5;pointer-events:none;
+    color:#7f8aa3;mix-blend-mode:difference;font-size:9.5px;letter-spacing:.16em;}
+  kbd{font:inherit;border:1px solid currentColor;border-radius:3px;padding:0 4px;opacity:.85;}
+  @media (max-width:560px){
+    #ui h1{font-size:11px;letter-spacing:.3em;}
+    #ui .sub{font-size:9px;}
+    #hint{font-size:9px;}
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <h1>S O R T S C A P E</h1>
+  <div class="sub">pixel-sorted glitch horizon<br>generative · datamosh · live</div>
+</div>
+<div id="hint">
+  <div>드래그 — 소팅 브러시</div>
+  <div>스크롤 — 임계값 / 글리치 양</div>
+  <div>클릭/탭 — 데이터모시 전단 <b>burst</b></div>
+  <div><kbd>space</kbd> 풍경 재생성 · <kbd>g</kbd> 그레인</div>
+</div>
+<div id="meta">v03 · A_round10</div>
+<script>
+(()=>{
+"use strict";
+const cv=document.getElementById('c'), ctx=cv.getContext('2d',{alpha:false});
+const meta=document.getElementById('meta');
+
+// ---- resolution-capped working buffer ------------------------------------
+let W=0,H=0,DW=0,DH=0,SCALE=1;
+let img, data, base, baseData; // working ImageData + base scene cache
+let off;                       // offscreen canvas holding the buffer for fast blit
+
+function pickScale(w,h){
+  // cap longest edge ~ 720 on big screens, 480 on phones, for 60fps headroom
+  const big=Math.max(w,h);
+  const cap = big>1100 ? 720 : (big>620 ? 560 : 460);
+  return Math.min(1, cap/big);
+}
+
+function resize(){
+  W=Math.floor(innerWidth); H=Math.floor(innerHeight);
+  cv.width=W; cv.height=H;
+  SCALE=pickScale(W,H);
+  DW=Math.max(2,Math.floor(W*SCALE));
+  DH=Math.max(2,Math.floor(H*SCALE));
+  off=document.createElement('canvas'); off.width=DW; off.height=DH;
+  img=ctx.createImageData(DW,DH); data=img.data;
+  base=new Uint8ClampedArray(DW*DH*4);
+  buildScene();
+  meta.textContent=`v03 · ${DW}×${DH} · A_round10`;
+}
+
+// ---- palette / scene -----------------------------------------------------
+let seed=Math.random()*1e6|0;
+function rnd(){ seed=(seed*1664525+1013904223)|0; return ((seed>>>8)&0xffffff)/0xffffff; }
+function hsl(h,s,l){ // h 0..1
+  h=((h%1)+1)%1; s=Math.min(1,Math.max(0,s)); l=Math.min(1,Math.max(0,l));
+  const a=s*Math.min(l,1-l);
+  const f=n=>{const k=(n+h*12)%12; return l-a*Math.max(-1,Math.min(k-3,9-k,1));};
+  return [f(0)*255,f(8)*255,f(4)*255];
+}
+// fbm-ish value noise for terrain
+function vnoise(x,p){
+  const xi=Math.floor(x); const xf=x-xi;
+  const u=xf*xf*(3-2*xf);
+  const a=fract(Math.sin((xi+p*57.0))*43758.5453);
+  const b=fract(Math.sin((xi+1+p*57.0))*43758.5453);
+  return a+(b-a)*u;
+}
+function fract(v){return v-Math.floor(v);}
+
+let palette;
+function newPalette(){
+  // moody synth horizons; rotate hue per scene
+  const base=rnd();
+  palette={
+    skyTop:   hsl(base+0.62,0.55,0.10),
+    skyHorizon:hsl(base+0.92,0.75,0.55),
+    sun:      hsl(base+0.97,0.95,0.66),
+    layers:[
+      hsl(base+0.74,0.50,0.16),
+      hsl(base+0.69,0.55,0.24),
+      hsl(base+0.06,0.62,0.34),
+      hsl(base+0.02,0.70,0.30),
+    ],
+    water:    hsl(base+0.9,0.60,0.40),
+    accent:   hsl(base+0.15,0.95,0.62),
+  };
+}
+
+function lerp(a,b,t){return a+(b-a)*t;}
+function mix3(a,b,t){return [lerp(a[0],b[0],t),lerp(a[1],b[1],t),lerp(a[2],b[2],t)];}
+
+function buildScene(){
+  newPalette();
+  const w=DW,h=DH;
+  const horizonY=Math.floor(h*0.56);
+  const sunX=Math.floor(w*(0.30+rnd()*0.42));
+  const sunY=Math.floor(horizonY*(0.42+rnd()*0.18));
+  const sunR=Math.floor(Math.min(w,h)*(0.10+rnd()*0.06));
+
+  for(let y=0;y<h;y++){
+    const ty=y/horizonY;
+    for(let x=0;x<w;x++){
+      let r,g,b;
+      if(y<horizonY){
+        // sky gradient
+        let c=mix3(palette.skyTop,palette.skyHorizon,Math.pow(Math.min(1,ty),1.6));
+        // sun disk + glow
+        const dx=x-sunX, dy=(y-sunY)*1.0;
+        const d=Math.sqrt(dx*dx+dy*dy);
+        const glow=Math.exp(-d/(sunR*2.4))*0.9;
+        c=mix3(c,palette.sun,glow);
+        if(d<sunR){
+          // banded sun (retro)
+          const band=((y%6)<4)?1:0.35;
+          c=mix3(c,palette.sun,0.85*band);
+        }
+        r=c[0];g=c[1];b=c[2];
+      } else {
+        r=g=b=0; // fill below with layered mountains/water next
+      }
+      const i=(y*w+x)*4;
+      base[i]=r;base[i+1]=g;base[i+2]=b;base[i+3]=255;
+    }
+  }
+
+  // mountain layers (back to front)
+  const L=palette.layers.length;
+  for(let li=0;li<L;li++){
+    const depth=li/(L-1);
+    const amp=h*(0.05+0.13*(li/L));
+    const baseLine=horizonY+ (li*(h-horizonY)/(L+1.4));
+    const ph=rnd()*40+li*11;
+    const freq=0.008+0.006*(1-depth);
+    const col=palette.layers[li];
+    const skipWater = li===L-1;
+    for(let x=0;x<w;x++){
+      // layered noise ridges
+      let n=0,a=1,f=freq*w;
+      let xx=x*freq;
+      n+=vnoise(xx,ph)*0.6;
+      n+=vnoise(xx*2.0+5,ph+9)*0.28;
+      n+=vnoise(xx*4.1+11,ph+17)*0.14;
+      const ridge=baseLine - n*amp*2.0;
+      for(let y=Math.max(horizonY,Math.floor(ridge));y<h;y++){
+        // shade by height for relief
+        const shade=1 - (y-ridge)/(h-ridge+1)*0.5;
+        let c=[col[0]*shade,col[1]*shade,col[2]*shade];
+        // rim light near ridge top facing sun
+        const rim=Math.max(0,1-(y-ridge)/4);
+        c=mix3(c,palette.accent,rim*0.5*(1-depth*0.5));
+        const i=(y*w+x)*4;
+        base[i]=c[0];base[i+1]=c[1];base[i+2]=c[2];base[i+3]=255;
+      }
+    }
+  }
+
+  // water reflection band at very bottom (mirror sky+sun, scrambled)
+  const waterY=Math.floor(h*0.80);
+  for(let y=waterY;y<h;y++){
+    const refl=horizonY - (y-waterY)*1.4; // mirror upward
+    const ry=Math.max(0,Math.min(horizonY-1,Math.floor(refl)));
+    const ripple=Math.sin(y*0.6+ (y-waterY)*0.2)* (2+(y-waterY)*0.12);
+    for(let x=0;x<w;x++){
+      const sx=Math.max(0,Math.min(w-1,Math.floor(x+ripple)));
+      const si=(ry*w+sx)*4;
+      let c=[base[si],base[si+1],base[si+2]];
+      c=mix3(c,palette.water,0.45);
+      // darken with depth
+      const dk=1-(y-waterY)/(h-waterY)*0.4;
+      const i=(y*w+x)*4;
+      base[i]=c[0]*dk;base[i+1]=c[1]*dk;base[i+2]=c[2]*dk;base[i+3]=255;
+    }
+  }
+  // copy base -> working
+  data.set(base);
+  off.getContext('2d').putImageData(img,0,0);
+}
+
+// ---- pixel sorting engine -----------------------------------------------
+// per-column threshold sort, animated by a moving "melt front"
+let t0=performance.now();
+let threshold=0.34;      // luminance threshold band (scroll adjusts)
+let meltPhase=0;         // animates the sort front
+let grain=true;
+
+// pointer state
+const P={x:-1,y:-1,px:-1,py:-1,down:false,active:false,vel:0};
+let shears=[]; // datamosh shear bursts {y, t, dir, mag}
+
+function lum(r,g,b){ return (r*0.299+g*0.587+b*0.114)/255; }
+
+// sort a vertical span [y0,y1) of column x in the data buffer by luminance
+function sortColumn(x,y0,y1,asc){
+  const n=y1-y0; if(n<2) return;
+  // gather
+  const keys=new Float32Array(n);
+  const idx=new Int32Array(n);
+  for(let k=0;k<n;k++){
+    const i=((y0+k)*DW+x)*4;
+    keys[k]=lum(data[i],data[i+1],data[i+2]);
+    idx[k]=k;
+  }
+  // insertion-ish via Array sort on small n (spans are short, animated)
+  const order=Array.from(idx).sort((a,b)=> asc?keys[a]-keys[b]:keys[b]-keys[a]);
+  // write back: reorder pixel rgb
+  const tmp=new Uint8ClampedArray(n*3);
+  for(let k=0;k<n;k++){
+    const i=((y0+k)*DW+x)*4;
+    tmp[k*3]=data[i];tmp[k*3+1]=data[i+1];tmp[k*3+2]=data[i+2];
+  }
+  for(let k=0;k<n;k++){
+    const src=order[k];
+    const i=((y0+k)*DW+x)*4;
+    data[i]=tmp[src*3];data[i+1]=tmp[src*3+1];data[i+2]=tmp[src*3+2];
+  }
+}
+
+function frame(now){
+  const dt=Math.min(40,now-t0); t0=now;
+  meltPhase += dt*0.0012;
+
+  // restore from base, then re-apply animated sorting (keeps it crisp & live)
+  data.set(base);
+
+  // global animated melt front: a sweeping luminance threshold that creates
+  // the classic pixel-sort drips, modulated spatially by noise + time.
+  const w=DW,h=DH;
+  const tSec=now*0.001;
+
+  // brush influence field around pointer (in buffer coords)
+  let bx=-999,by=-999,bR=0,bStrength=0;
+  if(P.active){
+    bx=P.x*SCALE; by=P.y*SCALE;
+    bR=Math.max(28*SCALE, 60*SCALE);
+    bStrength=Math.min(1, 0.35 + P.vel*0.02 + (P.down?0.5:0));
+  }
+
+  // process columns
+  for(let x=0;x<w;x++){
+    // local threshold wobble
+    const wob = Math.sin(x*0.03 + meltPhase*3.0)*0.06
+              + vnoise(x*0.05, 7.0)*0.10;
+    let th = threshold + wob;
+
+    // brush widens threshold band (more pixels sort) near pointer
+    let localBoost=0;
+    if(P.active){
+      const dxp=x-bx;
+      const fall=Math.exp(-(dxp*dxp)/(2*bR*bR));
+      localBoost=fall*bStrength;
+      th += localBoost*0.4;
+    }
+
+    // ascend direction alternates slowly per region -> organic
+    const asc = (Math.sin(x*0.012+meltPhase*1.4) > -0.15);
+
+    // scan column, find spans whose luminance crosses the threshold band,
+    // each contiguous span gets sorted. animated by meltPhase shifting starts.
+    let y=0;
+    const startJitter = Math.floor((vnoise(x*0.09,3.0)+ Math.sin(meltPhase*2.0+x*0.02)*0.5+0.5)*6);
+    y+=startJitter;
+    while(y<h){
+      const i=(y*w+x)*4;
+      const Lv=lum(data[i],data[i+1],data[i+2]);
+      if(Lv>th){
+        let y1=y+1;
+        // bright spans bleed downward past the threshold -> long sort drips
+        const bleed = 8 + Math.floor((Lv-th)*70) + Math.floor(localBoost*70);
+        let belowRun=0;
+        while(y1<h){
+          const j=(y1*w+x)*4;
+          const lj=lum(data[j],data[j+1],data[j+2]);
+          if(lj>th){ belowRun=0; y1++; }
+          else if(belowRun<bleed){ belowRun++; y1++; }   // drip past dark edge
+          else break;
+        }
+        if(y1-y>2) sortColumn(x,y,y1,asc);
+        y=y1;
+      } else y++;
+    }
+  }
+
+  // datamosh shear bursts (horizontal row displacement, decaying)
+  if(shears.length){
+    const tmpRow=new Uint8ClampedArray(w*4);
+    for(let s=shears.length-1;s>=0;s--){
+      const sh=shears[s];
+      sh.t+=dt*0.001;
+      const life=1-sh.t/0.9;
+      if(life<=0){ shears.splice(s,1); continue; }
+      const span=Math.floor(sh.span*life);
+      const y0=Math.max(0,sh.y-span), y1=Math.min(h,sh.y+span);
+      for(let yy=y0;yy<y1;yy++){
+        const dd=Math.floor(sh.dir* sh.mag*life* (1+Math.sin((yy-sh.y)*0.4)) );
+        if(dd===0) continue;
+        const row=yy*w;
+        for(let x=0;x<w;x++){ const i=(row+x)*4; tmpRow[x*4]=data[i];tmpRow[x*4+1]=data[i+1];tmpRow[x*4+2]=data[i+2]; }
+        for(let x=0;x<w;x++){
+          const sx=((x-dd)%w+w)%w;
+          const i=(row+x)*4, j=sx*4;
+          // channel split for RGB-glitch flavor
+          data[i]=tmpRow[(((x-dd-1)%w+w)%w)*4];
+          data[i+1]=tmpRow[j+1];
+          data[i+2]=tmpRow[(((x-dd+1)%w+w)%w)*4+2];
+        }
+      }
+    }
+  }
+
+  // brush also injects a bright chromatic smear at pointer for tactile feel
+  if(P.active && bx>-900){
+    const r=bR*0.6;
+    const x0=Math.max(0,Math.floor(bx-r)), x1=Math.min(w,Math.floor(bx+r));
+    const y0=Math.max(0,Math.floor(by-r)), y1=Math.min(h,Math.floor(by+r));
+    for(let yy=y0;yy<y1;yy++)for(let xx=x0;xx<x1;xx++){
+      const dx=xx-bx,dy=yy-by,dd=Math.sqrt(dx*dx+dy*dy);
+      if(dd>r) continue;
+      const f=(1-dd/r)*bStrength*0.5;
+      const i=(yy*w+xx)*4;
+      data[i]  =lerp(data[i],  palette.accent[0],f*0.6);
+      data[i+1]=lerp(data[i+1],palette.sun[1],   f*0.4);
+      data[i+2]=lerp(data[i+2],palette.skyHorizon[2],f*0.6);
+    }
+  }
+
+  // subtle film grain + scanline for the analog-glitch finish
+  if(grain){
+    for(let k=0;k<data.length;k+=4){
+      const g=(rnd()-0.5)*14;
+      data[k]+=g;data[k+1]+=g;data[k+2]+=g;
+    }
+  }
+
+  // blit buffer scaled to full screen (smoothing off for crisp pixels)
+  off.getContext('2d').putImageData(img,0,0);
+  ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(off,0,0,DW,DH,0,0,W,H);
+
+  // vignette
+  const grd=ctx.createRadialGradient(W/2,H*0.5,Math.min(W,H)*0.2, W/2,H*0.55,Math.max(W,H)*0.75);
+  grd.addColorStop(0,'rgba(0,0,0,0)'); grd.addColorStop(1,'rgba(0,0,0,0.45)');
+  ctx.fillStyle=grd; ctx.fillRect(0,0,W,H);
+
+  // decay pointer velocity
+  P.vel*=0.86;
+  requestAnimationFrame(frame);
+}
+
+// ---- interaction ---------------------------------------------------------
+function setPointer(x,y){
+  P.px=P.x;P.py=P.y;P.x=x;P.y=y;
+  if(P.px>=0){ P.vel=Math.min(60,Math.hypot(P.x-P.px,P.y-P.py)); }
+  P.active=true;
+}
+function shearBurst(x,y){
+  const by=y*SCALE;
+  shears.push({y:Math.floor(by), t:0, span:Math.floor(DH*(0.08+Math.random()*0.10)),
+    dir:Math.random()<0.5?-1:1, mag:Math.floor(DW*(0.18+Math.random()*0.22))});
+  if(shears.length>6) shears.shift();
+}
+cv.addEventListener('mousemove',e=>setPointer(e.clientX,e.clientY));
+cv.addEventListener('mousedown',e=>{P.down=true;setPointer(e.clientX,e.clientY);shearBurst(e.clientX,e.clientY);});
+window.addEventListener('mouseup',()=>{P.down=false;});
+cv.addEventListener('mouseleave',()=>{P.active=false;});
+cv.addEventListener('wheel',e=>{ e.preventDefault();
+  threshold=Math.min(0.78,Math.max(0.08, threshold + (e.deltaY>0?0.025:-0.025)));
+},{passive:false});
+
+// touch
+cv.addEventListener('touchstart',e=>{e.preventDefault();const t=e.touches[0];
+  P.down=true;setPointer(t.clientX,t.clientY);shearBurst(t.clientX,t.clientY);},{passive:false});
+cv.addEventListener('touchmove',e=>{e.preventDefault();const t=e.touches[0];
+  setPointer(t.clientX,t.clientY);
+  if(e.touches.length>1){ // pinch-ish two finger => threshold
+    threshold=Math.min(0.78,Math.max(0.08, t.clientY/innerHeight*0.7+0.1));
+  }},{passive:false});
+window.addEventListener('touchend',()=>{P.down=false;P.active=false;});
+
+window.addEventListener('keydown',e=>{
+  if(e.key===' '){ seed=Math.random()*1e6|0; buildScene(); }
+  if(e.key==='g'||e.key==='G'){ grain=!grain; }
+});
+
+window.addEventListener('resize',()=>{ clearTimeout(window.__rz); window.__rz=setTimeout(resize,120); });
+
+// expose for self-verification (playwright)
+window.__sortscape={
+  state:()=>({DW,DH,threshold,shears:shears.length,active:P.active,grain}),
+  setPointer, shearBurst,
+  scroll:(d)=>{threshold=Math.min(0.78,Math.max(0.08,threshold+(d>0?0.025:-0.025)));},
+  regen:()=>{seed=Math.random()*1e6|0;buildScene();},
+  sampleNonBlack:()=>{ // first-paint sanity: count non-near-black pixels in current draw
+    let n=0; const s=ctx.getImageData(0,0,Math.min(W,200),Math.min(H,200)).data;
+    for(let i=0;i<s.length;i+=4){ if(s[i]+s[i+1]+s[i+2]>30) n++; } return n;
+  }
+};
+
+resize();
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

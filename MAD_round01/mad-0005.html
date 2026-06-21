@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>ABYSS — 무한 하강 / Mandelbrot Deep Descent</title>
+<style>
+  :root{ --ink: rgba(236,240,255,.92); --dim: rgba(236,240,255,.42); }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ height:100%; width:100%; overflow:hidden; background:#04050a; }
+  body{
+    font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    color:var(--ink); -webkit-font-smoothing:antialiased;
+    touch-action:none; cursor:crosshair;
+  }
+  #gl{ position:fixed; inset:0; width:100%; height:100%; display:block; }
+
+  /* ── overlay UI (part of the composition, no loading screen) ── */
+  .ui{ position:fixed; pointer-events:none; z-index:5; mix-blend-mode:screen; }
+  .topL{ top:clamp(16px,3vw,34px); left:clamp(16px,3vw,38px); }
+  .title{
+    font-size:clamp(11px,1.05vw,14px); letter-spacing:.42em; font-weight:600;
+    text-transform:uppercase; line-height:1.9;
+    text-shadow:0 0 18px rgba(120,170,255,.35);
+  }
+  .title small{ display:block; letter-spacing:.30em; font-weight:400;
+    font-size:clamp(8.5px,.78vw,10px); color:var(--dim); margin-top:6px; }
+
+  .botL{ bottom:clamp(16px,3vw,30px); left:clamp(16px,3vw,38px); }
+  .stat{ font-size:clamp(9px,.82vw,11px); letter-spacing:.16em; line-height:1.85; color:var(--dim); }
+  .stat b{ color:var(--ink); font-weight:600; }
+  .stat .bar{ display:inline-block; width:64px; height:3px; vertical-align:middle;
+    background:rgba(255,255,255,.12); border-radius:2px; overflow:hidden; margin-left:8px; }
+  .stat .bar i{ display:block; height:100%; width:30%;
+    background:linear-gradient(90deg,#5bd5ff,#b98cff,#ffd27a); transition:width .25s; }
+
+  .hint{
+    position:fixed; left:50%; bottom:clamp(16px,3vw,30px); transform:translateX(-50%);
+    z-index:5; pointer-events:none; text-align:center;
+    font-size:clamp(8.5px,.78vw,10.5px); letter-spacing:.24em; color:var(--dim);
+    text-transform:uppercase; transition:opacity 1.4s ease; mix-blend-mode:screen;
+    white-space:nowrap;
+  }
+  .hint b{ color:var(--ink); font-weight:600; }
+  .hint.fade{ opacity:0; }
+
+  .corner{ position:fixed; z-index:5; width:clamp(22px,2.4vw,34px); height:clamp(22px,2.4vw,34px);
+    pointer-events:none; opacity:.5; mix-blend-mode:screen; }
+  .corner::before,.corner::after{ content:""; position:absolute; background:var(--dim); }
+  .corner.tr{ top:clamp(16px,3vw,30px); right:clamp(16px,3vw,30px); }
+  .corner.tr::before{ top:0; right:0; width:100%; height:1px; }
+  .corner.tr::after{ top:0; right:0; width:1px; height:100%; }
+  .corner.bl{ bottom:clamp(16px,3vw,30px); left:auto; right:clamp(16px,3vw,30px); }
+  .corner.bl::before{ bottom:0; right:0; width:100%; height:1px; }
+  .corner.bl::after{ bottom:0; right:0; width:1px; height:100%; }
+
+  .err{ position:fixed; inset:0; display:none; place-items:center; z-index:9; text-align:center;
+    padding:30px; font-size:13px; letter-spacing:.1em; color:var(--ink); }
+
+  @media (max-width:520px){
+    .title{ letter-spacing:.30em; }
+    .hint{ white-space:normal; max-width:84vw; line-height:1.7; }
+  }
+  @media (prefers-reduced-motion: reduce){ /* honored in JS: autopilot starts paused */ }
+</style>
+</head>
+<body>
+  <canvas id="gl"></canvas>
+
+  <div class="ui topL">
+    <div class="title">A B Y S S<small>무한 하강 · mandelbrot ↔ julia</small></div>
+  </div>
+
+  <div class="ui botL">
+    <div class="stat">
+      ZOOM <b id="z">×1</b><br>
+      ITER <b id="it">120</b><span class="bar"><i id="ib"></i></span><br>
+      MODE <b id="md">MANDELBROT</b>
+    </div>
+  </div>
+
+  <div class="corner tr"></div>
+  <div class="corner bl"></div>
+
+  <div class="hint" id="hint">
+    DRAG <b>이동</b> · SCROLL / PINCH <b>줌</b> · DOUBLE&#8202;TAP <b>잠수</b> · <b>J</b> JULIA · <b>SPACE</b> 자동 · <b>C</b> 색
+  </div>
+
+  <div class="err" id="err">이 브라우저에서 WebGL을 사용할 수 없습니다.</div>
+
+<script>
+(function(){
+"use strict";
+
+const cvs = document.getElementById('gl');
+const gl = cvs.getContext('webgl', {antialias:false, depth:false, stencil:false,
+  premultipliedAlpha:false, preserveDrawingBuffer:false, powerPreference:'high-performance'});
+if(!gl){ document.getElementById('err').style.display='grid'; return; }
+
+/* ───────────────────────── shaders ───────────────────────── */
+const VERT = `
+attribute vec2 aPos;
+void main(){ gl_Position = vec4(aPos,0.0,1.0); }`;
+
+const FRAG = `
+precision highp float;
+uniform vec2  uRes;
+uniform vec2  uCenter;
+uniform float uScale;     // vertical complex span
+uniform float uRot;
+uniform float uTime;
+uniform float uIter;
+uniform int   uMode;      // 0 mandel, 1 julia
+uniform vec2  uJulia;
+uniform float uShift;
+uniform vec3  uPalA, uPalB, uPalC, uPalD;
+uniform float uTrap;
+
+const int MAXI = 600;
+const float TAU = 6.28318530718;
+const float BAIL = 260.0;
+
+vec3 palette(float t){
+  return uPalA + uPalB*cos(TAU*(uPalC*t + uPalD + uShift));
+}
+
+void main(){
+  vec2 uv = (gl_FragCoord.xy - 0.5*uRes)/uRes.y;
+  float cs = cos(uRot), sn = sin(uRot);
+  vec2 ruv = vec2(cs*uv.x - sn*uv.y, sn*uv.x + cs*uv.y);
+  vec2 point = uCenter + ruv*uScale;
+
+  vec2 z, c;
+  if(uMode==0){ c = point; z = vec2(0.0); }
+  else        { z = point; c = uJulia; }
+
+  float nu = 0.0;
+  bool esc = false;
+  float trapRing = 1e9;   // |z|-1  -> ornate filaments
+  float trapDot  = 1e9;   // min |z| -> interior lightning
+  float trapAx   = 1e9;   // axis trap
+
+  for(int i=0;i<MAXI;i++){
+    if(float(i) >= uIter) break;
+    z = vec2(z.x*z.x - z.y*z.y, 2.0*z.x*z.y) + c;
+    float m = dot(z,z);
+    float r = sqrt(m);
+    trapRing = min(trapRing, abs(r - 1.0));
+    trapDot  = min(trapDot, r);
+    trapAx   = min(trapAx, min(abs(z.x), abs(z.y)));
+    if(m > BAIL){
+      nu = float(i) - log2(log2(m)) + 4.0;
+      esc = true;
+      break;
+    }
+  }
+
+  vec3 col;
+  if(!esc){
+    // interior — deep ink with faint, organic inner glow
+    float g  = exp(-trapDot*2.6);
+    float fg = exp(-trapAx*12.0);
+    vec3 a1 = palette(0.62);
+    vec3 a2 = palette(0.18);
+    col = vec3(0.012,0.018,0.032) + a1*g*0.16 + a2*fg*0.10;
+  } else {
+    float band = log2(nu + 1.0)*0.30;
+    // iridescent chromatic split
+    float d = 0.010;
+    col = vec3( palette(band - d).r, palette(band).g, palette(band + d).b );
+
+    // ornate orbit-trap filaments (the "wow" lacework)
+    float fil  = exp(-trapRing*16.0);
+    float fil2 = exp(-trapAx*26.0);
+    vec3 acc = palette(band + 0.34);
+    col += acc*fil*uTrap;
+    col += vec3(1.0,0.95,0.85)*fil2*uTrap*0.35;
+
+    // gentle inner darkening near the boundary for depth
+    col *= 0.55 + 0.55*smoothstep(0.0, 6.0, nu);
+  }
+
+  // bloom-ish lift
+  col += col*col*0.18;
+
+  // vignette
+  vec2 q = gl_FragCoord.xy/uRes;
+  float vig = smoothstep(1.25, 0.25, length((q-0.5)*vec2(uRes.x/uRes.y,1.0)));
+  col *= mix(0.70, 1.10, vig);
+
+  // film grain
+  float gr = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898,78.233)) + uTime*1.3)*43758.5453);
+  col += (gr-0.5)*0.022;
+
+  // tone / gamma
+  col = max(col, 0.0);
+  col = col/(col + 0.92);
+  col = pow(col, vec3(0.88));
+
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
+function compile(type, src){
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+    console.error(gl.getShaderInfoLog(s)); return null;
+  }
+  return s;
+}
+const prog = gl.createProgram();
+const vs = compile(gl.VERTEX_SHADER, VERT);
+const fs = compile(gl.FRAGMENT_SHADER, FRAG);
+if(!vs||!fs){ document.getElementById('err').style.display='grid'; return; }
+gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog, gl.LINK_STATUS)){
+  console.error(gl.getProgramInfoLog(prog)); document.getElementById('err').style.display='grid'; return;
+}
+gl.useProgram(prog);
+
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog,'aPos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+const U = {};
+['uRes','uCenter','uScale','uRot','uTime','uIter','uMode','uJulia','uShift',
+ 'uPalA','uPalB','uPalC','uPalD','uTrap'].forEach(n=> U[n]=gl.getUniformLocation(prog,n));
+
+/* ───────────────────────── state ───────────────────────── */
+const MAXI = 599;
+const isMobile = Math.min(innerWidth, innerHeight) < 620;
+let DPR = Math.min(devicePixelRatio||1, isMobile?1.5:2);
+
+const disp   = { cx:-0.6, cy:0.0, scale:3.0, rot:0.0 };
+const target = { cx:-0.6, cy:0.0, scale:3.0, rot:0.0 };
+
+let mode = 0;                 // 0 mandel, 1 julia
+let julia = { x:-0.4, y:0.6 };
+let juliaAuto = true;
+let lastSeedMove = -1e9;
+
+let shiftBase = 0.0;
+let trapAmt = 0.85;
+
+let autopilot = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+let lastInteract = -1e9;
+
+// palette presets (IQ cosine): [A,B,C,D]
+const PRESETS = [
+  [[0.52,0.50,0.50],[0.48,0.50,0.52],[1.00,1.00,1.00],[0.00,0.12,0.30]], // nebula blue→gold
+  [[0.50,0.42,0.38],[0.50,0.45,0.42],[1.00,1.05,1.10],[0.10,0.20,0.34]], // amber / copper
+  [[0.45,0.48,0.55],[0.45,0.48,0.50],[1.05,1.00,0.95],[0.55,0.40,0.25]], // teal / magenta
+  [[0.50,0.50,0.50],[0.50,0.48,0.46],[0.95,1.10,1.20],[0.00,0.33,0.67]], // spectral
+  [[0.48,0.44,0.52],[0.50,0.50,0.48],[1.20,0.90,1.00],[0.20,0.05,0.55]]  // violet / cyan
+];
+let palIdx = 0;
+const pal = { a:PRESETS[0][0].slice(), b:PRESETS[0][1].slice(), c:PRESETS[0][2].slice(), d:PRESETS[0][3].slice() };
+
+// deep-zoom waypoints (known ornate regions of the Mandelbrot boundary)
+const WP = [
+  {x:-0.743643887037151,  y: 0.131825904205330},
+  {x:-0.745428,           y: 0.113009},
+  {x: 0.001643721971153,  y: 0.822467633298876},
+  {x:-0.10109636384562,   y: 0.95628651080914},
+  {x:-1.250665,           y: 0.020128},
+  {x:-0.235125,           y: 0.827215},
+  {x: 0.2549870375,       y:-0.0005679430},
+  {x:-0.7436447860,       y: 0.1318252536}
+];
+let wpIdx = 0, wp = WP[0];
+
+/* ───────────────────────── resize ───────────────────────── */
+function resize(){
+  DPR = Math.min(devicePixelRatio||1, isMobile?1.5:2) * qScale;
+  const w = Math.max(1, Math.round(innerWidth  * DPR));
+  const h = Math.max(1, Math.round(innerHeight * DPR));
+  if(cvs.width!==w || cvs.height!==h){
+    cvs.width=w; cvs.height=h;
+    gl.viewport(0,0,w,h);
+  }
+}
+let qScale = 1.0;            // resolution quality (perf)
+addEventListener('resize', resize, {passive:true});
+
+/* ─────────────────── coordinate helpers ─────────────────── */
+function pixelToUV(px,py){
+  const r = cvs.getBoundingClientRect();
+  const x = (px - r.left) * (cvs.width / r.width);
+  const y = (py - r.top ) * (cvs.height / r.height);
+  const W = cvs.width, H = cvs.height;
+  const fx = x, fy = H - y;                 // gl origin is bottom-left
+  return { u:(fx - 0.5*W)/H, v:(fy - 0.5*H)/H };
+}
+function s2cTarget(px,py){
+  const {u,v} = pixelToUV(px,py);
+  const cs=Math.cos(target.rot), sn=Math.sin(target.rot);
+  const ru = cs*u - sn*v, rv = sn*u + cs*v;
+  return { x: target.cx + ru*target.scale, y: target.cy + rv*target.scale };
+}
+function s2cDisp(px,py){
+  const {u,v} = pixelToUV(px,py);
+  const cs=Math.cos(disp.rot), sn=Math.sin(disp.rot);
+  const ru = cs*u - sn*v, rv = sn*u + cs*v;
+  return { x: disp.cx + ru*disp.scale, y: disp.cy + rv*disp.scale };
+}
+function clampScale(){
+  target.scale = Math.min(4.0, Math.max(7e-8, target.scale));
+}
+function zoomAt(px,py,factor){
+  const p = s2cTarget(px,py);
+  target.scale *= factor; clampScale();
+  const {u,v} = pixelToUV(px,py);
+  const cs=Math.cos(target.rot), sn=Math.sin(target.rot);
+  const ru = cs*u - sn*v, rv = sn*u + cs*v;
+  target.cx = p.x - ru*target.scale;
+  target.cy = p.y - rv*target.scale;
+  touch();
+}
+function panPix(dx,dy){
+  const H = cvs.height;
+  const sc = cvs.width / cvs.getBoundingClientRect().width;
+  const du =  (dx*sc)/H, dv = -(dy*sc)/H;
+  const cs=Math.cos(disp.rot), sn=Math.sin(disp.rot);
+  const ru = cs*du - sn*dv, rv = sn*du + cs*dv;
+  target.cx -= ru*disp.scale; target.cy -= rv*disp.scale;
+  disp.cx  -= ru*disp.scale; disp.cy  -= rv*disp.scale;  // snappy
+  touch();
+}
+function touch(){ lastInteract = performance.now(); }
+
+/* ───────────────────────── input ───────────────────────── */
+cvs.addEventListener('wheel', (e)=>{
+  e.preventDefault();
+  let f = Math.exp(e.deltaY * 0.0014);
+  f = Math.min(1.6, Math.max(0.6, f));
+  zoomAt(e.clientX, e.clientY, f);
+}, {passive:false});
+
+const ptr = new Map();
+let pinchPrev = 0, pinchMid = null, downInfo = null, lastTap = 0;
+
+cvs.addEventListener('pointerdown', (e)=>{
+  cvs.setPointerCapture(e.pointerId);
+  ptr.set(e.pointerId, {x:e.clientX, y:e.clientY});
+  if(ptr.size===1){
+    downInfo = {x:e.clientX, y:e.clientY, t:performance.now(), moved:0};
+  } else if(ptr.size===2){
+    const a=[...ptr.values()];
+    pinchPrev = Math.hypot(a[0].x-a[1].x, a[0].y-a[1].y);
+    pinchMid  = {x:(a[0].x+a[1].x)/2, y:(a[0].y+a[1].y)/2};
+  }
+  touch();
+});
+cvs.addEventListener('pointermove', (e)=>{
+  if(!ptr.has(e.pointerId)){
+    // hover: live Julia seed steering (desktop)
+    if(mode===1 && e.pointerType==='mouse'){
+      const p = s2cDisp(e.clientX, e.clientY);
+      julia.x = p.x; julia.y = p.y; lastSeedMove = performance.now(); touch();
+    }
+    return;
+  }
+  const prev = ptr.get(e.pointerId);
+  const dx = e.clientX - prev.x, dy = e.clientY - prev.y;
+  ptr.set(e.pointerId, {x:e.clientX, y:e.clientY});
+
+  if(ptr.size===1){
+    if(downInfo) downInfo.moved += Math.abs(dx)+Math.abs(dy);
+    if(mode===1 && e.pointerType==='mouse'){
+      const p = s2cDisp(e.clientX, e.clientY);
+      julia.x = p.x; julia.y = p.y; lastSeedMove = performance.now(); touch();
+    } else {
+      panPix(dx, dy);
+    }
+  } else if(ptr.size===2){
+    const a=[...ptr.values()];
+    const dist = Math.hypot(a[0].x-a[1].x, a[0].y-a[1].y);
+    const mid  = {x:(a[0].x+a[1].x)/2, y:(a[0].y+a[1].y)/2};
+    if(pinchPrev>0){
+      zoomAt(mid.x, mid.y, pinchPrev/dist);
+      if(pinchMid) panPix(mid.x-pinchMid.x, mid.y-pinchMid.y);
+    }
+    pinchPrev = dist; pinchMid = mid;
+  }
+});
+function endPtr(e){
+  if(ptr.has(e.pointerId)) ptr.delete(e.pointerId);
+  if(ptr.size<2){ pinchPrev=0; pinchMid=null; }
+  if(ptr.size===0 && downInfo){
+    const dt = performance.now()-downInfo.t;
+    if(dt<260 && downInfo.moved<8){      // tap
+      const now = performance.now();
+      if(now-lastTap < 320){ zoomAt(downInfo.x, downInfo.y, 0.45); lastTap=0; }  // double tap → dive
+      else { zoomAt(downInfo.x, downInfo.y, 0.78); lastTap=now; }                 // single tap → gentle dive
+    }
+    downInfo=null;
+  }
+}
+cvs.addEventListener('pointerup', endPtr);
+cvs.addEventListener('pointercancel', endPtr);
+cvs.addEventListener('dblclick', (e)=>{ e.preventDefault(); zoomAt(e.clientX,e.clientY,0.4); });
+
+addEventListener('keydown', (e)=>{
+  const k = e.key.toLowerCase();
+  if(k===' '){ e.preventDefault(); autopilot=!autopilot; touch(); }
+  else if(k==='j'){
+    mode = mode?0:1;
+    if(mode===1){ julia.x = target.cx; julia.y = target.cy; juliaAuto = true; lastSeedMove=-1e9; }
+    document.getElementById('md').textContent = mode? 'JULIA':'MANDELBROT';
+    touch();
+  }
+  else if(k==='c'){ palIdx=(palIdx+1)%PRESETS.length; touch(); }
+  else if(k==='r'){
+    target.cx=-0.6; target.cy=0; target.scale=3.0; target.rot=0; mode=0;
+    document.getElementById('md').textContent='MANDELBROT'; touch();
+  }
+}, {passive:false});
+
+/* ───────────────────── perf adaptation ──────────────────── */
+let frameAvg = 16.7;
+let perfMult = isMobile ? 0.78 : 1.0;
+
+/* ───────────────────────── render ───────────────────────── */
+function lerp(a,b,t){ return a + (b-a)*t; }
+function vlerp(o,t,k){ o[0]=lerp(o[0],t[0],k); o[1]=lerp(o[1],t[1],k); o[2]=lerp(o[2],t[2],k); }
+
+let last = performance.now(), t0 = last;
+const hintEl = document.getElementById('hint');
+const zEl=document.getElementById('z'), itEl=document.getElementById('it'),
+      ibEl=document.getElementById('ib');
+let hintHidden=false;
+
+function frame(now){
+  const dt = Math.min(0.05, (now-last)/1000); last=now;
+  const time = (now - t0)/1000;
+
+  // perf-aware quality
+  frameAvg = frameAvg*0.92 + (dt*1000)*0.08;
+  if(frameAvg > 22 && perfMult > 0.45) perfMult -= 0.02;
+  else if(frameAvg < 13 && perfMult < 1.0) perfMult += 0.012;
+
+  // autopilot cinematic descent
+  if(autopilot && (now-lastInteract) > 3500){
+    if(mode===0){
+      target.scale *= Math.pow(0.9928, dt*60);
+      target.cx += (wp.x - target.cx)*Math.min(1, 0.9*dt);
+      target.cy += (wp.y - target.cy)*Math.min(1, 0.9*dt);
+      target.rot += 0.00045*dt*60;
+      if(target.scale < 6.5e-6){
+        wpIdx=(wpIdx+1)%WP.length; wp=WP[wpIdx];
+        target.scale = 3.0;                 // breathe out, then dive into the next region
+        palIdx = (palIdx+1)%PRESETS.length;
+      }
+    }
+    shiftBase += 0.045*dt;
+  }
+
+  // Julia auto seed orbit (classic dramatic morph)
+  if(mode===1){
+    if(!juliaAuto && (now-lastSeedMove) > 2200) juliaAuto = true;
+    if(juliaAuto){
+      const a = time*0.11;
+      const rad = 0.7885 + 0.06*Math.sin(time*0.37);
+      const jx = rad*Math.cos(a), jy = rad*Math.sin(a);
+      julia.x = lerp(julia.x, jx, Math.min(1,1.4*dt));
+      julia.y = lerp(julia.y, jy, Math.min(1,1.4*dt));
+    } else { juliaAuto = false; }
+    if((now-lastSeedMove) < 2200) juliaAuto=false;
+  }
+
+  // smooth display toward target (framerate independent)
+  const k = 1 - Math.exp(-dt*7.5);
+  disp.cx = lerp(disp.cx, target.cx, k);
+  disp.cy = lerp(disp.cy, target.cy, k);
+  disp.rot = lerp(disp.rot, target.rot, k);
+  disp.scale = disp.scale * Math.pow(target.scale/disp.scale, k);
+
+  // palette easing
+  const P = PRESETS[palIdx];
+  vlerp(pal.a, P[0], k); vlerp(pal.b, P[1], k); vlerp(pal.c, P[2], k); vlerp(pal.d, P[3], k);
+
+  // iteration budget scales with depth
+  const zoomF = 3.0 / disp.scale;
+  let iter = 120 + 95*Math.log2(zoomF + 1);
+  iter = Math.max(80, Math.min(MAXI, iter*perfMult));
+  iter = Math.round(iter);
+
+  // resolution quality (rare changes only)
+  const wantQ = perfMult < 0.6 ? 0.8 : 1.0;
+  if(Math.abs(wantQ - qScale) > 0.05){ qScale = wantQ; }
+  resize();
+
+  const uShift = shiftBase + time*0.012;
+
+  gl.uniform2f(U.uRes, cvs.width, cvs.height);
+  gl.uniform2f(U.uCenter, disp.cx, disp.cy);
+  gl.uniform1f(U.uScale, disp.scale);
+  gl.uniform1f(U.uRot, disp.rot);
+  gl.uniform1f(U.uTime, time);
+  gl.uniform1f(U.uIter, iter);
+  gl.uniform1i(U.uMode, mode);
+  gl.uniform2f(U.uJulia, julia.x, julia.y);
+  gl.uniform1f(U.uShift, uShift);
+  gl.uniform3fv(U.uPalA, pal.a);
+  gl.uniform3fv(U.uPalB, pal.b);
+  gl.uniform3fv(U.uPalC, pal.c);
+  gl.uniform3fv(U.uPalD, pal.d);
+  gl.uniform1f(U.uTrap, trapAmt);
+
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  // HUD
+  const zoom = 3.0/disp.scale;
+  zEl.textContent = '×' + (zoom>=1e6 ? zoom.toExponential(1) : (zoom>=1000? Math.round(zoom).toLocaleString() : zoom.toFixed(zoom<10?2:0)));
+  itEl.textContent = iter;
+  ibEl.style.width = Math.round(100*iter/MAXI) + '%';
+
+  if(!hintHidden && (time>7 || (now-lastInteract)<500 && time>2)){
+    hintEl.classList.add('fade'); hintHidden=true;
+  }
+
+  requestAnimationFrame(frame);
+}
+
+resize();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

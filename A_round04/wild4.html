@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>墨流 · INKBLOOM</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Noto+Serif+KR:wght@200;400;600;900&family=Space+Grotesk:wght@300;400;500;700&family=Nanum+Myeongjo:wght@400;700;800&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --ink:#05060a;
+    --ink2:#0a0d16;
+    --paper:#ece3d2;
+    --paper-dim:#8c8576;
+    --vermilion:#e5352b;
+    --vermilion-soft:#ff5a4d;
+    --gold:#d8b25a;
+    --jade:#4fd7c0;
+    --line:rgba(236,227,210,.14);
+    --line-strong:rgba(236,227,210,.32);
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    background:#05060a;
+    color:var(--paper);
+    font-family:"Space Grotesk","Noto Serif KR",sans-serif;
+    overflow-x:hidden;
+    -webkit-font-smoothing:antialiased;
+    cursor:none;
+  }
+  body.touch{cursor:auto}
+  canvas{display:block}
+
+  /* ---- live ink simulation canvas: IS the first paint ---- */
+  #ink{position:fixed;inset:0;width:100vw;height:100vh;z-index:0;}
+  /* paper-grain + vignette over the fluid */
+  #grain{position:fixed;inset:0;z-index:1;pointer-events:none;mix-blend-mode:soft-light;opacity:.5;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.5'/%3E%3C/svg%3E");}
+  #vignette{position:fixed;inset:0;z-index:1;pointer-events:none;
+    background:
+      radial-gradient(120% 90% at 50% 40%,transparent 30%,rgba(3,4,8,.55) 100%),
+      linear-gradient(180deg,rgba(3,4,8,.45) 0%,transparent 22%,transparent 78%,rgba(3,4,8,.55) 100%);}
+
+  /* ---- custom ink-brush cursor ---- */
+  #cursor{position:fixed;top:0;left:0;z-index:90;pointer-events:none;
+    width:14px;height:14px;border-radius:50%;
+    background:radial-gradient(circle at 35% 30%,#fff,var(--vermilion-soft) 55%,var(--vermilion) 100%);
+    box-shadow:0 0 14px 2px rgba(229,53,43,.6);
+    transform:translate(-50%,-50%);transition:width .25s,height .25s,opacity .3s;}
+  #cursor.big{width:38px;height:38px;background:radial-gradient(circle at 40% 35%,rgba(255,255,255,.9),rgba(229,53,43,.35) 60%,transparent 75%);box-shadow:0 0 30px 6px rgba(229,53,43,.4)}
+  #cring{position:fixed;top:0;left:0;z-index:89;pointer-events:none;width:46px;height:46px;border-radius:50%;
+    border:1px solid rgba(236,227,210,.35);transform:translate(-50%,-50%);transition:width .3s,height .3s,border-color .3s}
+  #cring.big{width:84px;height:84px;border-color:rgba(216,178,90,.6)}
+
+  /* ====== layout scaffold ====== */
+  .wrap{position:relative;z-index:5}
+  .pad{padding:0 clamp(20px,4.5vw,76px)}
+
+  /* hairline frame */
+  .frame{position:fixed;z-index:6;pointer-events:none;}
+  .frame.t{top:18px;left:18px;right:18px;height:1px;background:var(--line)}
+  .frame.b{bottom:18px;left:18px;right:18px;height:1px;background:var(--line)}
+  .frame.l{top:18px;bottom:18px;left:18px;width:1px;background:var(--line)}
+  .frame.r{top:18px;bottom:18px;right:18px;width:1px;background:var(--line)}
+  .corner{position:fixed;z-index:7;width:11px;height:11px;pointer-events:none;border:1px solid var(--line-strong)}
+  .corner.tl{top:18px;left:18px;border-right:0;border-bottom:0}
+  .corner.tr{top:18px;right:18px;border-left:0;border-bottom:0}
+  .corner.bl{bottom:18px;left:18px;border-right:0;border-top:0}
+  .corner.br{bottom:18px;right:18px;border-left:0;border-top:0}
+
+  /* ---- top HUD ---- */
+  header{position:fixed;top:0;left:0;right:0;z-index:20;padding:30px clamp(28px,4.7vw,86px) 0;
+    display:flex;justify-content:space-between;align-items:flex-start;font-size:11px;letter-spacing:.32em;
+    text-transform:uppercase;color:var(--paper-dim);mix-blend-mode:difference}
+  header .mark{display:flex;align-items:center;gap:12px;color:var(--paper)}
+  .seal{width:30px;height:30px;display:grid;place-items:center;border:1px solid var(--vermilion);
+    color:var(--vermilion-soft);font-family:"Nanum Myeongjo",serif;font-weight:800;font-size:16px;letter-spacing:0;
+    background:rgba(229,53,43,.06)}
+  header nav{display:flex;gap:26px}
+  header nav a{color:var(--paper-dim);text-decoration:none;position:relative}
+  header nav a:hover{color:var(--paper)}
+  header .meta{text-align:right;line-height:1.9}
+  .blink{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--jade);
+    box-shadow:0 0 8px var(--jade);animation:bl 1.6s infinite;margin-right:7px;vertical-align:middle}
+  @keyframes bl{0%,100%{opacity:1}50%{opacity:.2}}
+
+  /* ============== HERO ============== */
+  .hero{min-height:100vh;min-height:100svh;display:flex;flex-direction:column;justify-content:center;
+    position:relative;z-index:5}
+  .hero::before{content:"";position:absolute;left:-8%;top:8%;width:74%;height:84%;z-index:-1;pointer-events:none;
+    background:radial-gradient(60% 60% at 30% 45%,rgba(3,4,8,.86) 0%,rgba(3,4,8,.6) 45%,transparent 78%)}
+  .hero .kicker{display:flex;align-items:center;gap:18px;font-size:12px;letter-spacing:.4em;
+    text-transform:uppercase;color:var(--gold);margin-bottom:26px;opacity:0;transform:translateY(14px)}
+  .kicker .ln{height:1px;width:62px;background:linear-gradient(90deg,var(--gold),transparent)}
+
+  .title{font-family:"Nanum Myeongjo",serif;font-weight:800;line-height:.84;
+    font-size:clamp(74px,15.5vw,250px);letter-spacing:-.02em;position:relative;
+    text-shadow:0 6px 50px rgba(3,4,8,.92), 0 2px 14px rgba(3,4,8,.95)}
+  .title .ko{display:block;color:var(--paper);position:relative}
+  .title .row{display:block;overflow:hidden}
+  .title .row .seg{display:inline-block;transform:translateY(112%);will-change:transform}
+  .title .stamp{color:var(--vermilion-soft);
+    text-shadow:0 0 34px rgba(229,53,43,.55), 0 0 4px rgba(229,53,43,.9)}
+  .title .ghost{position:absolute;left:0;top:0;color:transparent;-webkit-text-stroke:1px rgba(216,178,90,.30);
+    pointer-events:none;transform:translate(.12em,.09em);z-index:-1}
+
+  .latin{font-family:"Space Grotesk",sans-serif;font-weight:300;letter-spacing:.62em;
+    text-transform:uppercase;font-size:clamp(11px,1.25vw,15px);color:var(--paper-dim);
+    margin-top:34px;display:flex;align-items:center;gap:22px;opacity:0;transform:translateY(14px)}
+  .latin .dash{flex:0 0 70px;height:1px;background:var(--line-strong)}
+
+  .lead{max-width:560px;margin-top:40px;font-family:"Noto Serif KR",serif;font-weight:200;
+    font-size:clamp(15px,1.5vw,19px);line-height:1.95;color:#d3ccbe;opacity:0;transform:translateY(14px);
+    text-shadow:0 2px 16px rgba(3,4,8,.96), 0 0 4px rgba(3,4,8,.9)}
+  .lead b{font-weight:600;color:var(--paper)}
+  .lead .v{color:var(--vermilion-soft)}
+
+  .heronote{position:absolute;right:clamp(28px,4.7vw,86px);bottom:120px;writing-mode:vertical-rl;
+    font-family:"Nanum Myeongjo",serif;font-size:13px;letter-spacing:.5em;color:var(--paper-dim);
+    height:230px;display:flex;align-items:center;gap:18px;opacity:0}
+  .heronote .l{width:1px;height:70px;background:linear-gradient(var(--line-strong),transparent)}
+
+  .scrollcue{position:absolute;left:clamp(28px,4.7vw,86px);bottom:46px;display:flex;align-items:center;gap:14px;
+    font-size:10px;letter-spacing:.34em;text-transform:uppercase;color:var(--paper-dim);opacity:0}
+  .scrollcue .bar{position:relative;width:48px;height:1px;background:var(--line)}
+  .scrollcue .bar i{position:absolute;top:0;left:0;height:1px;width:14px;background:var(--gold);animation:slide 2.4s infinite}
+  @keyframes slide{0%{left:0;width:6px}50%{left:34px;width:14px}100%{left:48px;width:0}}
+
+  /* live readout ticker */
+  .ticker{position:fixed;bottom:34px;left:0;right:0;z-index:18;overflow:hidden;
+    font-family:"Space Grotesk";font-size:11px;letter-spacing:.3em;text-transform:uppercase;
+    color:var(--paper-dim);white-space:nowrap;mix-blend-mode:difference;pointer-events:none}
+  .ticker .run{display:inline-block;padding-left:100%;animation:tick 26s linear infinite}
+  .ticker .run span{margin:0 30px}
+  .ticker .dot{color:var(--vermilion-soft)}
+  @keyframes tick{to{transform:translateX(-100%)}}
+
+  /* ============ SECTION : chapters ============ */
+  section.chap{position:relative;z-index:5;padding-top:clamp(90px,13vw,200px);padding-bottom:clamp(90px,13vw,200px)}
+  .chead{display:flex;justify-content:space-between;align-items:flex-end;
+    border-bottom:1px solid var(--line);padding-bottom:24px;margin-bottom:clamp(40px,6vw,90px)}
+  .chead .idx{font-family:"Space Grotesk";font-size:13px;letter-spacing:.3em;color:var(--gold)}
+  .chead h2{font-family:"Nanum Myeongjo",serif;font-weight:800;font-size:clamp(30px,5vw,68px);line-height:1;letter-spacing:-.01em;text-shadow:0 3px 26px rgba(3,4,8,.9)}
+  .chead h2 em{font-style:normal;color:var(--vermilion-soft)}
+  .chead .en{font-family:"Space Grotesk";font-size:11px;letter-spacing:.4em;text-transform:uppercase;color:var(--paper-dim);text-align:right;line-height:2}
+
+  /* three-state ink cards */
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:clamp(16px,1.6vw,26px)}
+  .card{position:relative;border:1px solid var(--line);padding:34px 30px 30px;min-height:330px;
+    background:linear-gradient(160deg,rgba(236,227,210,.035),rgba(236,227,210,0));
+    overflow:hidden;transition:border-color .5s,transform .5s;backdrop-filter:blur(2px)}
+  .card:hover{border-color:var(--line-strong);transform:translateY(-6px)}
+  .card .num{font-family:"Space Grotesk";font-size:12px;letter-spacing:.3em;color:var(--gold)}
+  .card .glyph{font-family:"Nanum Myeongjo",serif;font-weight:800;font-size:clamp(54px,6vw,88px);line-height:1;
+    margin:22px 0 18px;color:var(--paper);transition:color .5s,text-shadow .5s}
+  .card:hover .glyph{color:var(--vermilion-soft);text-shadow:0 0 30px rgba(229,53,43,.4)}
+  .card h3{font-family:"Noto Serif KR",serif;font-weight:600;font-size:18px;margin-bottom:12px}
+  .card p{font-family:"Noto Serif KR",serif;font-weight:200;font-size:14px;line-height:1.9;color:#b7b1a3}
+  .card .ink-fill{position:absolute;left:0;bottom:0;width:100%;height:0;
+    background:linear-gradient(0deg,rgba(229,53,43,.14),transparent);transition:height .6s ease}
+  .card:hover .ink-fill{height:60%}
+  .card .corner-s{position:absolute;top:0;right:0;width:0;height:0;
+    border-style:solid;border-width:0 22px 22px 0;border-color:transparent var(--line) transparent transparent;transition:border-color .5s}
+  .card:hover .corner-s{border-color:transparent var(--vermilion) transparent transparent}
+
+  /* big quote slab */
+  .slab{position:relative;z-index:5;padding-top:clamp(80px,12vw,170px);padding-bottom:clamp(80px,12vw,170px);text-align:center}
+  .slab .q{font-family:"Nanum Myeongjo",serif;font-weight:800;line-height:1.22;
+    font-size:clamp(28px,5.4vw,76px);letter-spacing:-.01em;max-width:18ch;margin:0 auto;
+    word-break:keep-all;text-shadow:0 4px 34px rgba(3,4,8,.92)}
+  .slab .q .hl{color:var(--vermilion-soft);position:relative}
+  .slab .q .hl::after{content:"";position:absolute;left:-2%;bottom:.08em;width:104%;height:.42em;
+    background:rgba(229,53,43,.16);z-index:-1}
+  .slab cite{display:block;margin-top:40px;font-family:"Space Grotesk";font-size:12px;
+    letter-spacing:.34em;text-transform:uppercase;color:var(--paper-dim);font-style:normal}
+
+  /* horizontal data strip */
+  .strip{position:relative;z-index:5;border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+    display:grid;grid-template-columns:repeat(4,1fr)}
+  .strip .cell{padding:clamp(34px,4vw,60px) clamp(22px,2.4vw,40px);border-right:1px solid var(--line)}
+  .strip .cell:last-child{border-right:0}
+  .strip .cell .k{font-family:"Space Grotesk";font-size:11px;letter-spacing:.32em;text-transform:uppercase;color:var(--paper-dim);margin-bottom:18px}
+  .strip .cell .v{font-family:"Nanum Myeongjo",serif;font-weight:800;font-size:clamp(40px,5.6vw,80px);line-height:.9;
+    background:linear-gradient(180deg,var(--paper),#9d9789);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .strip .cell .v .u{font-size:.32em;-webkit-text-fill-color:var(--gold);color:var(--gold);margin-left:6px;letter-spacing:.05em;font-family:"Space Grotesk";font-weight:500}
+  .strip .cell .s{margin-top:14px;font-family:"Noto Serif KR";font-weight:200;font-size:13px;color:#a59f92}
+
+  /* === interactive : ink letter composer === */
+  .compose{position:relative;z-index:5;padding-top:clamp(80px,11vw,160px);padding-bottom:clamp(80px,11vw,160px)}
+  .composeInner{display:grid;grid-template-columns:1.05fr .95fr;gap:clamp(30px,5vw,80px);align-items:center}
+  .composeInner h2{font-family:"Nanum Myeongjo",serif;font-weight:800;font-size:clamp(34px,5.6vw,76px);line-height:1.02;letter-spacing:-.01em;margin-bottom:26px;text-shadow:0 3px 28px rgba(3,4,8,.9)}
+  .composeInner h2 em{font-style:normal;color:var(--vermilion-soft)}
+  .composeInner p{font-family:"Noto Serif KR";font-weight:200;font-size:16px;line-height:2;color:#bdb7a9;max-width:48ch}
+  .panel{border:1px solid var(--line-strong);background:rgba(8,10,18,.55);backdrop-filter:blur(10px);
+    padding:30px;position:relative}
+  .panel::before{content:"墨";position:absolute;top:14px;right:18px;font-family:"Nanum Myeongjo";font-weight:800;
+    font-size:46px;color:rgba(229,53,43,.10)}
+  .panel label{font-family:"Space Grotesk";font-size:10px;letter-spacing:.32em;text-transform:uppercase;color:var(--paper-dim)}
+  .panel textarea{width:100%;margin-top:14px;background:transparent;border:0;border-bottom:1px solid var(--line);
+    color:var(--paper);font-family:"Noto Serif KR",serif;font-weight:300;font-size:20px;line-height:1.8;
+    resize:none;padding:6px 0 16px;min-height:96px;outline:none;cursor:none}
+  .panel textarea::placeholder{color:#5a564d}
+  .panel .ctl{display:flex;justify-content:space-between;align-items:center;margin-top:22px}
+  .panel .count{font-family:"Space Grotesk";font-size:11px;letter-spacing:.2em;color:var(--paper-dim)}
+  .seal-btn{font-family:"Space Grotesk";font-size:12px;letter-spacing:.26em;text-transform:uppercase;
+    color:var(--ink);background:var(--paper);border:0;padding:13px 26px;cursor:none;position:relative;overflow:hidden;
+    transition:color .4s}
+  .seal-btn span{position:relative;z-index:2}
+  .seal-btn::after{content:"";position:absolute;inset:0;background:var(--vermilion);transform:translateY(101%);transition:transform .42s cubic-bezier(.7,0,.2,1)}
+  .seal-btn:hover{color:var(--paper)}
+  .seal-btn:hover::after{transform:translateY(0)}
+
+  /* ---- footer ---- */
+  footer{position:relative;z-index:5;border-top:1px solid var(--line);padding:60px 0 110px;
+    display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:30px}
+  footer .big{font-family:"Nanum Myeongjo",serif;font-weight:800;font-size:clamp(40px,8vw,120px);line-height:.85;letter-spacing:-.02em;text-shadow:0 4px 34px rgba(3,4,8,.9)}
+  footer .big .v{color:var(--vermilion-soft)}
+  footer .col{font-size:11px;letter-spacing:.24em;text-transform:uppercase;color:var(--paper-dim);line-height:2.4;text-align:right}
+
+  .reveal{opacity:0;transform:translateY(40px);transition:opacity 1s cubic-bezier(.2,.7,.2,1),transform 1s cubic-bezier(.2,.7,.2,1)}
+  .reveal.in{opacity:1;transform:none}
+
+  /* depth meter (right rail) */
+  .rail{position:fixed;right:30px;top:50%;transform:translateY(-50%);z-index:18;display:flex;flex-direction:column;align-items:center;gap:14px;mix-blend-mode:difference}
+  .rail .tube{width:1px;height:160px;background:var(--line-strong);position:relative}
+  .rail .tube i{position:absolute;left:-2px;width:5px;height:5px;border-radius:50%;background:var(--vermilion-soft);box-shadow:0 0 8px var(--vermilion-soft);top:0;transition:top .15s linear}
+  .rail .pct{font-family:"Space Grotesk";font-size:10px;letter-spacing:.2em;color:var(--paper-dim);writing-mode:vertical-rl}
+
+  /* sealed letter toast */
+  #toast{position:fixed;left:50%;bottom:60px;transform:translate(-50%,40px);z-index:95;
+    background:rgba(8,10,18,.86);backdrop-filter:blur(14px);border:1px solid var(--vermilion);
+    padding:16px 26px;font-family:"Noto Serif KR";font-size:14px;color:var(--paper);
+    display:flex;align-items:center;gap:14px;opacity:0;transition:opacity .5s,transform .5s;pointer-events:none}
+  #toast.show{opacity:1;transform:translate(-50%,0)}
+  #toast .s{font-family:"Nanum Myeongjo";font-weight:800;color:var(--vermilion-soft);font-size:20px}
+
+  @media (max-width:820px){
+    body{cursor:auto}
+    #cursor,#cring,.rail,.heronote{display:none}
+    header{padding:22px 22px 0;font-size:9px;letter-spacing:.2em}
+    header nav{display:none}
+    .grid3{grid-template-columns:1fr}
+    .strip{grid-template-columns:1fr 1fr}
+    .strip .cell:nth-child(2n){border-right:0}
+    .strip .cell:nth-child(-n+2){border-bottom:1px solid var(--line)}
+    .composeInner{grid-template-columns:1fr;gap:36px}
+    .hero{justify-content:flex-start;padding-top:118px;min-height:auto;padding-bottom:120px}
+    .title{font-size:clamp(58px,20vw,108px)}
+    .kicker{margin-bottom:20px;font-size:10px;letter-spacing:.26em;flex-wrap:wrap}
+    .kicker .ln{width:30px}
+    .latin{margin-top:24px;letter-spacing:.34em}
+    .latin .dash{flex:0 0 36px}
+    .lead{margin-top:26px;font-size:15px;line-height:1.85}
+    .scrollcue{position:static;margin-top:48px;opacity:1!important;left:auto;bottom:auto}
+    .ticker{bottom:14px;font-size:9px}
+    .chap{padding:80px 0}
+    .chead{flex-direction:column;align-items:flex-start;gap:14px}
+    .chead .en{text-align:left}
+    .slab .q{font-size:clamp(26px,7.6vw,40px);max-width:none}
+    footer{flex-direction:column;align-items:flex-start}
+    footer .col{text-align:left}
+  }
+  @media (max-width:430px){
+    .strip{grid-template-columns:1fr}
+    .strip .cell{border-right:0;border-bottom:1px solid var(--line)}
+  }
+</style>
+</head>
+<body>
+  <!-- LIVE INK FLUID = first paint, no loader -->
+  <canvas id="ink"></canvas>
+  <div id="grain"></div>
+  <div id="vignette"></div>
+
+  <div class="frame t"></div><div class="frame b"></div><div class="frame l"></div><div class="frame r"></div>
+  <div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
+
+  <div id="cring"></div><div id="cursor"></div>
+
+  <header>
+    <div class="mark"><div class="seal">墨</div><span>INKBLOOM&nbsp;／&nbsp;墨流</span></div>
+    <nav>
+      <a href="#flow">流</a><a href="#three">三相</a><a href="#letter">封緘</a><a href="#index">索引</a>
+    </nav>
+    <div class="meta"><span class="blink"></span>FLUID&nbsp;ENGINE&nbsp;LIVE<br/>VOL.04 — WILDCARD&nbsp;IV<br/>2026 · KR / OBSERVATORY</div>
+  </header>
+
+  <div class="rail"><span class="pct">DEPTH</span><div class="tube"><i id="railDot"></i></div><span class="pct" id="railPct">00%</span></div>
+
+  <div class="wrap">
+
+    <!-- HERO -->
+    <section class="hero pad" id="flow">
+      <div class="kicker" id="kicker"><span class="ln"></span> LIVING&nbsp;INK&nbsp;·&nbsp;墨이&nbsp;살아있는&nbsp;정원 <span class="ln"></span></div>
+      <h1 class="title">
+        <span class="ghost" aria-hidden="true">墨流<br>한획</span>
+        <span class="ko">
+          <span class="row"><span class="seg">墨</span><span class="seg stamp">流</span></span>
+          <span class="row"><span class="seg">한</span><span class="seg">획</span></span>
+        </span>
+      </h1>
+      <div class="latin" id="latin"><span class="dash"></span> ONE&nbsp;STROKE&nbsp;OF&nbsp;LIVING&nbsp;INK</div>
+      <p class="lead" id="lead">
+        화면은 비어 있지 않습니다. 당신의 손끝을 따라 <b>먹(墨)</b>이 번지고, 피어나고, 흩어집니다.
+        멈추면 가라앉고, 움직이면 다시 <span class="v">살아납니다</span>.
+        이것은 그림이 아니라 — 지금, 이 순간, 당신이 그리는 한 획입니다.
+      </p>
+      <div class="heronote" id="heronote"><span class="l"></span>움직여&nbsp;보세요&nbsp;·&nbsp;DRAG&nbsp;THE&nbsp;VOID<span class="l"></span></div>
+      <div class="scrollcue" id="scrollcue"><div class="bar"><i></i></div> SCROLL TO DESCEND</div>
+    </section>
+
+    <!-- THREE STATES OF INK -->
+    <section class="chap pad" id="three">
+      <div class="chead reveal">
+        <div>
+          <div class="idx">章 01 — STATES</div>
+          <h2>먹의 <em>세 가지 상(相)</em></h2>
+        </div>
+        <div class="en">PHASE OF INK<br/>濃 · 流 · 散</div>
+      </div>
+      <div class="grid3">
+        <div class="card reveal"><div class="corner-s"></div>
+          <div class="num">相 / 01</div><div class="glyph">濃</div>
+          <h3>응축 — Condense</h3>
+          <p>한 점에 모인 먹은 가장 짙다. 압력이 높을수록 색은 깊어지고, 형태는 단단해진다. 시작은 언제나 한 점에서.</p>
+          <div class="ink-fill"></div>
+        </div>
+        <div class="card reveal"><div class="corner-s"></div>
+          <div class="num">相 / 02</div><div class="glyph">流</div>
+          <h3>유동 — Flow</h3>
+          <p>먹은 물길을 따라 흐른다. 속도가 곧 형태가 되고, 망설임은 번짐이 되어 화면 위에 흔적을 남긴다.</p>
+          <div class="ink-fill"></div>
+        </div>
+        <div class="card reveal"><div class="corner-s"></div>
+          <div class="num">相 / 03</div><div class="glyph">散</div>
+          <h3>소산 — Disperse</h3>
+          <p>모든 획은 끝내 흩어진다. 사라짐은 실패가 아니라 완성이다. 비워야 다음 한 획이 들어설 자리가 생긴다.</p>
+          <div class="ink-fill"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- QUOTE SLAB -->
+    <section class="slab pad">
+      <div class="q reveal"><span style="white-space:nowrap">붓이&nbsp;닿기&nbsp;전의&nbsp;종이는&nbsp;비어&nbsp;있고,</span><br/><span style="white-space:nowrap">붓이&nbsp;떠난&nbsp;뒤의&nbsp;종이는&nbsp;<span class="hl">살아&nbsp;있다.</span></span></div>
+      <cite class="reveal">— 墨流 觀測記 · ENTRY NO.04</cite>
+    </section>
+
+    <!-- DATA STRIP -->
+    <section class="pad">
+      <div class="strip reveal">
+        <div class="cell"><div class="k">Particles Alive</div><div class="v" id="dPart">0<span class="u">drops</span></div><div class="s">실시간 유체 입자 수</div></div>
+        <div class="cell"><div class="k">Stroke Length</div><div class="v" id="dLen">0<span class="u">px</span></div><div class="s">당신이 그린 누적 거리</div></div>
+        <div class="cell"><div class="k">Viscosity</div><div class="v">0.<span id="dVis">92</span><span class="u">η</span></div><div class="s">먹의 점성 계수</div></div>
+        <div class="cell"><div class="k">Frame</div><div class="v" id="dFps">60<span class="u">fps</span></div><div class="s">유체 시뮬레이션 속도</div></div>
+      </div>
+    </section>
+
+    <!-- COMPOSER -->
+    <section class="compose pad" id="letter">
+      <div class="composeInner">
+        <div class="reveal">
+          <h2>한 문장을<br/><em>먹으로 봉(封)하다</em></h2>
+          <p>당신의 문장을 적고 봉인하면, 글자는 먹이 되어 이 검은 정원으로 풀려납니다.
+            아무도 읽지 못하는 깊이로 가라앉지만 — 화면 어딘가, 분명히 흐르고 있습니다.</p>
+        </div>
+        <div class="panel reveal">
+          <label>YOUR ONE STROKE / 한 문장</label>
+          <textarea id="msg" maxlength="80" placeholder="여기에 한 문장을 적으세요…"></textarea>
+          <div class="ctl">
+            <span class="count"><span id="cnum">0</span> / 80</span>
+            <button class="seal-btn" id="sealBtn"><span>封 — 봉인하여 풀어놓기</span></button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FOOTER -->
+    <footer class="pad" id="index">
+      <div class="big reveal">墨은<br/>흐른다<span class="v">.</span></div>
+      <div class="col reveal">
+        INKBLOOM · 墨流<br/>
+        SINGLE-FILE · WEBGL-FREE FLUID<br/>
+        DESIGNER-CODER A4-7<br/>
+        WILDCARD IV — 2026<br/>
+        <span style="color:var(--gold)">NO LOADER · CONTENT IS FIRST PAINT</span>
+      </div>
+    </footer>
+  </div>
+
+  <div class="ticker"><div class="run">
+    <span class="dot">●</span><span>墨流 · LIVING INK GARDEN</span><span class="dot">●</span><span>DRAG TO PAINT — RELEASE TO LET IT SINK</span>
+    <span class="dot">●</span><span>이것은 그림이 아니라 지금 그리는 한 획</span><span class="dot">●</span><span>濃 · 流 · 散</span>
+    <span class="dot">●</span><span>WILDCARD IV — A_ROUND_04</span><span class="dot">●</span><span>붓이 떠난 자리에 남는 것</span>
+  </div></div>
+
+  <div id="toast"><span class="s">封</span><span id="toastMsg">한 문장이 먹이 되어 풀려났습니다.</span></div>
+
+<script>
+/* ======================================================================
+   INKBLOOM — particle ink-fluid sim on 2D canvas (no WebGL, CDN-free core)
+   Content paints instantly; the fluid is layer-0 and animates from frame 1.
+   ====================================================================== */
+(function(){
+  const cv = document.getElementById('ink');
+  const ctx = cv.getContext('2d', {alpha:false});
+  let W,H,DPR;
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function resize(){
+    DPR = Math.min(window.devicePixelRatio||1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = W*DPR; cv.height = H*DPR;
+    cv.style.width = W+'px'; cv.style.height = H+'px';
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    ctx.fillStyle = '#05060a'; ctx.fillRect(0,0,W,H);
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  // ---- flow field (curl-ish noise via cheap trig) for drifting ink ----
+  function flow(x,y,t){
+    const a = Math.sin(x*0.0026 + t*0.20) + Math.cos(y*0.0031 - t*0.16);
+    const b = Math.cos(x*0.0019 - t*0.13) - Math.sin(y*0.0024 + t*0.22);
+    return {ax: b*0.10, ay: -a*0.10 - 0.02}; // slight upward bias = rising ink
+  }
+
+  const PMAX = 2600;
+  const parts = [];
+  let totalDrops = 0;
+
+  // ink palette: deep blue-black ink dominates; vermilion/gold/jade are RARE accents
+  const PAL = [
+    [38,44,66], [54,62,90], [28,32,50],   // 0-2  cool ink (the body of every stroke)
+    [88,96,128], [120,128,160],           // 3-4  lighter ink highlights
+    [229,53,43], [255,90,77],             // 5-6  vermilion seal (rare)
+    [216,178,90],                          // 7    gold (rarer)
+    [79,215,192]                           // 8    jade (rarest)
+  ];
+  function pick(rare){
+    if(rare && Math.random()<0.30) return PAL[5+((Math.random()*4)|0)];
+    const r = Math.random();
+    if(r<0.76) return PAL[(Math.random()*3)|0];      // 76% deep cool ink
+    if(r<0.93) return PAL[3+((Math.random()*2)|0)];  // 17% ink highlight
+    if(r<0.972) return PAL[5+((Math.random()*2)|0)]; // vermilion (rare)
+    if(r<0.99) return PAL[7];                         // gold (rarer)
+    return PAL[8];                                    // jade (rarest)
+  }
+
+  function spawn(x,y,vx,vy,strength,rare){
+    if(parts.length>PMAX) return;
+    const c = pick(rare);
+    const accent = c[0]>200 || c[2]>180; // vermilion/gold/jade glow a touch more
+    parts.push({
+      x,y,vx,vy,
+      life:1, decay: 0.005 + Math.random()*0.011,
+      r: (3 + Math.random()*15)*strength,
+      c, a: (accent? 0.13 : 0.10 + Math.random()*0.16)*strength,
+      spin:(Math.random()-0.5)*0.04
+    });
+    totalDrops++;
+  }
+
+  // ---- pointer driven ink ----
+  let px=W/2, py=H/2, ppx=px, ppy=py, painting=false, lastSpawn=0;
+  let strokeLen=0;
+  const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints>0;
+  if(isTouch) document.body.classList.add('touch');
+
+  function emitAlong(x,y,intensity){
+    const dx=x-ppx, dy=y-ppy;
+    const d=Math.hypot(dx,dy);
+    strokeLen += d;
+    const steps=Math.min(14, 1+ (d*0.4|0));
+    const vx=dx*0.06, vy=dy*0.06;
+    for(let i=0;i<steps;i++){
+      const t=i/steps;
+      const jx=(Math.random()-0.5)*10, jy=(Math.random()-0.5)*10;
+      spawn(ppx+dx*t+jx, ppy+dy*t+jy, vx+(Math.random()-0.5)*0.5, vy+(Math.random()-0.5)*0.5, intensity, d>22);
+    }
+    ppx=x; ppy=y;
+  }
+
+  function onMove(e){
+    const x = e.clientX, y = e.clientY;
+    px=x; py=y;
+    moveCursor(x,y);
+    const now=performance.now();
+    if(now-lastSpawn>14){
+      emitAlong(x,y, painting?1.35:0.7);
+      lastSpawn=now;
+    }
+  }
+  window.addEventListener('mousemove', onMove, {passive:true});
+  window.addEventListener('mousedown', ()=>{painting=true; cursorBig(true);});
+  window.addEventListener('mouseup', ()=>{painting=false; cursorBig(false);});
+
+  window.addEventListener('touchmove', (e)=>{
+    const t=e.touches[0]; if(!t) return;
+    px=t.clientX; py=t.clientY;
+    const now=performance.now();
+    if(now-lastSpawn>16){ emitAlong(px,py,1.2); lastSpawn=now; }
+  }, {passive:true});
+  window.addEventListener('touchstart',(e)=>{const t=e.touches[0]; if(t){ppx=t.clientX;ppy=t.clientY;}},{passive:true});
+
+  // ambient drifting motes so the void is never dead, even idle
+  function ambient(){
+    if(reduced) return;
+    if(parts.length<260 && Math.random()<0.6){
+      spawn(Math.random()*W, H+10, (Math.random()-0.5)*0.3, -0.3-Math.random()*0.5, 0.5, false);
+    }
+  }
+
+  // ---- sealed letters become slow heavy ink blobs ----
+  function sealLetter(text){
+    const n = Math.min(60, 8+text.length*2);
+    for(let i=0;i<n;i++){
+      const ang=Math.random()*Math.PI*2, rad=Math.random()*40;
+      spawn(px+Math.cos(ang)*rad, py+Math.sin(ang)*rad,
+            Math.cos(ang)*0.4, Math.sin(ang)*0.4-0.3, 1.6, true);
+    }
+  }
+
+  // ---- main loop ----
+  let t=0, lastFps=performance.now(), frames=0, fps=60;
+  function step(){
+    t+=0.016;
+    // trail fade: translucent dark wash => long sumi-e trails
+    ctx.globalCompositeOperation='source-over';
+    ctx.fillStyle='rgba(5,6,10,0.085)';
+    ctx.fillRect(0,0,W,H);
+
+    ctx.globalCompositeOperation='lighter';
+    for(let i=parts.length-1;i>=0;i--){
+      const p=parts[i];
+      const f=flow(p.x,p.y,t);
+      p.vx = p.vx*0.93 + f.ax; p.vy = p.vy*0.93 + f.ay;
+      p.x += p.vx; p.y += p.vy;
+      p.r *= 1.006;
+      p.life -= p.decay;
+      if(p.life<=0 || p.y< -40 || p.x<-60 || p.x>W+60){ parts.splice(i,1); continue; }
+      const al = p.a * p.life;
+      const g = ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,p.r);
+      g.addColorStop(0, `rgba(${p.c[0]},${p.c[1]},${p.c[2]},${al})`);
+      g.addColorStop(1, `rgba(${p.c[0]},${p.c[1]},${p.c[2]},0)`);
+      ctx.fillStyle=g;
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,6.2832); ctx.fill();
+    }
+    ambient();
+
+    // fps + readouts
+    frames++;
+    const now=performance.now();
+    if(now-lastFps>500){ fps=Math.round(frames*1000/(now-lastFps)); frames=0; lastFps=now; updateReadouts(); }
+
+    requestAnimationFrame(step);
+  }
+  // seed an initial bloom so first paint already has ink
+  for(let i=0;i<140;i++){
+    spawn(W*(0.3+Math.random()*0.4), H*(0.4+Math.random()*0.3),
+          (Math.random()-0.5)*0.6,(Math.random()-0.5)*0.6, 0.7, Math.random()<0.2);
+  }
+  requestAnimationFrame(step);
+
+  // ---- readouts ----
+  const dPart=document.getElementById('dPart'),dLen=document.getElementById('dLen'),
+        dFps=document.getElementById('dFps');
+  function fmt(n){return n.toLocaleString('en-US');}
+  function updateReadouts(){
+    if(dPart) dPart.firstChild.nodeValue = fmt(parts.length);
+    if(dLen)  dLen.firstChild.nodeValue  = fmt(Math.round(strokeLen));
+    if(dFps)  dFps.firstChild.nodeValue  = fps;
+  }
+
+  // ======= custom cursor =======
+  const cur=document.getElementById('cursor'), ring=document.getElementById('cring');
+  let cx=px,cy=py;
+  function moveCursor(x,y){ cur.style.left=x+'px'; cur.style.top=y+'px'; }
+  function cursorBig(b){ cur.classList.toggle('big',b); ring.classList.toggle('big',b); }
+  (function ringLoop(){
+    cx += (px-cx)*0.16; cy += (py-cy)*0.16;
+    ring.style.left=cx+'px'; ring.style.top=cy+'px';
+    requestAnimationFrame(ringLoop);
+  })();
+  // interactive elements enlarge ring
+  document.querySelectorAll('a,button,textarea,.card').forEach(el=>{
+    el.addEventListener('mouseenter',()=>ring.classList.add('big'));
+    el.addEventListener('mouseleave',()=>ring.classList.remove('big'));
+  });
+
+  // ======= hero intro (CSS-light, non-blocking, <0.8s) =======
+  function show(id,delay){const el=document.getElementById(id);if(!el)return;
+    setTimeout(()=>{el.style.transition='opacity .8s ease,transform .8s cubic-bezier(.2,.7,.2,1)';
+      el.style.opacity=1; el.style.transform='none';}, delay);}
+  requestAnimationFrame(()=>{
+    document.querySelectorAll('.title .seg').forEach((s,i)=>{
+      s.style.transition='transform .9s cubic-bezier(.16,1,.3,1)';
+      setTimeout(()=>{s.style.transform='translateY(0)';}, 120+i*90);
+    });
+    show('kicker',60); show('latin',460); show('lead',600);
+    show('heronote',760); show('scrollcue',800);
+  });
+
+  // ======= scroll reveal + depth rail =======
+  const io=new IntersectionObserver((es)=>{es.forEach(e=>{if(e.isIntersecting)e.target.classList.add('in');});},{threshold:.18});
+  document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+  const railDot=document.getElementById('railDot'), railPct=document.getElementById('railPct');
+  window.addEventListener('scroll',()=>{
+    const max=document.documentElement.scrollHeight-window.innerHeight;
+    const p=max>0?window.scrollY/max:0;
+    railDot.style.top=(p*155)+'px';
+    railPct.textContent=String(Math.round(p*100)).padStart(2,'0')+'%';
+  },{passive:true});
+
+  // ======= composer =======
+  const msg=document.getElementById('msg'), cnum=document.getElementById('cnum'),
+        sealBtn=document.getElementById('sealBtn'), toast=document.getElementById('toast'),
+        toastMsg=document.getElementById('toastMsg');
+  msg.addEventListener('input',()=>{cnum.textContent=msg.value.length;});
+  let toastT;
+  function doSeal(){
+    const v=msg.value.trim();
+    sealLetter(v||'墨');
+    // burst at center of screen too for drama
+    const ox=px,oy=py;
+    toastMsg.textContent = v? `"${v.slice(0,28)}${v.length>28?'…':''}" — 먹이 되어 풀려났습니다.` : '한 획의 먹을 풀어놓았습니다.';
+    toast.classList.add('show');
+    clearTimeout(toastT); toastT=setTimeout(()=>toast.classList.remove('show'),3200);
+    msg.value=''; cnum.textContent='0';
+  }
+  sealBtn.addEventListener('click',doSeal);
+  msg.addEventListener('keydown',(e)=>{if((e.metaKey||e.ctrlKey)&&e.key==='Enter')doSeal();});
+
+  // smooth anchor scroll
+  document.querySelectorAll('header nav a').forEach(a=>{
+    a.addEventListener('click',(e)=>{e.preventDefault();
+      const el=document.querySelector(a.getAttribute('href'));
+      if(el)el.scrollIntoView({behavior:'smooth',block:'start'});});
+  });
+})();
+</script>
+</body>
+</html>

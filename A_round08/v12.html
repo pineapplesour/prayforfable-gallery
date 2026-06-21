@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>LUMEN LOOM</title>
+<style>
+  html,body{margin:0;height:100%;background:#04050a;overflow:hidden;cursor:none;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}
+  #c{display:block;width:100vw;height:100vh;touch-action:none;}
+  .ui{position:fixed;pointer-events:none;mix-blend-mode:screen;user-select:none;}
+  #title{left:20px;top:16px;color:#bcd0ff;font-size:12px;letter-spacing:.46em;
+    text-transform:uppercase;opacity:0;transition:opacity 1.8s ease;}
+  #title span{color:#fff;}
+  #hud{left:20px;bottom:18px;color:#7384a8;font-size:11px;letter-spacing:.2em;
+    text-transform:uppercase;line-height:1.8;opacity:0;transition:opacity 1.4s ease 0.3s;}
+  #hud b{color:#d6e4ff;font-weight:600;}
+  @media(max-width:520px){#title{font-size:10px;letter-spacing:.3em}
+    #hud{font-size:9px;letter-spacing:.1em}}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="title" class="ui"><span>LUMEN</span>&nbsp;&nbsp;LOOM</div>
+<div id="hud" class="ui">PLUCK <b>strings</b> &nbsp;·&nbsp; CLICK <b>spark</b> &nbsp;·&nbsp; SCROLL <b>wind</b> &nbsp;·&nbsp; MOVE <b>light</b></div>
+<script>
+/* ============== LUMEN LOOM ========================================
+   A taut harp of luminous strings, anchored top & bottom, living in
+   dark space. Verlet physics: pluck a string and it oscillates and
+   snaps back to its resting arc. The pointer is a travelling light
+   that bows the strings and ignites them; clicks fire sparks that
+   ride the strings and bounce off the anchors; scroll bends a wind
+   that bows the whole loom and recolours the light. Additive light,
+   single canvas, no libraries, first frame is the artwork.
+==================================================================*/
+(()=>{
+'use strict';
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d',{alpha:false});
+let W=0,H=0,DPR=1,small=false;
+
+function resize(){
+  DPR=Math.min(window.devicePixelRatio||1,2);
+  W=window.innerWidth;H=window.innerHeight;small=W<560;
+  cv.width=Math.round(W*DPR);cv.height=Math.round(H*DPR);
+  cv.style.width=W+'px';cv.style.height=H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  build();
+}
+window.addEventListener('resize',resize);
+
+/* ---------- input ---------- */
+const P={x:-9999,y:-9999,vx:0,vy:0,down:false,active:false};
+let grabbed=null, windTarget=0, windNow=0, hueShift=0;
+let pulses=[], bursts=[];
+
+function setPointer(x,y){P.vx=x-P.x;P.vy=y-P.y;P.x=x;P.y=y;P.active=true;}
+cv.addEventListener('pointermove',e=>{setPointer(e.clientX,e.clientY);if(P.down)drag();},{passive:true});
+cv.addEventListener('pointerdown',e=>{setPointer(e.clientX,e.clientY);P.down=true;grab();},{passive:true});
+window.addEventListener('pointerup',()=>{if(P.down&&!grabbed)spark(P.x,P.y);P.down=false;grabbed=null;},{passive:true});
+cv.addEventListener('pointerleave',()=>{P.active=false;P.x=P.y=-9999;},{passive:true});
+window.addEventListener('wheel',e=>{
+  windTarget+=(e.deltaY>0?1:-1)*1.4;
+  windTarget=Math.max(-9,Math.min(9,windTarget));
+  hueShift+=(e.deltaY>0?10:-10);
+},{passive:true});
+
+/* ---------- the loom (strings anchored top & bottom) ---------- */
+let strands=[];
+function build(){
+  strands=[];
+  const margin=small?20:Math.max(48,W*0.05);
+  const span=W-margin*2;
+  const count=small?13:Math.max(20,Math.round(W/56));
+  const gap=span/(count-1);
+  const topY=H*0.02, botY=H*0.98;
+  const segs=small?26:34;
+  for(let i=0;i<count;i++){
+    const x=margin+i*gap;
+    const t=i/(count-1);
+    const pts=[],rest=[];
+    for(let j=0;j<=segs;j++){
+      const f=j/segs;
+      const y=topY+f*(botY-topY);
+      // resting arc: gentle slack belly, deeper for mid strings
+      const slack=Math.sin(f*Math.PI)*(8+Math.sin(t*Math.PI)*26);
+      const rx=x+slack;
+      pts.push({x:rx,y, ox:rx,oy:y, pinned:(j===0||j===segs)});
+      rest.push({x:rx,y});
+    }
+    strands.push({
+      pts,rest,segs,
+      restLen:(botY-topY)/segs*1.012,
+      x0:x,t,
+      hue:198+t*162,
+      glow:0.16+0.06*Math.sin(t*7), // base resting glow, varies per string
+      phase:Math.random()*6.28,
+      shimmer:0.5+0.5*Math.sin(t*9)
+    });
+  }
+}
+
+function nearest(mx,my,maxd){
+  let best=null,bd=maxd*maxd;
+  for(const s of strands)for(let j=1;j<s.pts.length-1;j++){
+    const p=s.pts[j],dx=p.x-mx,dy=p.y-my,d=dx*dx+dy*dy;
+    if(d<bd){bd=d;best={s,j,p};}
+  }
+  return best;
+}
+function grab(){const n=nearest(P.x,P.y,small?40:54);if(n){grabbed=n;n.s.glow=Math.min(1,n.s.glow+0.6);}}
+function drag(){if(grabbed){grabbed.p.x=P.x;grabbed.p.y=P.y;}}
+
+function spark(x,y){
+  const n=nearest(x,y,9999); if(!n)return;
+  const hue=n.s.hue+hueShift;
+  bursts.push({x,y,r:1,max:small?130:210,life:1,hue});
+  n.s.glow=1;
+  pulses.push({s:n.s,pos:n.j,dir:1,life:1,hue,spd:1.0});
+  pulses.push({s:n.s,pos:n.j,dir:-1,life:1,hue,spd:1.0});
+  const idx=strands.indexOf(n.s);
+  [idx-1,idx+1,idx-2,idx+2].forEach((k,ki)=>{
+    if(k>=0&&k<strands.length){
+      const s2=strands[k],amp=ki<2?0.9:0.6;
+      s2.glow=Math.min(1,s2.glow+0.5*amp);
+      pulses.push({s:s2,pos:n.j,dir:1,life:amp,hue:s2.hue+hueShift,spd:0.9});
+      pulses.push({s:s2,pos:n.j,dir:-1,life:amp,hue:s2.hue+hueShift,spd:0.9});
+    }
+  });
+}
+
+/* ---------- physics ---------- */
+let wp=0;
+function simulate(){
+  wp+=0.013;
+  windTarget*=0.965;                 // scroll wind decays fully
+  windNow+=(windTarget-windNow)*0.06;
+  const autoWind=Math.sin(wp)*0.9+Math.sin(wp*1.7)*0.4; // always breathing
+  const wind=windNow+autoWind;
+
+  const LR=small?115:165, LR2=LR*LR, pact=P.active;
+
+  for(const s of strands){
+    const pts=s.pts, rest=s.rest;
+    s.glow=Math.max(0.10+0.05*s.shimmer, s.glow*0.95); // decay but keep a floor
+    s.phase+=0.03;
+    const segs=s.pts.length;
+    for(let j=1;j<segs-1;j++){
+      const p=pts[j], r=rest[j];
+      if(grabbed&&grabbed.p===p){p.ox=p.x;p.oy=p.y;continue;}
+      let vx=(p.x-p.ox)*0.978, vy=(p.y-p.oy)*0.978;
+      p.ox=p.x;p.oy=p.y;
+      p.x+=vx;p.y+=vy;
+      // restoring spring to the resting arc -> always re-forms the loom
+      const belly=Math.sin(j/(segs-1)*Math.PI);
+      p.x+=(r.x-p.x)*0.018;
+      p.y+=(r.y-p.y)*0.05;
+      // wind bows the strings, strongest at the belly
+      p.x+=wind*belly*0.9;
+      // light pressure from pointer
+      if(pact){
+        const dx=p.x-P.x,dy=p.y-P.y,d2=dx*dx+dy*dy;
+        if(d2<LR2&&d2>0.01){
+          const d=Math.sqrt(d2),f=1-d/LR;
+          const dir=(P.down&&!grabbed)?-1:1;        // press = lens/pull, hover = push
+          const force=f*f*(P.down?3.0:1.8)*dir;
+          p.x+=dx/d*force;p.y+=dy/d*force;
+          s.glow=Math.min(1,s.glow+f*0.07);
+        }
+      }
+    }
+    // distance constraints
+    for(let k=0;k<4;k++){
+      for(let j=0;j<segs-1;j++){
+        const a=pts[j],b=pts[j+1];
+        let dx=b.x-a.x,dy=b.y-a.y,d=Math.sqrt(dx*dx+dy*dy)||1e-4;
+        const diff=(d-s.restLen)/d*0.5,ox=dx*diff,oy=dy*diff;
+        if(!a.pinned&&!(grabbed&&grabbed.p===a)){a.x+=ox;a.y+=oy;}
+        if(!b.pinned&&!(grabbed&&grabbed.p===b)){b.x-=ox;b.y-=oy;}
+      }
+    }
+  }
+}
+
+function updatePulses(){
+  for(let i=pulses.length-1;i>=0;i--){
+    const pu=pulses[i],s=pu.s;
+    pu.pos+=pu.dir*(0.9+pu.spd);
+    pu.life-=0.011;
+    if(pu.pos<=0){pu.pos=0;pu.dir=1;pu.life-=0.10;bursts.push({x:s.pts[0].x,y:s.pts[0].y,r:1,max:60,life:0.7,hue:pu.hue});}
+    if(pu.pos>=s.pts.length-1){pu.pos=s.pts.length-1;pu.dir=-1;pu.life-=0.10;bursts.push({x:s.pts[s.pts.length-1].x,y:s.pts[s.pts.length-1].y,r:1,max:60,life:0.7,hue:pu.hue});}
+    s.glow=Math.min(1,s.glow+0.05*pu.life);
+    if(pu.life<=0)pulses.splice(i,1);
+  }
+  for(let i=bursts.length-1;i>=0;i--){
+    const b=bursts[i];b.r+=(b.max-b.r)*0.13;b.life-=0.04;
+    if(b.life<=0)bursts.splice(i,1);
+  }
+}
+
+/* ---------- render ---------- */
+function clear(){
+  const g=ctx.createRadialGradient(W*0.5,H*0.42,0,W*0.5,H*0.42,Math.max(W,H)*0.8);
+  g.addColorStop(0,'#0a0d1a');
+  g.addColorStop(0.5,'#06070f');
+  g.addColorStop(1,'#020308');
+  ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+}
+
+function strokePath(pts,style,width){
+  ctx.beginPath();ctx.moveTo(pts[0].x,pts[0].y);
+  for(let j=1;j<pts.length-1;j++){
+    const xc=(pts[j].x+pts[j+1].x)/2,yc=(pts[j].y+pts[j+1].y)/2;
+    ctx.quadraticCurveTo(pts[j].x,pts[j].y,xc,yc);
+  }
+  const L=pts.length-1;ctx.lineTo(pts[L].x,pts[L].y);
+  ctx.strokeStyle=style;ctx.lineWidth=width;ctx.stroke();
+}
+
+function drawStrand(s){
+  const pts=s.pts;
+  const h=((s.hue+hueShift)%360+360)%360;
+  const g=s.glow;
+  ctx.lineCap='round';ctx.lineJoin='round';
+  // outer bloom
+  strokePath(pts,`hsla(${h},92%,60%,${0.05+g*0.16})`,(small?8:13)*(0.7+g));
+  // mid
+  strokePath(pts,`hsla(${h},96%,${50+g*20}%,${0.20+g*0.5})`,small?1.8:2.4);
+  // bright core
+  strokePath(pts,`hsla(${(h+14)%360},100%,${80+g*16}%,${0.30+g*0.55})`,small?0.8:1.1);
+  // beads of light + travelling shimmer (the "chain" reading)
+  const step=small?3:2;
+  for(let j=0;j<pts.length;j+=step){
+    const p=pts[j],w=j/pts.length;
+    const tw=0.5+0.5*Math.sin(s.phase+j*0.55);
+    const r=(small?0.9:1.3)*(0.5+tw*0.8)*(0.7+g*0.9);
+    const a=(0.08+g*0.5)*(0.35+tw*0.65);
+    ctx.fillStyle=`hsla(${(h+w*46)%360},100%,${72+g*20}%,${a})`;
+    ctx.beginPath();ctx.arc(p.x,p.y,r,0,6.283);ctx.fill();
+  }
+}
+
+function drawPulses(){
+  for(const pu of pulses){
+    const pts=pu.s.pts;
+    const j=Math.max(0,Math.min(pts.length-1,Math.round(pu.pos)));
+    const p=pts[j],h=((pu.hue)%360+360)%360,R=(small?14:22)*pu.life;
+    const g=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,R);
+    g.addColorStop(0,`hsla(${h},100%,90%,${0.95*pu.life})`);
+    g.addColorStop(0.4,`hsla(${h},100%,66%,${0.5*pu.life})`);
+    g.addColorStop(1,`hsla(${h},100%,50%,0)`);
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(p.x,p.y,R,0,6.283);ctx.fill();
+  }
+}
+function drawBursts(){
+  for(const b of bursts){
+    const h=((b.hue)%360+360)%360;
+    const g=ctx.createRadialGradient(b.x,b.y,0,b.x,b.y,b.r);
+    g.addColorStop(0,`hsla(${h},100%,90%,0)`);
+    g.addColorStop(0.7,`hsla(${h},100%,72%,${0.16*b.life})`);
+    g.addColorStop(0.86,`hsla(${h},100%,82%,${0.4*b.life})`);
+    g.addColorStop(1,`hsla(${h},100%,70%,0)`);
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(b.x,b.y,b.r,0,6.283);ctx.fill();
+  }
+}
+function drawCursor(){
+  if(!P.active)return;
+  const h=((212+hueShift)%360+360)%360;
+  const sp=Math.min(1,Math.hypot(P.vx,P.vy)/26);
+  const R=(small?32:46)*(1+sp*0.5);
+  const g=ctx.createRadialGradient(P.x,P.y,0,P.x,P.y,R);
+  g.addColorStop(0,`hsla(${h},100%,93%,${P.down?0.95:0.62})`);
+  g.addColorStop(0.25,`hsla(${h},100%,73%,${0.3+sp*0.22})`);
+  g.addColorStop(1,`hsla(${h},100%,60%,0)`);
+  ctx.fillStyle=g;ctx.beginPath();ctx.arc(P.x,P.y,R,0,6.283);ctx.fill();
+  ctx.fillStyle=`hsla(${h},100%,98%,${P.down?1:0.85})`;
+  ctx.beginPath();ctx.arc(P.x,P.y,P.down?3.2:2,0,6.283);ctx.fill();
+}
+
+function frame(){
+  hueShift*=0.9992;
+  simulate();updatePulses();
+  clear();
+  ctx.globalCompositeOperation='lighter';
+  for(const s of strands)drawStrand(s);
+  drawPulses();drawBursts();drawCursor();
+  ctx.globalCompositeOperation='source-over';
+  requestAnimationFrame(frame);
+}
+
+/* ---------- ambient life at rest ---------- */
+function ambient(){
+  if(strands.length&&Math.random()<0.6){
+    const s=strands[(Math.random()*strands.length)|0];
+    const j=3+((Math.random()*(s.pts.length-6))|0);
+    s.glow=Math.min(1,s.glow+0.45);
+    const hue=s.hue+hueShift;
+    pulses.push({s,pos:j,dir:Math.random()<.5?1:-1,life:0.75,hue,spd:0.7});
+  }
+  setTimeout(ambient,1100+Math.random()*1600);
+}
+
+resize();
+requestAnimationFrame(frame);
+setTimeout(ambient,900);
+requestAnimationFrame(()=>requestAnimationFrame(()=>{
+  document.getElementById('title').style.opacity='1';
+  document.getElementById('hud').style.opacity='1';
+}));
+})();
+</script>
+</body>
+</html>

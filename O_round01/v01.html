@@ -1,0 +1,1013 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>GLYPHLANDS — ASCII Voxel Sandbox</title>
+<style>
+  :root{
+    --bg:#0a0d12; --panel:#10151d; --ink:#cdd6e3; --dim:#5a6675;
+    --acc:#7fd6a0; --warn:#e0a85a; --bad:#e06a6a;
+  }
+  *{box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent;}
+  html,body{height:100%; background:var(--bg); color:var(--ink);
+    font-family:"DejaVu Sans Mono","Cascadia Mono",Consolas,"Courier New",monospace;
+    overflow:hidden; user-select:none; -webkit-user-select:none;}
+  #app{position:fixed; inset:0; display:flex; flex-direction:column;}
+
+  /* ---- World render ---- */
+  #stage{flex:1; position:relative; overflow:hidden; background:
+     radial-gradient(120% 80% at 50% -10%, #16202e 0%, #0a0d12 60%);}
+  #view{position:absolute; left:0; top:0; white-space:pre; line-height:1.0;
+     letter-spacing:0; font-weight:600; transform-origin:0 0;
+     text-shadow:0 0 1px rgba(0,0,0,.6);}
+  #vignette{position:absolute; inset:0; pointer-events:none;
+     box-shadow:inset 0 0 140px 40px rgba(0,0,0,.55);}
+  #tint{position:absolute; inset:0; pointer-events:none; transition:background .8s linear;}
+
+  /* ---- HUD ---- */
+  #hud{position:absolute; left:0; right:0; top:0; padding:8px 10px;
+     display:flex; gap:10px; align-items:flex-start; pointer-events:none; flex-wrap:wrap;}
+  .badge{background:rgba(16,21,29,.78); border:1px solid #1f2a38; border-radius:8px;
+     padding:5px 9px; font-size:12px; line-height:1.4; backdrop-filter:blur(2px);}
+  .bar{display:flex; gap:2px; align-items:center;}
+  .bar b{font-weight:700; color:var(--dim); margin-right:4px; font-size:11px;}
+  .pip{font-size:13px;}
+  .hp{color:var(--bad);} .fd{color:var(--warn);}
+  #clock{color:var(--acc);}
+
+  /* ---- Hotbar ---- */
+  #hotbar{position:absolute; left:50%; bottom:10px; transform:translateX(-50%);
+     display:flex; gap:6px; pointer-events:auto; z-index:6;}
+  .slot{width:52px; height:52px; background:rgba(16,21,29,.85);
+     border:2px solid #243142; border-radius:8px; position:relative;
+     display:flex; flex-direction:column; align-items:center; justify-content:center;
+     cursor:pointer;}
+  .slot.sel{border-color:var(--acc); box-shadow:0 0 0 2px rgba(127,214,160,.25);}
+  .slot .gl{font-size:22px; font-weight:800; line-height:1;}
+  .slot .ct{position:absolute; right:3px; bottom:1px; font-size:11px; color:#fff;
+     text-shadow:0 0 3px #000,0 0 3px #000;}
+  .slot .nm{position:absolute; left:0; right:0; top:-15px; text-align:center;
+     font-size:9px; color:var(--dim); white-space:nowrap; overflow:hidden;}
+  .slot .key{position:absolute; left:3px; top:1px; font-size:9px; color:var(--dim);}
+
+  /* ---- Crosshair ---- */
+  #cross{position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+     color:#fff; font-size:20px; opacity:.8; pointer-events:none; z-index:5;
+     text-shadow:0 0 4px #000;}
+
+  /* ---- Right control cluster ---- */
+  #rcs{position:absolute; right:10px; top:50%; transform:translateY(-50%);
+     display:flex; flex-direction:column; gap:8px; pointer-events:auto; z-index:6;}
+  .rb{background:rgba(16,21,29,.85); border:1px solid #243142; color:var(--ink);
+     border-radius:8px; padding:8px 10px; font-size:11px; font-family:inherit; cursor:pointer;}
+  .rb:active{background:#1b2533;}
+
+  /* ---- Touch dpad ---- */
+  #touch{display:none; position:absolute; inset:0; pointer-events:none; z-index:4;}
+  #dpad{position:absolute; left:12px; bottom:74px; width:150px; height:150px; pointer-events:auto;}
+  .dk{position:absolute; width:48px; height:48px; background:rgba(16,21,29,.8);
+     border:1px solid #2a3a4d; border-radius:10px; color:var(--ink);
+     display:flex; align-items:center; justify-content:center; font-size:18px;}
+  .dk:active{background:#22303f;}
+  #dU{left:51px; top:0;} #dD{left:51px; top:102px;}
+  #dL{left:0; top:51px;} #dR{left:102px; top:51px;}
+  #look{position:absolute; right:0; left:170px; top:0; bottom:0; pointer-events:auto;}
+  #tbtns{position:absolute; right:12px; bottom:140px; display:flex; flex-direction:column; gap:10px; pointer-events:auto;}
+  .tb{width:62px; height:62px; border-radius:50%; border:2px solid #2a3a4d;
+     background:rgba(16,21,29,.85); color:var(--ink); font-size:11px; font-weight:700;}
+  .tb:active{background:#22303f;}
+
+  /* ---- Crafting panel ---- */
+  #craft{position:absolute; inset:0; display:none; z-index:20;
+     background:rgba(6,9,13,.86); backdrop-filter:blur(3px);
+     align-items:center; justify-content:center; padding:16px; pointer-events:auto;}
+  #craft .card{background:var(--panel); border:1px solid #243142; border-radius:12px;
+     width:min(560px,94vw); max-height:88vh; overflow:auto; padding:16px;}
+  #craft h2{font-size:16px; color:var(--acc); margin-bottom:4px;}
+  #craft .sub{font-size:11px; color:var(--dim); margin-bottom:12px;}
+  .recipe{display:flex; align-items:center; gap:10px; padding:9px;
+     border:1px solid #1d2735; border-radius:8px; margin-bottom:8px; background:#0d1218;}
+  .recipe .out{font-size:24px; font-weight:800; width:34px; text-align:center;}
+  .recipe .info{flex:1; font-size:12px;}
+  .recipe .info .t{font-weight:700;}
+  .recipe .info .c{color:var(--dim); font-size:11px;}
+  .recipe button{font-family:inherit; font-size:12px; padding:7px 12px; border-radius:7px;
+     border:1px solid #2c3c50; background:#16202c; color:var(--ink); cursor:pointer;}
+  .recipe button:disabled{opacity:.4; cursor:not-allowed;}
+  .recipe button:not(:disabled):hover{background:#1d2a38;}
+
+  /* ---- Intro / overlay ---- */
+  #intro{position:absolute; inset:0; z-index:30; display:flex; flex-direction:column;
+     align-items:center; justify-content:center; text-align:center; padding:20px;
+     background:radial-gradient(120% 90% at 50% 30%, #121a26 0%, #07090d 70%);}
+  #intro pre{color:var(--acc); font-size:13px; line-height:1.05; margin-bottom:14px;
+     text-shadow:0 0 8px rgba(127,214,160,.25);}
+  #intro h1{font-size:20px; letter-spacing:3px; margin-bottom:6px;}
+  #intro p{font-size:12px; color:var(--dim); max-width:520px; line-height:1.7; margin-bottom:6px;}
+  #enterBtn{margin-top:16px; font-family:inherit; font-size:14px; font-weight:700;
+     padding:11px 26px; border-radius:10px; border:1px solid var(--acc);
+     background:#11211a; color:var(--acc); cursor:pointer;}
+  #enterBtn:active{background:#163022;}
+  .credit{margin-top:18px; font-size:10px; color:#48535f; line-height:1.6;}
+  #toast{position:absolute; left:50%; bottom:78px; transform:translateX(-50%);
+     background:rgba(16,21,29,.92); border:1px solid #2a3a4d; border-radius:8px;
+     padding:6px 12px; font-size:12px; opacity:0; transition:opacity .25s; z-index:8;
+     pointer-events:none; white-space:nowrap;}
+  #help{position:absolute; right:10px; bottom:70px; font-size:10px; color:var(--dim);
+     text-align:right; line-height:1.6; pointer-events:none; z-index:5;}
+  #footcred{position:absolute; left:10px; bottom:6px; font-size:9px; color:#3a444f; z-index:5;}
+  #deadly{position:absolute; inset:0; background:rgba(80,0,0,0); pointer-events:none;
+     transition:background .3s; z-index:7;}
+  @media (max-width:520px){
+    #help{display:none;}
+    .credit{font-size:9px;}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <pre id="view"></pre>
+    <div id="tint"></div>
+    <div id="vignette"></div>
+    <div id="deadly"></div>
+    <div id="cross">+</div>
+
+    <div id="hud">
+      <div class="badge bar"><b>HP</b><span id="hpbar" class="hp pip"></span></div>
+      <div class="badge bar"><b>FOOD</b><span id="fdbar" class="fd pip"></span></div>
+      <div class="badge" id="clock">DAY 1 06:00 ☀</div>
+      <div class="badge" id="biome">PLAINS</div>
+      <div class="badge" id="depthb">y=12</div>
+    </div>
+
+    <div id="hotbar"></div>
+    <div id="help">
+      WASD 이동 · 마우스 시야 · 좌클릭 채굴 · 우클릭 설치<br>
+      1-8 슬롯 · E 제작 · Space 점프/상승 · Shift 하강
+    </div>
+    <div id="footcred">Minecraft에서 영감 — © Mojang/Microsoft. 오리지널 구현 (GLYPHLANDS)</div>
+
+    <div id="rcs">
+      <button class="rb" id="craftBtn">제작 (E)</button>
+      <button class="rb" id="ascendBtn">상승 ▲</button>
+      <button class="rb" id="descendBtn">하강 ▼</button>
+    </div>
+
+    <div id="toast"></div>
+
+    <!-- touch -->
+    <div id="touch">
+      <div id="look"></div>
+      <div id="dpad">
+        <button class="dk" id="dU">▲</button>
+        <button class="dk" id="dD">▼</button>
+        <button class="dk" id="dL">◀</button>
+        <button class="dk" id="dR">▶</button>
+      </div>
+      <div id="tbtns">
+        <button class="tb" id="tMine">채굴</button>
+        <button class="tb" id="tPlace">설치</button>
+        <button class="tb" id="tJump">점프</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Crafting -->
+  <div id="craft">
+    <div class="card">
+      <h2>제작대 · CRAFTING</h2>
+      <div class="sub">자원을 조합해 새 블록과 도구를 만든다. 보유 자원: <span id="craftInv"></span></div>
+      <div id="recipeList"></div>
+      <div style="text-align:right;margin-top:8px;">
+        <button class="rb" id="closeCraft">닫기 (E / Esc)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Intro -->
+  <div id="intro">
+    <pre>   ▟█▙  ▗▖    ▝█▘ ▟█▙ ▟█▙ ▗▖   ▟██▙ ▟█▙ ▗▖▟█▙ ▗██▖
+   █     █      █  █ █ █ █ █   █  █ █ █ █ ▘█ █ ▘ ▝█▘
+   █▟██  █      █  █▟█ █▟█ █   █▟██ █▟█ █ ▝█▙ ▝██▖
+   █  █  █      █  █   █   █   █  █ █ █ █  ▝█    ▝█
+   ▜██▛  ▜██▘  ▝▀▘ ▝▘  ▝▘  ▜██▘▝▘ ▝▘▝▘ ▝▘ ▝▀▘ ▝██▘</pre>
+    <h1>GLYPHLANDS</h1>
+    <p>문자로 빚어진 복셀 대지. 곡괭이를 들고 흙을 파고, 광맥을 캐고,
+       제작대에서 도구를 벼려, 너만의 구조물을 세워라.</p>
+    <p style="color:#7fd6a0">평원(PLAINS) 변주 · 절차생성 무한 지형 · 채굴 / 설치 / 제작 / 생존</p>
+    <button id="enterBtn">세계로 들어가기 ▶</button>
+    <div class="credit">
+      본 작품은 <b>Minecraft에서 영감을 받은 완전 오리지널 게임</b>입니다.<br>
+      Minecraft — © Mojang Studios / Microsoft. 텍스처·몹·차원·레시피·상표 무복제.<br>
+      GLYPHLANDS의 모든 블록·생물·제작법은 오리지널 디자인입니다.
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+(function(){
+/* =====================================================================
+   GLYPHLANDS — ASCII voxel sandbox (isometric column raycast renderer)
+   Original work inspired by the mine/build/craft genre. No MC assets.
+   ===================================================================== */
+
+// ---------- Block registry (all original) ----------
+// id 0 = air. Each block: glyph, color, solid, hardness(0=instant), drop, light
+const AIR=0;
+const BLOCKS = {
+  0:{name:"공기", g:" ", c:"#000", solid:false},
+  1:{name:"잔디흙", g:"▒", c:"#5ba35b", top:"▓", topc:"#74c473", solid:true, hard:1, drop:1},
+  2:{name:"흙",   g:"▓", c:"#8a6a45", solid:true, hard:1, drop:2},
+  3:{name:"돌",   g:"█", c:"#7d8593", solid:true, hard:3, drop:3, tool:"pick"},
+  4:{name:"모래",  g:"░", c:"#d8c98a", solid:true, hard:1, drop:4},
+  5:{name:"통나무", g:"╫", c:"#9c6b3f", solid:true, hard:2, drop:5},
+  6:{name:"잎새",  g:"♣", c:"#3f9d52", solid:true, hard:1, drop:6, leaf:true},
+  7:{name:"수정광", g:"◆", c:"#6fd0e0", solid:true, hard:4, drop:7, tool:"pick", glow:true},
+  8:{name:"붉은광", g:"✦", c:"#e07a7a", solid:true, hard:4, drop:8, tool:"pick"},
+  9:{name:"황금광", g:"❖", c:"#e8c45a", solid:true, hard:5, drop:9, tool:"pick", glow:true},
+ 10:{name:"판자",  g:"▤", c:"#c08a4f", solid:true, hard:2, drop:10},
+ 11:{name:"벽돌",  g:"▥", c:"#b05544", solid:true, hard:3, drop:11, tool:"pick"},
+ 12:{name:"수정등", g:"☀", c:"#bff0f6", solid:true, hard:2, drop:12, glow:true, glowStrong:true},
+ 13:{name:"기반암", g:"▦", c:"#3a3f47", solid:true, hard:99},
+ 14:{name:"물",   g:"≈", c:"#3f74c0", solid:false, liquid:true},
+ 15:{name:"풀꽃",  g:"❀", c:"#e6a6d6", solid:false, hard:0, drop:15, deco:true},
+};
+// resource item ids (drops) map to block place ids where placeable.
+// Items that are NOT placeable as-is: 7,8,9 (raw ore -> ingots via craft)
+const ITEM = {
+  1:{name:"잔디흙", g:"▒", c:"#74c473", place:1},
+  2:{name:"흙", g:"▓", c:"#a07a4f", place:2},
+  3:{name:"돌", g:"█", c:"#9aa3b0", place:3},
+  4:{name:"모래", g:"░", c:"#e6d79a", place:4},
+  5:{name:"통나무", g:"╫", c:"#b07c48", place:5},
+  6:{name:"잎새", g:"♣", c:"#52b566", place:6},
+  7:{name:"수정원석", g:"◆", c:"#7fd6e6", place:7},
+  8:{name:"붉은원석", g:"✦", c:"#ee8a8a", place:8},
+  9:{name:"황금원석", g:"❖", c:"#f2cf6a", place:9},
+ 10:{name:"판자", g:"▤", c:"#d09a5f", place:10},
+ 11:{name:"벽돌", g:"▥", c:"#c46a58", place:11},
+ 12:{name:"수정등", g:"☀", c:"#dffaff", place:12},
+ 15:{name:"풀꽃", g:"❀", c:"#f0b6e0", place:15},
+ // crafted non-placeable items:
+ 20:{name:"막대기", g:"|", c:"#caa06a", place:null},
+ 21:{name:"돌곡괭이", g:"⛏", c:"#c8d0dc", place:null, tool:"pick", power:2},
+ 22:{name:"수정곡괭이", g:"⛏", c:"#9fe6f2", place:null, tool:"pick", power:3},
+ 23:{name:"빵",   g:"◉", c:"#e0b46a", place:null, food:6},
+ 24:{name:"수정괴", g:"◈", c:"#aef0fa", place:null},
+ 25:{name:"황금괴", g:"◉", c:"#f4d878", place:null},
+};
+
+// ---------- World (procedural, infinite via chunk-hash terrain) ----------
+const WORLD_H = 40;          // vertical blocks
+const SEA = 8;
+const cache = new Map();     // "x,y,z" -> blockid override (player edits)
+let SEED = (Math.random()*1e9)|0;
+
+function hash3(x,y,z){
+  let h = x*374761393 + y*668265263 + z*2246822519 + SEED*0x9e3779b1;
+  h = (h ^ (h>>>13))>>>0; h = (h*1274126177)>>>0;
+  return (h>>>0)/4294967295;
+}
+function noise2(x,z,sc){
+  // value noise, smooth
+  const xs=x/sc, zs=z/sc;
+  const x0=Math.floor(xs), z0=Math.floor(zs);
+  const fx=xs-x0, fz=zs-z0;
+  const sx=fx*fx*(3-2*fx), sz=fz*fz*(3-2*fz);
+  const v00=hash3(x0,777,z0), v10=hash3(x0+1,777,z0);
+  const v01=hash3(x0,777,z0+1), v11=hash3(x0+1,777,z0+1);
+  const a=v00+(v10-v00)*sx, b=v01+(v11-v01)*sx;
+  return a+(b-a)*sz;
+}
+function biomeAt(x,z){
+  const b=noise2(x+1000,z-1000,34);
+  if(b<0.32) return "DESERT";
+  if(b>0.70) return "CRYSTAL FLATS";
+  return "PLAINS";
+}
+function heightAt(x,z){
+  let n = noise2(x,z,16)*0.6 + noise2(x,z,7)*0.3 + noise2(x,z,40)*0.6;
+  n/=1.5;
+  let h = Math.floor(SEA + 1 + n*9); // ~ 9..19
+  return Math.max(2, Math.min(WORLD_H-6, h));
+}
+function key(x,y,z){return x+","+y+","+z;}
+
+function genBlock(x,y,z){
+  if(y<0 || y>=WORLD_H) return AIR;
+  if(y===0) return 13; // bedrock
+  const h = heightAt(x,z);
+  const biome = biomeAt(x,z);
+  // caves: 3D-ish carve using two noise samples
+  if(y<h && y>1){
+    const cv = (noise2(x*1.0+y*13, z*1.0-y*7, 9) + noise2(x-y*5, z+y*9, 5))*0.5;
+    if(cv>0.74 && y<h-1) return AIR; // cave pocket
+  }
+  if(y>h){
+    if(y<=SEA && biome!=="DESERT") return 14; // shallow water lakes
+    return AIR;
+  }
+  if(y===h){
+    if(biome==="DESERT") return 4;
+    if(biome==="CRYSTAL FLATS") return (hash3(x,5,z)>0.93)?7:1;
+    return 1; // grass
+  }
+  if(y>h-4){
+    if(biome==="DESERT") return 4;
+    return 2; // dirt
+  }
+  // stone with ores
+  const oreR = hash3(x,y,z);
+  const depth = h-y;
+  if(depth>3){
+    if(oreR>0.992) return 9;             // gold (rare)
+    if(oreR>0.978) return 7;             // crystal
+    if(oreR>0.958) return 8;             // red
+  }
+  return 3;
+}
+function getBlock(x,y,z){
+  const k=key(x,y,z);
+  if(cache.has(k)) return cache.get(k);
+  return genBlock(x,y,z);
+}
+function setBlock(x,y,z,id){ cache.set(key(x,y,z),id); }
+
+// surface decorations: trees + flowers (deterministic, generated lazily into cache once visited)
+const decoDone = new Set();
+function decorate(cx,cz){
+  const dk=cx+","+cz;
+  if(decoDone.has(dk)) return; decoDone.add(dk);
+  const r=hash3(cx,42,cz);
+  const biome=biomeAt(cx,cz);
+  const h=heightAt(cx,cz);
+  if(biome==="PLAINS"||biome==="CRYSTAL FLATS"){
+    if(r>0.90){ // tree
+      const trunk=2+Math.floor(hash3(cx,9,cz)*2);
+      for(let i=1;i<=trunk;i++){ if(getBlock(cx,h+i,cz)===AIR) setBlock(cx,h+i,cz,5); }
+      const ly=h+trunk;
+      for(let dx=-2;dx<=2;dx++)for(let dz=-2;dz<=2;dz++)for(let dy=0;dy<=2;dy++){
+        if(Math.abs(dx)+Math.abs(dz)+dy<=3){
+          const yy=ly+dy-1;
+          if(getBlock(cx+dx,yy,cz+dz)===AIR) setBlock(cx+dx,yy,cz+dz,6);
+        }
+      }
+    } else if(r>0.74 && r<=0.90){
+      if(getBlock(cx,h+1,cz)===AIR) setBlock(cx,h+1,cz,15); // flower
+    }
+  }
+}
+
+// ---------- Player ----------
+const P = {
+  x:0.5, y:0, z:0.5,        // y is vertical (feet). camera = eye
+  yaw: Math.PI*0.25, pitch: -0.18,
+  vy:0, onGround:false, fly:false,
+  hp:20, food:20, hunger:0, regenT:0,
+};
+// spawn on surface
+function spawn(){
+  const sx=0, sz=0;
+  const h=heightAt(sx,sz);
+  P.x=sx+0.5; P.z=sz+0.5; P.y=h+1.1;
+  P.yaw=Math.PI*0.25; P.pitch=-0.15;
+}
+
+// ---------- Inventory ----------
+// hotbar: array of {item, count}
+const HOT = 8;
+let hotbar = new Array(HOT).fill(null);
+let sel = 0;
+function addItem(itemId, n=1){
+  for(let i=0;i<HOT;i++){ if(hotbar[i] && hotbar[i].item===itemId){ hotbar[i].count+=n; renderHotbar(); return true; } }
+  for(let i=0;i<HOT;i++){ if(!hotbar[i]){ hotbar[i]={item:itemId,count:n}; renderHotbar(); return true; } }
+  return false; // full
+}
+function countItem(itemId){
+  let c=0; for(const s of hotbar) if(s&&s.item===itemId) c+=s.count; return c;
+}
+function consume(itemId,n){
+  let need=n;
+  for(let i=0;i<HOT;i++){ const s=hotbar[i]; if(s&&s.item===itemId){
+    const take=Math.min(s.count,need); s.count-=take; need-=take;
+    if(s.count<=0) hotbar[i]=null; if(need<=0) break; } }
+  renderHotbar(); return need<=0;
+}
+function bestPick(){
+  // returns power 0(hand)/1/2/3 based on held + owned tools
+  let best=0;
+  for(const s of hotbar){ if(s){ const it=ITEM[s.item]; if(it&&it.tool==="pick") best=Math.max(best,it.power||1);} }
+  return best;
+}
+
+// ---------- Recipes (all original combos) ----------
+const RECIPES = [
+  {out:10,n:4, cost:{5:1}, t:"판자 ×4", c:"통나무 1"},
+  {out:20,n:4, cost:{10:2}, t:"막대기 ×4", c:"판자 2"},
+  {out:21,n:1, cost:{3:3,20:2}, t:"돌곡괭이", c:"돌 3 + 막대기 2  (돌 채굴 가능)"},
+  {out:24,n:1, cost:{7:2}, t:"수정괴", c:"수정원석 2"},
+  {out:22,n:1, cost:{24:2,20:2}, t:"수정곡괭이", c:"수정괴 2 + 막대기 2  (광물 채굴↑)"},
+  {out:25,n:1, cost:{9:2}, t:"황금괴", c:"황금원석 2"},
+  {out:12,n:2, cost:{24:1,8:1}, t:"수정등 ×2", c:"수정괴1+붉은원석1  (빛남)"},
+  {out:11,n:4, cost:{3:2,4:1}, t:"벽돌 ×4", c:"돌 2 + 모래 1"},
+  {out:23,n:2, cost:{15:3}, t:"빵 ×2", c:"풀꽃 3  (허기 회복)"},
+];
+
+// ---------- Renderer: isometric raymarch over screen columns ----------
+const view = document.getElementById('view');
+const stage = document.getElementById('stage');
+const tintEl = document.getElementById('tint');
+let COLS=80, ROWS=44, CELL=8;
+
+function fitGrid(){
+  const w=stage.clientWidth, h=stage.clientHeight;
+  // pick a monospace cell size; keep total cells reasonable for perf
+  const targetCols = Math.max(48, Math.min(110, Math.floor(w/9)));
+  CELL = Math.max(6, Math.floor(w/targetCols));
+  COLS = Math.floor(w/(CELL*0.62));
+  ROWS = Math.floor(h/CELL);
+  COLS=Math.max(40,Math.min(150,COLS));
+  ROWS=Math.max(28,Math.min(90,ROWS));
+  view.style.fontSize = CELL+"px";
+  view.style.lineHeight = CELL+"px";
+}
+window.addEventListener('resize', ()=>{ fitGrid(); });
+
+// raycast a single ray through voxel grid, return hit info
+function castRay(ox,oy,oz, dx,dy,dz, maxDist){
+  let x=Math.floor(ox), y=Math.floor(oy), z=Math.floor(oz);
+  const stepX=dx>0?1:-1, stepY=dy>0?1:-1, stepZ=dz>0?1:-1;
+  const tDX=dx!==0?Math.abs(1/dx):1e9;
+  const tDY=dy!==0?Math.abs(1/dy):1e9;
+  const tDZ=dz!==0?Math.abs(1/dz):1e9;
+  let tMX=dx!==0?((dx>0?(x+1-ox):(ox-x))*tDX):1e9;
+  let tMY=dy!==0?((dy>0?(y+1-oy):(oy-y))*tDY):1e9;
+  let tMZ=dz!==0?((dz>0?(z+1-oz):(oz-z))*tDZ):1e9;
+  let dist=0, face=0; // 0=x,1=y,2=z
+  let steps=0;
+  while(dist<maxDist && steps<140){
+    steps++;
+    if(tMX<tMY && tMX<tMZ){ x+=stepX; dist=tMX; tMX+=tDX; face=0; }
+    else if(tMY<tMZ){ y+=stepY; dist=tMY; tMY+=tDY; face=1; }
+    else { z+=stepZ; dist=tMZ; tMZ+=tDZ; face=2; }
+    if(y<0||y>=WORLD_H) continue;
+    const b=getBlock(x,y,z);
+    if(b!==AIR){ const bd=BLOCKS[b]; if(bd && (bd.solid||bd.liquid||bd.deco)){
+      return {hit:true, x,y,z, b, dist, face, stepX,stepY,stepZ};
+    }}
+  }
+  return {hit:false, dist:maxDist};
+}
+
+// glyph shading by distance & face
+const SHADE=" ·:-=+*#%@";
+function shadeChar(g, lit){
+  return g;
+}
+function dim(hex, f){
+  // f in 0..1 brightness multiplier
+  const n=parseInt(hex.slice(1),16);
+  let r=(n>>16)&255, gg=(n>>8)&255, b=n&255;
+  r=Math.round(r*f); gg=Math.round(gg*f); b=Math.round(b*f);
+  return "rgb("+r+","+gg+","+b+")";
+}
+function parseRGB(s){
+  const m=s.match(/(\d+),\s*(\d+),\s*(\d+)/);
+  return m?[+m[1],+m[2],+m[3]]:[0,0,0];
+}
+function mix(a,b,t){ // a,b are "rgb(...)" strings, t 0..1 toward b
+  const A=parseRGB(a), B=parseRGB(b);
+  return "rgb("+Math.round(A[0]+(B[0]-A[0])*t)+","+
+                Math.round(A[1]+(B[1]-A[1])*t)+","+
+                Math.round(A[2]+(B[2]-A[2])*t)+")";
+}
+
+let dayT = 6.0; // hours 0..24
+function ambient(){
+  // 0..1 light from day cycle
+  const t=dayT;
+  let l;
+  if(t>=6 && t<=18){ l = Math.sin((t-6)/12*Math.PI); l=0.35+l*0.65; }
+  else { l=0.18; }
+  return Math.max(0.18,Math.min(1,l));
+}
+
+// fov rays
+const FOV = Math.PI*0.42;
+let lastTarget=null;   // currently aimed block (for highlight)
+let frameStr="";
+
+function render(){
+  const amb=ambient();
+  const colChars=new Array(COLS);
+  // camera
+  const ex=P.x, ey=P.y+1.5, ez=P.z; // eye
+  const cy=Math.cos(P.yaw), sy=Math.sin(P.yaw);
+  const aspect = (ROWS*1.0)/(COLS*0.62);
+  let centerTarget=null;
+  // precompute pitch
+  const vpitch=P.pitch;
+  let out=new Array(ROWS);
+  for(let r=0;r<ROWS;r++) out[r]=new Array(COLS);
+
+  const horizon = ROWS*(0.5 - vpitch*0.9);
+
+  // sky/ground per row baseline already; we fill via per-column wall
+  // First, per column compute a ray on horizontal plane + sample vertical
+  for(let c=0;c<COLS;c++){
+    const camX=(c/(COLS-1))*2-1;        // -1..1
+    const ang=P.yaw + camX*(FOV/2);
+    const dxh=Math.cos(ang), dzh=Math.sin(ang);
+    // We do a 2.5D style: cast horizontal ray, find nearest solid column height profile
+    // Instead, full voxel: cast along (dxh, vary y by row). Simpler: per (col,row) ray.
+  }
+
+  // Full per-cell raycast (bounded grid keeps it cheap)
+  for(let r=0;r<ROWS;r++){
+    const camY = ((ROWS-1-r)/(ROWS-1))*2-1; // bottom=-1 top=+1
+    const py = (camY + vpitch*1.6)*Math.tan(FOV/2)*0.78;
+    for(let c=0;c<COLS;c++){
+      const camX=(c/(COLS-1))*2-1;
+      const ax = camX*Math.tan(FOV/2);
+      // direction in world
+      let dx = cy + ax*(-sy);
+      let dz = sy + ax*( cy);
+      let dy = py;
+      const inv=1/Math.hypot(dx,dy,dz); dx*=inv; dy*=inv; dz*=inv;
+      const hit=castRay(ex,ey,ez, dx,dy,dz, 34);
+      if(hit.hit){
+        const bd=BLOCKS[hit.b];
+        let g=bd.g, col=bd.c;
+        if(bd.top && hit.face===1 && hit.stepY<0){ g=bd.top; col=bd.topc; }
+        // lighting: face shading + distance fog + day ambient + glow
+        let faceL = hit.face===1?1.0:(hit.face===0?0.82:0.66);
+        let dl = 1 - Math.min(0.78, hit.dist/30);
+        let lit = amb*faceL*dl;
+        if(bd.glow) lit = Math.max(lit, bd.glowStrong?1.0:0.78);
+        lit=Math.max(0.10,Math.min(1,lit));
+        // distance glyph reduction for far blocks
+        if(hit.dist>22) g = (hit.dist>28)?"·":":";
+        let fcol=dim(col,lit);
+        // atmospheric fog: blend distant cells toward haze so far ore doesn't speckle
+        if(hit.dist>14 && !(bd.glow)){
+          const fog=Math.min(0.72,(hit.dist-14)/22);
+          fcol=mix(fcol, dim("#283341", amb), fog);
+        }
+        out[r][c]={g, col:fcol};
+        if(r===((ROWS/2)|0) && c===((COLS/2)|0)){ /* center handled below */ }
+      } else {
+        // sky or distant ground
+        const isSky = py>0.02;
+        if(isSky){
+          // stars at night
+          let g=" ";
+          if(amb<0.3){ const sh=hash3(c*7,r*13,99); if(sh>0.985) g="."; }
+          out[r][c]={g, col:"#1a2433"};
+        } else {
+          // far ground haze
+          const g = py<-0.4?"·":" ";
+          out[r][c]={g, col: dim("#27313f", amb)};
+        }
+      }
+    }
+  }
+
+  // crosshair target (center ray) for highlight + interaction
+  {
+    const c=(COLS/2)|0, r=(ROWS/2)|0;
+    const camX=0, camY=0;
+    const ax=0;
+    const py=(camY + vpitch*1.6)*Math.tan(FOV/2)*0.78;
+    let dx=cy, dz=sy, dy=py;
+    const inv=1/Math.hypot(dx,dy,dz); dx*=inv;dy*=inv;dz*=inv;
+    const hit=castRay(ex,ey,ez,dx,dy,dz,6.5);
+    if(hit.hit){ centerTarget={...hit, prevX:hit.x-hit.stepX*(hit.face===0?1:0),
+      prevY:hit.y-hit.stepY*(hit.face===1?1:0),
+      prevZ:hit.z-hit.stepZ*(hit.face===2?1:0)};
+      // highlight aimed cell visually
+      if(out[r] && out[r][c]) out[r][c]={g:"▣", col:"#ffffff"};
+    } else centerTarget=null;
+  }
+  lastTarget=centerTarget;
+
+  // build string
+  let s="";
+  let spans=[];
+  // To keep DOM cheap, build colored runs
+  let html="";
+  for(let r=0;r<ROWS;r++){
+    let line="";
+    let curCol=null, run="";
+    for(let c=0;c<COLS;c++){
+      const cell=out[r][c]||{g:" ",col:"#000"};
+      if(cell.col!==curCol){
+        if(run) line+="<span style='color:"+curCol+"'>"+esc(run)+"</span>";
+        run=cell.g; curCol=cell.col;
+      } else run+=cell.g;
+    }
+    if(run) line+="<span style='color:"+curCol+"'>"+esc(run)+"</span>";
+    html+=line+"\n";
+  }
+  view.innerHTML=html;
+}
+function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
+
+// ---------- Physics & movement ----------
+const keys={};
+let moveVec={f:0,s:0}; // forward, strafe from touch
+function solidAt(x,y,z){
+  const b=getBlock(Math.floor(x),Math.floor(y),Math.floor(z));
+  const bd=BLOCKS[b]; return bd && bd.solid;
+}
+function footprintSolid(x,iy,z){
+  const rad=0.3;
+  for(const ox of [-rad,rad]) for(const oz of [-rad,rad]){
+    if(solidAt(x+ox, iy+0.5, z+oz)) return true;
+  }
+  return false;
+}
+function playerCollide(nx,ny,nz){
+  // AABB ~ 0.6 wide, 1.7 tall
+  const rad=0.3;
+  const ys=[ny+0.1, ny+0.9, ny+1.6];
+  for(const yy of ys){
+    for(const ox of [-rad,rad]) for(const oz of [-rad,rad]){
+      if(solidAt(nx+ox,yy,nz+oz)) return true;
+    }
+  }
+  return false;
+}
+let lastT=performance.now();
+function physics(dt){
+  if(!started) return;
+  const speed = P.fly?7.5:4.2;
+  let f=0,s=0;
+  if(keys['w']||keys['arrowup']) f+=1;
+  if(keys['s']||keys['arrowdown']) f-=1;
+  if(keys['a']) s-=1;
+  if(keys['d']) s+=1;
+  f+=moveVec.f; s+=moveVec.s;
+  const len=Math.hypot(f,s); if(len>1){f/=len;s/=len;}
+  const cy=Math.cos(P.yaw), sy=Math.sin(P.yaw);
+  let mx=(cy*f - sy*s)*speed*dt;
+  let mz=(sy*f + cy*s)*speed*dt;
+
+  // horizontal move with collision per-axis
+  if(!playerCollide(P.x+mx, P.y, P.z)) P.x+=mx;
+  if(!playerCollide(P.x, P.y, P.z+mz)) P.z+=mz;
+
+  if(P.fly){
+    let vy=0;
+    if(keys[' ']) vy+=1; if(keys['shift']) vy-=1;
+    vy+=flyV;
+    const dyy=vy*speed*dt;
+    if(!playerCollide(P.x,P.y+dyy,P.z)) P.y+=dyy;
+    P.vy=0;
+  } else {
+    // gravity
+    P.vy-=18*dt; if(P.vy<-30)P.vy=-30;
+    let dyy=P.vy*dt;
+    if(!playerCollide(P.x,P.y+dyy,P.z)){ P.y+=dyy; P.onGround=false; }
+    else {
+      if(P.vy<0){
+        // landing: snap feet to the top of the block below the player footprint
+        let topY=-1;
+        const start=Math.ceil(P.y);
+        for(let yy=start;yy>=start-4 && yy>=0;yy--){
+          if(footprintSolid(P.x,yy,P.z)){ topY=yy; break; }
+        }
+        if(topY>=0){ P.y = topY+1.0; P.onGround=true; }
+      } else if(P.vy>0){
+        P.onGround=false;
+      }
+      P.vy=0;
+    }
+    // ceiling
+    if(playerCollide(P.x,P.y+1.7,P.z) && P.vy>0) P.vy=0;
+  }
+  // clamp world
+  if(P.y<-5){ P.y=heightAt(Math.floor(P.x),Math.floor(P.z))+2; P.vy=0; damage(4,"낙하"); }
+
+  // decorate around player + small radius for trees
+  const px=Math.floor(P.x), pz=Math.floor(P.z);
+  for(let dx=-6;dx<=6;dx++)for(let dz=-6;dz<=6;dz++) decorate(px+dx,pz+dz);
+
+  // survival ticks
+  survival(dt);
+}
+let flyV=0;
+function jump(){
+  if(P.fly){ flyV=1; setTimeout(()=>flyV=0,140); return; }
+  if(P.onGround){ P.vy=7.2; P.onGround=false; }
+}
+
+// ---------- Survival ----------
+let survT=0;
+function survival(dt){
+  survT+=dt;
+  if(survT>=4){ survT=0;
+    P.hunger+=1;
+    if(P.hunger>=4){ P.hunger=0;
+      if(P.food>0) P.food-=1;
+      else damage(1,"굶주림");
+    }
+    // regen when fed
+    if(P.food>=16 && P.hp<20){ P.hp=Math.min(20,P.hp+1); }
+    renderStats();
+  }
+}
+function damage(n,why){
+  P.hp=Math.max(0,P.hp-n);
+  flashDeadly();
+  renderStats();
+  if(P.hp<=0) respawn(why);
+}
+function flashDeadly(){
+  const d=document.getElementById('deadly');
+  d.style.background="rgba(120,10,10,.35)";
+  setTimeout(()=>d.style.background="rgba(80,0,0,0)",180);
+}
+function respawn(why){
+  toast("쓰러졌다… ("+(why||"")+") 다시 깨어난다");
+  spawn(); P.hp=20; P.food=20; P.hunger=0; P.vy=0;
+  renderStats();
+}
+
+// ---------- Interaction ----------
+let mining=0, mineTarget=null, mineNeed=0;
+function tryMine(dt){
+  const t=lastTarget; if(!t||!t.hit){ mining=0; return; }
+  const bd=BLOCKS[t.b];
+  if(!bd || bd.hard===undefined || bd.hard>=99){ mining=0; return; } // bedrock/unbreakable
+  const k=key(t.x,t.y,t.z);
+  if(mineTarget!==k){ mineTarget=k; mining=0;
+    let h=bd.hard;
+    if(bd.tool==="pick"){ const pw=bestPick(); h = pw>0? Math.max(0.3, h - pw*0.9) : h*2.4; }
+    mineNeed=h*0.32; // seconds
+  }
+  mining+=dt;
+  if(mining>=mineNeed){
+    // break
+    breakBlock(t.x,t.y,t.z,t.b);
+    mining=0; mineTarget=null;
+  }
+}
+function breakBlock(x,y,z,b){
+  const bd=BLOCKS[b];
+  setBlock(x,y,z,AIR);
+  // require pick for ore/stone? give nothing if hand on ore (still breaks but no drop)
+  let drop=bd.drop;
+  if(bd.tool==="pick" && bestPick()<1){ drop=undefined; toast("곡괭이가 필요하다 — 부서졌지만 자원 없음"); }
+  if(drop!==undefined){ if(!addItem(drop,1)) toast("인벤토리가 가득 찼다!"); else flashGet(BLOCKS[b]?ITEM[drop]:null,drop); }
+  // physics: if leaf/flower above lost support, leave (simple)
+}
+let getMsgT=0;
+function flashGet(it,id){
+  const i=ITEM[id]; if(i) toast("+1 "+i.name);
+}
+function tryPlace(){
+  const t=lastTarget; if(!t||!t.hit) return;
+  const s=hotbar[sel]; if(!s) { toast("설치할 블록이 없다"); return; }
+  const it=ITEM[s.item]; if(!it || it.place==null){ toast(it?it.name+"은(는) 설치할 수 없다":"설치 불가"); return; }
+  if(it.food){ return eat(); }
+  const px=t.prevX, py=t.prevY, pz=t.prevZ;
+  // don't place inside player
+  const inPlayer = (Math.floor(P.x)===px && Math.floor(P.z)===pz &&
+       (Math.floor(P.y)===py||Math.floor(P.y+1)===py));
+  if(inPlayer){ toast("그 자리엔 설치할 수 없다"); return; }
+  if(getBlock(px,py,pz)!==AIR) return;
+  setBlock(px,py,pz,it.place);
+  consume(s.item,1);
+}
+function eat(){
+  const s=hotbar[sel]; if(!s) return;
+  const it=ITEM[s.item]; if(!it||!it.food) return;
+  if(P.food>=20){ toast("배가 부르다"); return; }
+  P.food=Math.min(20,P.food+it.food);
+  consume(s.item,1); renderStats(); toast("냠… 허기 회복");
+}
+
+// ---------- UI render ----------
+function renderHotbar(){
+  const hb=document.getElementById('hotbar');
+  hb.innerHTML="";
+  for(let i=0;i<HOT;i++){
+    const d=document.createElement('div');
+    d.className="slot"+(i===sel?" sel":"");
+    d.dataset.i=i;
+    const s=hotbar[i];
+    let inner="<span class='key'>"+(i+1)+"</span>";
+    if(s){ const it=ITEM[s.item];
+      inner+="<span class='nm'>"+it.name+"</span>";
+      inner+="<span class='gl' style='color:"+it.c+"'>"+it.g+"</span>";
+      inner+="<span class='ct'>"+s.count+"</span>";
+    }
+    d.innerHTML=inner;
+    d.addEventListener('click',()=>{ sel=i; renderHotbar(); });
+    hb.appendChild(d);
+  }
+}
+function renderStats(){
+  const hp=document.getElementById('hpbar');
+  const fd=document.getElementById('fdbar');
+  hp.textContent = "♥".repeat(Math.ceil(P.hp/2)) + "♡".repeat(10-Math.ceil(P.hp/2));
+  fd.textContent = "◆".repeat(Math.ceil(P.food/2)) + "◇".repeat(10-Math.ceil(P.food/2));
+  const d=Math.floor(dayT/24)+1;
+  const hh=Math.floor(dayT%24), mm=Math.floor((dayT%1)*60);
+  const sym = (dayT%24>=6&&dayT%24<18)?"☀":"☾";
+  document.getElementById('clock').textContent="DAY "+d+" "+String(hh).padStart(2,'0')+":"+String(mm).padStart(2,'0')+" "+sym;
+  document.getElementById('biome').textContent=biomeAt(Math.floor(P.x),Math.floor(P.z));
+  document.getElementById('depthb').textContent="y="+Math.floor(P.y);
+}
+let toastT=0;
+function toast(msg){
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.style.opacity="1"; toastT=performance.now();
+  setTimeout(()=>{ if(performance.now()-toastT>=1400) t.style.opacity="0"; },1500);
+}
+
+// crafting
+function openCraft(){
+  document.getElementById('craft').style.display="flex";
+  renderCraft();
+  exitPointer();
+}
+function closeCraft(){ document.getElementById('craft').style.display="none"; }
+function craftOpen(){ return document.getElementById('craft').style.display==="flex"; }
+function renderCraft(){
+  const inv=[];
+  for(const id of [1,2,3,4,5,6,7,8,9,10,11,12,15,20,24,25]){ const c=countItem(id); if(c) inv.push(ITEM[id].g+ITEM[id].name.replace(/원석|괴|곡괭이/g,'')+":"+c); }
+  document.getElementById('craftInv').textContent = inv.join("  ") || "없음";
+  const list=document.getElementById('recipeList'); list.innerHTML="";
+  for(const r of RECIPES){
+    const can = Object.entries(r.cost).every(([id,n])=>countItem(+id)>=n);
+    const div=document.createElement('div'); div.className="recipe";
+    const oi=ITEM[r.out];
+    div.innerHTML="<div class='out' style='color:"+oi.c+"'>"+oi.g+"</div>"+
+      "<div class='info'><div class='t'>"+r.t+"</div><div class='c'>필요: "+r.c+"</div></div>";
+    const btn=document.createElement('button'); btn.textContent="제작"; btn.disabled=!can;
+    btn.addEventListener('click',()=>{
+      if(Object.entries(r.cost).every(([id,n])=>countItem(+id)>=n)){
+        for(const [id,n] of Object.entries(r.cost)) consume(+id,n);
+        addItem(r.out,r.n); toast("제작: "+oi.name+" ×"+r.n);
+        renderCraft();
+      }
+    });
+    div.appendChild(btn); list.appendChild(div);
+  }
+}
+
+// ---------- Input ----------
+let pointerLocked=false;
+function reqPointer(){ if(isTouch) return; stage.requestPointerLock&&stage.requestPointerLock(); }
+function exitPointer(){ document.exitPointerLock&&document.exitPointerLock(); }
+document.addEventListener('pointerlockchange',()=>{ pointerLocked=(document.pointerLockElement===stage); });
+
+stage.addEventListener('click',(e)=>{
+  if(!started||craftOpen()) return;
+  if(isTouch) return;
+  if(!pointerLocked){ reqPointer(); return; }
+});
+stage.addEventListener('mousemove',(e)=>{
+  if(!pointerLocked) return;
+  P.yaw += e.movementX*0.0026;
+  P.pitch -= e.movementY*0.0024;
+  P.pitch=Math.max(-1.2,Math.min(1.2,P.pitch));
+});
+stage.addEventListener('mousedown',(e)=>{
+  if(!started||craftOpen()||!pointerLocked) return;
+  if(e.button===2){ tryPlace(); }
+});
+let mouseHeld=false;
+stage.addEventListener('mousedown',(e)=>{ if(e.button===0) mouseHeld=true; });
+window.addEventListener('mouseup',(e)=>{ if(e.button===0) mouseHeld=false; mining=0; });
+stage.addEventListener('contextmenu',e=>e.preventDefault());
+
+window.addEventListener('keydown',(e)=>{
+  const k=e.key.toLowerCase();
+  keys[k]=true;
+  if(!started) return;
+  if(k>='1'&&k<='8'){ sel=+k-1; renderHotbar(); }
+  if(k==='e'){ e.preventDefault(); craftOpen()?closeCraft():openCraft(); }
+  if(k==='escape'){ if(craftOpen()) closeCraft(); }
+  if(k===' '){ e.preventDefault(); jump(); }
+  if(k==='f'){ P.fly=!P.fly; toast(P.fly?"비행 ON (Space 상승/Shift 하강)":"비행 OFF"); }
+  if(k==='q'){ eat(); }
+});
+window.addEventListener('keyup',(e)=>{ keys[e.key.toLowerCase()]=false; });
+
+// wheel selects hotbar
+stage.addEventListener('wheel',(e)=>{ if(!started)return; e.preventDefault(); sel=(sel+(e.deltaY>0?1:HOT-1))%HOT; renderHotbar(); },{passive:false});
+
+// ---------- Touch ----------
+const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints>0;
+function bindHold(el, on){ // on returns true while held
+  let active=false;
+  const down=(e)=>{e.preventDefault(); active=true; on(true);};
+  const up=(e)=>{e.preventDefault(); active=false; on(false);};
+  el.addEventListener('touchstart',down,{passive:false});
+  el.addEventListener('touchend',up,{passive:false});
+  el.addEventListener('touchcancel',up,{passive:false});
+  el.addEventListener('mousedown',down); el.addEventListener('mouseup',up);
+  el.addEventListener('mouseleave',()=>{if(active){active=false;on(false);}});
+}
+function setupTouch(){
+  document.getElementById('touch').style.display="block";
+  bindHold(document.getElementById('dU'),v=>moveVec.f=v?1:0);
+  bindHold(document.getElementById('dD'),v=>moveVec.f=v?-1:0);
+  bindHold(document.getElementById('dL'),v=>moveVec.s=v?-1:0);
+  bindHold(document.getElementById('dR'),v=>moveVec.s=v?1:0);
+  bindHold(document.getElementById('tMine'),v=>{ mouseHeld=v; if(!v)mining=0; });
+  document.getElementById('tPlace').addEventListener('touchstart',e=>{e.preventDefault(); tryPlace();},{passive:false});
+  document.getElementById('tPlace').addEventListener('click',()=>{ if(isTouch)tryPlace(); });
+  document.getElementById('tJump').addEventListener('touchstart',e=>{e.preventDefault(); jump();},{passive:false});
+  // look drag
+  const look=document.getElementById('look');
+  let lx=0,ly=0,drag=false;
+  const start=(e)=>{const t=e.touches?e.touches[0]:e; lx=t.clientX; ly=t.clientY; drag=true;};
+  const move=(e)=>{ if(!drag)return; e.preventDefault(); const t=e.touches?e.touches[0]:e;
+    P.yaw+=(t.clientX-lx)*0.006; P.pitch-=(t.clientY-ly)*0.006;
+    P.pitch=Math.max(-1.2,Math.min(1.2,P.pitch)); lx=t.clientX; ly=t.clientY; };
+  const end=()=>{drag=false;};
+  look.addEventListener('touchstart',start,{passive:false});
+  look.addEventListener('touchmove',move,{passive:false});
+  look.addEventListener('touchend',end);
+}
+
+// buttons
+document.getElementById('craftBtn').addEventListener('click',()=>{ craftOpen()?closeCraft():openCraft(); });
+document.getElementById('closeCraft').addEventListener('click',closeCraft);
+document.getElementById('craft').addEventListener('click',e=>{ if(e.target.id==='craft') closeCraft(); });
+bindHold(document.getElementById('ascendBtn'),v=>{ if(!P.fly&&v){jump();} flyV=v?1:0; });
+bindHold(document.getElementById('descendBtn'),v=>{ if(P.fly) flyV=v?-1:0; });
+
+// ---------- Start ----------
+let started=false;
+function startGame(){
+  if(started) return;
+  started=true;
+  document.getElementById('intro').style.display="none";
+  spawn();
+  // starter kit
+  addItem(5,3); addItem(3,5); addItem(10,4); addItem(15,2);
+  sel=0; renderHotbar(); renderStats();
+  if(isTouch) setupTouch();
+  if(!isTouch){ document.getElementById('rcs').style.display="flex"; }
+}
+document.getElementById('enterBtn').addEventListener('click',()=>{ startGame(); if(!isTouch) reqPointer(); });
+
+// ---------- Main loop ----------
+function loop(now){
+  const dt=Math.min(0.05,(now-lastT)/1000); lastT=now;
+  if(started){
+    physics(dt);
+    if(mouseHeld && !craftOpen()) tryMine(dt); else mining=0;
+    // day cycle (1 day ~ 4 min)
+    dayT += dt*(24/240);
+    // night tint
+    const amb=ambient();
+    const nightAlpha=Math.max(0, (0.45-amb))*1.2;
+    tintEl.style.background="rgba(8,14,40,"+Math.min(0.55,nightAlpha).toFixed(2)+")";
+    render();
+    renderStats();
+  }
+  requestAnimationFrame(loop);
+}
+
+// ---------- boot ----------
+fitGrid();
+spawn();
+render();           // first paint behind intro so canvas isn't blank
+renderHotbar();
+renderStats();
+requestAnimationFrame(loop);
+
+// ---------- test hooks ----------
+window.__glyph = {
+  state:()=>({x:P.x,y:P.y,z:P.z,yaw:P.yaw,pitch:P.pitch,hp:P.hp,food:P.food,
+     sel, hot:hotbar.map(s=>s?{item:s.item,n:s.count}:null), started,
+     biome:biomeAt(Math.floor(P.x),Math.floor(P.z)),
+     target:lastTarget?{x:lastTarget.x,y:lastTarget.y,z:lastTarget.z,b:lastTarget.b}:null,
+     viewLen:view.textContent.replace(/\s/g,'').length}),
+  teleport:(x,y,z)=>{P.x=x;P.y=y;P.z=z;P.vy=0;},
+  face:(yaw,pitch)=>{P.yaw=yaw; if(pitch!==undefined)P.pitch=pitch;},
+  setKey:(k,v)=>{keys[k.toLowerCase()]=v;},
+  mineAt:(x,y,z)=>{const b=getBlock(x,y,z); if(BLOCKS[b]&&BLOCKS[b].hard<99){breakBlock(x,y,z,b);return true;}return false;},
+  placeAt:(x,y,z,id)=>{ if(getBlock(x,y,z)===AIR){setBlock(x,y,z,id);return true;}return false;},
+  add:(id,n)=>addItem(id,n||1),
+  craft:(idx)=>{const r=RECIPES[idx]; if(!r)return false;
+     if(Object.entries(r.cost).every(([id,n])=>countItem(+id)>=n)){
+       for(const [id,n] of Object.entries(r.cost)) consume(+id,n); addItem(r.out,r.n); return true;} return false;},
+  count:(id)=>countItem(id),
+  start:startGame,
+  getBlock,
+  blockAround:()=>{const px=Math.floor(P.x),py=Math.floor(P.y),pz=Math.floor(P.z);
+     return getBlock(px,py-1,pz);},
+};
+})();
+</script>
+</body>
+</html>

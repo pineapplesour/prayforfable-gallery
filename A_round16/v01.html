@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>KLEIN PHANTOM — 비가향 무한면</title>
+<style>
+  :root{ color-scheme: dark; }
+  *{ margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#04040a; }
+  #stage{ position:fixed; inset:0; display:block; touch-action:none; cursor:grab; }
+  #stage:active{ cursor:grabbing; }
+
+  .hud{
+    position:fixed; left:0; right:0; pointer-events:none;
+    font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+    color:#cdd6ff; mix-blend-mode:screen; user-select:none;
+    text-shadow:0 0 18px rgba(120,150,255,.35);
+  }
+  #top{ top:22px; padding:0 26px; display:flex; justify-content:space-between; align-items:flex-start; }
+  #title{ font-size:13px; letter-spacing:.42em; font-weight:600; opacity:.92; }
+  #title b{ font-weight:800; color:#fff; }
+  #sub{ font-size:10px; letter-spacing:.28em; opacity:.5; margin-top:7px; }
+  #stat{ text-align:right; font-size:10px; letter-spacing:.16em; opacity:.55; line-height:1.85; }
+  #stat .v{ color:#9fe9ff; }
+
+  #bottom{ bottom:20px; padding:0 26px; display:flex; justify-content:space-between; align-items:flex-end; gap:14px; }
+  #legend{ font-size:9.5px; letter-spacing:.2em; opacity:.46; line-height:2.1; max-width:62%; }
+  #legend kbd{
+    pointer-events:auto; display:inline-block; font:inherit; font-size:9px;
+    padding:1px 6px; margin-right:4px; border:1px solid rgba(150,170,255,.35);
+    border-radius:5px; color:#e7ecff; background:rgba(90,110,200,.12);
+  }
+  #phase{
+    text-align:right; font-size:10px; letter-spacing:.2em; opacity:.7; line-height:1.7;
+  }
+  #phase .name{ font-size:15px; letter-spacing:.12em; color:#fff; font-weight:700; }
+  #phase .bar{
+    margin-top:6px; width:128px; height:3px; margin-left:auto;
+    background:rgba(120,140,255,.16); border-radius:3px; overflow:hidden;
+  }
+  #phase .fill{ height:100%; width:0%; background:linear-gradient(90deg,#5af,#b6f,#fa8); border-radius:3px; }
+
+  /* control chips — pointer enabled */
+  #chips{ position:fixed; left:50%; transform:translateX(-50%); bottom:62px; display:flex; gap:8px; pointer-events:none; }
+  .chip{
+    pointer-events:auto; cursor:pointer; font-family:inherit; font-size:10px; letter-spacing:.18em;
+    color:#c3ccff; padding:7px 13px; border-radius:30px;
+    border:1px solid rgba(150,170,255,.28); background:rgba(20,24,52,.5);
+    backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);
+    transition:.22s; user-select:none; white-space:nowrap;
+  }
+  .chip:hover{ color:#fff; border-color:rgba(180,200,255,.6); background:rgba(40,46,92,.6); }
+  .chip.on{ color:#04040a; background:#9fe9ff; border-color:#9fe9ff; text-shadow:none; }
+
+  .hud, #chips{ font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace; }
+
+  @media (max-width:560px){
+    #top{ top:16px; padding:0 16px; }
+    #title{ font-size:11px; letter-spacing:.3em; }
+    #sub{ font-size:8.5px; }
+    #stat{ font-size:8.5px; }
+    #legend{ display:none; }
+    #bottom{ padding:0 16px; bottom:14px; }
+    #phase .name{ font-size:13px; }
+    #phase .bar{ width:96px; }
+    #chips{ bottom:54px; gap:6px; }
+    .chip{ font-size:9px; padding:6px 10px; letter-spacing:.1em; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div id="top" class="hud">
+  <div>
+    <div id="title"><b>KLEIN</b>&nbsp;PHANTOM</div>
+    <div id="sub">NON-ORIENTABLE&nbsp;·&nbsp;ONE-SIDED&nbsp;·&nbsp;INFINITE SURFACE</div>
+  </div>
+  <div id="stat">
+    <div><span class="v" id="sFps">60</span> FPS</div>
+    <div><span class="v" id="sP">0</span> FLOW</div>
+    <div><span class="v" id="sG">∞</span> EULER χ=0</div>
+  </div>
+</div>
+
+<div id="chips">
+  <div class="chip" data-act="morph">⟳ 모핑 자동</div>
+  <div class="chip" data-act="flow">✦ 입자 흐름</div>
+  <div class="chip" data-act="trail">≋ 잔상</div>
+  <div class="chip" data-act="cam">◎ 자동 회전</div>
+</div>
+
+<div id="bottom" class="hud">
+  <div id="legend">
+    <kbd>드래그</kbd>회전 &nbsp; <kbd>휠</kbd>모핑/줌 &nbsp; <kbd>SPACE</kbd>모핑전환 &nbsp; <kbd>탭</kbd>맥동 &nbsp; <kbd>R</kbd>리셋
+  </div>
+  <div id="phase">
+    <div class="name" id="pName">KLEIN BOTTLE</div>
+    <div id="pHint" style="opacity:.55;font-size:9px;margin-top:3px;">tube self-passing through 4D shadow</div>
+    <div class="bar"><div class="fill" id="pFill"></div></div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function(){
+"use strict";
+
+// ---------- guard ----------
+if(typeof THREE==='undefined'){
+  document.getElementById('sub').textContent='WebGL/THREE load failed';
+  return;
+}
+
+const canvas = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:true, alpha:false, powerPreference:'high-performance' });
+const DPR = Math.min(window.devicePixelRatio||1, 1.9);
+renderer.setPixelRatio(DPR);
+renderer.setClearColor(0x04040a, 1);
+renderer.autoClearColor = true;
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x04040a, 0.030);
+
+const camera = new THREE.PerspectiveCamera(48, innerWidth/innerHeight, 0.1, 200);
+camera.position.set(0, 0, 30);
+
+// root group we rotate
+const root = new THREE.Group();
+root.scale.setScalar(1.28);   // command the frame
+scene.add(root);
+
+// =====================================================================
+//  PARAMETRIC GEOMETRY:  Klein bottle  <->  Möbius strip  <->  Torus
+//  We build ONE indexed grid (u: 0..2pi loop, v: 0..2pi/strip) and
+//  morph vertex positions in the vertex shader between 3 target forms,
+//  blended by a single uniform uMorph in [0..2].
+//   morph 0 = Klein bottle (figure-8 immersion)
+//   morph 1 = Möbius strip (wide ribbon, half-twist)
+//   morph 2 = trefoil-ish twisted torus knot tube  (bonus shape)
+// =====================================================================
+
+const SEG_U = (innerWidth<560)? 220 : 320;   // around the long loop
+const SEG_V = (innerWidth<560)? 36  : 54;     // around tube / across strip
+
+// build base grid in (u,v) param space, store as attributes
+const N = (SEG_U+1)*(SEG_V+1);
+const aUV   = new Float32Array(N*2);
+const indices = [];
+let p=0;
+for(let i=0;i<=SEG_U;i++){
+  const u = i/SEG_U;             // 0..1  -> *2pi
+  for(let j=0;j<=SEG_V;j++){
+    const v = j/SEG_V;           // 0..1  -> *2pi
+    aUV[p*2]   = u;
+    aUV[p*2+1] = v;
+    p++;
+  }
+}
+const rw = SEG_V+1;
+for(let i=0;i<SEG_U;i++){
+  for(let j=0;j<SEG_V;j++){
+    const a = i*rw + j;
+    const b = (i+1)*rw + j;
+    const c = (i+1)*rw + (j+1);
+    const d = i*rw + (j+1);
+    indices.push(a,b,d, b,c,d);
+  }
+}
+
+const geo = new THREE.BufferGeometry();
+// dummy position attr (real positions computed in shader) but we need it for bounds/raycast count
+geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(N*3), 3));
+geo.setAttribute('aUV', new THREE.BufferAttribute(aUV, 2));
+geo.setIndex(indices);
+geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0,0,0), 22);
+
+// ---------- shared GLSL: surface functions ----------
+const surfaceGLSL = `
+const float PI = 3.141592653589793;
+const float TAU = 6.283185307307179;
+
+// ---- Klein bottle (figure-8 / Lawson style immersion), smooth & symmetric ----
+vec3 klein(float u, float v){
+  // u around big loop, v around the tube cross-section
+  float U = u; float V = v;
+  float cu = cos(U), su = sin(U);
+  float hv = U*0.5;
+  float cv = cos(V), sv = sin(V);
+  float r = 4.0 + cos(hv)*sv - sin(hv)*sin(2.0*V)*0.5;
+  float x = r * cu;
+  float y = r * su;
+  float z = sin(hv)*sv + cos(hv)*sin(2.0*V)*0.5;
+  return vec3(x, z*2.6, y) ; // remap so the "mouth" tucks vertically
+}
+
+// ---- Möbius strip ribbon (wide), v across the band ----
+vec3 mobius(float u, float v){
+  float U = u;                 // 0..2pi
+  float t = (v/TAU)*2.0 - 1.0; // -1..1 across band
+  float w = 3.4;               // band half-width
+  float hu = U*0.5;
+  float R = 6.0;
+  float ct = w*t;
+  float x = (R + ct*cos(hu))*cos(U);
+  float y = (R + ct*cos(hu))*sin(U);
+  float z = ct*sin(hu);
+  return vec3(x, z, y);
+}
+
+// ---- twisted torus-knot tube (p=2,q=3 feel), v around tube ----
+vec3 knotTube(float u, float v){
+  float U = u; // 0..2pi
+  float p_ = 2.0, q_ = 3.0;
+  // center curve of a (2,3) torus knot
+  float cr = 2.0 + cos(q_*U);
+  vec3 c = vec3(cr*cos(p_*U), cr*sin(p_*U), sin(q_*U));
+  // crude frame
+  float du = 0.01;
+  float cr2 = 2.0 + cos(q_*(U+du));
+  vec3 c2 = vec3(cr2*cos(p_*(U+du)), cr2*sin(p_*(U+du)), sin(q_*(U+du)));
+  vec3 T = normalize(c2 - c);
+  vec3 nUp = vec3(0.0,0.0,1.0);
+  vec3 Nv = normalize(cross(T, nUp)+vec3(1e-4));
+  vec3 Bv = normalize(cross(T, Nv));
+  float tr = 1.15;
+  vec3 pos = c*3.0 + (cos(v)*Nv + sin(v)*Bv)*tr;
+  return pos;
+}
+
+vec3 surfacePos(float u, float v, float m){
+  vec3 k = klein(u, v);
+  vec3 mo = mobius(u, v);
+  vec3 kn = knotTube(u, v);
+  // m in [0..2]
+  float m0 = clamp(1.0 - m, 0.0, 1.0);          // klein weight
+  float m1 = clamp(1.0 - abs(m-1.0), 0.0, 1.0); // mobius weight
+  float m2 = clamp(m-1.0, 0.0, 1.0);            // knot weight
+  float s = m0+m1+m2; m0/=s; m1/=s; m2/=s;
+  return k*m0 + mo*m1 + kn*m2;
+}
+`;
+
+// ===================== SURFACE MESH (mesh shader) =====================
+const surfaceUniforms = {
+  uTime:   { value: 0 },
+  uMorph:  { value: 0 },
+  uPulse:  { value: 0 },
+  uHue:    { value: 0.58 },
+  uAmp:    { value: 1.0 },
+  uOpacity:{ value: 0.92 },
+};
+
+const surfMat = new THREE.ShaderMaterial({
+  uniforms: surfaceUniforms,
+  side: THREE.DoubleSide,
+  transparent: true,
+  depthWrite: true,
+  blending: THREE.NormalBlending,
+  vertexShader: surfaceGLSL + `
+    attribute vec2 aUV;
+    uniform float uTime, uMorph, uPulse, uAmp;
+    varying vec3 vWorld, vNormal, vView;
+    varying vec2 vUV;
+    varying float vWave;
+
+    vec3 calc(vec2 p){
+      float u = p.x*TAU;
+      float v = p.y*TAU;
+      vec3 pos = surfacePos(u, v, uMorph);
+      // breathing ripple along u, audio-less but lively
+      float wob = sin(u*3.0 - uTime*1.3) * 0.18
+                + sin(v*4.0 + uTime*1.7) * 0.10;
+      wob *= (1.0 + uPulse*2.4);
+      vec3 n = normalize(pos)+vec3(1e-5);
+      pos += n * wob * uAmp;
+      return pos;
+    }
+
+    void main(){
+      vUV = aUV;
+      vec3 pos = calc(aUV);
+      // numeric normal
+      float e = 1.0/256.0;
+      vec3 pu = calc(aUV+vec2(e,0.0));
+      vec3 pv = calc(aUV+vec2(0.0,e));
+      vec3 nrm = normalize(cross(pu-pos, pv-pos)+vec3(1e-5));
+      vWave = sin(aUV.x*TAU*3.0 - uTime*1.3)*0.5+0.5;
+
+      vec4 wp = modelMatrix * vec4(pos,1.0);
+      vWorld = wp.xyz;
+      vNormal = normalize(mat3(modelMatrix)*nrm);
+      vView = normalize(cameraPosition - wp.xyz);
+      gl_Position = projectionMatrix * viewMatrix * wp;
+    }
+  `,
+  fragmentShader: `
+    precision highp float;
+    const float TAU = 6.283185307307179;
+    uniform float uTime, uHue, uOpacity, uMorph;
+    varying vec3 vWorld, vNormal, vView;
+    varying vec2 vUV;
+    varying float vWave;
+
+    vec3 hsv2rgb(vec3 c){
+      vec3 p = abs(fract(c.xxx + vec3(0.0,2.0/3.0,1.0/3.0))*6.0 - 3.0);
+      return c.z * mix(vec3(1.0), clamp(p-1.0,0.0,1.0), c.y);
+    }
+    // thin-film iridescence by view angle
+    vec3 iridescence(float ang, float shift){
+      float h = fract(uHue + ang*0.9 + shift);
+      return hsv2rgb(vec3(h, 0.72, 1.0));
+    }
+
+    void main(){
+      vec3 N = normalize(vNormal);
+      vec3 V = normalize(vView);
+      float ndv = abs(dot(N,V));
+      float fres = pow(1.0 - ndv, 2.6);
+
+      // base iridescent skin
+      vec3 ir = iridescence(fres, vUV.x*0.5 + uTime*0.02);
+      // along-surface flowing bands -> reveal the one-sided continuity
+      float band = sin(vUV.x*TAU*7.0 + vUV.y*TAU*1.0 - uTime*2.2);
+      band = smoothstep(0.55, 1.0, band);
+
+      vec3 col = ir * (0.42 + 1.05*fres);
+      col += iridescence(fres+0.35, 0.5)*band*1.15;      // glowing flow lines (hot)
+      col += iridescence(fres+0.62, 0.18)*pow(band,3.0)*0.8; // white-hot crest
+      col += vec3(0.6,0.85,1.0) * pow(ndv,4.0) * 0.16;   // soft core sheen
+
+      // gentle depth dim
+      float depth = clamp((vWorld.z+18.0)/40.0, 0.22, 1.0);
+      col *= mix(0.62, 1.30, depth);
+
+      float a = uOpacity * (0.40 + 0.65*fres) + band*0.30;
+      a = clamp(a, 0.0, 1.0);
+      gl_FragColor = vec4(col, a);
+    }
+  `
+});
+
+const surfMesh = new THREE.Mesh(geo, surfMat);
+root.add(surfMesh);
+
+// wireframe ghost overlay for structure
+const wireMat = surfMat.clone();
+wireMat.uniforms = surfaceUniforms; // share
+wireMat.wireframe = true;
+wireMat.transparent = true;
+wireMat.depthWrite = false;
+wireMat.blending = THREE.AdditiveBlending;
+const wireMesh = new THREE.Mesh(geo, wireMat);
+wireMesh.scale.setScalar(1.004);
+// custom fragment for faint additive wire
+wireMat.fragmentShader = `
+  precision highp float;
+  uniform float uTime, uHue;
+  varying vec3 vNormal, vView; varying vec2 vUV;
+  vec3 hsv2rgb(vec3 c){vec3 p=abs(fract(c.xxx+vec3(0.0,2.0/3.0,1.0/3.0))*6.0-3.0);return c.z*mix(vec3(1.0),clamp(p-1.0,0.0,1.0),c.y);}
+  void main(){
+    float f = pow(1.0-abs(dot(normalize(vNormal),normalize(vView))),2.0);
+    vec3 c = hsv2rgb(vec3(fract(uHue+0.5+vUV.x*0.3+uTime*0.02),0.6,1.0));
+    gl_FragColor = vec4(c*(0.10+f*0.5), (0.05+f*0.18));
+  }`;
+root.add(wireMesh);
+
+// ===================== FLOW PARTICLES (point shader) =====================
+// Each particle has a phase along u and a fixed v offset. They travel the
+// surface; because surfacePos is continuous, a particle that crosses the
+// non-orientable seam keeps flowing — visually demonstrating one-sidedness.
+const PCOUNT = (innerWidth<560)? 9000 : 18000;
+const pUV = new Float32Array(PCOUNT*2);
+const pSeed = new Float32Array(PCOUNT);
+for(let i=0;i<PCOUNT;i++){
+  pUV[i*2]   = Math.random();              // u start
+  pUV[i*2+1] = Math.random();              // v lane
+  pSeed[i]   = Math.random();
+}
+const pGeo = new THREE.BufferGeometry();
+pGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(PCOUNT*3),3));
+pGeo.setAttribute('aUV', new THREE.BufferAttribute(pUV,2));
+pGeo.setAttribute('aSeed', new THREE.BufferAttribute(pSeed,1));
+pGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0,0,0), 24);
+
+const pUniforms = {
+  uTime:   { value: 0 },
+  uMorph:  { value: 0 },
+  uPulse:  { value: 0 },
+  uHue:    { value: 0.58 },
+  uAmp:    { value: 1.0 },
+  uSize:   { value: DPR* (innerWidth<560?2.0:2.6) },
+  uSpeed:  { value: 0.10 },
+  uOn:     { value: 1.0 },
+};
+const pMat = new THREE.ShaderMaterial({
+  uniforms: pUniforms,
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+  vertexShader: surfaceGLSL + `
+    attribute vec2 aUV;
+    attribute float aSeed;
+    uniform float uTime, uMorph, uPulse, uAmp, uSize, uSpeed;
+    varying float vGlow, vHueOff;
+
+    vec3 calc(float u, float v){
+      vec3 pos = surfacePos(u, v, uMorph);
+      float wob = sin(u*3.0 - uTime*1.3)*0.18 + sin(v*4.0 + uTime*1.7)*0.10;
+      wob *= (1.0 + uPulse*2.4);
+      vec3 n = normalize(pos)+vec3(1e-5);
+      pos += n*wob*uAmp;
+      return pos;
+    }
+    void main(){
+      // travel along u over time, wrap continuously
+      float u = fract(aUV.x + uTime*uSpeed*(0.6+aSeed*0.8));
+      float v = aUV.y;
+      float U = u*TAU, V = v*TAU;
+      vec3 pos = calc(U, V);
+      // lift slightly off the skin so points read as a luminous mist
+      vec3 n = normalize(pos)+vec3(1e-5);
+      pos += n * (0.05 + 0.12*sin(aSeed*40.0+uTime));
+
+      vGlow = 0.5 + 0.5*sin(u*TAU*4.0 - uTime*3.0 + aSeed*6.28);
+      vHueOff = aSeed*0.3 + v*0.4;
+
+      vec4 mv = viewMatrix * modelMatrix * vec4(pos,1.0);
+      gl_Position = projectionMatrix * mv;
+      float sz = uSize * (0.6 + vGlow*1.4) * (1.0+uPulse*1.5);
+      gl_PointSize = sz * (24.0 / -mv.z);
+    }
+  `,
+  fragmentShader: `
+    precision highp float;
+    uniform float uHue, uOn, uTime;
+    varying float vGlow, vHueOff;
+    vec3 hsv2rgb(vec3 c){vec3 p=abs(fract(c.xxx+vec3(0.0,2.0/3.0,1.0/3.0))*6.0-3.0);return c.z*mix(vec3(1.0),clamp(p-1.0,0.0,1.0),c.y);}
+    void main(){
+      vec2 d = gl_PointCoord - 0.5;
+      float r = length(d);
+      if(r>0.5) discard;
+      float core = smoothstep(0.5,0.0,r);
+      core = pow(core, 1.6);
+      vec3 c = hsv2rgb(vec3(fract(uHue+vHueOff), 0.55, 1.0));
+      c = mix(c, vec3(1.0), core*0.5);
+      gl_FragColor = vec4(c*core*(0.4+vGlow), core*uOn);
+    }
+  `
+});
+const points = new THREE.Points(pGeo, pMat);
+root.add(points);
+
+// ===================== STARFIELD BACKDROP =====================
+(function stars(){
+  const SC=600;
+  const g=new THREE.BufferGeometry();
+  const pos=new Float32Array(SC*3);
+  for(let i=0;i<SC;i++){
+    const rr=50+Math.random()*70;
+    const th=Math.random()*Math.PI*2, ph=Math.acos(2*Math.random()-1);
+    pos[i*3]=rr*Math.sin(ph)*Math.cos(th);
+    pos[i*3+1]=rr*Math.sin(ph)*Math.sin(th);
+    pos[i*3+2]=rr*Math.cos(ph);
+  }
+  g.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  const m=new THREE.PointsMaterial({color:0x556,size:0.6,sizeAttenuation:true,transparent:true,opacity:0.55,blending:THREE.AdditiveBlending,depthWrite:false});
+  const s=new THREE.Points(g,m);
+  scene.add(s);
+})();
+
+// ===================== STATE / INTERACTION =====================
+const state = {
+  morph: 0,            // current
+  morphTarget: 0,      // snap target when manual
+  autoMorph: true,
+  flowOn: true,
+  trail: false,
+  autoCam: true,
+  rotX: 0.25, rotY: 0,
+  velX: 0, velY: 0.0018,
+  dist: 30, distTarget: 30,
+  hue: 0.58,
+  pulse: 0,
+  dragging:false, lastX:0, lastY:0,
+};
+
+const NAMES = ['KLEIN BOTTLE','MÖBIUS STRIP','TORUS KNOT (2,3)'];
+const HINTS = ['tube self-passing through 4D shadow','single edge · one-sided ribbon · half-twist','closed non-trivial knotted tube'];
+const pName=document.getElementById('pName'), pHint=document.getElementById('pHint'), pFill=document.getElementById('pFill');
+
+function snapName(){
+  const idx = Math.round(state.morph)%3;
+  pName.textContent = NAMES[idx];
+  pHint.textContent = HINTS[idx];
+}
+
+// pointer drag rotate
+function down(x,y){ state.dragging=true; state.lastX=x; state.lastY=y; }
+function move(x,y){
+  if(!state.dragging) return;
+  const dx=x-state.lastX, dy=y-state.lastY;
+  state.lastX=x; state.lastY=y;
+  state.velY = dx*0.005;
+  state.velX = dy*0.005;
+  state.rotY += dx*0.005;
+  state.rotX += dy*0.005;
+  state.rotX = Math.max(-1.3, Math.min(1.3, state.rotX));
+}
+function up(){ state.dragging=false; }
+
+canvas.addEventListener('pointerdown',e=>{ down(e.clientX,e.clientY); canvas.setPointerCapture(e.pointerId); });
+canvas.addEventListener('pointermove',e=>move(e.clientX,e.clientY));
+canvas.addEventListener('pointerup',up);
+canvas.addEventListener('pointercancel',up);
+
+// wheel = morph + slight zoom
+canvas.addEventListener('wheel',e=>{
+  e.preventDefault();
+  state.autoMorph=false; setChip('morph',false);
+  state.morph += e.deltaY*0.0016;
+  state.morph = Math.max(0, Math.min(2, state.morph));
+  state.morphTarget = state.morph;
+  // zoom on shift or pinch-ish via ctrl
+  if(e.ctrlKey){
+    state.distTarget += e.deltaY*0.02;
+    state.distTarget = Math.max(16, Math.min(48, state.distTarget));
+  }
+  snapName();
+},{passive:false});
+
+// pinch zoom (touch)
+let pinchD=0;
+canvas.addEventListener('touchstart',e=>{
+  if(e.touches.length===2){
+    pinchD=Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
+  }
+},{passive:false});
+canvas.addEventListener('touchmove',e=>{
+  if(e.touches.length===2){
+    e.preventDefault();
+    const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
+    state.distTarget += (pinchD-d)*0.05;
+    state.distTarget = Math.max(16, Math.min(48, state.distTarget));
+    pinchD=d;
+  }
+},{passive:false});
+
+// tap / click pulse
+function pulse(){ state.pulse = 1.0; state.hue = (state.hue + 0.07)%1.0; }
+canvas.addEventListener('click', pulse);
+
+// keyboard
+addEventListener('keydown',e=>{
+  if(e.code==='Space'){ e.preventDefault(); state.autoMorph=false; setChip('morph',false);
+    state.morphTarget = (Math.round(state.morph)+1)%3; }
+  else if(e.key==='r'||e.key==='R'){ reset(); }
+  else if(e.key===' '){ /* handled */ }
+});
+
+function reset(){
+  state.morph=0; state.morphTarget=0; state.autoMorph=true; setChip('morph',true);
+  state.rotX=0.25; state.rotY=0; state.velX=0; state.velY=0.0018;
+  state.distTarget=30; state.hue=0.58;
+  snapName();
+}
+
+// chips
+const chips = document.querySelectorAll('.chip');
+function setChip(act,on){ chips.forEach(c=>{ if(c.dataset.act===act) c.classList.toggle('on',on); }); }
+chips.forEach(c=>{
+  c.addEventListener('click',()=>{
+    const a=c.dataset.act;
+    if(a==='morph'){ state.autoMorph=!state.autoMorph; c.classList.toggle('on',state.autoMorph); }
+    else if(a==='flow'){ state.flowOn=!state.flowOn; c.classList.toggle('on',state.flowOn); points.visible=state.flowOn; }
+    else if(a==='trail'){ state.trail=!state.trail; c.classList.toggle('on',state.trail); renderer.autoClearColor=!state.trail; }
+    else if(a==='cam'){ state.autoCam=!state.autoCam; c.classList.toggle('on',state.autoCam); }
+  });
+});
+// initial chip states
+setChip('morph',true); setChip('flow',true); setChip('cam',true);
+
+// trail effect: when trail on, we don't clear; instead draw a faint fade quad
+let fadeMesh=null;
+(function makeFade(){
+  const fg=new THREE.PlaneGeometry(2,2);
+  const fm=new THREE.MeshBasicMaterial({color:0x04040a,transparent:true,opacity:0.14,depthTest:false,depthWrite:false});
+  fadeMesh=new THREE.Mesh(fg,fm);
+  fadeMesh.frustumCulled=false;
+})();
+const fadeScene=new THREE.Scene(); fadeScene.add(fadeMesh);
+const fadeCam=new THREE.OrthographicCamera(-1,1,1,-1,0,1);
+
+// ===================== RESIZE =====================
+function resize(){
+  const w=innerWidth, h=innerHeight;
+  renderer.setSize(w,h,false);
+  camera.aspect=w/h; camera.updateProjectionMatrix();
+}
+addEventListener('resize',resize);
+resize();
+
+// ===================== HUD STATS =====================
+const sFps=document.getElementById('sFps'), sP=document.getElementById('sP'), sG=document.getElementById('sG');
+sP.textContent = PCOUNT.toLocaleString();
+let fpsT=0, fpsC=0, fpsShown=60;
+
+// ===================== ANIMATE =====================
+let last=performance.now();
+let firstFrames=0;
+function tick(now){
+  const dt = Math.min(0.05, (now-last)/1000); last=now;
+  const t = now*0.001;
+
+  // morph progression
+  if(state.autoMorph){
+    state.morph += dt*0.10;
+    if(state.morph>2.0) state.morph=0.0;
+    snapName();
+  } else {
+    state.morph += (state.morphTarget - state.morph)*Math.min(1, dt*4.0);
+    if(Math.abs(state.morphTarget-state.morph)<0.003) state.morph=state.morphTarget;
+  }
+
+  // camera distance ease
+  state.dist += (state.distTarget-state.dist)*Math.min(1,dt*4.0);
+  camera.position.z = state.dist;
+
+  // rotation: drag inertia + auto
+  if(!state.dragging){
+    if(state.autoCam){ state.rotY += 0.0016 + state.velY; }
+    else state.rotY += state.velY;
+    state.rotX += state.velX;
+    state.velY *= 0.95; state.velX *= 0.90;
+    state.rotX += (0 - state.rotX*0.02); // gentle drift to level when idle-ish? keep subtle
+    state.rotX = Math.max(-1.3, Math.min(1.3, state.rotX));
+  }
+  root.rotation.y = state.rotY;
+  root.rotation.x = state.rotX;
+  root.rotation.z = Math.sin(t*0.13)*0.08;
+
+  // pulse decay
+  state.pulse *= 0.92;
+  if(state.pulse<0.001) state.pulse=0;
+
+  // hue slow drift
+  const hue = (state.hue + t*0.006)%1.0;
+
+  // amp breathing
+  const amp = 1.0 + Math.sin(t*0.6)*0.12;
+
+  // push uniforms
+  surfaceUniforms.uTime.value = t;
+  surfaceUniforms.uMorph.value = state.morph;
+  surfaceUniforms.uPulse.value = state.pulse;
+  surfaceUniforms.uHue.value = hue;
+  surfaceUniforms.uAmp.value = amp;
+  pUniforms.uTime.value = t;
+  pUniforms.uMorph.value = state.morph;
+  pUniforms.uPulse.value = state.pulse;
+  pUniforms.uHue.value = hue;
+  pUniforms.uAmp.value = amp;
+  pUniforms.uOn.value = state.flowOn?1.0:0.0;
+
+  pFill.style.width = ((state.morph/2.0)*100).toFixed(1)+'%';
+
+  // render (trail mode handled by fade quad instead of clear)
+  if(state.trail){
+    renderer.autoClearColor=false;
+    renderer.render(fadeScene, fadeCam); // draw fade
+    renderer.render(scene, camera);
+  } else {
+    renderer.autoClearColor=true;
+    renderer.render(scene, camera);
+  }
+
+  // fps
+  fpsC++; fpsT+=dt;
+  if(fpsT>=0.5){ fpsShown=Math.round(fpsC/fpsT); fpsC=0; fpsT=0; sFps.textContent=fpsShown; }
+
+  if(firstFrames<3){ firstFrames++; }
+  requestAnimationFrame(tick);
+}
+snapName();
+requestAnimationFrame(tick);
+
+// expose for self-verification
+window.__phantom = {
+  state,
+  ready: true,
+  setMorph(m){ state.autoMorph=false; setChip('morph',false); state.morph=m; state.morphTarget=m; snapName(); },
+  pulse,
+  rotate(dx,dy){ state.rotY+=dx; state.rotX=Math.max(-1.3,Math.min(1.3,state.rotX+dy)); },
+  info(){ return { morph:+state.morph.toFixed(3), pcount:PCOUNT, fps:fpsShown, flow:state.flowOn, glRendererOK:!!renderer.getContext() }; }
+};
+
+})();
+</script>
+</body>
+</html>

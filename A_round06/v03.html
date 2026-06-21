@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>SILK — interactive cloth</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { height:100%; width:100%; overflow:hidden; background:#05060e; }
+  body {
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    touch-action:none; -webkit-tap-highlight-color:transparent; cursor:none;
+  }
+  #stage { position:fixed; inset:0; display:block; }
+  /* soft vignette + grain on top */
+  #vig {
+    position:fixed; inset:0; pointer-events:none; mix-blend-mode:multiply;
+    background:radial-gradient(120% 90% at 50% 40%, transparent 45%, rgba(2,3,10,.55) 100%);
+  }
+  /* custom cursor ring */
+  #cur {
+    position:fixed; top:0; left:0; width:54px; height:54px; margin:-27px 0 0 -27px;
+    border-radius:50%; pointer-events:none; z-index:30; transition:width .18s,height .18s,margin .18s,border-color .25s;
+    border:1.5px solid rgba(180,220,255,.55);
+    box-shadow:0 0 22px rgba(120,180,255,.35), inset 0 0 14px rgba(120,180,255,.12);
+    mix-blend-mode:screen;
+  }
+  #cur.grab { width:30px; height:30px; margin:-15px 0 0 -15px; border-color:rgba(255,140,210,.9); box-shadow:0 0 26px rgba(255,90,200,.5), inset 0 0 12px rgba(255,90,200,.25); }
+  #cur::after{ content:""; position:absolute; inset:42%; border-radius:50%; background:rgba(220,235,255,.85); box-shadow:0 0 8px rgba(200,230,255,.9); }
+
+  .ui { position:fixed; z-index:20; pointer-events:none; user-select:none; color:#cdd6f4; }
+  #title {
+    top:26px; left:30px; line-height:1.02;
+  }
+  #title b { display:block; font-weight:800; letter-spacing:.34em; font-size:38px;
+    background:linear-gradient(95deg,#ff7ad9,#9b8cff 38%,#5fe9ff 72%,#ffd479);
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+    text-shadow:0 0 30px rgba(140,180,255,.25); }
+  #title span { display:block; margin-top:7px; font-size:11.5px; letter-spacing:.42em;
+    font-weight:500; color:rgba(180,195,235,.62); text-transform:uppercase; }
+  #hint {
+    bottom:24px; left:30px; font-size:12px; letter-spacing:.05em; color:rgba(176,190,230,.55);
+    max-width:60vw;
+  }
+  #hint kbd { font:inherit; padding:1px 7px; border-radius:6px; background:rgba(150,180,255,.12);
+    border:1px solid rgba(150,180,255,.18); color:#dbe3ff; margin:0 1px; }
+  #stat {
+    bottom:24px; right:30px; text-align:right; font-size:11px; letter-spacing:.14em;
+    color:rgba(150,168,215,.5); text-transform:uppercase; font-variant-numeric:tabular-nums;
+  }
+  #stat b{ color:rgba(200,215,255,.78); font-weight:700; }
+  .fade { animation:fade 1.4s ease both; }
+  @keyframes fade { from{opacity:0; transform:translateY(8px);} to{opacity:1; transform:none;} }
+  @media (max-width:560px){
+    #title b{ font-size:27px; letter-spacing:.26em; }
+    #title{ top:16px; left:18px; }
+    #hint{ left:18px; right:18px; bottom:42px; font-size:11px; max-width:none; line-height:1.9; }
+    #hint .deskonly{ display:none; }
+    #stat{ right:16px; left:18px; bottom:16px; font-size:10px; text-align:left; }
+  }
+  @media (prefers-reduced-motion: reduce){ .fade{animation:none;} }
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <div id="vig"></div>
+  <div id="cur"></div>
+
+  <div class="ui fade" id="title"><b>SILK</b><span>drag &nbsp;·&nbsp; tear &nbsp;·&nbsp; let it fall</span></div>
+  <div class="ui fade" id="hint" style="animation-delay:.25s">
+    <kbd>drag</kbd> grab &nbsp; <kbd>tear</kbd> slice fast &nbsp; <kbd>scroll</kbd> wind<span class="deskonly"> &nbsp; <kbd>space</kbd> re-weave &nbsp; <kbd>G</kbd> gravity &nbsp; <kbd>R</kbd> reset</span>
+  </div>
+  <div class="ui fade" id="stat" style="animation-delay:.4s">
+    <span id="sfps">— fps</span> · <span>pins <b id="spin">2</b></span> · <span>wind <b id="swind">0</b></span>
+  </div>
+
+<script>
+"use strict";
+(() => {
+  const cv = document.getElementById('stage');
+  const g  = cv.getContext('2d', { alpha:false, desynchronized:true });
+  const cur = document.getElementById('cur');
+  const sfps = document.getElementById('sfps');
+  const spin = document.getElementById('spin');
+  const swind = document.getElementById('swind');
+
+  let W=0,H=0,DPR=1;
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // ---------- cloth model ----------
+  let COLS, ROWS, REST;        // grid dims + rest spacing
+  let pts=[], cons=[];         // particles + constraints
+  let originX=0, originY=0;    // top-left anchor of grid in world
+
+  // simulation params
+  const GRAV = 0.42;           // base gravity (px/step^2)
+  let gravMul = 1;             // toggled by G
+  let windX = 0, windTarget = 0;
+  let timeT = 0;
+
+  // pointer
+  const ptr = { x:-9999, y:-9999, px:-9999, py:-9999, down:false, has:false };
+  let grabbed = null, grabOff = {x:0,y:0};
+  const GRAB_R = 26, PUSH_R = 120, TEAR_SPEED = 38;
+
+  function build(){
+    // size grid to viewport, keep cells ~square, bound the count for perf
+    const isMobile = Math.min(W,H) < 620;
+    COLS = isMobile ? 28 : (W>1700? 52 : 44);
+    REST = (W*0.62) / (COLS-1);
+    ROWS = Math.min(isMobile?26:34, Math.max(14, Math.round((H*0.60)/REST)));
+    const gw = (COLS-1)*REST;
+    originX = (W - gw)/2;
+    originY = H*0.12;
+
+    pts.length=0; cons.length=0;
+    for(let y=0;y<ROWS;y++){
+      for(let x=0;x<COLS;x++){
+        const px = originX + x*REST;
+        const py = originY + y*REST;
+        // default: pin the two top corners -> sheet hangs in a catenary drape
+        const pinned = (y===0) && (x===0 || x===COLS-1);
+        pts.push({ x:px,y:py, ox:px,oy:py, pin:pinned, anchx:px, anchy:py });
+      }
+    }
+    const idx=(x,y)=>y*COLS+x;
+    for(let y=0;y<ROWS;y++){
+      for(let x=0;x<COLS;x++){
+        if(x<COLS-1) cons.push({a:idx(x,y), b:idx(x+1,y), rest:REST, alive:true});
+        if(y<ROWS-1) cons.push({a:idx(x,y), b:idx(x,y+1), rest:REST, alive:true});
+        // shear constraints (diagonals) keep it from collapsing, woven feel
+        if(x<COLS-1 && y<ROWS-1){
+          cons.push({a:idx(x,y), b:idx(x+1,y+1), rest:REST*1.41421, alive:true, shear:true});
+          cons.push({a:idx(x+1,y), b:idx(x,y+1), rest:REST*1.41421, alive:true, shear:true});
+        }
+      }
+    }
+    countPins();
+  }
+  function countPins(){
+    let n=0; for(const p of pts) if(p.pin) n++; spin.textContent=n;
+  }
+
+  // ---------- pin presets cycling with space ----------
+  let pinMode = 0; // 0:two corners 1:full top edge 2:four corners 3:center 4:none(rain)
+  function applyPins(){
+    const idx=(x,y)=>y*COLS+x;
+    for(const p of pts) p.pin=false;
+    if(pinMode===0){ pts[idx(0,0)].pin=true; pts[idx(COLS-1,0)].pin=true; }
+    else if(pinMode===1){ for(let x=0;x<COLS;x++) pts[idx(x,0)].pin=true; }
+    else if(pinMode===2){ pts[idx(0,0)].pin=pts[idx(COLS-1,0)].pin=pts[idx(0,ROWS-1)].pin=pts[idx(COLS-1,ROWS-1)].pin=true; }
+    else if(pinMode===3){ pts[idx((COLS>>1),0)].pin=true; }
+    else if(pinMode===4){ /* none */ }
+    countPins();
+  }
+
+  // ---------- physics ----------
+  function step(dt){
+    const damp = 0.984;
+    const gy = GRAV * gravMul;
+    timeT += dt;
+    // ambient breathing wind so cloth never sits dead-still
+    const ambient = Math.sin(timeT*0.0011)*0.16 + Math.sin(timeT*0.00043)*0.09;
+    windX += (windTarget - windX)*0.05;
+    windTarget *= 0.992;                 // gusts decay back toward calm
+    const totalWind = windX + ambient;
+    const windF = totalWind * REST * 0.024;   // resolution-independent, gentle
+
+    // integrate
+    for(let i=0;i<pts.length;i++){
+      const p=pts[i];
+      if(p.pin){ p.x=p.anchx; p.y=p.anchy; p.ox=p.x; p.oy=p.y; continue; }
+      let vx=(p.x-p.ox)*damp, vy=(p.y-p.oy)*damp;
+      p.ox=p.x; p.oy=p.y;
+      // per-particle turbulence -> ripples that travel across the cloth
+      const turb = Math.sin((p.y*0.012)+(timeT*0.004))*0.45 + Math.sin((p.x*0.02)-(timeT*0.003))*0.25;
+      p.x += vx + windF*(1 + turb*0.6) + turb*0.05;
+      p.y += vy + gy + windF*turb*0.12;
+      // soft centering so a free sheet can't be advected permanently off-frame
+      if(p.x < -REST*1.5) p.x += ( -REST*1.5 - p.x)*0.06;
+      else if(p.x > W+REST*1.5) p.x -= (p.x - (W+REST*1.5))*0.06;
+    }
+
+    // pointer force field (push / drag handled separately)
+    if(ptr.has && !grabbed){
+      const vmag = Math.hypot(ptr.x-ptr.px, ptr.y-ptr.py);
+      const tearing = vmag > TEAR_SPEED;
+      const R = ptr.down ? PUSH_R*1.15 : PUSH_R;
+      const R2 = R*R;
+      for(let i=0;i<pts.length;i++){
+        const p=pts[i]; if(p.pin) continue;
+        const dx=p.x-ptr.x, dy=p.y-ptr.y; const d2=dx*dx+dy*dy;
+        if(d2<R2 && d2>0.01){
+          const d=Math.sqrt(d2); const f=(1-d/R);
+          const push = ptr.down ? 6.2 : 2.4;
+          p.x += (dx/d)*f*push + (ptr.x-ptr.px)*f*0.55;
+          p.y += (dy/d)*f*push + (ptr.y-ptr.py)*f*0.55;
+        }
+      }
+      if(tearing && ptr.down) sliceAt(ptr.px,ptr.py,ptr.x,ptr.y);
+    }
+
+    // grabbed particle follows pointer
+    if(grabbed){
+      grabbed.x = ptr.x + grabOff.x; grabbed.y = ptr.y + grabOff.y;
+      grabbed.ox = grabbed.x; grabbed.oy = grabbed.y;
+    }
+
+    // constraint relaxation (Verlet) — several iterations for stiffness
+    const ITER = reduce?2:3;
+    for(let k=0;k<ITER;k++){
+      for(let c=0;c<cons.length;c++){
+        const con=cons[c]; if(!con.alive) continue;
+        const a=pts[con.a], b=pts[con.b];
+        let dx=b.x-a.x, dy=b.y-a.y;
+        let d=Math.sqrt(dx*dx+dy*dy)||0.0001;
+        // structural over-stretch tears; shear just relaxes
+        if(!con.shear && d > con.rest*4.2){ con.alive=false; continue; }
+        const diff=(d-con.rest)/d;
+        const stiff = con.shear? 0.64 : 1.0;   // shear softer than structural
+        if(a.pin && b.pin) continue;
+        // distribute the correction: each free endpoint moves half (full if partner pinned)
+        const wa = a.pin?0:1, wb = b.pin?0:1, ws = wa+wb;
+        const moveA = wa/ws, moveB = wb/ws;
+        const ox=dx*diff*stiff, oy=dy*diff*stiff;
+        a.x += ox*moveA; a.y += oy*moveA;
+        b.x -= ox*moveB; b.y -= oy*moveB;
+      }
+    }
+
+    // floor + walls (soft)
+    const floorY=H-2;
+    for(let i=0;i<pts.length;i++){
+      const p=pts[i]; if(p.pin) continue;
+      if(p.y>floorY){ p.y=floorY; p.oy=p.y + (p.y-p.oy)*0.3; p.x -= (p.x-p.ox)*0.18; }
+      if(p.x< -40){ p.x=-40; } if(p.x>W+40){ p.x=W+40; }
+    }
+  }
+
+  // tear: kill constraints crossing the swept pointer segment
+  function sliceAt(x0,y0,x1,y1){
+    for(let c=0;c<cons.length;c++){
+      const con=cons[c]; if(!con.alive||con.shear) continue;
+      const a=pts[con.a], b=pts[con.b];
+      if(segIntersect(x0,y0,x1,y1, a.x,a.y,b.x,b.y)){
+        con.alive=false;
+        // also drop touching shear diagonals nearby for clean rip
+      }
+    }
+  }
+  function segIntersect(ax,ay,bx,by, cx,cy,dx,dy){
+    const d1=cross(cx,cy,dx,dy,ax,ay), d2=cross(cx,cy,dx,dy,bx,by);
+    const d3=cross(ax,ay,bx,by,cx,cy), d4=cross(ax,ay,bx,by,dx,dy);
+    return ((d1>0)!==(d2>0)) && ((d3>0)!==(d4>0));
+  }
+  function cross(ax,ay,bx,by,px,py){ return (bx-ax)*(py-ay)-(by-ay)*(px-ax); }
+
+  // ---------- rendering ----------
+  // iridescent palette: hue shifts across surface + over time + with strain
+  function hueAt(u,v,strain){
+    let h = 285 + u*120 + Math.sin(v*3.1+timeT*0.0009)*40 + timeT*0.006;
+    h += strain*60;
+    return h;
+  }
+
+  function render(){
+    // trailing fade for silky motion-blur (instead of clearRect)
+    g.globalCompositeOperation='source-over';
+    g.fillStyle='rgba(5,6,14,0.30)';
+    g.fillRect(0,0,W,H);
+
+    const idx=(x,y)=>y*COLS+x;
+    g.globalCompositeOperation='lighter';
+    g.lineJoin='round';
+
+    // light direction for shading
+    const lx=0.45, ly=-0.55, lz=0.70;
+
+    for(let y=0;y<ROWS-1;y++){
+      for(let x=0;x<COLS-1;x++){
+        const p00=pts[idx(x,y)], p10=pts[idx(x+1,y)], p01=pts[idx(x,y+1)], p11=pts[idx(x+1,y+1)];
+        // skip quad if its bounding edges are torn away (both top edges dead -> hole)
+        const cTop = consAlive(idx(x,y),idx(x+1,y));
+        const cLeft= consAlive(idx(x,y),idx(x,y+1));
+        if(!cTop && !cLeft) continue;
+        // strain from edge length vs rest
+        const e1=Math.hypot(p10.x-p00.x,p10.y-p00.y);
+        const e2=Math.hypot(p01.x-p00.x,p01.y-p00.y);
+        const strain=Math.min(1,((e1+e2)/(2*REST)-1)*1.4);
+
+        // degenerate / collapsed quad? (signed area near zero) -> skip
+        const ax=p11.x-p00.x, ay=p11.y-p00.y;
+        const bx=p10.x-p01.x, by=p10.y-p01.y;
+        const area=Math.abs(ax*by - ay*bx);
+        if(area<0.4) continue;
+        // fake-3D shading: treat the quad's screen-space tilt as a surface normal proxy.
+        // sx,sy = average horizontal edge vector; the steeper the local fold, the more it
+        // tilts toward/away from the light -> shimmering creases.
+        const sx=(p10.x-p00.x+p11.x-p01.x), sy=(p10.y-p00.y+p11.y-p01.y);
+        let nx=sy*0.5, ny=-sx*0.5, n3=REST*1.2;
+        const nl=Math.hypot(nx,ny,n3)||1; nx/=nl; ny/=nl; const nzz=n3/nl;
+        let diff = nx*lx + ny*ly + nzz*lz;
+        diff = 0.35 + 0.65*Math.max(0,diff);
+        // specular sheen
+        const spec = Math.pow(Math.max(0, diff), 6)*0.9;
+
+        const u=x/(COLS-1), v=y/(ROWS-1);
+        const h=hueAt(u,v,strain);
+        const sat = 78 - strain*30;
+        const lig = (16 + diff*46 + spec*22) * (1-strain*0.25);
+        const alpha = 0.50 * (cTop&&cLeft?1:0.7);
+
+        g.beginPath();
+        g.moveTo(p00.x,p00.y); g.lineTo(p10.x,p10.y); g.lineTo(p11.x,p11.y); g.lineTo(p01.x,p01.y); g.closePath();
+        g.fillStyle = `hsla(${h},${sat}%,${lig}%,${alpha})`;
+        g.fill();
+      }
+    }
+
+    // shimmering weave lines on top (thin, only structural alive)
+    g.lineWidth = Math.max(0.6, REST*0.045);
+    for(let c=0;c<cons.length;c++){
+      const con=cons[c]; if(!con.alive||con.shear) continue;
+      const a=pts[con.a], b=pts[con.b];
+      const d=Math.hypot(b.x-a.x,b.y-a.y);
+      const strain=Math.min(1,(d/con.rest-1)*1.4);
+      const u=(a.x-originX)/((COLS-1)*REST);
+      const h=hueAt(Math.max(0,Math.min(1,u)),0.3,strain);
+      g.strokeStyle=`hsla(${h},90%,${72+strain*18}%,${0.10+strain*0.55})`;
+      g.beginPath(); g.moveTo(a.x,a.y); g.lineTo(b.x,b.y); g.stroke();
+    }
+
+    // glowing pins
+    g.globalCompositeOperation='lighter';
+    for(const p of pts){ if(!p.pin) continue;
+      const r=REST*0.5;
+      const grd=g.createRadialGradient(p.x,p.y,0,p.x,p.y,r*2.4);
+      grd.addColorStop(0,'rgba(255,255,255,.9)');
+      grd.addColorStop(.4,'rgba(180,210,255,.5)');
+      grd.addColorStop(1,'rgba(120,160,255,0)');
+      g.fillStyle=grd; g.beginPath(); g.arc(p.x,p.y,r*2.4,0,7); g.fill();
+    }
+
+    // pointer aura on the fabric
+    if(ptr.has){
+      const r = ptr.down? PUSH_R*1.05: PUSH_R*0.7;
+      const grd=g.createRadialGradient(ptr.x,ptr.y,0,ptr.x,ptr.y,r);
+      const c = ptr.down? '255,90,200' : '120,200,255';
+      grd.addColorStop(0,`rgba(${c},${ptr.down?0.20:0.10})`);
+      grd.addColorStop(1,`rgba(${c},0)`);
+      g.fillStyle=grd; g.beginPath(); g.arc(ptr.x,ptr.y,r,0,7); g.fill();
+    }
+    g.globalCompositeOperation='source-over';
+  }
+  function consAlive(ia,ib){
+    // small helper, linear-ish but constraints are ordered; cache map for speed
+    return aliveMap.get(ia*100000+ib) ?? aliveMap.get(ib*100000+ia) ?? false;
+  }
+  let aliveMap=new Map();
+  function rebuildAliveMap(){
+    aliveMap.clear();
+    for(const con of cons){ if(con.shear) continue; aliveMap.set(con.a*100000+con.b, con.alive); }
+  }
+
+  // ---------- main loop ----------
+  let last=performance.now(), acc=0, fpsT=last, fpsN=0;
+  const STEP=1000/60;
+  function frame(now){
+    let dtMs = now-last; last=now; if(dtMs>60) dtMs=60;
+    acc+=dtMs;
+    let iters=0;
+    while(acc>=STEP && iters<3){ step(STEP); acc-=STEP; iters++; }
+    // refresh pointer prev each visual frame (for force based on motion)
+    rebuildAliveMap();
+    render();
+    ptr.px=ptr.x; ptr.py=ptr.y;
+
+    fpsN++;
+    if(now-fpsT>500){ const f=Math.round(fpsN*1000/(now-fpsT)); sfps.textContent=f+' fps'; swind.textContent=windX.toFixed(1); fpsN=0; fpsT=now; }
+    requestAnimationFrame(frame);
+  }
+
+  // ---------- input ----------
+  function setPtr(x,y){
+    ptr.x=x; ptr.y=y;
+    if(!ptr.has){ ptr.px=x; ptr.py=y; }
+    ptr.has=true;
+    cur.style.transform=`translate(${x}px,${y}px)`;
+  }
+  function findGrab(x,y){
+    let best=null, bd=GRAB_R*GRAB_R;
+    for(const p of pts){ if(p.pin) continue; const dx=p.x-x, dy=p.y-y, d=dx*dx+dy*dy; if(d<bd){bd=d;best=p;} }
+    return best;
+  }
+  function down(x,y){
+    setPtr(x,y); ptr.down=true; ptr.px=x; ptr.py=y;
+    grabbed=findGrab(x,y);
+    if(grabbed){ grabOff.x=grabbed.x-x; grabOff.y=grabbed.y-y; cur.classList.add('grab'); }
+  }
+  function move(x,y){ setPtr(x,y); }
+  function up(){ ptr.down=false; grabbed=null; cur.classList.remove('grab'); }
+
+  cv.addEventListener('mousemove', e=>move(e.clientX,e.clientY));
+  cv.addEventListener('mousedown', e=>down(e.clientX,e.clientY));
+  window.addEventListener('mouseup', up);
+  cv.addEventListener('mouseleave', ()=>{ /* keep last; ambient continues */ });
+  window.addEventListener('mouseenter', e=>{ if(e.clientX) setPtr(e.clientX,e.clientY); });
+
+  cv.addEventListener('touchstart', e=>{ const t=e.touches[0]; down(t.clientX,t.clientY); e.preventDefault(); },{passive:false});
+  cv.addEventListener('touchmove',  e=>{ const t=e.touches[0]; move(t.clientX,t.clientY); e.preventDefault(); },{passive:false});
+  cv.addEventListener('touchend',   e=>{ up(); e.preventDefault(); },{passive:false});
+
+  // scroll / wheel -> wind
+  window.addEventListener('wheel', e=>{
+    windTarget += (e.deltaY>0?1:-1)*0.6;
+    windTarget = Math.max(-9, Math.min(9, windTarget));
+    e.preventDefault();
+  }, {passive:false});
+
+  // keys
+  window.addEventListener('keydown', e=>{
+    if(e.code==='Space'){ pinMode=(pinMode+1)%5; applyPins(); kickAll(0.0); e.preventDefault(); }
+    else if(e.key==='g'||e.key==='G'){ gravMul = gravMul>0? -0.55 : 1; }
+    else if(e.key==='r'||e.key==='R'){ build(); }
+  });
+  function kickAll(){ for(const p of pts){ if(p.pin)continue; p.ox=p.x; p.oy=p.y; } }
+
+  // ---------- resize ----------
+  function resize(){
+    DPR=Math.min(window.devicePixelRatio||1, 2);
+    W=window.innerWidth; H=window.innerHeight;
+    cv.width=Math.floor(W*DPR); cv.height=Math.floor(H*DPR);
+    cv.style.width=W+'px'; cv.style.height=H+'px';
+    g.setTransform(DPR,0,0,DPR,0,0);
+    g.fillStyle='#05060e'; g.fillRect(0,0,W,H);
+    build();
+  }
+  let rzT; window.addEventListener('resize', ()=>{ clearTimeout(rzT); rzT=setTimeout(resize,180); });
+
+  // ---------- boot ----------
+  resize();
+  // gentle entrance: let cloth fall a touch before pointer center
+  setPtr(W*0.5, H*0.5); ptr.has=true; ptr.px=ptr.x; ptr.py=ptr.y;
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

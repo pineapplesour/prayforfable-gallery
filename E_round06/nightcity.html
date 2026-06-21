@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NEON_DRIFT.EXE — 486 DITHER RENDER</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0a0712;
+    --chrome:#1a1230;
+    --chrome2:#241845;
+    --edge:#3a2a66;
+    --edge-lt:#5a44a0;
+    --ink:#cfc2ff;
+    --ink-dim:#8d7fc0;
+    --cyan:#34e0e6;
+    --magenta:#ff3ea5;
+    --amber:#ffb454;
+    --green:#52f2a8;
+    --hot:#ff2e6e;
+    --panel:#140d28;
+    --panel2:#1d143a;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:
+      radial-gradient(ellipse at 50% 30%, #1a0f33 0%, #0a0712 70%);
+    color:var(--ink);
+    font-family:'VT323',monospace;
+    display:flex;align-items:center;justify-content:center;
+    min-height:100vh;padding:18px;
+    -webkit-font-smoothing:none;
+    image-rendering:pixelated;
+    overflow-x:hidden;
+  }
+
+  /* ===== Window chrome ===== */
+  .win{
+    width:100%;max-width:880px;
+    background:var(--chrome);
+    border:2px solid var(--edge-lt);
+    border-radius:3px;
+    box-shadow:
+      0 0 0 2px #000,
+      6px 6px 0 0 rgba(0,0,0,.6),
+      0 0 36px rgba(52,224,230,.10),
+      0 0 60px rgba(255,62,165,.08);
+    overflow:hidden;
+  }
+  .titlebar{
+    display:flex;align-items:center;gap:8px;
+    background:linear-gradient(90deg,var(--magenta),#7b2ff7 55%,var(--cyan));
+    color:#0a0712;
+    padding:5px 8px;
+    border-bottom:2px solid #000;
+  }
+  .titlebar .dots{display:flex;gap:5px}
+  .titlebar .dots span{
+    width:11px;height:11px;border:1px solid #000;display:inline-block;
+    background:#0a0712;
+  }
+  .titlebar .dots span:nth-child(1){background:var(--hot)}
+  .titlebar .dots span:nth-child(2){background:var(--amber)}
+  .titlebar .dots span:nth-child(3){background:var(--green)}
+  .titlebar h1{
+    font-family:'Press Start 2P',monospace;
+    font-size:9px;letter-spacing:1px;
+    flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    text-shadow:1px 1px 0 rgba(255,255,255,.3);
+  }
+  .titlebar .winbtns{display:flex;gap:3px}
+  .titlebar .winbtns b{
+    font-family:'Press Start 2P',monospace;font-size:8px;
+    background:#0a0712;color:var(--ink);
+    border:1px solid #000;padding:3px 5px;line-height:1;
+  }
+
+  .menubar{
+    display:flex;gap:2px;flex-wrap:wrap;
+    background:var(--chrome2);
+    border-bottom:2px solid #000;
+    padding:3px 6px;
+    font-size:17px;
+  }
+  .menubar span{padding:1px 7px;color:var(--ink-dim);cursor:default}
+  .menubar span:hover{background:var(--cyan);color:#0a0712}
+  .menubar .spacer{flex:1}
+  .menubar .stat{color:var(--cyan)}
+
+  /* ===== Body: render + side panel ===== */
+  .body{display:flex;gap:0;background:#000}
+  .stage{
+    position:relative;flex:1;min-width:0;
+    background:#05030d;
+    border-right:2px solid var(--edge);
+    overflow:hidden;
+  }
+  .scanwrap{position:relative;width:100%;line-height:0}
+  canvas#scene{
+    display:block;width:100%;height:auto;
+    image-rendering:pixelated;
+  }
+  /* CRT scanlines + vignette overlay */
+  .crt{
+    pointer-events:none;position:absolute;inset:0;
+    background:
+      repeating-linear-gradient(
+        to bottom,
+        rgba(0,0,0,0) 0px,
+        rgba(0,0,0,0) 2px,
+        rgba(0,0,0,.28) 3px,
+        rgba(0,0,0,.28) 4px
+      );
+    mix-blend-mode:multiply;
+  }
+  .crt::after{
+    content:"";position:absolute;inset:0;
+    background:radial-gradient(ellipse at center, rgba(0,0,0,0) 55%, rgba(0,0,0,.55) 100%);
+  }
+  .stage .tag{
+    position:absolute;left:8px;top:8px;z-index:3;
+    font-family:'Press Start 2P',monospace;font-size:8px;
+    color:var(--cyan);background:rgba(10,7,18,.7);
+    border:1px solid var(--cyan);padding:4px 6px;
+    text-shadow:0 0 6px var(--cyan);
+  }
+  .stage .tag.r{left:auto;right:8px;color:var(--magenta);border-color:var(--magenta);text-shadow:0 0 6px var(--magenta)}
+  .stage .footstrip{
+    position:absolute;left:0;right:0;bottom:0;z-index:3;
+    display:flex;justify-content:space-between;
+    font-size:16px;color:var(--ink-dim);
+    background:rgba(10,7,18,.78);border-top:1px solid var(--edge);
+    padding:1px 8px;
+  }
+  .stage .footstrip b{color:var(--green)}
+
+  /* ===== Side CONTROL panel ===== */
+  .panel{
+    width:228px;flex:0 0 228px;
+    background:var(--panel);
+    display:flex;flex-direction:column;
+    font-size:17px;
+  }
+  .sect{border-bottom:2px solid #000;padding:8px 9px}
+  .sect h2{
+    font-family:'Press Start 2P',monospace;font-size:8px;
+    color:var(--amber);letter-spacing:1px;margin-bottom:7px;
+    display:flex;justify-content:space-between;align-items:center;
+  }
+  .sect h2 i{color:var(--ink-dim);font-style:normal;font-size:7px}
+  .row{display:flex;justify-content:space-between;align-items:center;padding:1px 0;color:var(--ink)}
+  .row span:first-child{color:var(--ink-dim)}
+  .row .v{color:var(--cyan)}
+  .row .v.m{color:var(--magenta)}
+  .row .v.g{color:var(--green)}
+
+  /* sliders */
+  .ctl{margin:6px 0}
+  .ctl label{display:flex;justify-content:space-between;color:var(--ink-dim);margin-bottom:2px}
+  .ctl label b{color:var(--cyan);font-weight:normal}
+  input[type=range]{
+    -webkit-appearance:none;appearance:none;width:100%;height:14px;
+    background:var(--panel2);border:1px solid var(--edge);outline:none;
+    image-rendering:pixelated;
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;appearance:none;
+    width:12px;height:12px;background:var(--cyan);border:1px solid #000;cursor:pointer;
+    box-shadow:0 0 6px var(--cyan);
+  }
+  input[type=range]::-moz-range-thumb{
+    width:12px;height:12px;background:var(--cyan);border:1px solid #000;cursor:pointer;
+  }
+
+  /* buttons */
+  .btns{display:flex;gap:6px;margin-top:4px}
+  .btns button{
+    flex:1;font-family:'Press Start 2P',monospace;font-size:7px;
+    color:#0a0712;background:var(--cyan);
+    border:1px solid #000;padding:7px 4px;cursor:pointer;
+    box-shadow:2px 2px 0 #000;
+    transition:transform .04s;
+  }
+  .btns button.alt{background:var(--magenta)}
+  .btns button.gho{background:var(--panel2);color:var(--ink)}
+  .btns button:active{transform:translate(2px,2px);box-shadow:0 0 0 #000}
+
+  /* mode chips */
+  .chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:2px}
+  .chips b{
+    font-size:14px;padding:2px 6px;border:1px solid var(--edge);
+    color:var(--ink-dim);cursor:pointer;user-select:none;
+  }
+  .chips b.on{background:var(--cyan);color:#0a0712;border-color:var(--cyan)}
+
+  /* palette swatches */
+  .swatches{display:flex;gap:0;margin-top:4px;border:1px solid #000}
+  .swatches i{flex:1;height:18px;display:block}
+
+  /* LOG */
+  .log{flex:1;overflow:auto;padding:7px 9px;background:#0c0820}
+  .log .ln{color:var(--ink-dim);white-space:nowrap;font-size:15px;line-height:1.25}
+  .log .ln b{color:var(--green)}
+  .log .ln .c{color:var(--cyan)}
+  .log .ln .m{color:var(--magenta)}
+  .log .ln .w{color:var(--amber)}
+
+  .statusbar{
+    display:flex;justify-content:space-between;align-items:center;
+    background:var(--chrome2);border-top:2px solid #000;
+    padding:3px 8px;font-size:16px;color:var(--ink-dim);
+  }
+  .statusbar .blink{color:var(--green);animation:bl 1s steps(2) infinite}
+  @keyframes bl{50%{opacity:.25}}
+
+  @media (max-width:760px){
+    body{padding:6px}
+    .body{flex-direction:column}
+    .stage{border-right:none;border-bottom:2px solid var(--edge)}
+    .panel{width:100%;flex:0 0 auto}
+    .log{max-height:150px}
+    .titlebar h1{font-size:7px}
+  }
+</style>
+</head>
+<body>
+  <div class="win" role="application" aria-label="Neon Drift dithered night city renderer">
+    <!-- Title bar -->
+    <div class="titlebar">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <h1>NEON_DRIFT.EXE</h1>
+      <div class="winbtns"><b>_</b><b>[]</b><b>X</b></div>
+    </div>
+
+    <!-- Menu bar -->
+    <div class="menubar">
+      <span>FILE</span><span>RENDER</span><span>SCENE</span><span>PALETTE</span><span>HELP</span>
+      <span class="spacer"></span>
+      <span class="stat">DOS/486 · DAC&nbsp;8bit</span>
+    </div>
+
+    <!-- Body -->
+    <div class="body">
+      <!-- Stage / render -->
+      <div class="stage">
+        <div class="scanwrap">
+          <canvas id="scene" width="320" height="220" aria-label="Dithered neon night city scene"></canvas>
+          <div class="crt"></div>
+        </div>
+        <div class="tag">NEON_DRIFT v0.486</div>
+        <div class="tag r" id="sceneTag">SCN: RAIN_BLVD</div>
+        <div class="footstrip">
+          <span>RES <b>320x220</b> · DITHER <b id="ftDither">BAYER 8x8</b></span>
+          <span>PAL <b id="ftPal">8</b> · <b id="ftFps">— ms</b></span>
+        </div>
+      </div>
+
+      <!-- CONTROL panel -->
+      <div class="panel">
+        <div class="sect">
+          <h2>CONTROL <i>RENDER</i></h2>
+          <div class="ctl">
+            <label>DITHER MATRIX <b id="lblMat">8x8</b></label>
+            <input type="range" id="mat" min="0" max="2" step="1" value="1" aria-label="dither matrix size">
+          </div>
+          <div class="ctl">
+            <label>PALETTE DEPTH <b id="lblPal">8</b></label>
+            <input type="range" id="pal" min="4" max="12" step="1" value="8" aria-label="palette colors">
+          </div>
+          <div class="ctl">
+            <label>NEON GAIN <b id="lblGain">1.15</b></label>
+            <input type="range" id="gain" min="60" max="170" step="1" value="115" aria-label="neon glow gain">
+          </div>
+          <div class="ctl">
+            <label>RAIN <b id="lblRain">ON</b></label>
+            <input type="range" id="rain" min="0" max="100" step="1" value="62" aria-label="rain density">
+          </div>
+          <div class="btns">
+            <button id="bRender">RENDER</button>
+            <button id="bAnim" class="alt">ANIM</button>
+            <button id="bSave" class="gho">SAVE</button>
+          </div>
+        </div>
+
+        <div class="sect">
+          <h2>SCENE <i>SELECT</i></h2>
+          <div class="chips" id="chips">
+            <b data-s="0" class="on">RAIN BLVD</b>
+            <b data-s="1">ALLEY</b>
+            <b data-s="2">SKYLINE</b>
+            <b data-s="3">SUBWAY</b>
+          </div>
+          <div class="row" style="margin-top:6px"><span>FOG</span><span class="v" id="vFog">0.32</span></div>
+          <div class="row"><span>WET ROAD</span><span class="v g" id="vWet">REFLECT</span></div>
+        </div>
+
+        <div class="sect">
+          <h2>PALETTE <i>LOCKED 8</i></h2>
+          <div class="swatches" id="swatches"></div>
+          <div class="row" style="margin-top:5px"><span>BASE</span><span class="v">COOL/NEON</span></div>
+          <div class="row"><span>GAMMA</span><span class="v m">2.20</span></div>
+        </div>
+
+        <div class="sect" style="flex:1;display:flex;flex-direction:column;padding:0">
+          <div style="padding:8px 9px 4px"><h2 style="margin:0">LOG <i>STDOUT</i></h2></div>
+          <div class="log" id="log"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Status bar -->
+    <div class="statusbar">
+      <span><span class="blink">●</span> READY · VESA 320x220x8</span>
+      <span id="stRight">ORDERED-DITHER OK</span>
+    </div>
+  </div>
+
+<script>
+(()=>{
+  "use strict";
+  const cv = document.getElementById('scene');
+  const W = cv.width, H = cv.height;
+  const ctx = cv.getContext('2d', {willReadFrequently:true});
+
+  // ---------- Limited palette (cool + neon), gamma-aware ----------
+  // 8 master colors; depth slider trims/extends around this set.
+  const PAL_FULL = [
+    [10, 8, 22],     // near-black cool
+    [26, 20, 56],    // deep indigo
+    [44, 34, 96],    // violet
+    [38, 70, 120],   // steel blue
+    [52, 224, 230],  // cyan neon
+    [255, 62, 165],  // magenta neon
+    [255, 180, 84],  // amber sign
+    [82, 242, 168]   // mint neon
+  ];
+  // ordering for "depth" trimming preference (dark->structural->neon)
+  const DEPTH_ORDER = [0,1,2,3,6,4,5,7,/* extras for >8 */];
+  const EXTRA = [[180,90,210],[120,40,90],[20,40,52],[240,240,255]];
+
+  function buildPalette(n){
+    let base = PAL_FULL.slice();
+    if(n <= 8){
+      // pick first n by depth order, but always keep darkest + a couple neons
+      const idx = DEPTH_ORDER.slice(0,n).sort((a,b)=>a-b);
+      base = idx.map(i=>PAL_FULL[i]);
+    } else {
+      base = PAL_FULL.concat(EXTRA.slice(0, n-8));
+    }
+    return base;
+  }
+
+  // 4x4 and 8x8 Bayer matrices (normalized 0..1, centered)
+  const BAYER4 = [
+    [ 0, 8, 2,10],
+    [12, 4,14, 6],
+    [ 3,11, 1, 9],
+    [15, 7,13, 5]
+  ];
+  function genBayer8(){
+    // standard recursive Bayer 8x8
+    const m=[];
+    const b4=BAYER4;
+    for(let y=0;y<8;y++){m.push([]);for(let x=0;x<8;x++){
+      const q = b4[Math.floor(y/2)%4 *0 + (y%4>=2?0:0)] ;// placeholder, recompute below
+      m[y].push(0);
+    }}
+    // proper recursion: M8 = 4*M4_tile + bayer2 offset
+    const B2=[[0,2],[3,1]];
+    const M=[];
+    for(let y=0;y<8;y++){M.push([]);for(let x=0;x<8;x++){
+      const hi = BAYER4[y%4][x%4];          // 0..15
+      const lo = B2[(y<4?0:1)][(x<4?0:1)];  // 0..3 block
+      // 8x8 value = 4*B4(inner) + B2(block) gives 0..63
+      M[y].push(4*BAYER4[y%4][x%4] + B2[(y>=4)?1:0][(x>=4)?1:0]);
+    }}
+    return M; // 0..63
+  }
+  const BAYER8 = genBayer8();
+
+  function matrixFor(mode){
+    if(mode===0) return {m:BAYER4, max:16, size:4};   // 4x4
+    if(mode===2){ // 2x2 coarse
+      const M2=[[0,2],[3,1]]; return {m:M2,max:4,size:2};
+    }
+    return {m:BAYER8, max:64, size:8};                // 8x8
+  }
+
+  // nearest palette color (linear-ish in sRGB, fine for this)
+  function nearest(pal, r,g,b){
+    let bi=0, bd=1e12;
+    for(let i=0;i<pal.length;i++){
+      const c=pal[i];
+      const dr=r-c[0], dg=g-c[1], db=b-c[2];
+      const d=dr*dr+dg*dg+db*db;
+      if(d<bd){bd=d;bi=i;}
+    }
+    return pal[bi];
+  }
+
+  // ---------- Scene generation into a float HDR-ish buffer ----------
+  // We render the scene at native W*H into a Float buffer (r,g,b 0..255+),
+  // then apply ordered dithering + quantization to that buffer.
+  const buf = new Float32Array(W*H*3);
+
+  function clearBuf(){ buf.fill(0); }
+  function px(x,y,r,g,b,a=1){
+    if(x<0||y<0||x>=W||y>=H) return;
+    const i=(y*W+x)*3;
+    buf[i]   = buf[i]*(1-a)+r*a;
+    buf[i+1] = buf[i+1]*(1-a)+g*a;
+    buf[i+2] = buf[i+2]*(1-a)+b*a;
+  }
+  function add(x,y,r,g,b,a=1){
+    if(x<0||y<0||x>=W||y>=H) return;
+    const i=(y*W+x)*3;
+    buf[i]   += r*a; buf[i+1]+=g*a; buf[i+2]+=b*a;
+  }
+
+  // deterministic pseudo-random
+  let seed=1337;
+  function rnd(){ seed=(seed*1103515245+12345)&0x7fffffff; return seed/0x7fffffff; }
+  function rseed(s){ seed=s>>>0 || 1; }
+
+  // vertical sky gradient (cool night, no sunset)
+  function sky(top,bot,horizon){
+    for(let y=0;y<horizon;y++){
+      const t=y/horizon;
+      const r=top[0]+(bot[0]-top[0])*t;
+      const g=top[1]+(bot[1]-top[1])*t;
+      const b=top[2]+(bot[2]-top[2])*t;
+      for(let x=0;x<W;x++){ const i=(y*W+x)*3; buf[i]=r;buf[i+1]=g;buf[i+2]=b; }
+    }
+  }
+
+  function star(){ // faint stars + low moon glow
+    for(let k=0;k<40;k++){
+      const x=(rnd()*W)|0, y=(rnd()*H*0.35)|0;
+      const v=120+rnd()*100; add(x,y,v*0.6,v*0.6,v,0.5);
+    }
+  }
+
+  // building with lit windows
+  function building(x0,bw,bh,horizon,bodyCol,glow){
+    const top=horizon-bh;
+    for(let y=top;y<horizon;y++){
+      for(let x=x0;x<x0+bw;x++){
+        px(x,y,bodyCol[0],bodyCol[1],bodyCol[2],1);
+      }
+    }
+    // window grid
+    const wx=4, wy=5, mx=3, my=3;
+    for(let y=top+4;y<horizon-3;y+=wy+my){
+      for(let x=x0+3;x<x0+bw-3;x+=wx+mx){
+        if(rnd()<0.55){
+          // lit window: cyan/amber/magenta tint
+          const r=rnd();
+          let c = r<0.5?[255,200,120]: r<0.8?[120,230,235]:[255,120,190];
+          const lvl=0.55+rnd()*0.45;
+          for(let yy=0;yy<wy;yy++)for(let xx=0;xx<wx;xx++){
+            px(x+xx,y+yy,c[0]*lvl,c[1]*lvl,c[2]*lvl,1);
+          }
+          // tiny bloom
+          add(x+wx/2,y+wy/2,c[0]*0.2,c[1]*0.2,c[2]*0.2,glow);
+        }
+      }
+    }
+    // roof edge highlight
+    for(let x=x0;x<x0+bw;x++) add(x,top, 60,90,140,0.5);
+  }
+
+  function neonSign(cx,cy,col,gain){
+    // glowing horizontal/vertical neon bar with bloom
+    const len=8+(rnd()*14|0);
+    const vert=rnd()<0.4;
+    for(let i=-len;i<=len;i++){
+      const x = vert?cx:cx+i;
+      const y = vert?cy+i:cy;
+      px(x,y,col[0],col[1],col[2],1);
+      // bloom rings
+      for(let rr=1;rr<=3;rr++){
+        const a=(0.22/rr)*gain;
+        add(x+rr,y,col[0],col[1],col[2],a);
+        add(x-rr,y,col[0],col[1],col[2],a);
+        add(x,y+rr,col[0],col[1],col[2],a);
+        add(x,y-rr,col[0],col[1],col[2],a);
+      }
+    }
+  }
+
+  // wet road with neon reflections (vertical smear)
+  function road(horizon, reflectCols, gain){
+    const rh=H-horizon;
+    for(let y=horizon;y<H;y++){
+      const t=(y-horizon)/rh;
+      // dark wet asphalt, cooler toward bottom
+      const base = 14 - t*6;
+      for(let x=0;x<W;x++){ const i=(y*W+x)*3;
+        buf[i]=base+6; buf[i+1]=base+4; buf[i+2]=base+18;
+      }
+    }
+    // streaking reflections from neon columns
+    for(const rc of reflectCols){
+      const cx=rc.x;
+      for(let y=horizon;y<H;y++){
+        const t=(y-horizon)/rh;
+        const flick = 0.5+0.5*Math.sin((y*0.6)+(cx*0.3));
+        const a=(0.5*(1-t)+0.12)*flick*gain;
+        const w=1+ (t*3|0);
+        for(let dx=-w;dx<=w;dx++){
+          add(cx+dx + (Math.sin(y*0.25+cx)*t*4|0), y, rc.c[0],rc.c[1],rc.c[2], a*0.4/(1+Math.abs(dx)));
+        }
+      }
+    }
+    // horizon glow line
+    for(let x=0;x<W;x++) add(x,horizon, 80,120,200,0.6);
+  }
+
+  function rainPass(density, horizon){
+    if(density<=0) return;
+    const n=(density/100)*420|0;
+    for(let k=0;k<n;k++){
+      const x=(rnd()*W)|0;
+      const y=(rnd()*H)|0;
+      const len=3+(rnd()*4|0);
+      const slant=1;
+      for(let i=0;i<len;i++){
+        add(x+ (i*slant*0.4|0), y+i, 150,180,220,0.10);
+      }
+    }
+    // a few bright streaks lit by neon
+    const m=(density/100)*60|0;
+    for(let k=0;k<m;k++){
+      const x=(rnd()*W)|0, y=(rnd()*horizon)|0, len=5+(rnd()*6|0);
+      const c = rnd()<0.5?[60,220,225]:[255,120,190];
+      for(let i=0;i<len;i++) add(x+(i*0.4|0),y+i,c[0],c[1],c[2],0.18);
+    }
+  }
+
+  // ---------- Scene presets (all night, no sunset) ----------
+  function renderScene(scn, gain, rainD){
+    clearBuf(); rseed(20240 + scn*97);
+    let horizon, signCount, reflect=[];
+
+    if(scn===0){ // RAIN BLVD — wide street, mid skyline, heavy reflections
+      horizon = (H*0.60)|0;
+      sky([12,10,30],[40,28,70],horizon);
+      star();
+      // far skyline
+      let x=0; while(x<W){ const bw=10+(rnd()*22|0); const bh=14+(rnd()*40|0);
+        building(x,bw,bh,horizon,[16+rnd()*10,14+rnd()*8,38+rnd()*14],gain*0.6); x+=bw+ (rnd()*3|0);}
+      signCount=14;
+    }
+    else if(scn===1){ // ALLEY — two tall walls, narrow sky strip
+      horizon=(H*0.72)|0;
+      sky([10,8,26],[30,20,54],horizon);
+      // left & right tall buildings framing
+      building(0, (W*0.32)|0, horizon, horizon,[22,16,46],gain*0.7);
+      building((W*0.70)|0, W-((W*0.70)|0), horizon, horizon,[20,14,42],gain*0.7);
+      // back wall low
+      let x=(W*0.32)|0; while(x<W*0.70){const bw=8+(rnd()*12|0);const bh=10+(rnd()*22|0);
+        building(x,bw,bh,horizon,[18,14,40],gain*0.6);x+=bw+2;}
+      signCount=18;
+    }
+    else if(scn===2){ // SKYLINE — tall towers, high horizon, panoramic
+      horizon=(H*0.78)|0;
+      sky([14,10,34],[46,30,78],horizon);
+      star();
+      let x=-4; while(x<W){const bw=14+(rnd()*26|0);const bh=30+(rnd()*70|0);
+        building(x,bw,Math.min(bh,horizon-2),horizon,[18,14,44],gain*0.7);x+=bw+(rnd()*4|0);}
+      signCount=10;
+    }
+    else { // SUBWAY — underground platform, tiled wall, signage
+      horizon=(H*0.55)|0;
+      sky([8,8,16],[22,20,34],horizon); // ceiling
+      // tile grid wall
+      for(let y=0;y<horizon;y+=8) for(let x=0;x<W;x+=12){
+        const v=20+rnd()*16; px(x,y,v,v,v+10,1);
+        for(let i=0;i<12;i++) px(x+i,y, (i===0?40:v), v, v+12, 1);
+        for(let i=0;i<8;i++) px(x,y+i, 40, v, v+12,1);
+      }
+      // pillars
+      for(let px0=20;px0<W;px0+=70){ for(let y=10;y<horizon;y++) for(let dx=0;dx<8;dx++) px(px0+dx,y,30,26,40,1);}
+      signCount=8;
+    }
+
+    // neon signs along upper area
+    rseed(7000+scn*13);
+    const neonCols=[[52,224,230],[255,62,165],[255,180,84],[82,242,168],[180,90,210]];
+    for(let i=0;i<signCount;i++){
+      const cx=(rnd()*W)|0;
+      const cy=(8+rnd()*(horizon-16))|0;
+      const c=neonCols[(rnd()*neonCols.length)|0];
+      neonSign(cx,cy,c,gain);
+      if(rnd()<0.7) reflect.push({x:cx, c:c});
+    }
+
+    // wet reflective road / floor with neon smear
+    road(horizon, reflect, gain);
+
+    // fog band near horizon
+    for(let y=horizon-6;y<horizon+8;y++) for(let x=0;x<W;x++){
+      add(x,y, 50,60,90, 0.10*(1-Math.abs(y-horizon)/8));
+    }
+
+    rainPass(rainD, horizon);
+  }
+
+  // ---------- Dither + quantize buf -> canvas ----------
+  function dither(pal, matMode, gamma=2.2){
+    const {m,max,size}=matrixFor(matMode);
+    const img=ctx.createImageData(W,H);
+    const d=img.data;
+    const spread = 36; // dither amplitude in 0..255 space
+    for(let y=0;y<H;y++){
+      for(let x=0;x<W;x++){
+        const i=(y*W+x)*3;
+        // bayer threshold centered at 0
+        const t = (m[y%size][x%size]/max - 0.5) * spread;
+        let r=buf[i]+t, g=buf[i+1]+t, b=buf[i+2]+t;
+        r=r<0?0:r>255?255:r; g=g<0?0:g>255?255:g; b=b<0?0:b>255?255:b;
+        const c=nearest(pal,r,g,b);
+        const j=(y*W+x)*4;
+        d[j]=c[0];d[j+1]=c[1];d[j+2]=c[2];d[j+3]=255;
+      }
+    }
+    ctx.putImageData(img,0,0);
+  }
+
+  // ---------- State + UI wiring ----------
+  const ui={
+    mat:document.getElementById('mat'),
+    pal:document.getElementById('pal'),
+    gain:document.getElementById('gain'),
+    rain:document.getElementById('rain'),
+    lblMat:document.getElementById('lblMat'),
+    lblPal:document.getElementById('lblPal'),
+    lblGain:document.getElementById('lblGain'),
+    lblRain:document.getElementById('lblRain'),
+    ftDither:document.getElementById('ftDither'),
+    ftPal:document.getElementById('ftPal'),
+    ftFps:document.getElementById('ftFps'),
+    sceneTag:document.getElementById('sceneTag'),
+    swatches:document.getElementById('swatches'),
+    log:document.getElementById('log'),
+    stRight:document.getElementById('stRight'),
+    vFog:document.getElementById('vFog'),
+  };
+  let scene=0, animOn=false, rafId=null, t0=0;
+
+  const matName=['4x4','8x8','2x2'];
+  function matLabel(v){return ['4x4','8x8','2x2'][v];}
+
+  function logLine(html){
+    const div=document.createElement('div');
+    div.className='ln'; div.innerHTML=html;
+    ui.log.appendChild(div);
+    while(ui.log.children.length>40) ui.log.removeChild(ui.log.firstChild);
+    ui.log.scrollTop=ui.log.scrollHeight;
+  }
+
+  function paintSwatches(pal){
+    ui.swatches.innerHTML='';
+    pal.forEach(c=>{
+      const i=document.createElement('i');
+      i.style.background=`rgb(${c[0]},${c[1]},${c[2]})`;
+      ui.swatches.appendChild(i);
+    });
+  }
+
+  function frameLabels(pal){
+    const matMode=+ui.mat.value;
+    ui.lblMat.textContent=matLabel(matMode);
+    ui.ftDither.textContent='BAYER '+matLabel(matMode);
+    ui.lblPal.textContent=pal.length;
+    ui.ftPal.textContent=pal.length;
+    const g=(+ui.gain.value/100);
+    ui.lblGain.textContent=g.toFixed(2);
+    ui.lblRain.textContent = (+ui.rain.value>2)?('ON '+ui.rain.value+'%'):'OFF';
+  }
+
+  function doRender(quiet){
+    const t=performance.now();
+    const palN=+ui.pal.value;
+    const pal=buildPalette(palN);
+    const matMode=+ui.mat.value;
+    const gain=+ui.gain.value/100;
+    const rainD=+ui.rain.value;
+    renderScene(scene, gain, rainD);
+    dither(pal, matMode);
+    paintSwatches(pal);
+    frameLabels(pal);
+    const ms=(performance.now()-t);
+    ui.ftFps.textContent=ms.toFixed(1)+' ms';
+    if(!quiet){
+      logLine(`<b>$</b> render scn=<span class="c">${['RAIN_BLVD','ALLEY','SKYLINE','SUBWAY'][scene]}</span>`);
+      logLine(`  bayer=<span class="c">${matLabel(matMode)}</span> pal=<span class="m">${pal.length}</span> gain=<span class="w">${gain.toFixed(2)}</span>`);
+      logLine(`  quantize ${W*H} px -> ${pal.length} colors`);
+      logLine(`  <b>done</b> ${ms.toFixed(1)}ms · dither <span class="c">OK</span>`);
+    }
+  }
+
+  // rain animation: re-render rain layer only via reseed + full pass (cheap at 320x220)
+  function loop(ts){
+    if(!animOn) return;
+    if(!t0) t0=ts;
+    seed = (seed+ (Math.floor(ts/90)*131)) ; // animate rain pattern
+    rseed(20240 + scene*97 + Math.floor(ts/90));
+    const palN=+ui.pal.value;
+    const pal=buildPalette(palN);
+    renderScene(scene, +ui.gain.value/100, +ui.rain.value);
+    dither(pal, +ui.mat.value);
+    rafId=requestAnimationFrame(loop);
+  }
+
+  function setScene(s){
+    scene=s;
+    document.querySelectorAll('#chips b').forEach(b=>b.classList.toggle('on', +b.dataset.s===s));
+    const names=['RAIN_BLVD','ALLEY','SKYLINE','SUBWAY'];
+    ui.sceneTag.textContent='SCN: '+names[s];
+    ui.vFog.textContent=(0.20+s*0.07).toFixed(2);
+    logLine(`<b>$</b> scene <span class="c">${names[s]}</span> loaded`);
+    doRender(true);
+  }
+
+  // wire controls
+  ['mat','pal','gain','rain'].forEach(id=>{
+    ui[id].addEventListener('input',()=>{ doRender(true); });
+    ui[id].addEventListener('change',()=>{ doRender(false); });
+  });
+  document.getElementById('bRender').addEventListener('click',()=>doRender(false));
+  document.getElementById('bSave').addEventListener('click',()=>{
+    logLine(`<b>$</b> save PNG <span class="c">320x220</span> ...`);
+    const a=document.createElement('a');
+    a.download='neon_drift_486.png'; a.href=cv.toDataURL('image/png'); a.click();
+    logLine(`  wrote <span class="w">neon_drift_486.png</span>`);
+  });
+  document.getElementById('bAnim').addEventListener('click',(e)=>{
+    animOn=!animOn;
+    e.target.textContent= animOn?'STOP':'ANIM';
+    ui.stRight.textContent = animOn?'RAIN ANIM RUNNING':'ORDERED-DITHER OK';
+    if(animOn){ t0=0; logLine(`<b>$</b> rain animation <span class="c">start</span>`); rafId=requestAnimationFrame(loop);}
+    else { cancelAnimationFrame(rafId); logLine(`<b>$</b> rain animation <span class="m">stop</span>`); doRender(true);}
+  });
+  document.getElementById('chips').addEventListener('click',e=>{
+    const b=e.target.closest('b[data-s]'); if(!b) return; setScene(+b.dataset.s);
+  });
+
+  // ---------- BOOT: dithered screen is the FIRST paint (no loading gate) ----------
+  logLine(`<b>NEON_DRIFT</b> v0.486 — 486 DITHER RENDER`);
+  logLine(`init VESA <span class="c">320x220x8</span> DAC`);
+  logLine(`load bayer <span class="c">4x4/8x8</span> matrices ok`);
+  doRender(false);
+  logLine(`<b>$</b> idle. select SCENE / drag CONTROL`);
+})();
+</script>
+</body>
+</html>

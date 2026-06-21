@@ -1,0 +1,1482 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>엠버폴 크로니클 — Emberfall Chronicle</title>
+<style>
+  :root{
+    --bg:#1a0f12; --panel:#241317; --ink:#ffeede; --hot:#ff7a3c; --emb:#ffb547;
+    --shadow:#0c0608; --line:#46232a; --good:#7dd87d; --bad:#ff6b6b;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;height:100%;background:#000;color:var(--ink);
+    font-family:'Courier New',monospace;overflow:hidden;}
+  #stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+    background:radial-gradient(circle at 50% 30%,#2a161a,#0a0506 80%);}
+  canvas{image-rendering:pixelated;image-rendering:crisp-edges;
+    background:#0a0506;touch-action:none;display:block;
+    box-shadow:0 0 0 3px var(--line),0 0 40px #000;}
+  /* HUD overlay (DOM) */
+  #ui{position:fixed;inset:0;pointer-events:none;font-size:13px;}
+  .pad{pointer-events:auto;}
+  #credit{position:fixed;left:6px;bottom:4px;font-size:9px;color:#9b6f5e;
+    max-width:60vw;line-height:1.25;pointer-events:none;text-shadow:1px 1px 0 #000;}
+  /* touch controls */
+  #touch{position:fixed;inset:0;display:none;pointer-events:none;}
+  .tbtn{position:absolute;pointer-events:auto;background:rgba(60,30,34,.82);
+    border:2px solid var(--line);color:var(--ink);border-radius:12px;
+    font-family:inherit;font-weight:bold;font-size:18px;
+    display:flex;align-items:center;justify-content:center;user-select:none;
+    box-shadow:0 3px 0 #000;}
+  .tbtn:active{transform:translateY(2px);box-shadow:0 1px 0 #000;background:var(--hot);}
+  #dpad{position:fixed;left:14px;bottom:18px;width:150px;height:150px;pointer-events:none;}
+  #dpad .tbtn{width:48px;height:48px;}
+  #d-up{left:51px;top:0;} #d-dn{left:51px;top:102px;}
+  #d-lf{left:0;top:51px;} #d-rt{left:102px;top:51px;}
+  #abtns{position:fixed;right:14px;bottom:24px;width:150px;height:140px;pointer-events:none;}
+  #abtns .tbtn{width:60px;height:60px;border-radius:50%;font-size:15px;}
+  #b-a{right:0;bottom:0;background:rgba(255,122,60,.85);}
+  #b-b{right:74px;bottom:42px;}
+  #b-m{right:0;bottom:78px;width:46px;height:46px;font-size:11px;}
+  .hint{position:fixed;top:6px;right:8px;font-size:10px;color:#9b6f5e;
+    text-align:right;line-height:1.35;text-shadow:1px 1px 0 #000;}
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="cv" width="320" height="288"></canvas></div>
+<div id="credit">포켓몬에서 영감 — © Nintendo / Game Freak / The Pokémon Company. 오리지널 구현 (엠버폴 크로니클)</div>
+<div class="hint" id="kbhint">키보드: 방향키 이동 · Z 확인/공격 · X 취소 · C 메뉴</div>
+<div id="touch">
+  <div id="dpad">
+    <div class="tbtn pad" id="d-up">▲</div>
+    <div class="tbtn pad" id="d-dn">▼</div>
+    <div class="tbtn pad" id="d-lf">◀</div>
+    <div class="tbtn pad" id="d-rt">▶</div>
+  </div>
+  <div id="abtns">
+    <div class="tbtn pad" id="b-a">A</div>
+    <div class="tbtn pad" id="b-b">B</div>
+    <div class="tbtn pad" id="b-m">메뉴</div>
+  </div>
+</div>
+<script>
+"use strict";
+/* ============================================================
+   엠버폴 크로니클 — Emberfall Chronicle
+   포켓몬 장르에서 영감받은 100% 오리지널 픽셀 몬스터 JRPG.
+   실제 포켓몬 종/이름/스프라이트/타입표/코드 복제 없음.
+   화산지대(엠버폴) 테마. 단일 자기완결 HTML. 백엔드 없음.
+   ============================================================ */
+const CV = document.getElementById('cv');
+const X = CV.getContext('2d');
+X.imageSmoothingEnabled = false;
+const W = 320, H = 288;
+
+/* ---------- responsive scaling ---------- */
+function fit(){
+  const sw = window.innerWidth, sh = window.innerHeight;
+  const scale = Math.max(1, Math.floor(Math.min(sw/W, sh/H)));
+  CV.style.width = (W*scale)+'px';
+  CV.style.height = (H*scale)+'px';
+  const touchUI = (window.matchMedia && window.matchMedia('(pointer:coarse)').matches)
+    || ('ontouchstart' in window) || sw < 760;
+  document.getElementById('touch').style.display = touchUI ? 'block' : 'none';
+  document.getElementById('kbhint').style.display = touchUI ? 'none' : 'block';
+}
+window.addEventListener('resize', fit);
+
+/* ============================================================
+   ORIGINAL TYPE SYSTEM (6 types)
+   불(Ember) 물(Tide) 풀(Bloom) 바위(Crag) 번개(Volt) 유령(Wisp)
+   ============================================================ */
+const TYPES = ['EMBER','TIDE','BLOOM','CRAG','VOLT','WISP'];
+const TYPE_KR = {EMBER:'불꽃',TIDE:'물결',BLOOM:'새싹',CRAG:'바위',VOLT:'번개',WISP:'유령'};
+const TYPE_COL = {EMBER:'#ff7a3c',TIDE:'#4ec3ff',BLOOM:'#7dd87d',CRAG:'#c9a06a',VOLT:'#ffe14d',WISP:'#c489ff'};
+// EFF[atk][def] = multiplier
+const EFF = {
+  EMBER:{EMBER:.5,TIDE:.5,BLOOM:2 ,CRAG:.5,VOLT:1 ,WISP:1 },
+  TIDE :{EMBER:2 ,TIDE:.5,BLOOM:.5,CRAG:2 ,VOLT:.5,WISP:1 },
+  BLOOM:{EMBER:.5,TIDE:2 ,BLOOM:.5,CRAG:2 ,VOLT:1 ,WISP:1 },
+  CRAG :{EMBER:2 ,TIDE:.5,BLOOM:.5,CRAG:1 ,VOLT:2 ,WISP:1 },
+  VOLT :{EMBER:1 ,TIDE:2 ,BLOOM:1 ,CRAG:.5,VOLT:.5,WISP:1 },
+  WISP :{EMBER:1 ,TIDE:1 ,BLOOM:1 ,CRAG:1 ,VOLT:1 ,WISP:2 },
+};
+function effMult(atkType, defType){ return (EFF[atkType] && EFF[atkType][defType]!=null)?EFF[atkType][defType]:1; }
+
+/* ============================================================
+   ORIGINAL CREATURE DEX (12 species) — all original names/designs
+   Each species: name, type, base stats, sprite (16x16 palette grid),
+   moves by level, evolution.
+   Sprites are 16x16 index grids -> palette arrays. '.' = transparent.
+   ============================================================ */
+// palette helper: characters map to colors per-species
+const DEX = {};
+function def(id, o){ DEX[id]=Object.assign({id},o); }
+
+// --- sprite art (16 rows x 16 chars). designed by hand, fire-themed region. ---
+// Common palette tokens reused; each species supplies its own colorMap.
+
+def('emberpup',{ name:'엠버펍', type:'EMBER', stage:1, evo:{to:'magmaw',lv:16},
+  base:{hp:42,atk:52,def:40,spd:55}, catchRate:.55,
+  moves:[{lv:1,m:'ember_nip'},{lv:1,m:'scratch'},{lv:7,m:'cinder_toss'},{lv:13,m:'flare_fang'}],
+  cm:{o:'#3a1408',f:'#ff7a3c',y:'#ffd24a',d:'#7a2a10',w:'#fff2da',e:'#1a0a05'},
+  art:[
+  '................',
+  '....oo....oo....',
+  '...offo..offo...',
+  '...offfooffo....',
+  '..offffffffo....',
+  '..offwfwffffo...',
+  '..ofefffefffo...',
+  '..offffffffo....',
+  '...offyyyffo....',
+  '...offffffo.....',
+  '..ooffffffoo....',
+  '.ofo offff ofo..',
+  '.ofo.offfo.ofo..',
+  '....offooffo....',
+  '...od......do...',
+  '................']});
+
+def('magmaw',{ name:'마그마우', type:'EMBER', stage:2, evo:{to:'volcanyx',lv:34},
+  base:{hp:70,atk:84,def:66,spd:74}, catchRate:.22,
+  moves:[{lv:1,m:'flare_fang'},{lv:1,m:'cinder_toss'},{lv:20,m:'magma_bite'},{lv:28,m:'eruption_kick'}],
+  cm:{o:'#3a1408',f:'#ff5a22',y:'#ffd24a',d:'#8a2e12',w:'#fff2da',e:'#1a0a05'},
+  art:[
+  '...o........o...',
+  '..ofo......ofo..',
+  '..offoo..ooffo..',
+  '..offffooffffo..',
+  '.offfffffffffo..',
+  '.offwffffwfffo..',
+  '.offefffefffffo.',
+  '.offfffyyfffffo.',
+  '.offffyyyyffffo.',
+  '..offffffffffo..',
+  '..offfffffffoo..',
+  '.ofoffffffffofo.',
+  '.ofo offff oofo.',
+  '....offooffo....',
+  '...od.....do....',
+  '................']});
+
+def('volcanyx',{ name:'볼카닉스', type:'EMBER', stage:3, evo:null,
+  base:{hp:104,atk:118,def:96,spd:92}, catchRate:.07,
+  moves:[{lv:1,m:'eruption_kick'},{lv:1,m:'magma_bite'},{lv:40,m:'caldera_blast'},{lv:48,m:'inferno_crown'}],
+  cm:{o:'#2a0e06',f:'#ff4416',y:'#ffe14d',d:'#7a2206',w:'#fff2da',e:'#140704'},
+  art:[
+  '..y..o..o..y...',
+  '..oyo.fo.oyo....',
+  '.ooofoffooofo...',
+  '.offffffffffoo..',
+  'offffyffyfffffo.',
+  'offwffffffwfffo.',
+  'offefffffefffffo',
+  'offffyyyyyffffo.',
+  'offfyyooyyffffo.',
+  '.offffffffffffo.',
+  '.offffffffffoo..',
+  'ofoffffffffofo..',
+  'ofo offff  ofo..',
+  '...offooffo.....',
+  '..od.....do.....',
+  '................']});
+
+def('seedling',{ name:'씨드링', type:'BLOOM', stage:1, evo:{to:'thornbloom',lv:17},
+  base:{hp:45,atk:44,def:50,spd:48}, catchRate:.55,
+  moves:[{lv:1,m:'leaf_jab'},{lv:1,m:'tackle'},{lv:8,m:'spore_puff'},{lv:14,m:'vine_lash'}],
+  cm:{o:'#163d12',f:'#7dd87d',y:'#d6ff8a',d:'#3a7a2e',w:'#fff2da',e:'#0a1f08'},
+  art:[
+  '.......yy.......',
+  '......yffy......',
+  '.....yffffy.....',
+  '......offo......',
+  '....ooffffoo....',
+  '...offffffffo...',
+  '..offwffffwffo..',
+  '..offefffefffo..',
+  '..offfffffffo...',
+  '...offdddffo....',
+  '...offffffo.....',
+  '..offffffffo....',
+  '.ofo offf ofo...',
+  '....offooffo....',
+  '...od.....do....',
+  '................']});
+
+def('thornbloom',{ name:'쏜블룸', type:'BLOOM', stage:2, evo:{to:'verdragon',lv:35},
+  base:{hp:68,atk:70,def:78,spd:64}, catchRate:.22,
+  moves:[{lv:1,m:'vine_lash'},{lv:1,m:'spore_puff'},{lv:22,m:'thorn_volley'},{lv:30,m:'bloom_crush'}],
+  cm:{o:'#0f3310',f:'#5fc46a',y:'#e2ff7a',d:'#2e6a26',w:'#fff2da',e:'#081a06'},
+  art:[
+  '....y.....y.....',
+  '...yfy...yfy....',
+  '...yffyoyffy....',
+  '....offfffoo....',
+  '...offffffffo...',
+  '..offwffffwffo..',
+  '.offefffffefffo.',
+  '.offffffffffffo.',
+  '.offdfffffdffoo.',
+  '.offffffffffofo.',
+  '..offfffffffoo..',
+  '..offffffffffo..',
+  '.ofo offff oofo.',
+  '....offooffo....',
+  '...od.....do....',
+  '................']});
+
+def('verdragon',{ name:'베르드래곤', type:'BLOOM', stage:3, evo:null,
+  base:{hp:100,atk:104,def:110,spd:86}, catchRate:.07,
+  moves:[{lv:1,m:'bloom_crush'},{lv:1,m:'thorn_volley'},{lv:42,m:'verdant_storm'},{lv:50,m:'world_root'}],
+  cm:{o:'#0c2c0d',f:'#4fb85e',y:'#d6ff66',d:'#246020',w:'#fff2da',e:'#06150a'},
+  art:[
+  '..yy.....yy....',
+  '.yffy...yffy....',
+  '.yffyoooyffy....',
+  '..offfffffo.....',
+  '.offffffffffo...',
+  'offwffffffwffo..',
+  'offefffffeffffo.',
+  'offfffffffffffo.',
+  'offdffffffdffoo.',
+  'offffffffffffoo.',
+  '.offffffffffoo..',
+  '.offffffffffffo.',
+  'ofo offff  oofo.',
+  '...offooffo.....',
+  '..od.....do.....',
+  '................']});
+
+def('puddlet',{ name:'퍼들릿', type:'TIDE', stage:1, evo:{to:'tidalfin',lv:18},
+  base:{hp:48,atk:42,def:46,spd:52}, catchRate:.55,
+  moves:[{lv:1,m:'bubble_pop'},{lv:1,m:'tackle'},{lv:9,m:'splash_jet'},{lv:15,m:'aqua_ring'}],
+  cm:{o:'#0d2a44',f:'#4ec3ff',y:'#bfeaff',d:'#1f5e8a',w:'#fff2da',e:'#06121f'},
+  art:[
+  '................',
+  '......oooo......',
+  '....ooffffoo....',
+  '...offffffffo...',
+  '..offffffffffo..',
+  '..offwffffwffo..',
+  '..offefffefffo..',
+  '..offffyyffffo..',
+  '..offffffffffo..',
+  '...offffffffo...',
+  '....offffffo....',
+  '...ofo    ofo...',
+  '..ofo......ofo..',
+  '...od......do...',
+  '................',
+  '................']});
+
+def('tidalfin',{ name:'타이달핀', type:'TIDE', stage:2, evo:{to:'leviath',lv:36},
+  base:{hp:72,atk:66,def:70,spd:80}, catchRate:.22,
+  moves:[{lv:1,m:'aqua_ring'},{lv:1,m:'splash_jet'},{lv:23,m:'torrent_slash'},{lv:31,m:'whirl_crash'}],
+  cm:{o:'#0a2640',f:'#37b4f5',y:'#bfeaff',d:'#1a5680',w:'#fff2da',e:'#05101a'},
+  art:[
+  '.....y..........',
+  '....yyo.........',
+  '...ooffoo.......',
+  '..offffffoo.....',
+  '.offffffffffo...',
+  '.offwffffwfffo..',
+  'offefffffefffffo',
+  'offffyyffffffffo',
+  'offffffffffffoo.',
+  '.offffffffffo...',
+  '..offffffffo....',
+  '..ofo    ofo....',
+  '.ofo......ofo...',
+  '..od......do....',
+  '................',
+  '................']});
+
+def('leviath',{ name:'레비아스', type:'TIDE', stage:3, evo:null,
+  base:{hp:108,atk:96,def:100,spd:98}, catchRate:.07,
+  moves:[{lv:1,m:'whirl_crash'},{lv:1,m:'torrent_slash'},{lv:43,m:'tidal_doom'},{lv:51,m:'abyss_call'}],
+  cm:{o:'#08223a',f:'#2aa9f0',y:'#bfeaff',d:'#15507a',w:'#fff2da',e:'#040d18'},
+  art:[
+  '..y.............',
+  '.yyo....y.......',
+  'ooffo..yyo......',
+  'offffooofoo.....',
+  'offffffffffo....',
+  'offwffffffwfo...',
+  'offefffffefffo..',
+  'offffyyffffffffo',
+  'offffffffffffffo',
+  '.offffffffffffo.',
+  '..offffffffffo..',
+  '..ofo    ofo....',
+  '.ofo......ofo...',
+  '..od......do....',
+  '................',
+  '................']});
+
+def('boulderkin',{ name:'볼더킨', type:'CRAG', stage:1, evo:{to:'cragmaul',lv:19},
+  base:{hp:55,atk:54,def:62,spd:34}, catchRate:.50,
+  moves:[{lv:1,m:'rock_throw'},{lv:1,m:'tackle'},{lv:10,m:'harden'},{lv:16,m:'stone_edge'}],
+  cm:{o:'#3a2a16',f:'#c9a06a',y:'#ffe1a0',d:'#7a5a30',w:'#fff2da',e:'#1a1208'},
+  art:[
+  '................',
+  '....oooooo......',
+  '...offfffoo.....',
+  '..offffffffo....',
+  '.offfffffffoo...',
+  '.offwffffwffo...',
+  '.offefffefffo...',
+  '.offffyyffffo...',
+  '.offffffffffo...',
+  '.offdffffdffo...',
+  '..offffffffo....',
+  '..offffffffo....',
+  '.ofo......ofo...',
+  '.od........do...',
+  '................',
+  '................']});
+
+def('cragmaul',{ name:'크래그몰', type:'CRAG', stage:2, evo:{to:'titanrock',lv:37},
+  base:{hp:84,atk:82,def:96,spd:50}, catchRate:.20,
+  moves:[{lv:1,m:'stone_edge'},{lv:1,m:'harden'},{lv:24,m:'boulder_slam'},{lv:32,m:'quake_step'}],
+  cm:{o:'#33260f',f:'#b8905c',y:'#ffe1a0',d:'#6a4e28',w:'#fff2da',e:'#150f06'},
+  art:[
+  '...oooo..oooo...',
+  '..offffooffffo..',
+  '.offffffffffffo.',
+  '.offfffffffffoo.',
+  'offwffffffwfffo.',
+  'offefffffefffffo',
+  'offffyyyyffffffo',
+  'offffffffffffffo',
+  'offdfffffdffffoo',
+  '.offffffffffffo.',
+  '.offffffffffffo.',
+  '.offffffffffffo.',
+  'ofo........  ofo',
+  'od..........  do',
+  '................',
+  '................']});
+
+def('titanrock',{ name:'타이탄록', type:'CRAG', stage:3, evo:null,
+  base:{hp:120,atk:110,def:128,spd:62}, catchRate:.06,
+  moves:[{lv:1,m:'quake_step'},{lv:1,m:'boulder_slam'},{lv:44,m:'tectonic_ruin'},{lv:52,m:'mountain_fall'}],
+  cm:{o:'#2c2009',f:'#a8814e',y:'#ffe1a0',d:'#5a4220',w:'#fff2da',e:'#100b04'},
+  art:[
+  '..oooo....oooo..',
+  '.offffo..offffo.',
+  'offffffooffffffo',
+  'offffffffffffffo',
+  'offwffffffwffffo',
+  'offefffffeffffoo',
+  'offffyyyyffffffo',
+  'offffffffffffffo',
+  'offdfffffdffffoo',
+  'offffffffffffffo',
+  'offffffffffffffo',
+  'offffffffffffffo',
+  'ofo........  ofo',
+  'od...........  o',
+  'od...........  o',
+  '................']});
+
+const DEX_IDS = Object.keys(DEX);
+
+/* ============================================================
+   MOVES — original move set
+   ============================================================ */
+const MOVES = {
+  scratch     :{name:'할퀴기',  type:'EMBER',pow:35,acc:1.0,kind:'phys'},
+  tackle      :{name:'몸통박치기',type:'CRAG', pow:35,acc:1.0,kind:'phys'},
+  ember_nip   :{name:'불씨물기',  type:'EMBER',pow:38,acc:1.0,kind:'spec'},
+  cinder_toss :{name:'불티던지기',type:'EMBER',pow:45,acc:.95,kind:'spec'},
+  flare_fang  :{name:'화염송곳니',type:'EMBER',pow:58,acc:.95,kind:'phys'},
+  magma_bite  :{name:'용암물기',  type:'EMBER',pow:72,acc:.9 ,kind:'phys'},
+  eruption_kick:{name:'분화발차기',type:'EMBER',pow:80,acc:.9 ,kind:'phys'},
+  caldera_blast:{name:'칼데라폭발',type:'EMBER',pow:100,acc:.85,kind:'spec'},
+  inferno_crown:{name:'화염왕관',  type:'EMBER',pow:120,acc:.8 ,kind:'spec'},
+  leaf_jab    :{name:'잎날찌르기',type:'BLOOM',pow:40,acc:1.0,kind:'phys'},
+  spore_puff  :{name:'포자뿜기',  type:'BLOOM',pow:45,acc:.95,kind:'spec'},
+  vine_lash   :{name:'덩굴채찍',  type:'BLOOM',pow:58,acc:.95,kind:'phys'},
+  thorn_volley:{name:'가시난사',  type:'BLOOM',pow:72,acc:.9 ,kind:'spec'},
+  bloom_crush :{name:'개화강타',  type:'BLOOM',pow:80,acc:.9 ,kind:'phys'},
+  verdant_storm:{name:'녹음폭풍',  type:'BLOOM',pow:100,acc:.85,kind:'spec'},
+  world_root  :{name:'세계뿌리',  type:'BLOOM',pow:120,acc:.8 ,kind:'phys'},
+  bubble_pop  :{name:'거품터뜨리기',type:'TIDE',pow:40,acc:1.0,kind:'spec'},
+  splash_jet  :{name:'물줄기',    type:'TIDE', pow:45,acc:.95,kind:'spec'},
+  aqua_ring   :{name:'물의고리',  type:'TIDE', pow:58,acc:.95,kind:'spec'},
+  torrent_slash:{name:'급류베기',  type:'TIDE', pow:72,acc:.9 ,kind:'phys'},
+  whirl_crash :{name:'소용돌이강타',type:'TIDE',pow:80,acc:.9 ,kind:'phys'},
+  tidal_doom  :{name:'해일심판',  type:'TIDE', pow:100,acc:.85,kind:'spec'},
+  abyss_call  :{name:'심연의부름',type:'TIDE', pow:120,acc:.8 ,kind:'spec'},
+  rock_throw  :{name:'돌던지기',  type:'CRAG', pow:42,acc:.95,kind:'phys'},
+  harden      :{name:'단단해지기',type:'CRAG', pow:0,acc:1.0,kind:'buff'},
+  stone_edge  :{name:'돌날',      type:'CRAG', pow:58,acc:.9 ,kind:'phys'},
+  boulder_slam:{name:'바위내려치기',type:'CRAG',pow:72,acc:.9 ,kind:'phys'},
+  quake_step  :{name:'지진발구르기',type:'CRAG',pow:80,acc:.9 ,kind:'phys'},
+  tectonic_ruin:{name:'지각붕괴',  type:'CRAG',pow:100,acc:.85,kind:'phys'},
+  mountain_fall:{name:'산사태',    type:'CRAG', pow:120,acc:.8 ,kind:'phys'},
+  zap         :{name:'찌릿',      type:'VOLT', pow:45,acc:.95,kind:'spec'},
+  spark_arc   :{name:'스파크아크',type:'VOLT', pow:65,acc:.9 ,kind:'spec'},
+  haunt       :{name:'홀리기',    type:'WISP', pow:45,acc:.95,kind:'spec'},
+};
+
+/* ============================================================
+   SPRITE RENDERING (cached canvases for performance)
+   ============================================================ */
+const spriteCache = {};
+function buildSprite(id){
+  if(spriteCache[id]) return spriteCache[id];
+  const s = DEX[id];
+  const c = document.createElement('canvas'); c.width=16; c.height=16;
+  const g = c.getContext('2d');
+  for(let r=0;r<16;r++){
+    const row = s.art[r]||'';
+    for(let col=0;col<16;col++){
+      const ch=row[col]||'.';
+      if(ch==='.'||ch===' ')continue;
+      const color=s.cm[ch]; if(!color)continue;
+      g.fillStyle=color; g.fillRect(col,r,1,1);
+    }
+  }
+  spriteCache[id]=c; return c;
+}
+function drawSprite(id, dx, dy, size, flip){
+  const c = buildSprite(id);
+  if(flip){
+    X.save(); X.translate(dx+size,dy); X.scale(-1,1);
+    X.drawImage(c,0,0,16,16,0,0,size,size); X.restore();
+  } else {
+    X.drawImage(c,0,0,16,16,dx,dy,size,size);
+  }
+}
+
+/* ============================================================
+   CREATURE INSTANCES (party members / wild)
+   ============================================================ */
+function statAt(base, lv, isHp){
+  if(isHp) return Math.floor((2*base*lv)/100) + lv + 10;
+  return Math.floor((2*base*lv)/100) + 5;
+}
+function learnsetAt(id, lv){
+  const s=DEX[id]; const set=[];
+  for(const e of s.moves){ if(e.lv<=lv && set.indexOf(e.m)<0) set.push(e.m); }
+  return set.slice(-4); // last up-to-4
+}
+function makeCreature(id, lv){
+  const s=DEX[id];
+  const maxhp=statAt(s.base.hp,lv,true);
+  return {
+    id, name:s.name, type:s.type, lv,
+    exp:0, expNext: lv*lv*5 + 20,
+    maxhp, hp:maxhp,
+    atk:statAt(s.base.atk,lv), def:statAt(s.base.def,lv), spd:statAt(s.base.spd,lv),
+    moves:learnsetAt(id,lv), defBuff:0
+  };
+}
+function recompute(cr){ // after level up / evolution
+  const s=DEX[cr.id];
+  const ratio = cr.hp/cr.maxhp;
+  cr.maxhp=statAt(s.base.hp,cr.lv,true);
+  cr.atk=statAt(s.base.atk,cr.lv); cr.def=statAt(s.base.def,cr.lv); cr.spd=statAt(s.base.spd,cr.lv);
+  cr.hp=Math.max(1,Math.round(cr.maxhp*ratio));
+  cr.name=s.name; cr.type=s.type;
+  const learn=learnsetAt(cr.id,cr.lv);
+  cr.moves=learn;
+}
+
+/* ============================================================
+   GAME STATE
+   ============================================================ */
+const G = {
+  scene:'title',      // title, world, battle, menu, dialog, shop, box
+  party:[],           // active creatures (max 6)
+  box:[],             // stored creatures
+  bag:{spark_ball:5, salve:3},
+  money:600,
+  px:8, py:8,         // player tile
+  facing:'down',
+  steps:0,
+  caught:{},          // dex seen/caught
+  trainerDone:false,
+  healCount:0,
+};
+
+/* ============================================================
+   OVERWORLD MAP — tile grid for Emberfall region
+   tiles: 0 path/ash  1 wall/rock  2 grass(encounter Bloom/etc)
+          3 lava(encounter Ember, hurts) 4 water(encounter Tide)
+          5 healCenter  6 shop  7 trainer  8 sign
+   ============================================================ */
+const MAP_W=20, MAP_H=18;
+const MAPSTR = [
+  '11111111111111111111',
+  '15000000003333000061',
+  '10000000003333000001',
+  '10022200003333000001',
+  '10022200000000000001',
+  '10022200008000000001',
+  '10000000000000220001',
+  '10000000000000220001',
+  '14444000000000220001',
+  '14444000007000000001',
+  '14444000000000000001',
+  '10000000003333000001',
+  '10022200003333033301',
+  '10022200000000033301',
+  '10022200000000000001',
+  '10000000000008000001',
+  '10000000000000000001',
+  '11111111111111111111',
+];
+const MAP = MAPSTR.map(r=>r.split('').map(Number));
+function tileAt(tx,ty){
+  if(tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) return 1;
+  return MAP[ty][tx];
+}
+const SIGNS = {
+  '8,4':'엠버폴 — 화산의 마을. 잿빛 길 너머 용암 분지가 있다.',
+  '13,15':'주의: 용암지대는 매 걸음 화상을 입는다. 불꽃 크리처가 산다.',
+};
+
+/* ============================================================
+   INPUT
+   ============================================================ */
+const KEY={up:false,down:false,left:false,right:false,a:false,b:false,m:false};
+const pressed={}; // edge events queue handled per-scene
+let keyEvents=[]; // 'up','down','left','right','a','b','m'
+function pushEvent(e){ keyEvents.push(e); }
+window.addEventListener('keydown',ev=>{
+  let handled=true;
+  switch(ev.key){
+    case 'ArrowUp': case 'w': KEY.up=true; pushEvent('up'); break;
+    case 'ArrowDown': case 's': KEY.down=true; pushEvent('down'); break;
+    case 'ArrowLeft': case 'a': KEY.left=true; pushEvent('left'); break;
+    case 'ArrowRight': case 'd': KEY.right=true; pushEvent('right'); break;
+    case 'z': case 'Z': case 'Enter': KEY.a=true; pushEvent('a'); break;
+    case 'x': case 'X': case 'Escape': KEY.b=true; pushEvent('b'); break;
+    case 'c': case 'C': KEY.m=true; pushEvent('m'); break;
+    default: handled=false;
+  }
+  if(handled) ev.preventDefault();
+});
+window.addEventListener('keyup',ev=>{
+  switch(ev.key){
+    case 'ArrowUp': case 'w': KEY.up=false; break;
+    case 'ArrowDown': case 's': KEY.down=false; break;
+    case 'ArrowLeft': case 'a': KEY.left=false; break;
+    case 'ArrowRight': case 'd': KEY.right=false; break;
+    case 'z': case 'Z': case 'Enter': KEY.a=false; break;
+    case 'x': case 'X': case 'Escape': KEY.b=false; break;
+    case 'c': case 'C': KEY.m=false; break;
+  }
+});
+// touch bindings
+function bindTouch(elid, dir, ev){
+  const el=document.getElementById(elid);
+  if(!el) return;
+  el.addEventListener('touchstart',e=>{e.preventDefault();KEY[dir]=true; if(ev)pushEvent(ev); else pushEvent(dir);},{passive:false});
+  el.addEventListener('touchend',e=>{e.preventDefault();KEY[dir]=false;},{passive:false});
+  el.addEventListener('mousedown',e=>{e.preventDefault();KEY[dir]=true; if(ev)pushEvent(ev); else pushEvent(dir);});
+  el.addEventListener('mouseup',e=>{e.preventDefault();KEY[dir]=false;});
+  el.addEventListener('mouseleave',e=>{KEY[dir]=false;});
+}
+bindTouch('d-up','up'); bindTouch('d-dn','down'); bindTouch('d-lf','left'); bindTouch('d-rt','right');
+bindTouch('b-a','a','a'); bindTouch('b-b','b','b'); bindTouch('b-m','m','m');
+
+/* ============================================================
+   TEXT / DIALOG QUEUE
+   ============================================================ */
+let dialogQ=[]; let dialogActive=false; let afterDialog=null;
+function say(lines, cb){
+  if(typeof lines==='string') lines=[lines];
+  dialogQ=dialogQ.concat(lines); dialogActive=true; afterDialog=cb||afterDialog;
+  if(G.scene!=='battle') G.scene='dialog';
+}
+function dialogAdvance(){
+  dialogQ.shift();
+  if(dialogQ.length===0){
+    dialogActive=false;
+    const cb=afterDialog; afterDialog=null;
+    if(G.scene==='dialog') G.scene='world';
+    if(cb) cb();
+  }
+}
+
+/* ============================================================
+   BATTLE STATE
+   ============================================================ */
+const B={
+  active:false, wild:null, foe:null, you:null,
+  menu:'main',       // main, fight, bag, party, msg
+  cursor:0, sub:0,
+  msg:[], msgCb:null, busy:false,
+  isTrainer:false, runOk:true,
+  catchAnim:0,
+};
+function startBattle(foeId, foeLv, isTrainer){
+  // find first non-fainted party member
+  let you=G.party.find(c=>c.hp>0);
+  if(!you){ return; }
+  B.active=true; B.isTrainer=!!isTrainer; B.runOk=!isTrainer;
+  B.foe=makeCreature(foeId, foeLv);
+  B.you=you;
+  B.menu='main'; B.cursor=0; B.sub=0; B.busy=false; B.catchAnim=0;
+  B.msg=[]; B.msgCb=null;
+  G.caught[foeId]=G.caught[foeId]||'seen';
+  G.scene='battle';
+  bmsg([`야생 ${B.foe.name}(이)가 나타났다!`,`가라, ${B.you.name}!`]);
+}
+function bmsg(lines, cb){
+  if(typeof lines==='string') lines=[lines];
+  B.msg=B.msg.concat(lines); B.menu='msg'; B.msgCb=cb||B.msgCb; B.busy=true;
+}
+function bmsgAdvance(){
+  B.msg.shift();
+  if(B.msg.length===0){
+    B.busy=false;
+    const cb=B.msgCb; B.msgCb=null;
+    if(cb) cb(); else { B.menu='main'; B.cursor=0; }
+  }
+}
+
+/* damage formula */
+function calcDamage(attacker, mv, defender){
+  // mv is the resolved move object (already looked up by caller)
+  if(mv.kind==='buff'){ return {dmg:0, eff:1, buff:true}; }
+  const eff=effMult(mv.type, defender.type);
+  const stab = (mv.type===attacker.type)?1.4:1.0;
+  const aStat=attacker.atk, dStat=defender.def*(1+0.5*(defender.defBuff||0));
+  const rand=0.85+Math.random()*0.15;
+  let dmg=Math.floor((((2*attacker.lv/5+2)*mv.pow*(aStat/Math.max(1,dStat)))/12 +2)*stab*eff*rand);
+  dmg=Math.max(1,dmg);
+  return {dmg, eff, buff:false};
+}
+function effWord(e){ return e>1.5?'효과가 굉장하다!': (e<0.9 && e>0)?'효과가 별로인 듯하다…': e===0?'효과가 없다…':''; }
+
+function chain(fns){
+  // execute fns sequentially through bmsg callbacks
+  let i=0;
+  function next(){
+    if(i>=fns.length){ endTurn(); return; }
+    const f=fns[i++];
+    f(next);
+  }
+  next();
+}
+function doAttack(att, defn, moveKey, fromPlayer, done){
+  const mv=MOVES[moveKey];
+  const hit = Math.random() <= mv.acc;
+  const who = fromPlayer ? att.name : `야생 ${att.name}`;
+  if(mv.kind==='buff'){
+    att.defBuff=(att.defBuff||0)+1;
+    bmsg([`${who}의 ${mv.name}!`,`${att.name}의 방어가 올랐다!`], done);
+    return;
+  }
+  if(!hit){ bmsg([`${who}의 ${mv.name}!`,'하지만 빗나갔다!'], done); return; }
+  const r=calcDamage(att,mv,defn);
+  defn.hp=Math.max(0, defn.hp-r.dmg);
+  const ew=effWord(r.eff);
+  const lines=[`${who}의 ${mv.name}!`];
+  if(ew) lines.push(ew);
+  bmsg(lines, ()=>{
+    if(defn.hp<=0){
+      if(defn===B.foe){ onFoeFaint(done); }
+      else { onYouFaint(done); }
+    } else { if(done) done(); }
+  });
+}
+function foeAct(done){
+  const mvs=B.foe.moves;
+  const mk=mvs[Math.floor(Math.random()*mvs.length)];
+  doAttack(B.foe,B.you,mk,false,done);
+}
+function endTurn(){
+  if(!B.active) return;
+  if(B.foe.hp<=0 || B.you.hp<=0) return;
+  B.menu='main'; B.cursor=0; B.busy=false;
+}
+
+function onFoeFaint(done){
+  const gained=Math.floor(B.foe.lv*B.foe.lv*0.6)+8;
+  bmsg([`야생 ${B.foe.name}(을)를 쓰러뜨렸다!`, `${B.you.name}(은)는 ${gained} 경험치를 얻었다!`], ()=>{
+    gainExp(B.you, gained, ()=>{
+      if(B.isTrainer){ G.money+=300; bmsg(['트레이너 대결에서 승리! 300코인 획득!'],()=>{ G.trainerDone=true; endBattle(); }); }
+      else endBattle();
+    });
+  });
+}
+function onYouFaint(done){
+  bmsg([`${B.you.name}(은)는 쓰러졌다…`], ()=>{
+    const next=G.party.find(c=>c.hp>0);
+    if(next){
+      B.you=next;
+      bmsg([`가라, ${B.you.name}!`], ()=>{ B.menu='main'; B.busy=false; });
+    } else {
+      bmsg(['눈앞이 캄캄해졌다…','엠버폴 회복소로 돌아왔다.'], ()=>{
+        G.party.forEach(c=>{c.hp=c.maxhp;});
+        G.px=1; G.py=1; endBattle();
+      });
+    }
+  });
+}
+function gainExp(cr, amt, cb){
+  cr.exp+=amt;
+  function step(){
+    if(cr.exp>=cr.expNext && cr.lv<60){
+      cr.exp-=cr.expNext; cr.lv++; cr.expNext=cr.lv*cr.lv*5+20;
+      const before=cr.moves.slice();
+      recompute(cr);
+      const news=cr.moves.filter(m=>before.indexOf(m)<0);
+      const lines=[`${cr.name}(은)는 레벨 ${cr.lv}(이)가 되었다!`];
+      news.forEach(m=> lines.push(`${cr.name}(은)는 ${MOVES[m].name}(을)를 배웠다!`));
+      // evolution check
+      const sp=DEX[cr.id];
+      if(sp.evo && cr.lv>=sp.evo.lv){
+        const newName=DEX[sp.evo.to].name;
+        bmsg(lines,()=>{
+          bmsg([`어라…? ${cr.name}의 모습이…!`,`${cr.name}(은)는 ${newName}(으)로 진화했다!`],()=>{
+            cr.id=sp.evo.to; recompute(cr); G.caught[cr.id]='caught';
+            step();
+          });
+        });
+        return;
+      }
+      bmsg(lines, step);
+      return;
+    }
+    if(cb) cb();
+  }
+  step();
+}
+
+/* ----- catching ----- */
+function tryCatch(){
+  if(B.isTrainer){ bmsg(['남의 크리처는 잡을 수 없다!']); return; }
+  if(G.bag.spark_ball<=0){ bmsg(['스파크볼이 없다!']); return; }
+  G.bag.spark_ball--;
+  const sp=DEX[B.foe.id];
+  const hpFactor=1-(B.foe.hp/B.foe.maxhp)*0.7; // lower hp -> easier
+  const chance=Math.min(0.95, sp.catchRate*0.6 + hpFactor*0.6);
+  bmsg([`${B.you.name}(이)가 스파크볼을 던졌다!`], ()=>{
+    let shakes=0;
+    for(let i=0;i<3;i++){ if(Math.random()<chance) shakes++; else break; }
+    const caught = (shakes===3) && (Math.random()<chance+0.1);
+    const shakeMsgs=[];
+    for(let i=0;i<Math.max(1,shakes);i++) shakeMsgs.push('흔들… '+'●'.repeat(i+1));
+    if(caught){
+      shakeMsgs.push(`해냈다! ${B.foe.name}(을)를 잡았다!`);
+      bmsg(shakeMsgs, ()=>{
+        const captured=B.foe;
+        G.caught[captured.id]='caught';
+        captured.hp=captured.maxhp; captured.exp=0;
+        if(G.party.length<6){ G.party.push(captured); bmsg([`${captured.name}(이)가 파티에 합류했다!`],endBattle); }
+        else { G.box.push(captured); bmsg([`${captured.name}(은)는 보관함으로 보내졌다.`],endBattle); }
+      });
+    } else {
+      shakeMsgs.push(`아쉽다! ${B.foe.name}(이)가 튀어나왔다!`);
+      bmsg(shakeMsgs, ()=>{ if(B.foe.hp>0) foeAct(()=>{B.menu='main';B.busy=false;}); else {B.menu='main';B.busy=false;} });
+    }
+  });
+}
+
+function endBattle(){
+  B.active=false; B.foe=null;
+  G.scene='world';
+}
+
+/* ============================================================
+   MENU STATE (overworld pause menu)
+   ============================================================ */
+const M={open:false, page:'root', cursor:0, sub:0, target:0};
+
+/* ============================================================
+   SHOP
+   ============================================================ */
+const SHOP_ITEMS=[
+  {key:'spark_ball', name:'스파크볼', price:120, desc:'야생 크리처를 잡는다'},
+  {key:'salve', name:'화상연고', price:90, desc:'HP를 40 회복'},
+];
+const S={open:false, cursor:0};
+
+/* ============================================================
+   RENDER HELPERS
+   ============================================================ */
+function px(c,x,y,w,h){ X.fillStyle=c; X.fillRect(x,y,w,h); }
+function text(s,x,y,col,size){ X.fillStyle=col||'#ffeede'; X.font=(size||8)+"px 'Courier New',monospace"; X.textBaseline='top'; X.fillText(s,x,y); }
+function frame(x,y,w,h,fill){
+  px(fill||'#241317',x,y,w,h);
+  px('#46232a',x,y,w,2); px('#46232a',x,y+h-2,w,2);
+  px('#46232a',x,y,2,h); px('#46232a',x+w-2,y,2,h);
+  px('#5a2e36',x+2,y+2,w-4,1);
+}
+function hpbar(x,y,w,cur,max,big){
+  const pct=Math.max(0,cur/max);
+  px('#0c0608',x,y,w,big?6:4);
+  const col = pct>0.5?'#7dd87d': pct>0.2?'#ffd24a':'#ff6b6b';
+  px(col,x+1,y+1,Math.round((w-2)*pct),big?4:2);
+}
+
+/* ---- tile colors ---- */
+function drawTile(t,x,y){
+  switch(t){
+    case 0: px('#3a2a2e',x,y,16,16); px('#332428',x+2,y+10,4,2); px('#33252a',x+10,y+4,3,2); break;
+    case 1: px('#241016',x,y,16,16); px('#3a1c24',x+1,y+1,14,4); px('#1a0a10',x+2,y+9,12,5); break;
+    case 2: px('#1f4a22',x,y,16,16); px('#2f6a30',x+2,y+2,3,5); px('#2f6a30',x+8,y+5,3,5); px('#3a7a3a',x+12,y+3,2,6); break;
+    case 3: px('#7a1e08',x,y,16,16); px('#ff5a22',x+2,y+3,5,4); px('#ffb547',x+9,y+8,4,3); px('#ff7a3c',x+4,y+10,4,3); break;
+    case 4: px('#173a5a',x,y,16,16); px('#2a78b0',x+2,y+4,5,2); px('#3a90c8',x+9,y+9,5,2); break;
+    case 5: px('#2a1620',x,y,16,16); px('#ff6b8a',x+3,y+3,10,8); px('#fff',x+6,y+5,4,4); break; // heal (pink cross)
+    case 6: px('#1c2a3a',x,y,16,16); px('#ffd24a',x+3,y+3,10,6); px('#3a2a1a',x+4,y+10,8,4); break; // shop
+    case 7: px('#3a2a2e',x,y,16,16); break; // trainer stands on path; sprite drawn separately
+    case 8: px('#3a2a2e',x,y,16,16); px('#7a5a30',x+5,y+2,6,9); px('#c9a06a',x+4,y+3,8,5); break; // sign
+    default: px('#3a2a2e',x,y,16,16);
+  }
+}
+
+/* ---- player sprite (simple ember-cloaked trainer) ---- */
+function drawPlayer(x,y,facing){
+  // body
+  px('#2a1a2a',x+4,y+9,8,6);     // cloak
+  px('#ff7a3c',x+4,y+9,8,2);     // belt of fire
+  px('#f2c9a0',x+5,y+3,6,6);     // head
+  px('#7a3a20',x+4,y+2,8,3);     // hair
+  // eyes by facing
+  px('#1a0a05', x+ (facing==='left'?5:facing==='right'?8:6),y+5,2,2);
+  if(facing!=='left'&&facing!=='right') px('#1a0a05',x+8,y+5,2,2);
+  px('#3a2a2e',x+4,y+14,3,2); px('#3a2a2e',x+9,y+14,3,2); // feet
+}
+
+/* ============================================================
+   MAIN UPDATE / DRAW LOOP
+   ============================================================ */
+let moveLock=0; // tile-move cooldown frames
+let walkAnim=0;
+let lavaTick=0;
+
+function update(){
+  const evs=keyEvents; keyEvents=[];
+  switch(G.scene){
+    case 'title': updateTitle(evs); break;
+    case 'world': updateWorld(evs); break;
+    case 'dialog': updateDialog(evs); break;
+    case 'battle': updateBattle(evs); break;
+    case 'menu': updateMenu(evs); break;
+    case 'shop': updateShop(evs); break;
+    case 'box': updateBox(evs); break;
+  }
+}
+
+/* ---- TITLE ---- */
+let titleBlink=0;
+function updateTitle(evs){
+  if(evs.includes('a')||evs.includes('m')){
+    // new game: give starter choice
+    G.scene='dialog';
+    say([
+      '엠버폴 화산 연구소에 온 걸 환영한다, 트레이너!',
+      '첫 동료를 골라보자. (A로 진행)',
+    ],()=>{ openStarterChoice(); });
+  }
+}
+let starter={open:false,cursor:0,opts:['emberpup','seedling','puddlet']};
+function openStarterChoice(){ starter.open=true; starter.cursor=0; G.scene='menu'; M.page='starter'; }
+
+/* ---- WORLD ---- */
+function updateWorld(evs){
+  if(evs.includes('m')){ openMenu(); return; }
+  if(evs.includes('a')){ interact(); return; }
+  if(moveLock>0){ moveLock--; }
+  // movement (hold)
+  let dx=0,dy=0,nf=G.facing;
+  if(KEY.up){dy=-1;nf='up';} else if(KEY.down){dy=1;nf='down';}
+  else if(KEY.left){dx=-1;nf='left';} else if(KEY.right){dx=1;nf='right';}
+  if(dx||dy){
+    G.facing=nf;
+    if(moveLock<=0){
+      const nx=G.px+dx, ny=G.py+dy;
+      const t=tileAt(nx,ny);
+      if(t!==1){ // walkable
+        G.px=nx; G.py=ny; moveLock=7; walkAnim^=1; G.steps++;
+        onStep(t);
+      } else { moveLock=4; }
+    }
+  }
+}
+function onStep(t){
+  // lava burn
+  if(t===3){
+    const lead=G.party.find(c=>c.hp>0);
+    if(lead){ lead.hp=Math.max(1,lead.hp-2); }
+  }
+  // encounters
+  let rate=0, pool=null;
+  if(t===2){ rate=0.18; pool='grass'; }
+  else if(t===3){ rate=0.22; pool='lava'; }
+  else if(t===4){ rate=0.20; pool='water'; }
+  if(pool && Math.random()<rate){
+    spawnWild(pool);
+  }
+}
+function spawnWild(pool){
+  let id, lvMin, lvMax;
+  if(pool==='lava'){ id=pick(['emberpup','emberpup','magmaw']); lvMin=4; lvMax=12; }
+  else if(pool==='water'){ id=pick(['puddlet','puddlet','tidalfin']); lvMin=3; lvMax=10; }
+  else { id=pick(['seedling','boulderkin','seedling','boulderkin','thornbloom']); lvMin=3; lvMax=9; }
+  if(DEX[id].stage>=2){ lvMin=Math.max(lvMin,14); lvMax=lvMax+6; }
+  const lv=lvMin+Math.floor(Math.random()*(lvMax-lvMin+1));
+  startBattle(id, lv, false);
+}
+function pick(a){ return a[Math.floor(Math.random()*a.length)]; }
+
+function interact(){
+  let tx=G.px, ty=G.py;
+  if(G.facing==='up')ty--; else if(G.facing==='down')ty++;
+  else if(G.facing==='left')tx--; else tx++;
+  const t=tileAt(tx,ty);
+  if(t===8){ say(SIGNS[tx+','+ty]||'낡은 표지판이다.'); return; }
+  if(t===5){ // heal center (also can stand on)
+    healParty(); return;
+  }
+  // also if standing ON heal/shop tile interact with current
+  const cur=tileAt(G.px,G.py);
+  if(cur===5){ healParty(); return; }
+  if(cur===6 || t===6){ openShop(); return; }
+  if(t===7){ trainerBattle(); return; }
+}
+function healParty(){
+  G.party.forEach(c=>{c.hp=c.maxhp;});
+  G.healCount++;
+  say(['엠버폴 회복소.','크리처들이 완전히 회복되었다!']);
+}
+function trainerBattle(){
+  if(G.trainerDone){ say('트레이너 카이: "좋은 승부였어!"'); return; }
+  say(['트레이너 카이: "내 화산 크리처를 보여주지!"'],()=>{
+    startBattle('magmaw', 14, true);
+  });
+}
+
+/* ---- DIALOG ---- */
+function updateDialog(evs){
+  if(evs.includes('a')||evs.includes('b')){ dialogAdvance(); }
+}
+
+/* ---- MENU (pause / starter / party) ---- */
+function openMenu(){ M.open=true; M.page='root'; M.cursor=0; G.scene='menu'; }
+function closeMenu(){ M.open=false; G.scene='world'; }
+const MENU_ROOT=['크리처','가방','회복소 정보','도감','닫기'];
+function updateMenu(evs){
+  if(M.page==='starter'){
+    if(evs.includes('left'))starter.cursor=(starter.cursor+2)%3;
+    if(evs.includes('right'))starter.cursor=(starter.cursor+1)%3;
+    if(evs.includes('a')){
+      const id=starter.opts[starter.cursor];
+      const cr=makeCreature(id,5);
+      G.party.push(cr); G.caught[id]='caught';
+      starter.open=false; M.open=false;
+      G.scene='dialog';
+      say([`${DEX[id].name}(을)를 파트너로 선택했다!`,
+           '수풀(풀숲)·물가·용암지대에서 야생 크리처를 만나 잡아보자.',
+           '메뉴(C 또는 메뉴버튼)에서 크리처/가방 확인. 핑크 십자=회복소, 노란 가게=상점.'],
+          ()=>{ G.scene='world'; });
+    }
+    return;
+  }
+  if(M.page==='root'){
+    if(evs.includes('up'))M.cursor=(M.cursor+MENU_ROOT.length-1)%MENU_ROOT.length;
+    if(evs.includes('down'))M.cursor=(M.cursor+1)%MENU_ROOT.length;
+    if(evs.includes('b')){ closeMenu(); return; }
+    if(evs.includes('a')){
+      switch(M.cursor){
+        case 0: M.page='party'; M.cursor=0; break;
+        case 1: M.page='bag'; M.cursor=0; break;
+        case 2: M.page='info'; break;
+        case 3: M.page='dex'; break;
+        case 4: closeMenu(); break;
+      }
+    }
+    return;
+  }
+  if(M.page==='party'){
+    if(G.party.length>0){
+      if(evs.includes('up'))M.cursor=(M.cursor+G.party.length-1)%G.party.length;
+      if(evs.includes('down'))M.cursor=(M.cursor+1)%G.party.length;
+    }
+    if(evs.includes('b')){ M.page='root'; M.cursor=0; }
+    return;
+  }
+  if(M.page==='bag'){
+    const items=bagList();
+    if(items.length>0){
+      if(evs.includes('up'))M.cursor=(M.cursor+items.length-1)%items.length;
+      if(evs.includes('down'))M.cursor=(M.cursor+1)%items.length;
+      if(evs.includes('a')){
+        const it=items[M.cursor];
+        if(it.key==='salve'){ M.page='useSalve'; M.sub=0; }
+      }
+    }
+    if(evs.includes('b')){ M.page='root'; M.cursor=1; }
+    return;
+  }
+  if(M.page==='useSalve'){
+    if(G.party.length>0){
+      if(evs.includes('up'))M.sub=(M.sub+G.party.length-1)%G.party.length;
+      if(evs.includes('down'))M.sub=(M.sub+1)%G.party.length;
+      if(evs.includes('a')){
+        const c=G.party[M.sub];
+        if(G.bag.salve>0 && c.hp<c.maxhp){ c.hp=Math.min(c.maxhp,c.hp+40); G.bag.salve--; M.page='bag'; M.cursor=0; }
+      }
+    }
+    if(evs.includes('b')){ M.page='bag'; }
+    return;
+  }
+  if(M.page==='info'||M.page==='dex'){
+    if(evs.includes('b')||evs.includes('a')){ M.page='root'; }
+    return;
+  }
+}
+function bagList(){
+  const out=[];
+  out.push({key:'spark_ball',name:'스파크볼',n:G.bag.spark_ball});
+  out.push({key:'salve',name:'화상연고',n:G.bag.salve});
+  return out;
+}
+
+/* ---- SHOP ---- */
+function openShop(){ S.open=true; S.cursor=0; G.scene='shop'; }
+function updateShop(evs){
+  const n=SHOP_ITEMS.length+1; // +exit
+  if(evs.includes('up'))S.cursor=(S.cursor+n-1)%n;
+  if(evs.includes('down'))S.cursor=(S.cursor+1)%n;
+  if(evs.includes('b')){ S.open=false; G.scene='world'; return; }
+  if(evs.includes('a')){
+    if(S.cursor===SHOP_ITEMS.length){ S.open=false; G.scene='world'; return; }
+    const it=SHOP_ITEMS[S.cursor];
+    if(G.money>=it.price){ G.money-=it.price; G.bag[it.key]=(G.bag[it.key]||0)+1; }
+  }
+}
+
+/* ---- BOX (storage) ---- */
+function updateBox(evs){ if(evs.includes('b')) G.scene='world'; }
+
+/* ---- BATTLE ---- */
+const BMENU=['싸운다','가방','크리처','도망친다'];
+function updateBattle(evs){
+  if(B.busy || B.menu==='msg'){
+    if(evs.includes('a')||evs.includes('b')) bmsgAdvance();
+    return;
+  }
+  if(B.menu==='main'){
+    if(evs.includes('up'))B.cursor=(B.cursor+2)%4;
+    if(evs.includes('down'))B.cursor=(B.cursor+2)%4;
+    if(evs.includes('left'))B.cursor=(B.cursor%2===1)?B.cursor-1:B.cursor+1;
+    if(evs.includes('right'))B.cursor=(B.cursor%2===0)?B.cursor+1:B.cursor-1;
+    // simpler 2x2 nav
+    if(evs.includes('a')){
+      switch(B.cursor){
+        case 0: B.menu='fight'; B.sub=0; break;
+        case 1: B.menu='bag'; B.sub=0; break;
+        case 2: B.menu='party'; B.sub=0; break;
+        case 3:
+          if(!B.runOk){ bmsg(['트레이너 대결에서는 도망칠 수 없다!']); }
+          else if(Math.random()<0.75){ bmsg(['무사히 도망쳤다!'], endBattle); }
+          else { bmsg(['도망치지 못했다!'], ()=>{ foeAct(()=>{B.menu='main';B.busy=false;}); }); }
+          break;
+      }
+    }
+    return;
+  }
+  if(B.menu==='fight'){
+    const mvs=B.you.moves;
+    if(evs.includes('up'))B.sub=(B.sub+mvs.length-1)%mvs.length;
+    if(evs.includes('down'))B.sub=(B.sub+1)%mvs.length;
+    if(evs.includes('b')){ B.menu='main'; }
+    if(evs.includes('a')){
+      const mk=mvs[B.sub];
+      B._pendingMove=mk;
+      B.menu='msg'; B.busy=true; B.msg=[]; // chain will fill
+      const youFirst=B.you.spd>=B.foe.spd;
+      if(youFirst) chain([ (n)=>doAttack(B.you,B.foe,mk,true,n), (n)=>{ if(B.foe.hp>0&&B.you.hp>0) foeAct(n); else n&&n(); } ]);
+      else chain([ (n)=>foeAct(n), (n)=>{ if(B.you.hp>0&&B.foe.hp>0) doAttack(B.you,B.foe,mk,true,n); else n&&n(); } ]);
+    }
+    return;
+  }
+  if(B.menu==='bag'){
+    const opts=[{key:'spark_ball',name:'스파크볼',n:G.bag.spark_ball},{key:'salve',name:'화상연고',n:G.bag.salve}];
+    if(evs.includes('up'))B.sub=(B.sub+opts.length-1)%opts.length;
+    if(evs.includes('down'))B.sub=(B.sub+1)%opts.length;
+    if(evs.includes('b')){ B.menu='main'; }
+    if(evs.includes('a')){
+      const it=opts[B.sub];
+      if(it.key==='spark_ball'){ B.menu='msg';B.busy=true;B.msg=[]; tryCatch(); }
+      else if(it.key==='salve'){
+        if(G.bag.salve>0 && B.you.hp<B.you.maxhp){
+          G.bag.salve--; B.you.hp=Math.min(B.you.maxhp,B.you.hp+40);
+          B.menu='msg';B.busy=true;B.msg=[];
+          bmsg([`${B.you.name}의 HP를 40 회복했다!`], ()=>{ foeAct(()=>{B.menu='main';B.busy=false;}); });
+        } else { bmsg(['지금은 쓸 수 없다.']); }
+      }
+    }
+    return;
+  }
+  if(B.menu==='party'){
+    const alive=G.party;
+    if(evs.includes('up'))B.sub=(B.sub+alive.length-1)%alive.length;
+    if(evs.includes('down'))B.sub=(B.sub+1)%alive.length;
+    if(evs.includes('b')){ B.menu='main'; }
+    if(evs.includes('a')){
+      const c=G.party[B.sub];
+      if(c===B.you){ /* same */ B.menu='main'; }
+      else if(c.hp<=0){ bmsg([`${c.name}(은)는 싸울 수 없다!`]); }
+      else {
+        B.you=c;
+        B.menu='msg';B.busy=true;B.msg=[];
+        bmsg([`가라, ${c.name}!`], ()=>{ foeAct(()=>{B.menu='main';B.busy=false;}); });
+      }
+    }
+    return;
+  }
+}
+
+/* ============================================================
+   DRAW
+   ============================================================ */
+function draw(){
+  X.clearRect(0,0,W,H);
+  switch(G.scene){
+    case 'title': drawTitle(); break;
+    case 'world': drawWorld(); drawWorldHUD(); break;
+    case 'dialog': drawWorld(); drawDialog(); break;
+    case 'battle': drawBattle(); break;
+    case 'menu':
+      if(M.page==='starter'){ drawStarter(); }
+      else { drawWorld(); drawMenu(); }
+      break;
+    case 'shop': drawWorld(); drawShop(); break;
+    case 'box': drawWorld(); break;
+  }
+}
+
+function drawTitle(){
+  // volcano backdrop
+  px('#1a0a0e',0,0,W,H);
+  for(let i=0;i<40;i++){ px(i%3?'#3a1810':'#5a2412', (i*53)%W, (i*37)%H, 2,2); }
+  // mountain
+  X.fillStyle='#2a1216';
+  X.beginPath();X.moveTo(60,210);X.lineTo(160,80);X.lineTo(260,210);X.closePath();X.fill();
+  px('#7a1e08',130,80,60,18); // crater glow
+  px('#ff5a22',140,82,40,8);
+  px('#ffb547',150,84,20,4);
+  // lava streams
+  px('#ff7a3c',150,96,4,90); px('#ff5a22',168,100,3,80);
+  // title text
+  X.textAlign='center';
+  text2('엠버폴',160,28,'#ff7a3c',22,true);
+  text2('크로니클',160,52,'#ffb547',14,true);
+  text2('EMBERFALL CHRONICLE',160,72,'#9b6f5e',8,true);
+  // starter trio preview
+  drawSprite('emberpup',96,150,28);
+  drawSprite('seedling',146,150,28);
+  drawSprite('puddlet',196,150,28);
+  titleBlink=(titleBlink+1)%60;
+  if(titleBlink<40) text2('▶ A / 메뉴 로 시작 ◀',160,200,'#ffeede',9,true);
+  text2('포켓몬에서 영감 — 오리지널 구현',160,232,'#9b6f5e',7,true);
+  text2('© Nintendo / Game Freak / The Pokémon Company',160,244,'#7a5a50',6,true);
+  text2('크리처·이름·타입·지역 전부 오리지널 창작',160,256,'#7a5a50',6,true);
+  X.textAlign='left';
+}
+function text2(s,x,y,col,size,center){
+  X.fillStyle=col; X.font='bold '+size+"px 'Courier New',monospace";
+  X.textBaseline='top'; if(center)X.textAlign='center';
+  X.fillText(s,x,y); X.textAlign='left';
+}
+
+function drawWorld(){
+  lavaTick=(lavaTick+1)%1000;
+  // camera centered on player
+  const camx = clamp(G.px*16 - W/2 + 8, 0, MAP_W*16 - W);
+  const camy = clamp(G.py*16 - (H-40)/2 + 8, 0, MAP_H*16 - (H-40));
+  px('#1a0e10',0,0,W,H);
+  const startX=Math.floor(camx/16), startY=Math.floor(camy/16);
+  for(let ty=startY; ty<=startY+ Math.ceil((H-40)/16)+1; ty++){
+    for(let tx=startX; tx<=startX+ Math.ceil(W/16)+1; tx++){
+      if(tx<0||ty<0||tx>=MAP_W||ty>=MAP_H) continue;
+      const sx=tx*16-camx, sy=ty*16-camy;
+      drawTile(MAP[ty][tx], sx, sy);
+    }
+  }
+  // trainer sprite on tile 7
+  for(let ty=0;ty<MAP_H;ty++)for(let tx=0;tx<MAP_W;tx++){
+    if(MAP[ty][tx]===7){
+      const sx=tx*16-camx, sy=ty*16-camy;
+      // mini rival trainer
+      px('#3a2a4a',sx+4,sy+8,8,7); px('#c489ff',sx+4,sy+8,8,2);
+      px('#f2c9a0',sx+5,sy+2,6,6); px('#2a1a3a',sx+4,sy+1,8,3);
+      px('#1a0a05',sx+6,sy+4,2,2);px('#1a0a05',sx+9,sy+4,2,2);
+    }
+  }
+  // player
+  const psx=G.px*16-camx, psy=G.py*16-camy;
+  drawPlayer(psx,psy,G.facing);
+}
+function clamp(v,a,b){ return v<a?a:v>b?b:v; }
+
+function drawWorldHUD(){
+  // bottom thin bar
+  frame(0,H-30,W,30);
+  const lead=G.party[0];
+  if(lead){
+    drawSprite(lead.id,4,H-28,24);
+    text(`${lead.name}  Lv${lead.lv}`,32,H-26,'#ffeede',9);
+    text(`HP ${lead.hp}/${lead.maxhp}`,32,H-14,'#ffd9c0',8);
+    hpbar(120,H-12,70,lead.hp,lead.maxhp);
+  }
+  text(`코인 ${G.money}`,210,H-26,'#ffd24a',9);
+  text(`잡음 ${Object.values(G.caught).filter(v=>v==='caught').length}/${DEX_IDS.length}`,210,H-14,'#9bd87d',8);
+}
+
+function drawDialog(){
+  frame(8,H-78,W-16,70);
+  const line=dialogQ[0]||'';
+  wrapText(line, 18, H-66, W-36, 11, '#ffeede');
+  text('▼ A',W-40,H-20,'#ffb547',9);
+}
+function wrapText(s,x,y,maxw,lh,col){
+  X.fillStyle=col||'#ffeede'; X.font="9px 'Courier New',monospace"; X.textBaseline='top';
+  const words=s.split('');
+  let line='', yy=y;
+  for(let i=0;i<words.length;i++){
+    const test=line+words[i];
+    if(X.measureText(test).width>maxw){ X.fillText(line,x,yy); line=words[i]; yy+=lh; }
+    else line=test;
+  }
+  X.fillText(line,x,yy);
+}
+
+/* ---- battle scene ---- */
+function drawBattle(){
+  // background
+  px('#2a161a',0,0,W,H);
+  px('#3a1c20',0,0,W,90);
+  px('#1f1014',0,150,W,80);
+  // ground platforms
+  px('#4a2a20',180,120,120,14);
+  px('#3a2018',40,180,120,14);
+  // foe (top right)
+  if(B.foe){
+    drawSprite(B.foe.id, 210, 70, 56);
+    frame(8,8,150,40);
+    text(`${B.foe.name}`,16,12,'#ffeede',10);
+    text(`Lv${B.foe.lv}`,120,12,'#ffd24a',9);
+    text(TYPE_KR[B.foe.type], 16,36,'#'+TYPE_COL[B.foe.type].slice(1),7);
+    hpbar(16,26,130,B.foe.hp,B.foe.maxhp,true);
+  }
+  // you (bottom left, back)
+  if(B.you){
+    drawSprite(B.you.id, 60, 130, 56, true);
+    frame(W-170,128,162,46);
+    text(`${B.you.name}`,W-162,132,'#ffeede',10);
+    text(`Lv${B.you.lv}`,W-58,132,'#ffd24a',9);
+    hpbar(W-162,146,150,B.you.hp,B.you.maxhp,true);
+    text(`${B.you.hp}/${B.you.maxhp}`,W-162,154,'#ffd9c0',8);
+    text(TYPE_KR[B.you.type], W-58,154,'#'+TYPE_COL[B.you.type].slice(1),7);
+  }
+  // command box
+  frame(0,H-74,W,74);
+  if(B.menu==='msg'||B.busy){
+    wrapText(B.msg[0]||'', 12, H-62, W-24, 12, '#ffeede');
+    text('▼ A',W-38,H-18,'#ffb547',9);
+  } else if(B.menu==='main'){
+    drawBattleMain();
+  } else if(B.menu==='fight'){
+    drawBattleFight();
+  } else if(B.menu==='bag'){
+    drawBattleBag();
+  } else if(B.menu==='party'){
+    drawBattleParty();
+  }
+}
+function drawBattleMain(){
+  const cols=[12, 162]; const rows=[H-60, H-32];
+  for(let i=0;i<4;i++){
+    const x=cols[i%2], y=rows[Math.floor(i/2)];
+    const sel=(i===B.cursor);
+    if(sel){ px('#46232a',x-4,y-3,148,22); text('▶',x-4,y,'#ffb547',12); }
+    text(BMENU[i],x+10,y,sel?'#ffeede':'#bfa39a',12);
+  }
+}
+function drawBattleFight(){
+  const mvs=B.you.moves;
+  for(let i=0;i<mvs.length;i++){
+    const x=12, y=H-62+i*15;
+    const sel=(i===B.sub);
+    const mv=MOVES[mvs[i]];
+    if(sel){ px('#46232a',8,y-2,200,14); }
+    text((sel?'▶ ':'  ')+mv.name, x, y, sel?'#ffeede':'#bfa39a',10);
+    if(sel){
+      text(TYPE_KR[mv.type], 220,y,'#'+TYPE_COL[mv.type].slice(1),9);
+      text('위력'+(mv.pow||'-'), 270,y,'#ffd24a',8);
+    }
+  }
+  text('B: 뒤로',250,H-18,'#9b6f5e',8);
+}
+function drawBattleBag(){
+  const opts=[{name:'스파크볼',n:G.bag.spark_ball},{name:'화상연고',n:G.bag.salve}];
+  for(let i=0;i<opts.length;i++){
+    const y=H-60+i*16, sel=(i===B.sub);
+    if(sel)px('#46232a',8,y-2,260,14);
+    text((sel?'▶ ':'  ')+opts[i].name+'  x'+opts[i].n, 12,y, sel?'#ffeede':'#bfa39a',11);
+  }
+  text('B: 뒤로',250,H-18,'#9b6f5e',8);
+}
+function drawBattleParty(){
+  for(let i=0;i<G.party.length;i++){
+    const c=G.party[i], y=H-66+i*11, sel=(i===B.sub);
+    if(sel)px('#46232a',8,y-1,300,11);
+    const col=c.hp<=0?'#ff6b6b':(c===B.you?'#ffd24a':'#bfa39a');
+    text((sel?'▶':' ')+`${c.name} Lv${c.lv} HP${c.hp}/${c.maxhp}`,12,y,sel?'#ffeede':col,9);
+  }
+  text('B: 뒤로',250,H-16,'#9b6f5e',8);
+}
+
+/* ---- starter selection ---- */
+function drawStarter(){
+  px('#1a0e10',0,0,W,H);
+  text2('첫 동료를 선택',160,16,'#ffb547',13,true);
+  const labels=['용맹한 불꽃','끈질긴 새싹','유연한 물결'];
+  for(let i=0;i<3;i++){
+    const x=30+i*95, y=70, sel=(i===starter.cursor);
+    frame(x,y,84,120, sel?'#3a1c20':'#241317');
+    if(sel){ px('#ffb547',x,y,84,2); px('#ffb547',x,y+118,84,2); }
+    const id=starter.opts[i];
+    drawSprite(id, x+18, y+12, 48);
+    text2(DEX[id].name, x+42, y+66,'#ffeede',10,true);
+    text2(TYPE_KR[DEX[id].type], x+42, y+80,'#'+TYPE_COL[DEX[id].type].slice(1),9,true);
+    text2(labels[i], x+42, y+96,'#9b6f5e',7,true);
+  }
+  text2('◀ ▶ 선택 · A 결정',160,200,'#ffeede',10,true);
+  text2('포켓몬에서 영감 — 오리지널 구현',160,260,'#7a5a50',7,true);
+}
+
+/* ---- pause menu ---- */
+function drawMenu(){
+  if(M.page==='root'){
+    frame(W-110,8,102,MENU_ROOT.length*16+12);
+    for(let i=0;i<MENU_ROOT.length;i++){
+      const y=16+i*16, sel=(i===M.cursor);
+      if(sel)px('#46232a',W-108,y-1,98,14);
+      text((sel?'▶':' ')+MENU_ROOT[i], W-104,y, sel?'#ffeede':'#bfa39a',10);
+    }
+  } else if(M.page==='party'){
+    frame(8,8,W-16,H-40);
+    text2('크리처 파티',W/2,14,'#ffb547',12,true);
+    if(G.party.length===0) text('아직 크리처가 없다.',20,40,'#bfa39a',10);
+    for(let i=0;i<G.party.length;i++){
+      const c=G.party[i], y=30+i*36, sel=(i===M.cursor);
+      if(sel)px('#3a1c20',12,y-2,W-24,34);
+      drawSprite(c.id,16,y,30);
+      text(`${c.name}`,52,y,'#ffeede',11);
+      text(TYPE_KR[c.type],150,y,'#'+TYPE_COL[c.type].slice(1),9);
+      text(`Lv${c.lv}`,210,y,'#ffd24a',10);
+      text(`HP ${c.hp}/${c.maxhp}`,52,y+14,'#ffd9c0',9);
+      hpbar(150,y+16,90,c.hp,c.maxhp);
+      text(`A:${c.atk} D:${c.def} S:${c.spd}`,52,y+24,'#9b6f5e',7);
+    }
+    text('B: 뒤로',W-60,H-48,'#9b6f5e',8);
+  } else if(M.page==='bag'){
+    frame(8,8,W-16,160);
+    text2('가방',W/2,14,'#ffb547',12,true);
+    const items=bagList();
+    for(let i=0;i<items.length;i++){
+      const y=36+i*24, sel=(i===M.cursor);
+      if(sel)px('#3a1c20',12,y-2,W-24,22);
+      text((sel?'▶ ':'  ')+items[i].name,20,y,sel?'#ffeede':'#bfa39a',11);
+      text('x'+items[i].n, W-50,y,'#ffd24a',11);
+    }
+    text(`코인: ${G.money}`,20,120,'#ffd24a',10);
+    text('A: 화상연고 사용 · B: 뒤로',20,140,'#9b6f5e',8);
+  } else if(M.page==='useSalve'){
+    frame(8,8,W-16,H-40);
+    text2('누구에게 사용?',W/2,14,'#ffb547',12,true);
+    for(let i=0;i<G.party.length;i++){
+      const c=G.party[i], y=34+i*30, sel=(i===M.sub);
+      if(sel)px('#3a1c20',12,y-2,W-24,28);
+      drawSprite(c.id,16,y,24);
+      text(`${c.name} Lv${c.lv}`,46,y,'#ffeede',10);
+      text(`HP ${c.hp}/${c.maxhp}`,46,y+12,'#ffd9c0',9);
+      hpbar(170,y+12,90,c.hp,c.maxhp);
+    }
+    text('화상연고 보유: '+G.bag.salve,20,H-56,'#ffd24a',9);
+    text('A: 사용 · B: 뒤로',20,H-44,'#9b6f5e',8);
+  } else if(M.page==='info'){
+    frame(8,8,W-16,170);
+    text2('엠버폴 안내',W/2,14,'#ffb547',12,true);
+    const lines=[
+      '핑크 십자 = 회복소 (밟고 A: 무료 회복)',
+      '노란 가게 = 상점 (밟고 A: 아이템 구매)',
+      '초록 수풀 = 풀/바위 크리처 조우',
+      '용암 분지 = 불꽃 크리처 (걸을 때 화상)',
+      '파란 물가 = 물결 크리처 조우',
+      '보라 트레이너 = 다가가 A로 대결',
+      'HP 0 전멸 시 회복소로 귀환',
+    ];
+    lines.forEach((l,i)=>text(l,18,40+i*17,'#ffeede',9));
+    text('B/A: 닫기',W-70,H-50,'#9b6f5e',8);
+  } else if(M.page==='dex'){
+    frame(8,8,W-16,H-40);
+    text2('크리처 도감',W/2,12,'#ffb547',12,true);
+    for(let i=0;i<DEX_IDS.length;i++){
+      const id=DEX_IDS[i];
+      const st=G.caught[id];
+      const col=i%2, row=Math.floor(i/2);
+      const x=14+col*150, y=30+row*36;
+      const known = st==='caught'||st==='seen';
+      if(known){ drawSprite(id, x, y, 28); }
+      else { px('#2a1a1e',x,y,28,28); text('?',x+10,y+8,'#5a4a40',14); }
+      const mark = st==='caught'?'●': st==='seen'?'○':' ';
+      text(mark+(known?DEX[id].name:'？？？'), x+32, y+4,'#ffeede',9);
+      if(known) text('Lv진화 '+(DEX[id].evo?DEX[id].evo.lv:'-'),x+32,y+16,'#9b6f5e',7);
+    }
+    text('● 잡음 ○ 봄 · B: 뒤로',16,H-48,'#9b6f5e',8);
+  }
+}
+
+/* ---- shop ---- */
+function drawShop(){
+  frame(8,8,W-16,170);
+  text2('엠버폴 상점',W/2,14,'#ffb547',12,true);
+  text('코인: '+G.money,W-110,16,'#ffd24a',10);
+  for(let i=0;i<SHOP_ITEMS.length;i++){
+    const it=SHOP_ITEMS[i], y=40+i*30, sel=(i===S.cursor);
+    if(sel)px('#3a1c20',12,y-2,W-24,28);
+    text((sel?'▶ ':'  ')+it.name,18,y,sel?'#ffeede':'#bfa39a',11);
+    text(it.price+'코인',W-90,y,'#ffd24a',10);
+    text(it.desc,30,y+12,'#9b6f5e',7);
+  }
+  const ey=40+SHOP_ITEMS.length*30, esel=(S.cursor===SHOP_ITEMS.length);
+  if(esel)px('#3a1c20',12,ey-2,W-24,16);
+  text((esel?'▶ ':'  ')+'나간다',18,ey,esel?'#ffeede':'#bfa39a',11);
+  text('A: 구매 · ↑↓ 이동 · B: 나가기',18,160,'#9b6f5e',8);
+}
+
+/* ============================================================
+   LOOP
+   ============================================================ */
+let lastT=0, acc=0;
+function loop(t){
+  acc += (t-lastT); lastT=t;
+  // ~30fps logic tick for movement pacing
+  if(acc>=33){ update(); acc=0; }
+  draw();
+  requestAnimationFrame(loop);
+}
+
+/* boot */
+fit();
+requestAnimationFrame(loop);
+// expose for test harness
+window.__G=G; window.__B=B; window.__DEX=DEX; window.__startBattle=startBattle;
+window.__giveStarter=function(id){ const cr=makeCreature(id||'emberpup',5); G.party.push(cr); G.caught[cr.id]='caught'; G.scene='world'; };
+</script>
+</body>
+</html>

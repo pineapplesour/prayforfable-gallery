@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>구름바다 · Cloud Sea</title>
+<style>
+  :root{
+    --ink: 255,255,255;
+    --glass-bg: rgba(20,26,42,0.30);
+    --glass-bd: rgba(255,255,255,0.30);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;height:100%;overflow:hidden;background:#10131f;
+    font-family:"Hiragino Kaku Gothic ProN","Apple SD Gothic Neo","Pretendard","Segoe UI",system-ui,-apple-system,sans-serif;
+    color:rgba(var(--ink),0.94);}
+  #sky{position:fixed;inset:0;width:100%;height:100%;display:block;z-index:0;}
+  /* floating ambient noise/grain overlay for depth */
+  #grain{position:fixed;inset:0;z-index:1;pointer-events:none;opacity:.05;mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");}
+
+  .stage{position:fixed;inset:0;z-index:2;}
+
+  /* ---------- liquid glass panel base ---------- */
+  .glass{
+    position:absolute;
+    background:var(--glass-bg);
+    border:1px solid var(--glass-bd);
+    border-radius:26px;
+    box-shadow:
+      0 28px 70px rgba(8,12,28,0.45),
+      0 4px 18px rgba(8,12,28,0.30),
+      inset 0 1px 0 rgba(255,255,255,0.40),
+      inset 0 0 0 1px rgba(255,255,255,0.04);
+    backdrop-filter:blur(22px) saturate(1.5) brightness(1.05);
+    -webkit-backdrop-filter:blur(22px) saturate(1.5) brightness(1.05);
+    overflow:hidden;
+    will-change:transform;
+    transition:box-shadow .25s ease;
+  }
+  /* specular sheen sweeping the top edge */
+  .glass::before{
+    content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+    background:
+      radial-gradient(140% 80% at 18% -10%, rgba(255,255,255,0.30), rgba(255,255,255,0) 55%),
+      linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0) 22%);
+    mix-blend-mode:screen;opacity:.9;
+  }
+  .glass.dragging{box-shadow:
+      0 40px 90px rgba(8,12,28,0.55),
+      0 6px 22px rgba(8,12,28,0.40),
+      inset 0 1px 0 rgba(255,255,255,0.5);}
+
+  .grab{cursor:grab;}
+  .grab:active{cursor:grabbing;}
+
+  .pad{padding:24px 26px;position:relative;z-index:2;}
+
+  .eyebrow{font-size:11px;letter-spacing:.28em;text-transform:uppercase;
+    color:rgba(var(--ink),0.62);margin:0 0 12px;display:flex;align-items:center;gap:8px;}
+  .eyebrow .dot{width:7px;height:7px;border-radius:50%;background:#ffd27a;
+    box-shadow:0 0 10px 2px rgba(255,210,122,.8);}
+  h1{margin:0 0 6px;font-size:27px;line-height:1.18;font-weight:700;letter-spacing:-.01em;}
+  .sub{margin:0 0 20px;font-size:13.5px;line-height:1.6;color:rgba(var(--ink),0.72);max-width:30ch;}
+
+  /* ---------- search field ---------- */
+  .search{display:flex;gap:10px;align-items:stretch;}
+  .field{flex:1;display:flex;align-items:center;gap:10px;
+    border:1px solid rgba(var(--ink),0.40);background:rgba(var(--ink),0.08);
+    border-radius:16px;padding:0 14px;height:50px;transition:.2s;}
+  .field:focus-within{border-color:rgba(var(--ink),0.7);background:rgba(var(--ink),0.14);
+    box-shadow:0 0 0 4px rgba(255,255,255,0.08);}
+  .field svg{flex:0 0 auto;opacity:.78;}
+  .field input{flex:1;border:0;outline:0;background:transparent;color:rgba(var(--ink),0.96);
+    font-size:15px;font-family:inherit;letter-spacing:.01em;}
+  .field input::placeholder{color:rgba(var(--ink),0.5);}
+  .btn{border:0;cursor:pointer;font-family:inherit;font-weight:650;font-size:14px;
+    border-radius:16px;padding:0 22px;height:50px;color:#1b2236;
+    background:linear-gradient(180deg,#fff,#e9eefb);
+    box-shadow:0 8px 22px rgba(8,12,28,0.3),inset 0 1px 0 rgba(255,255,255,0.9);
+    transition:transform .12s ease,box-shadow .12s ease;white-space:nowrap;}
+  .btn:hover{transform:translateY(-1px);box-shadow:0 12px 28px rgba(8,12,28,0.38);}
+  .btn:active{transform:translateY(0);}
+
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px;}
+  .chip{border:1px solid rgba(var(--ink),0.42);background:rgba(var(--ink),0.07);
+    color:rgba(var(--ink),0.82);border-radius:999px;padding:8px 14px;font-size:12.5px;
+    cursor:pointer;transition:.16s;user-select:none;}
+  .chip:hover{background:rgba(var(--ink),0.16);border-color:rgba(var(--ink),0.6);}
+  .chip.on{background:rgba(255,255,255,0.88);color:#1b2236;border-color:#fff;font-weight:600;}
+
+  /* ---------- stat card (sky status) ---------- */
+  .stats{display:flex;gap:10px;}
+  .stat{flex:1;text-align:center;border:1px solid rgba(var(--ink),0.4);
+    background:rgba(var(--ink),0.07);border-radius:16px;padding:14px 8px;}
+  .stat b{display:block;font-size:21px;font-weight:700;letter-spacing:-.01em;}
+  .stat span{display:block;font-size:11px;margin-top:4px;color:rgba(var(--ink),0.62);letter-spacing:.04em;}
+
+  /* ---------- recent list ---------- */
+  .row{display:flex;align-items:center;gap:12px;padding:11px 4px;
+    border-bottom:1px solid rgba(var(--ink),0.12);}
+  .row:last-child{border-bottom:0;}
+  .row .ic{flex:0 0 auto;width:34px;height:34px;border-radius:11px;
+    display:flex;align-items:center;justify-content:center;
+    border:1px solid rgba(var(--ink),0.35);background:rgba(var(--ink),0.08);}
+  .row .tx{flex:1;min-width:0;}
+  .row .tx b{font-size:13.5px;font-weight:600;display:block;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .row .tx span{font-size:11.5px;color:rgba(var(--ink),0.55);}
+  .row .go{flex:0 0 auto;opacity:.5;transition:.16s;}
+  .row:hover .go{opacity:1;transform:translateX(2px);}
+
+  /* ---------- positions (1440 desktop default) ---------- */
+  #pMain{left:9%;top:50%;width:430px;transform:translateY(-50%);}
+  #pStat{right:9%;top:18%;width:360px;}
+  #pList{right:9%;top:52%;width:360px;}
+
+  .credit{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:3;
+    font-size:11px;letter-spacing:.18em;color:rgba(var(--ink),0.6);
+    background:rgba(10,14,26,0.32);border:1px solid rgba(255,255,255,0.14);
+    padding:7px 18px;border-radius:99px;backdrop-filter:blur(8px);pointer-events:none;white-space:nowrap;}
+
+  /* ---------- 390 mobile ---------- */
+  @media (max-width:780px){
+    .stage{padding:0;}
+    #pMain,#pStat,#pList{position:absolute;left:5%;right:5%;width:auto;transform:none;}
+    #pMain{top:14px;}
+    #pStat{top:auto;}            /* repositioned by JS to stack */
+    #pList{top:auto;}
+    h1{font-size:23px;}
+    .pad{padding:20px 20px;}
+    .credit{font-size:10px;letter-spacing:.12em;padding:6px 14px;}
+  }
+</style>
+</head>
+<body>
+  <canvas id="sky"></canvas>
+  <div id="grain"></div>
+
+  <div class="stage" id="stage">
+    <!-- MAIN SEARCH GLASS -->
+    <section class="glass grab" id="pMain">
+      <div class="pad">
+        <p class="eyebrow"><span class="dot"></span> Cloud Sea · 구름바다</p>
+        <h1>지평선 너머<br>무엇을 찾고 계신가요?</h1>
+        <p class="sub">앰비언트 하늘 위에 떠있는 리퀴드 글래스. 아래 흐르는 구름이 패널을 그대로 굴절합니다.</p>
+        <div class="search">
+          <label class="field">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            <input id="q" type="text" placeholder="구름, 노을, 고요함...">
+          </label>
+          <button class="btn" id="goBtn">탐색</button>
+        </div>
+        <div class="chips" id="chips">
+          <span class="chip on">전체</span>
+          <span class="chip">하늘</span>
+          <span class="chip">구름섬</span>
+          <span class="chip">빛</span>
+          <span class="chip">고요</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- SKY STATUS GLASS -->
+    <section class="glass grab" id="pStat">
+      <div class="pad">
+        <p class="eyebrow"><span class="dot"></span> 지금의 하늘</p>
+        <div class="stats">
+          <div class="stat"><b id="sAlt">3,280</b><span>고도 m</span></div>
+          <div class="stat"><b id="sLight">황혼</b><span>빛</span></div>
+          <div class="stat"><b id="sCalm">98%</b><span>고요함</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- RECENT GLASS -->
+    <section class="glass grab" id="pList">
+      <div class="pad">
+        <p class="eyebrow"><span class="dot"></span> 최근 떠오른 것</p>
+        <div id="rows">
+          <div class="row"><div class="ic">☁︎</div><div class="tx"><b>적란운의 가장자리</b><span>14분 전 · 하늘</span></div><span class="go">→</span></div>
+          <div class="row"><div class="ic">✦</div><div class="tx"><b>마지막 햇살의 입자</b><span>1시간 전 · 빛</span></div><span class="go">→</span></div>
+          <div class="row"><div class="ic">⌇</div><div class="tx"><b>바람이 멎은 고요</b><span>어제 · 고요</span></div><span class="go">→</span></div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="credit">패널을 드래그해 보세요 · 마우스를 움직이면 구름이 따라옵니다</div>
+
+<script>
+'use strict';
+(()=>{
+const TAU=Math.PI*2;
+const cv=document.getElementById('sky');
+const ctx=cv.getContext('2d');
+let W=0,H=0,DPR=1;
+
+/* ---- pointer / parallax ---- */
+const mouse={x:0.5,y:0.5,tx:0.5,ty:0.5};
+window.addEventListener('pointermove',e=>{
+  if(dragging) return;
+  mouse.tx=e.clientX/window.innerWidth;
+  mouse.ty=e.clientY/window.innerHeight;
+});
+
+/* ============================================================
+   CLOUD SEA  — slow ambient layered sky, painted to offscreen
+   then translated each frame for cheap parallax (frangollo-style
+   slow depth-blurred drift, reinterpreted as a sea of clouds).
+   ============================================================ */
+const rnd=(a,b)=>a+Math.random()*(b-a);
+
+// Each cloud layer is a pre-rendered, blurred wide strip we scroll.
+const LAYERS=[];
+function buildLayers(){
+  LAYERS.length=0;
+  // layer config: depth band y (0=top..1=bottom), speed, blur, scale, alpha, tint
+  const cfg=[
+    {y:0.30, speed:6,  blur:26, count:6,  rmin:160,rmax:340, a:0.30, tint:[176,150,205]}, // high faint haze (violet)
+    {y:0.46, speed:11, blur:18, count:7,  rmin:140,rmax:300, a:0.46, tint:[255,196,168]}, // mid peach
+    {y:0.62, speed:18, blur:12, count:8,  rmin:130,rmax:300, a:0.62, tint:[255,224,184]}, // warm lower
+    {y:0.78, speed:30, blur:7,  count:9,  rmin:150,rmax:360, a:0.80, tint:[255,243,222]}  // foreground bright sea
+  ];
+  for(const c of cfg){
+    const stripW=Math.max(2400,W*2.2);
+    const off=document.createElement('canvas');
+    off.width=stripW; off.height=H;
+    const o=off.getContext('2d');
+    o.filter='blur('+c.blur+'px)';
+    const bandY=H*c.y;
+    for(let i=0;i<c.count;i++){
+      const cx=rnd(0,stripW), cy=bandY+rnd(-H*0.10,H*0.10);
+      paintBlob(o,cx,cy,rnd(c.rmin,c.rmax),c.tint,c.a);
+    }
+    o.filter='none';
+    LAYERS.push({off,stripW,speed:c.speed,x:rnd(0,stripW)});
+  }
+}
+// soft cloud blob = clustered radial gradients
+function paintBlob(o,cx,cy,r,tint,a){
+  const lobes=5+(Math.random()*4|0);
+  for(let i=0;i<lobes;i++){
+    const ang=Math.random()*TAU, dist=Math.random()*r*0.7;
+    const lx=cx+Math.cos(ang)*dist, ly=cy+Math.sin(ang)*dist*0.55;
+    const lr=r*rnd(0.45,0.95);
+    const g=o.createRadialGradient(lx,ly-lr*0.2,0,lx,ly,lr);
+    const [R,G,B]=tint;
+    g.addColorStop(0,'rgba('+R+','+G+','+B+','+(a).toFixed(3)+')');
+    g.addColorStop(0.55,'rgba('+R+','+G+','+B+','+(a*0.45).toFixed(3)+')');
+    g.addColorStop(1,'rgba('+R+','+G+','+B+',0)');
+    o.fillStyle=g;
+    o.beginPath();o.ellipse(lx,ly,lr,lr*0.62,0,0,TAU);o.fill();
+  }
+}
+
+// distant drifting light motes (frangollo's floating bubbles -> light specks)
+const MOTES=[];
+function buildMotes(){
+  MOTES.length=0;
+  const n=Math.round(W*H/26000);
+  for(let i=0;i<n;i++){
+    MOTES.push({x:Math.random(),y:Math.random()*0.7,r:rnd(0.6,2.4),
+      sp:rnd(0.004,0.018),tw:Math.random()*TAU,a:rnd(0.2,0.7)});
+  }
+}
+
+function drawSkyGradient(t){
+  // vertical dawn->dusk gradient, very slowly breathing
+  const breathe=Math.sin(t*0.05)*0.5+0.5;
+  const g=ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0.00,'#1d1d3a');
+  g.addColorStop(0.30,mix('#2e2a55','#3a2e5e',breathe));
+  g.addColorStop(0.52,mix('#7e4f78','#8a5273',breathe));
+  g.addColorStop(0.72,'#d9806f');
+  g.addColorStop(0.88,'#f6b27a');
+  g.addColorStop(1.00,'#ffdca0');
+  ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+  // soft low sun glow
+  const sx=W*(0.5+(mouse.x-0.5)*0.06), sy=H*0.84;
+  const sg=ctx.createRadialGradient(sx,sy,0,sx,sy,H*0.7);
+  sg.addColorStop(0,'rgba(255,236,196,0.55)');
+  sg.addColorStop(0.4,'rgba(255,206,150,0.18)');
+  sg.addColorStop(1,'rgba(255,206,150,0)');
+  ctx.fillStyle=sg;ctx.fillRect(0,0,W,H);
+}
+function mix(c1,c2,t){
+  const a=hex(c1),b=hex(c2);
+  return 'rgb('+Math.round(a[0]+(b[0]-a[0])*t)+','+Math.round(a[1]+(b[1]-a[1])*t)+','+Math.round(a[2]+(b[2]-a[2])*t)+')';
+}
+function hex(h){return [parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)];}
+
+let last=0;
+function frame(ts){
+  requestAnimationFrame(frame);
+  const t=ts/1000;
+  const dt=Math.min(0.05,Math.max(0.001,t-last)); last=t;
+
+  // ease parallax
+  mouse.x+=(mouse.tx-mouse.x)*Math.min(1,dt*2.5);
+  mouse.y+=(mouse.ty-mouse.y)*Math.min(1,dt*2.5);
+  const px=(mouse.x-0.5), py=(mouse.y-0.5);
+
+  drawSkyGradient(t);
+
+  // cloud layers (each scrolls + parallax offset by depth)
+  for(let li=0;li<LAYERS.length;li++){
+    const L=LAYERS[li];
+    L.x-=L.speed*dt;
+    if(L.x<-L.stripW) L.x+=L.stripW;
+    const depth=(li+1)/LAYERS.length;            // 0..1 foreground = larger parallax
+    const ox=px*depth*46;
+    const oy=py*depth*26;
+    // draw the strip twice for seamless wrap
+    ctx.globalAlpha=1;
+    ctx.drawImage(L.off, L.x+ox, oy);
+    ctx.drawImage(L.off, L.x+L.stripW+ox, oy);
+  }
+
+  // light motes
+  ctx.globalCompositeOperation='screen';
+  for(const m of MOTES){
+    m.x+=m.sp*dt; if(m.x>1.05)m.x-=1.1;
+    m.tw+=dt*1.4;
+    const tw=(Math.sin(m.tw)*0.5+0.5);
+    const x=m.x*W + px*18, y=m.y*H + py*10;
+    ctx.fillStyle='rgba(255,248,224,'+(m.a*tw*0.8).toFixed(3)+')';
+    ctx.beginPath();ctx.arc(x,y,m.r*(0.6+tw*0.6),0,TAU);ctx.fill();
+  }
+  ctx.globalCompositeOperation='source-over';
+
+  // vignette (frangollo-style depth focus)
+  const vg=ctx.createRadialGradient(W*0.5,H*0.5,Math.min(W,H)*0.25,W*0.5,H*0.52,Math.max(W,H)*0.75);
+  vg.addColorStop(0,'rgba(0,0,0,0)');
+  vg.addColorStop(1,'rgba(8,8,22,0.45)');
+  ctx.fillStyle=vg;ctx.fillRect(0,0,W,H);
+}
+
+/* ---- glass parallax (counter-drift = floating feel) ---- */
+const panels=[...document.querySelectorAll('.glass')];
+const base=new WeakMap();
+function tickGlass(){
+  requestAnimationFrame(tickGlass);
+  const px=(mouse.x-0.5), py=(mouse.y-0.5);
+  panels.forEach((p,i)=>{
+    if(p.classList.contains('dragging')) return;
+    const d=(i+1)*0.5;
+    const b=base.get(p)||{x:0,y:0};
+    p.style.transform=(p.dataset.cy?'translateY(-50%) ':'')+
+      `translate(${(b.x - px*9*d).toFixed(2)}px, ${(b.y - py*7*d).toFixed(2)}px)`;
+  });
+}
+
+/* ---- resize / layout ---- */
+function layout(){
+  const small=window.innerWidth<=780;
+  const main=document.getElementById('pMain');
+  const stat=document.getElementById('pStat');
+  const list=document.getElementById('pList');
+  if(small){
+    main.dataset.cy='';stat.dataset.cy='';list.dataset.cy='';
+    main.style.top='14px';
+    const mh=main.offsetHeight;
+    stat.style.top=(14+mh+14)+'px';
+    const sh=stat.offsetHeight;
+    list.style.top=(14+mh+14+sh+14)+'px';
+  }else{
+    main.dataset.cy='1';        // keep translateY(-50%)
+    stat.removeAttribute('data-cy');
+    list.removeAttribute('data-cy');
+  }
+}
+function resize(){
+  W=window.innerWidth;H=window.innerHeight;
+  DPR=Math.min(window.devicePixelRatio||1,2);
+  cv.width=Math.round(W*DPR);cv.height=Math.round(H*DPR);
+  cv.style.width=W+'px';cv.style.height=H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  buildLayers();buildMotes();
+  layout();
+}
+window.addEventListener('resize',resize);
+
+/* ---- drag panels ---- */
+panels.forEach(p=>{
+  base.set(p,{x:0,y:0});
+  let sx,sy,bx,by,drag=false;
+  p.addEventListener('pointerdown',e=>{
+    if(e.target.closest('input,button,.chip,.row')) return;
+    drag=true;dragging=true;p.classList.add('dragging');
+    const b=base.get(p);bx=b.x;by=b.y;sx=e.clientX;sy=e.clientY;
+    p.setPointerCapture(e.pointerId);
+  });
+  p.addEventListener('pointermove',e=>{
+    if(!drag) return;
+    const b=base.get(p);
+    b.x=bx+(e.clientX-sx);b.y=by+(e.clientY-sy);
+    p.style.transform=(p.dataset.cy?'translateY(-50%) ':'')+`translate(${b.x}px,${b.y}px)`;
+  });
+  const up=()=>{drag=false;dragging=false;p.classList.remove('dragging');};
+  p.addEventListener('pointerup',up);
+  p.addEventListener('pointercancel',up);
+});
+let dragging=false;
+
+/* ---- chips + search interactivity ---- */
+document.getElementById('chips').addEventListener('click',e=>{
+  if(!e.target.classList.contains('chip'))return;
+  [...e.currentTarget.children].forEach(c=>c.classList.remove('on'));
+  e.target.classList.add('on');
+});
+const q=document.getElementById('q');
+function doSearch(){
+  const v=q.value.trim();if(!v)return;
+  const rows=document.getElementById('rows');
+  const cat=document.querySelector('.chip.on').textContent;
+  const row=document.createElement('div');row.className='row';
+  row.innerHTML='<div class="ic">⌕</div><div class="tx"><b></b><span>방금 · '+cat+'</span></div><span class="go">→</span>';
+  row.querySelector('b').textContent=v;
+  rows.insertBefore(row,rows.firstChild);
+  while(rows.children.length>4)rows.removeChild(rows.lastChild);
+  q.value='';layout();
+}
+document.getElementById('goBtn').addEventListener('click',doSearch);
+q.addEventListener('keydown',e=>{if(e.key==='Enter')doSearch();});
+
+// live sky-status numbers (subtle ambient life)
+const sAlt=document.getElementById('sAlt'),sCalm=document.getElementById('sCalm');
+setInterval(()=>{
+  sAlt.textContent=(3200+Math.round(Math.sin(Date.now()/4000)*120)).toLocaleString();
+  sCalm.textContent=(96+Math.round(Math.sin(Date.now()/3000)*3))+'%';
+},1400);
+
+resize();
+requestAnimationFrame(frame);
+requestAnimationFrame(tickGlass);
+})();
+</script>
+</body>
+</html>

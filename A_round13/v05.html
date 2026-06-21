@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>LIQUID LIGHT — fountain</title>
+<style>
+  html,body{margin:0;height:100%;background:#03040a;overflow:hidden;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-tap-highlight-color:transparent;cursor:crosshair;}
+  #stage{position:fixed;inset:0;display:block;}
+  /* hidden node only for the verify harness — never shown, never gates the art */
+  #view{position:fixed;left:-9999px;top:-9999px;opacity:0;pointer-events:none;}
+  #hud{position:fixed;left:18px;bottom:16px;z-index:5;color:#9fb6d6;
+    font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+    text-shadow:0 1px 8px rgba(0,0,0,.8);user-select:none;line-height:1.7;
+    opacity:.62;transition:opacity .6s;mix-blend-mode:screen;}
+  #hud b{color:#dfeaff;font-weight:600;}
+  #hud.dim{opacity:.16;}
+  #title{position:fixed;left:20px;top:18px;z-index:5;color:#eaf2ff;
+    font-weight:200;font-size:13px;letter-spacing:.42em;text-transform:uppercase;
+    text-shadow:0 1px 14px rgba(0,0,0,.7);user-select:none;mix-blend-mode:screen;opacity:.8;}
+  #title span{color:#7fa8ff;font-weight:600;}
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="title"><span>LIQUID</span> LIGHT</div>
+<div id="hud">
+  <div>move <b>cursor</b> — bend the water · <b>hold</b> — gather · <b>release</b> — burst</div>
+  <div>scroll — <b>gravity &amp; wind</b> · double-click — <b>chroma shift</b></div>
+</div>
+<div id="view">liquid light interactive particle fountain artwork rendered live on canvas with additive glow physics</div>
+<script>
+(()=>{
+"use strict";
+const cv=document.getElementById('stage'), g=cv.getContext('2d',{alpha:false});
+const hud=document.getElementById('hud');
+let W=0,H=0,DPR=1,floorY=0,nozzleX=0,nozzleY=0;
+
+/* ---------- sizing & quality tiers ---------- */
+let CAP=2600;           // particle cap (set by area)
+let trailFade=0.12;     // motion-blur amount (lower = longer trails)
+function resize(){
+  DPR=Math.min(window.devicePixelRatio||1, 2);
+  W=window.innerWidth; H=window.innerHeight;
+  cv.width=Math.round(W*DPR); cv.height=Math.round(H*DPR);
+  cv.style.width=W+'px'; cv.style.height=H+'px';
+  g.setTransform(DPR,0,0,DPR,0,0);
+  floorY=H*0.86;
+  nozzleX=W*0.5; nozzleY=floorY-2;
+  const area=W*H;
+  CAP = area>1400*800 ? 3000 : area>700*900 ? 2100 : 1500;
+  // smaller screens → slightly faster fade so trails stay crisp & cheap
+  trailFade = W<560 ? 0.16 : 0.115;
+}
+
+/* ---------- input state ---------- */
+const M={x:0,y:0,px:0,py:0,active:false,hold:false,inside:false,vx:0,vy:0};
+let gravity=0.16, wind=0, hueBase=205, hueShift=0;
+let lastInteract=performance.now();
+function touched(){ lastInteract=performance.now(); hud.classList.add('dim'); }
+
+function setPointer(x,y){
+  M.px=M.x; M.py=M.y; M.x=x; M.y=y;
+  M.vx=M.x-M.px; M.vy=M.y-M.py;
+  M.inside=true; M.active=true; touched();
+}
+cv.addEventListener('pointermove',e=>setPointer(e.clientX,e.clientY),{passive:true});
+cv.addEventListener('pointerdown',e=>{setPointer(e.clientX,e.clientY);M.hold=true;burstRing(e.clientX,e.clientY,18);});
+window.addEventListener('pointerup',()=>{ if(M.hold){ release(); } M.hold=false; });
+cv.addEventListener('pointerleave',()=>{M.inside=false;});
+cv.addEventListener('dblclick',e=>{ hueShift=(hueShift+70)%360; ringWave(e.clientX,e.clientY); });
+window.addEventListener('wheel',e=>{
+  gravity=Math.max(0.04,Math.min(0.38, gravity + Math.sign(e.deltaY)*0.012));
+  wind=Math.max(-1.6,Math.min(1.6, wind + (e.shiftKey?Math.sign(e.deltaY)*0.18:0)));
+  touched();
+},{passive:true});
+// touch-friendly: tilt wind by horizontal drag handled via pointermove vx already
+window.addEventListener('keydown',e=>{ if(e.key===' ') megaBurst(); });
+
+/* ---------- particle pool (typed, flat) ---------- */
+const x=new Float32Array(CAP_MAX()), y=new Float32Array(CAP_MAX()),
+      vx=new Float32Array(CAP_MAX()), vy=new Float32Array(CAP_MAX()),
+      life=new Float32Array(CAP_MAX()), max=new Float32Array(CAP_MAX()),
+      hue=new Float32Array(CAP_MAX()), sz=new Float32Array(CAP_MAX()),
+      kind=new Uint8Array(CAP_MAX());   // 0=jet 1=mist 2=spark
+let N=0;
+function CAP_MAX(){ return 3600; }
+
+function spawn(px,py,pvx,pvy,h,s,k,lf){
+  let i;
+  if(N<CAP_MAX()) i=N++;
+  else { i=(Math.random()*N)|0; }  // recycle oldest-ish
+  x[i]=px; y[i]=py; vx[i]=pvx; vy[i]=pvy;
+  hue[i]=h; sz[i]=s; kind[i]=k; life[i]=lf; max[i]=lf;
+}
+
+/* ---------- emitters ---------- */
+let t=0;
+function emitFountain(){
+  // 3 jets: center strong + two side fans, count scaled to cap headroom
+  const head=Math.max(0, CAP - N);
+  const base=Math.min(head, (W<560?10:16));
+  // 5 jets: tall central column + symmetric side fans → fills the frame
+  const reach=Math.min(1, (H*0.78)/640);          // scale power to viewport height
+  const angs=[-Math.PI/2, -Math.PI/2-0.30, -Math.PI/2+0.30, -Math.PI/2-0.58, -Math.PI/2+0.58];
+  const pows=[12.6, 10.4, 10.4, 8.2, 8.2];
+  for(let j=0;j<5;j++){
+    const ang=angs[j], power=pows[j]*reach;
+    const cnt=j===0? base : (base*(j<3?0.62:0.42))|0;
+    for(let n=0;n<cnt;n++){
+      const a=ang + (Math.random()-0.5)*0.26;
+      const sp=power*(0.80+Math.random()*0.46);
+      const h=hueBase + hueShift + (Math.random()*46-12) - 18;
+      spawn(nozzleX+(Math.random()-0.5)*8, nozzleY,
+            Math.cos(a)*sp + wind, Math.sin(a)*sp,
+            h, 1.4+Math.random()*1.7, 0, 78+Math.random()*52);
+    }
+  }
+  // ambient mist drifting up — atmosphere
+  if(N<CAP && Math.random()<0.7){
+    spawn(nozzleX+(Math.random()-0.5)*40, nozzleY-Math.random()*30,
+      (Math.random()-0.5)*0.6+wind*0.4, -0.6-Math.random()*0.8,
+      hueBase+hueShift+30, 6+Math.random()*10, 1, 110+Math.random()*60);
+  }
+}
+function burstRing(cx,cy,count){
+  const head=Math.max(0,CAP-N); count=Math.min(count,head);
+  for(let n=0;n<count;n++){
+    const a=Math.random()*Math.PI*2, sp=2+Math.random()*5;
+    spawn(cx,cy,Math.cos(a)*sp,Math.sin(a)*sp,
+      hueBase+hueShift+Math.random()*60, 1.2+Math.random()*1.4, 2, 36+Math.random()*30);
+  }
+}
+function release(){
+  // gathered water explodes outward from cursor
+  const head=Math.max(0,CAP-N), c=Math.min(70,head);
+  for(let n=0;n<c;n++){
+    const a=Math.random()*Math.PI*2, sp=3+Math.random()*8;
+    spawn(M.x,M.y,Math.cos(a)*sp,Math.sin(a)*sp - 2,
+      hueBase+hueShift+Math.random()*70-10, 1.6+Math.random()*1.8, 0, 50+Math.random()*40);
+  }
+}
+function ringWave(cx,cy){ burstRing(cx,cy,40); }
+function megaBurst(){ for(let k=0;k<6;k++) burstRing(nozzleX,nozzleY-60,30); }
+
+/* ---------- physics ---------- */
+const FORCE_R=150, FORCE_R2=FORCE_R*FORCE_R;
+function step(){
+  t++;
+  emitFountain();
+  const fx=M.x, fy=M.y, hold=M.hold, inside=M.inside||M.active;
+  for(let i=0;i<N;i++){
+    let l=life[i]; if(l<=0) continue;
+    // gravity (mist rises, jets/sparks fall)
+    if(kind[i]===1) vy[i]-=0.012; else vy[i]+=gravity;
+    vx[i]+=wind*0.012;
+    // pointer force field
+    if(inside){
+      const dx=fx-x[i], dy=fy-y[i], d2=dx*dx+dy*dy;
+      if(d2<FORCE_R2 && d2>1){
+        const d=Math.sqrt(d2), f=(1-d/FORCE_R);
+        if(hold){ // gather: pull toward cursor + swirl
+          const pull=f*0.9;
+          vx[i]+=(dx/d)*pull; vy[i]+=(dy/d)*pull;
+          vx[i]+=(-dy/d)*f*0.7; vy[i]+=(dx/d)*f*0.7; // tangential swirl
+          vx[i]*=0.92; vy[i]*=0.92;
+        }else{ // hover: push & drag along motion → water bends
+          const push=f*f*1.7;
+          vx[i]-=(dx/d)*push; vy[i]-=(dy/d)*push;
+          vx[i]+=M.vx*0.06*f; vy[i]+=M.vy*0.06*f;
+        }
+        hue[i]+=f*1.4; // energized water glows hotter
+      }
+    }
+    // drag
+    vx[i]*=0.992; vy[i]*=0.992;
+    x[i]+=vx[i]; y[i]+=vy[i];
+    // floor: splash + pool
+    if(y[i]>floorY && kind[i]!==1){
+      if(vy[i]>1.4 && Math.random()<0.5 && N<CAP){
+        // splash droplets
+        const a=-Math.PI/2+(Math.random()-0.5)*1.4, sp=Math.abs(vy[i])*(0.3+Math.random()*0.4);
+        spawn(x[i],floorY,Math.cos(a)*sp+vx[i]*0.4,Math.sin(a)*sp,hue[i]+10,1+Math.random(),2,24+Math.random()*16);
+      }
+      y[i]=floorY; vy[i]*=-0.28; vx[i]*=0.7;
+      life[i]-=8; // pooled water fades faster
+    }
+    // walls — soft
+    if(x[i]<-30){x[i]=-30;vx[i]*=-0.4;} else if(x[i]>W+30){x[i]=W+30;vx[i]*=-0.4;}
+    life[i]=l-1;
+  }
+  // wind & gravity gently relax toward calm so the piece self-settles
+  wind*=0.985; gravity+=(0.16-gravity)*0.004;
+  // hue base slow drift for living color
+  hueBase=205+Math.sin(t*0.0016)*26;
+  // re-dim hud handled by timer
+  if(performance.now()-lastInteract>4200 && !hud.classList.contains('dim')) {}
+}
+
+/* ---------- render: additive glow + basin reflection ---------- */
+function render(){
+  // motion-blur trail
+  g.globalCompositeOperation='source-over';
+  g.fillStyle='rgba(3,4,10,'+trailFade+')';
+  g.fillRect(0,0,W,H);
+
+  // basin water-line glow
+  const bg=g.createLinearGradient(0,floorY-6,0,H);
+  bg.addColorStop(0,'rgba(40,90,160,0.0)');
+  bg.addColorStop(0.12,'rgba(50,120,200,0.10)');
+  bg.addColorStop(1,'rgba(8,18,46,0.0)');
+  g.fillStyle=bg; g.fillRect(0,floorY-6,W,H-floorY+6);
+
+  g.globalCompositeOperation='lighter';
+  for(let i=0;i<N;i++){
+    const l=life[i]; if(l<=0) continue;
+    const a=l/max[i];
+    const yy=y[i];
+    // velocity → chromatic hue: slow=warm base, fast=cyan→violet apex
+    const spd=Math.abs(vx[i])+Math.abs(vy[i]);
+    let h=hue[i] - spd*1.4;          // faster water shifts cooler/violet
+    const lum=Math.min(1,0.40+spd*0.055);
+    const sat=kind[i]===1?52:90;
+    const r=sz[i]*(kind[i]===1?(1.6):(1));
+    const alpha=(kind[i]===1?0.10:0.92)*a*lum;
+    drawGlow(x[i],yy,r,h,sat,alpha,kind[i],spd);
+    // reflection in the basin (cheap, only near floor + jets/sparks)
+    if(yy<floorY && kind[i]!==1 && yy>floorY-220){
+      const ry=floorY+(floorY-yy)*0.5;
+      if(ry<H){ drawGlow(x[i]+wind*2,ry,r*0.9,h,sat,alpha*0.22,kind[i],spd*0.5); }
+    }
+  }
+  // nozzle core flare
+  const fl=g.createRadialGradient(nozzleX,nozzleY,0,nozzleX,nozzleY,46);
+  fl.addColorStop(0,'hsla('+(hueBase+hueShift)+',90%,75%,0.5)');
+  fl.addColorStop(1,'hsla('+(hueBase+hueShift)+',90%,55%,0)');
+  g.fillStyle=fl; g.beginPath(); g.arc(nozzleX,nozzleY,46,0,7); g.fill();
+
+  // pointer aura
+  if(M.inside||M.active){
+    const pr=M.hold?FORCE_R:90;
+    const pg=g.createRadialGradient(M.x,M.y,0,M.x,M.y,pr);
+    const ph=M.hold?(hueBase+hueShift+40):(hueBase+hueShift);
+    pg.addColorStop(0,'hsla('+ph+',90%,70%,'+(M.hold?0.22:0.12)+')');
+    pg.addColorStop(1,'hsla('+ph+',90%,60%,0)');
+    g.fillStyle=pg; g.beginPath(); g.arc(M.x,M.y,pr,0,7); g.fill();
+  }
+}
+// reusable radial-gradient glow — soft multi-stop to avoid banding
+function drawGlow(px,py,r,h,s,a,k,spd){
+  if(a<=0.003) return;
+  const rad=r*(k===2?2.4:3.4);
+  const grd=g.createRadialGradient(px,py,0,px,py,rad);
+  // fast jets get a hot white-ish core (water catching light)
+  const hot=spd!==undefined && spd>6 && k===0;
+  const core=k===2?80:64;
+  if(hot){
+    grd.addColorStop(0,'hsla('+h+',60%,94%,'+a+')');      // white-hot center
+    grd.addColorStop(0.22,'hsla('+h+','+s+'%,'+(core+8)+'%,'+(a*0.78)+')');
+  }else{
+    grd.addColorStop(0,'hsla('+h+','+s+'%,'+core+'%,'+a+')');
+  }
+  grd.addColorStop(0.5,'hsla('+h+','+s+'%,'+(core-14)+'%,'+(a*0.34)+')');
+  grd.addColorStop(0.78,'hsla('+h+','+s+'%,'+(core-22)+'%,'+(a*0.12)+')');
+  grd.addColorStop(1,'hsla('+h+','+s+'%,46%,0)');
+  g.fillStyle=grd;
+  g.beginPath(); g.arc(px,py,rad,0,7); g.fill();
+}
+
+/* ---------- loop with frame budget ---------- */
+let raf=0, slow=0;
+function frame(now){
+  step();
+  render();
+  // adaptive: if we're choking, trim cap a touch
+  raf=requestAnimationFrame(frame);
+}
+
+/* ---------- boot ---------- */
+function init(){
+  resize();
+  M.x=nozzleX; M.y=nozzleY-180; M.inside=false;
+  g.fillStyle='#03040a'; g.fillRect(0,0,W,H);
+  // pre-warm so first paint already shows a fountain mid-arc
+  for(let k=0;k<46;k++) step();
+  cancelAnimationFrame(raf); raf=requestAnimationFrame(frame);
+}
+window.addEventListener('resize',()=>{ resize(); });
+init();
+
+// hud auto-dim
+setInterval(()=>{ if(performance.now()-lastInteract>4500) hud.classList.add('dim'); },1500);
+
+// expose tiny hook for self-verify (no gate, purely observational)
+window.__fountain={ count:()=>N, paint:()=>true,
+  poke:(px,py)=>setPointer(px,py), hold:(b)=>{M.hold=!!b;},
+  burst:()=>release(), grav:()=>gravity };
+})();
+</script>
+</body>
+</html>

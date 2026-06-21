@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>BRILLIANCE — Faceted Light</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#04050a; }
+  body {
+    font-family: "SF Pro Display", -apple-system, "Helvetica Neue", system-ui, sans-serif;
+    touch-action:none; -webkit-tap-highlight-color:transparent;
+    cursor:crosshair;
+  }
+  #gl { position:fixed; inset:0; width:100%; height:100%; display:block; }
+  /* ---- overlay UI: pure first-paint, no loader, no gate ---- */
+  .ui { position:fixed; pointer-events:none; user-select:none; z-index:5;
+        mix-blend-mode:screen; }
+  #brand { top:clamp(20px,4.2vh,46px); left:clamp(20px,3.2vw,52px);
+           letter-spacing:.46em; font-weight:600; font-size:clamp(13px,1.5vw,17px);
+           color:#eaf0ff; text-shadow:0 0 24px rgba(120,170,255,.55); }
+  #brand b { font-weight:200; opacity:.55; letter-spacing:.5em; }
+  #sub { top:calc(clamp(20px,4.2vh,46px) + 26px); left:clamp(20px,3.2vw,52px);
+         font-size:clamp(9px,1vw,11px); letter-spacing:.34em; color:#7e93c8;
+         font-weight:300; }
+  #hint { bottom:clamp(18px,3.4vh,40px); left:50%; transform:translateX(-50%);
+          font-size:clamp(9px,1vw,11px); letter-spacing:.28em; color:#6d80b8;
+          font-weight:300; text-align:center; line-height:1.9;
+          transition:opacity 1.1s ease; }
+  #cut { bottom:clamp(18px,3.4vh,40px); right:clamp(20px,3.2vw,52px);
+         font-size:clamp(9px,1vw,11px); letter-spacing:.26em; color:#8fa2d6;
+         font-weight:300; text-align:right; }
+  #cut b { color:#dfe7ff; font-weight:500; letter-spacing:.1em;
+           text-shadow:0 0 16px rgba(140,180,255,.6); }
+  .corner { position:fixed; width:clamp(26px,3vw,42px); height:clamp(26px,3vw,42px);
+            border:1px solid rgba(150,180,255,.22); z-index:4; pointer-events:none; }
+  #c1 { top:clamp(14px,2.6vh,30px); left:clamp(14px,2.2vw,34px); border-right:0; border-bottom:0; }
+  #c2 { top:clamp(14px,2.6vh,30px); right:clamp(14px,2.2vw,34px); border-left:0; border-bottom:0; }
+  #c3 { bottom:clamp(14px,2.6vh,30px); left:clamp(14px,2.2vw,34px); border-right:0; border-top:0; }
+  #c4 { bottom:clamp(14px,2.6vh,30px); right:clamp(14px,2.2vw,34px); border-left:0; border-top:0; }
+  @media (max-width:520px){
+    #cut{ display:none; }
+    #hint{ font-size:9px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="c1" class="corner"></div><div id="c2" class="corner"></div>
+<div id="c3" class="corner"></div><div id="c4" class="corner"></div>
+<div id="brand" class="ui">BRILLIANCE <b>°</b></div>
+<div id="sub" class="ui">FACETED LIGHT · DISPERSION STUDY</div>
+<div id="hint" class="ui">MOVE — light &nbsp;·&nbsp; DRAG — turn &nbsp;·&nbsp; SCROLL — cut &nbsp;·&nbsp; CLICK — shatter</div>
+<div id="cut" class="ui">CUT&nbsp;&nbsp;<b id="cutName">ROUND BRILLIANT</b><br><span id="facetCount" style="opacity:.6">— facets</span></div>
+
+<script>
+/* ============================================================================
+   BRILLIANCE — analytic faceted-gem refraction in a single WebGL fragment shader.
+   The gem is the intersection of N half-space planes (a convex cut). A camera ray
+   enters the gem, refracts (per-wavelength → dispersion / fire), bounces internally
+   by total-internal-reflection up to several times, then exits and samples a
+   procedural studio HDR environment. Mouse = moving key light. Scroll = cut shape.
+   No assets, no loader: first paint IS the gem, already tumbling.
+   ============================================================================ */
+const cv = document.getElementById('gl');
+const gl = cv.getContext('webgl', {antialias:false, alpha:false,
+            premultipliedAlpha:false, powerPreference:'high-performance'});
+if(!gl){ document.body.innerHTML='<div style="color:#9ab;font:14px sans-serif;'+
+  'position:fixed;inset:0;display:grid;place-items:center">WebGL unavailable</div>'; }
+
+/* ---------- vertex: fullscreen triangle ---------- */
+const VERT = `
+attribute vec2 p; void main(){ gl_Position = vec4(p,0.,1.); }`;
+
+/* ---------- fragment ---------- */
+const FRAG = `
+precision highp float;
+uniform vec2  uRes;      // pixel resolution
+uniform float uT;        // time (s)
+uniform vec2  uMouse;    // light dir in screen space (-1..1)
+uniform float uYaw;      // gem rotation (drag)
+uniform float uPitch;
+uniform float uCut;      // 0..1 cut morph
+uniform float uShatter;  // 0..1 shatter pulse
+uniform float uQual;     // quality scale for facet count / bounces
+
+#define PI 3.14159265359
+
+/* ---- rotations ---- */
+mat3 rotY(float a){ float c=cos(a),s=sin(a); return mat3(c,0,s, 0,1,0, -s,0,c); }
+mat3 rotX(float a){ float c=cos(a),s=sin(a); return mat3(1,0,0, 0,c,-s, 0,s,c); }
+
+/* ---- hash / noise for environment sparkle ---- */
+float h21(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
+float h31(vec3 p){ return fract(sin(dot(p,vec3(12.99,78.23,37.71)))*43758.5453); }
+
+/* ============================================================================
+   THE GEM as a set of facet planes. A round brilliant: a flat table on top,
+   a crown of slanted facets, a girdle, then a pavilion of facets meeting at a
+   culet point below. We build it as the intersection of planes:
+       inside  <=>  dot(pos, n_i) <= d_i   for all i
+   Ray vs convex polytope: t_enter = max over (entering planes),
+                           t_exit  = min over (exiting planes).
+   Planes are generated procedurally so we can morph the "cut".
+   ============================================================================ */
+
+/* number of crown + pavilion radial facets */
+const int NF = 16;   // facets per ring (8 main + 8 between, but we sample 16)
+
+/* girdle radius profile by cut: round vs marquise(elongated) vs step(emerald) */
+vec3 facetNormal(int ring, int k, float cut){
+  // angle around axis
+  float ang = (float(k)+ (ring==1? 0.5:0.0)) / float(NF) * 2.0*PI;
+  // elongate for marquise cut (cut~0.5), squarer for emerald (cut~1.0)
+  float ax = 1.0 + cut*1.0;          // x stretch
+  float az = 1.0 - cut*0.45;         // z squeeze
+  float cs = cos(ang)*ax, sn = sin(ang)*az;
+  float L = inversesqrt(cs*cs+sn*sn);
+  cs*=L; sn*=L;
+  // crown facets tilt up (+y), pavilion facets tilt down (-y)
+  float tiltC = mix(0.62, 0.40, cut);
+  float tiltP = mix(0.95, 1.15, cut);
+  if(ring==0){      // crown
+    vec3 n = normalize(vec3(cs, tiltC, sn)); return n;
+  } else {          // pavilion
+    vec3 n = normalize(vec3(cs, -tiltP, sn)); return n;
+  }
+}
+
+/* signed dist plane support distances (the "size" of the cut) */
+float facetD(int ring, float cut){
+  if(ring==0) return mix(0.74, 0.80, cut);   // crown bulge
+  return mix(0.80, 0.86, cut);               // pavilion depth
+}
+
+/* Intersect ray (ro,rd) with convex gem. Returns entry/exit t and normals. */
+bool gemHit(vec3 ro, vec3 rd, float cut,
+            out float tN, out vec3 nN, out float tF, out vec3 nF){
+  tN = -1e9; tF = 1e9;
+  nN = vec3(0.); nF = vec3(0.);
+  bool ok = true;
+
+  // helper macro-like inline via loop over a fixed plane list
+  // 1) TABLE (top flat) : n=(0,1,0), d=table height
+  {
+    vec3 n = vec3(0.0,1.0,0.0);
+    float d = mix(0.50, 0.46, cut);
+    float den = dot(rd,n);
+    float t = (d - dot(ro,n))/den;
+    if(den < 0.0){ if(t>tN){tN=t;nN=n;} } else { if(t<tF){tF=t;nF=n;} }
+  }
+  // 2) CULET / bottom point handled by pavilion convergence + a small bottom plane
+  {
+    vec3 n = vec3(0.0,-1.0,0.0);
+    float d = mix(0.92, 1.00, cut);
+    float den = dot(rd,n);
+    float t = (d - dot(ro,n))/den;
+    if(den < 0.0){ if(t>tN){tN=t;nN=n;} } else { if(t<tF){tF=t;nF=n;} }
+  }
+  // 3) crown + pavilion radial facets
+  for(int ring=0; ring<2; ring++){
+    for(int k=0;k<NF;k++){
+      vec3 n = facetNormal(ring,k,cut);
+      float d = facetD(ring,cut);
+      float den = dot(rd,n);
+      // avoid div by ~0
+      float t = (d - dot(ro,n))/ (abs(den)<1e-4? (den<0.0?-1e-4:1e-4):den);
+      if(den < 0.0){ if(t>tN){tN=t;nN=n;} }
+      else         { if(t<tF){tF=t;nF=n;} }
+    }
+  }
+  if(tN > tF || tF < 0.0) ok=false;
+  return ok;
+}
+
+/* ============================================================================
+   STUDIO ENVIRONMENT — procedural HDR so reflections/refractions have something
+   gorgeous to carry: a soft gradient sky, a bright key softbox, rim lights, and
+   a field of fine sparkle (bokeh studio dust). Direction-driven.
+   ============================================================================ */
+vec3 environment(vec3 dir, vec3 lightDir){
+  dir = normalize(dir);
+  float up = dir.y*0.5+0.5;
+  // base studio gradient — cool dark indigo to warm horizon
+  vec3 sky = mix(vec3(0.02,0.03,0.07), vec3(0.10,0.12,0.20), pow(up,0.8));
+  sky = mix(sky, vec3(0.16,0.10,0.18), pow(1.0-abs(dir.y),6.0)*0.6); // warm horizon band
+  // KEY softbox (the moving mouse light) — big bright rectangle of light
+  float key = pow(max(dot(dir,lightDir),0.0), 22.0);
+  float keySoft = pow(max(dot(dir,lightDir),0.0), 5.0)*0.5;
+  vec3 col = sky + vec3(1.0,0.96,0.9)*key*7.0 + vec3(0.8,0.85,1.0)*keySoft*1.4;
+  // RIM lights (fixed) — cyan + magenta + gold studio strips for spectral drama
+  vec3 r1 = normalize(vec3(-0.7, 0.25, 0.6));
+  vec3 r2 = normalize(vec3( 0.6,-0.1,-0.7));
+  vec3 r3 = normalize(vec3( 0.1, 0.8, 0.2));
+  col += vec3(0.22,0.62,1.0)*pow(max(dot(dir,r1),0.0),10.0)*2.8;
+  col += vec3(1.0,0.30,0.78)*pow(max(dot(dir,r2),0.0),10.0)*2.4;
+  col += vec3(1.0,0.78,0.32)*pow(max(dot(dir,r3),0.0),14.0)*1.8;
+  // fine studio sparkle (high-frequency bright points = scintillation source)
+  vec2 su = vec2(atan(dir.z,dir.x), dir.y);
+  float spk = h21(floor(su*46.0));
+  spk = pow(spk, 70.0)*step(0.0,dir.y)*9.0;
+  // a second finer sparkle layer
+  float spk2 = pow(h21(floor(su*90.0)+7.3), 90.0)*5.0;
+  col += vec3(1.0,0.98,0.95)*(spk+spk2);
+  return col;
+}
+
+/* fresnel (Schlick) */
+float fres(float c, float f0){ return f0 + (1.0-f0)*pow(1.0-c,5.0); }
+
+/* ============================================================================
+   trace one wavelength through the gem (ior given). Returns accumulated light.
+   We do: enter (refract), then internal bounces (TIR or exit). On exit, sample
+   env. Reflected portion at entry samples env too (surface luster).
+   ============================================================================ */
+vec3 traceWavelength(vec3 ro, vec3 rd, float cut, float ior, vec3 lightDir, int bounces){
+  float tN,tF; vec3 nN,nF;
+  if(!gemHit(ro,rd,cut, tN,nN,tF,nF)) return vec3(-1.0); // miss → caller draws bg
+
+  vec3 acc = vec3(0.0);
+  float throughput = 1.0;
+
+  // ---- entry surface ----
+  vec3 hp = ro + rd*tN;
+  vec3 n  = normalize(nN);
+  float cosI = -dot(rd,n);
+  float F = fres(max(cosI,0.0), 0.06);
+  // surface reflection (luster) goes to environment
+  vec3 refl = reflect(rd,n);
+  acc += environment(refl, lightDir) * F * 0.9;
+  throughput *= (1.0 - F);
+
+  // refract into gem
+  vec3 dir = refract(rd, n, 1.0/ior);
+  vec3 pos = hp + dir*0.001;
+
+  // ---- internal bounces ----
+  for(int b=0;b<6;b++){
+    if(b>=bounces) break;
+    float t2N,t2F; vec3 n2N,n2F;
+    if(!gemHit(pos+dir*0.0, dir, cut, t2N,n2N,t2F,n2F)){ break; }
+    // we are inside → next surface is the FAR side (t2F) with normal n2F (outward)
+    vec3 ip = pos + dir*max(t2F,0.0008);
+    vec3 in_ = normalize(n2F);             // outward normal
+    float cosi = dot(dir, in_);            // dir hitting from inside
+    // try to refract out (glass→air)
+    vec3 outDir = refract(dir, in_, ior);
+    if(dot(outDir,outDir) < 1e-6){
+      // TOTAL INTERNAL REFLECTION → bounce, stay inside (this is the gem's fire)
+      dir = reflect(dir, in_);
+      pos = ip + dir*0.001;
+      throughput *= 0.985;                 // tiny loss
+      continue;
+    } else {
+      float c2 = abs(cosi);
+      float Fo = fres(c2, 0.06);
+      // partial internal reflection
+      // exit portion → environment
+      acc += environment(outDir, lightDir) * throughput * (1.0-Fo);
+      // reflect remaining inside
+      throughput *= Fo;
+      dir = reflect(dir, in_);
+      pos = ip + dir*0.001;
+      if(throughput < 0.02) break;
+    }
+  }
+  // residual leaks to a soft body color
+  acc += throughput * environment(dir, lightDir) * 0.5;
+  return acc;
+}
+
+/* tonemap */
+vec3 aces(vec3 x){
+  return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0);
+}
+
+void main(){
+  vec2 uv = (gl_FragCoord.xy*2.0 - uRes)/uRes.y;
+
+  // camera
+  vec3 ro = vec3(0.0,0.0,3.05);
+  vec3 rd = normalize(vec3(uv, -2.1));
+
+  // gem rotation: constant gentle tumble + drag + tiny mouse parallax
+  float yaw = uYaw + uT*0.18;
+  float pit = uPitch + sin(uT*0.27)*0.06 - 0.18;
+  mat3 R = rotY(yaw) * rotX(pit);
+  mat3 Rinv = rotX(-pit) * rotY(-yaw);
+  // bring ray into gem-local space
+  vec3 lro = Rinv * ro;
+  vec3 lrd = Rinv * rd;
+
+  // shatter: explode facet planes outward by pushing the ray origin scale (cheap)
+  float sh = uShatter;
+  if(sh>0.001){
+    float n = h31(floor(lro*7.0)+floor(lrd*9.0));
+    lrd = normalize(lrd + (vec3(h31(lrd+1.0),h31(lrd+2.0),h31(lrd+3.0))-0.5)*sh*0.5);
+  }
+
+  // light direction (mouse) in local space
+  vec3 lightDir = normalize(vec3(uMouse.x*1.4, uMouse.y*1.2+0.3, 0.9));
+  vec3 lLight = Rinv * lightDir;
+
+  // dispersion: trace R/G/B at slightly different IOR (Cauchy-ish). Diamond ~2.417.
+  float baseIor = 2.32;
+  float disp = mix(0.14, 0.26, uCut) + sh*0.18;   // dispersion strength (fire)
+  int bounces = (uQual>0.5)? 5 : 3;
+
+  vec3 cr = traceWavelength(lro, lrd, uCut, baseIor + disp, lLight, bounces); // red bends most? (we choose red lower ior visually)
+  vec3 cg = traceWavelength(lro, lrd, uCut, baseIor,        lLight, bounces);
+  vec3 cb = traceWavelength(lro, lrd, uCut, baseIor - disp, lLight, bounces);
+
+  vec3 col;
+  if(cr.x < -0.5 && cg.x<-0.5 && cb.x<-0.5){
+    // BACKGROUND — dark studio vignette + faint floor reflection of light
+    vec3 bg = environment(rd, lightDir)*0.18;
+    float vig = smoothstep(1.7,0.2,length(uv));
+    // ground caustic glow under gem — dancing spectral pool grounding the stone
+    vec2 gp = uv-vec2(0.0,-0.62);
+    float glow = exp(-pow(length(gp)*1.3,2.0))*0.7;
+    float cau = 0.5+0.5*sin(gp.x*22.0+uT*1.3)*sin(gp.x*9.0-uT*0.7);
+    vec3 ccol2 = mix(vec3(0.35,0.5,1.0), vec3(1.0,0.45,0.85), 0.5+0.5*sin(uT*0.5));
+    bg += ccol2*glow*(0.35+0.65*max(uMouse.y*0.5+0.5,0.0))*(0.6+0.4*cau);
+    bg *= vig;
+    col = bg;
+  } else {
+    // recombine spectral channels (this is the FIRE) — each wavelength its own path
+    col = vec3(
+      max(cr.r,0.0),
+      max(cg.g,0.0),
+      max(cb.b,0.0)
+    );
+    // blend a little cross-channel so it's a gem, not pure RGB split
+    col += 0.16*vec3(cg.r, (cr.g+cb.g)*0.5, cg.b);
+    // scintillation: bright spectral edges burst where channels diverge (fire flash)
+    float fire = abs(cr.r-cb.b) + abs(cg.g-cb.b);
+    col += fire*0.35*vec3(1.0,0.92,1.05);
+    // shatter flash
+    col += sh*0.5*vec3(1.0,0.9,0.8);
+  }
+
+  // exposure + tonemap
+  col *= 1.15;
+  col = aces(col);
+  // gamma
+  col = pow(col, vec3(0.4545));
+  // subtle filmic vignette
+  col *= smoothstep(1.9,0.35,length(uv))*0.55+0.45;
+  // faint grain to kill banding
+  col += (h21(gl_FragCoord.xy+uT)-0.5)*0.012;
+
+  gl_FragColor = vec4(col,1.0);
+}`;
+
+/* ---------------- compile helpers ---------------- */
+function sh(type,src){
+  const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){
+    console.error(gl.getShaderInfoLog(s)); throw new Error('shader compile');
+  }
+  return s;
+}
+
+/* GL resources are rebuildable so the gem survives a WebGL context loss. */
+let prog, buf, loc, U, glReady=false;
+function buildGL(){
+  prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER,VERT));
+  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER,FRAG));
+  gl.linkProgram(prog);
+  if(!gl.getProgramParameter(prog,gl.LINK_STATUS)){
+    console.error(gl.getProgramInfoLog(prog)); throw new Error('link');
+  }
+  gl.useProgram(prog);
+  buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 3,-1, -1,3]),gl.STATIC_DRAW);
+  loc = gl.getAttribLocation(prog,'p');
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+  U = {
+    res:    gl.getUniformLocation(prog,'uRes'),
+    t:      gl.getUniformLocation(prog,'uT'),
+    mouse:  gl.getUniformLocation(prog,'uMouse'),
+    yaw:    gl.getUniformLocation(prog,'uYaw'),
+    pitch:  gl.getUniformLocation(prog,'uPitch'),
+    cut:    gl.getUniformLocation(prog,'uCut'),
+    shatter:gl.getUniformLocation(prog,'uShatter'),
+    qual:   gl.getUniformLocation(prog,'uQual'),
+  };
+  glReady=true;
+}
+buildGL();
+
+/* survive GPU context loss (swiftshader/mobile can drop it under load) */
+cv.addEventListener('webglcontextlost', e=>{ e.preventDefault(); glReady=false; }, false);
+cv.addEventListener('webglcontextrestored', ()=>{ buildGL(); resize(); }, false);
+
+/* ---------------- interaction state ---------------- */
+const S = {
+  mx:0.25, my:0.35, tmx:0.25, tmy:0.35,
+  yaw:0, pitch:0, tyaw:0, tpitch:0,
+  dragging:false, lastX:0, lastY:0,
+  cut:0, tcut:0,
+  shatter:0,
+  dpr:1, qual:1,
+};
+
+/* responsive + DPR cap for performance */
+let CSSW=0, CSSH=0;
+function resize(){
+  CSSW = window.innerWidth; CSSH = window.innerHeight;
+  const small = Math.min(CSSW,CSSH) < 560;
+  // resolution cap: keep total pixels reasonable for 60fps fragment work
+  let dpr = Math.min(window.devicePixelRatio||1, small?2.0:1.5);
+  // additional cap by area
+  const targetMaxPix = small? 1.7e6 : 2.3e6;
+  let w = CSSW*dpr, h = CSSH*dpr;
+  if(w*h > targetMaxPix){ const s=Math.sqrt(targetMaxPix/(w*h)); dpr*=s; }
+  S.dpr = dpr; S.qual = small?0:1;
+  cv.width  = Math.max(2,Math.round(CSSW*dpr));
+  cv.height = Math.max(2,Math.round(CSSH*dpr));
+  cv.style.width=CSSW+'px'; cv.style.height=CSSH+'px';
+  gl.viewport(0,0,cv.width,cv.height);
+}
+window.addEventListener('resize',resize,{passive:true});
+resize();
+
+/* ---- cut names by morph ---- */
+const CUTS = [
+  {n:'ROUND BRILLIANT', f:'57 facets'},
+  {n:'MARQUISE',        f:'58 facets'},
+  {n:'EMERALD STEP',    f:'50 facets'},
+];
+const cutNameEl = document.getElementById('cutName');
+const facetEl   = document.getElementById('facetCount');
+function updateCutLabel(){
+  const idx = Math.min(CUTS.length-1, Math.round(S.tcut*(CUTS.length-1)));
+  cutNameEl.textContent = CUTS[idx].n;
+  facetEl.textContent   = CUTS[idx].f;
+}
+updateCutLabel();
+
+/* ---- pointer (light + drag) ---- */
+function setLightFromClient(x,y){
+  S.tmx = (x/CSSW)*2-1;
+  S.tmy = -((y/CSSH)*2-1);
+}
+cv.addEventListener('pointermove',e=>{
+  if(S.dragging){
+    const dx=(e.clientX-S.lastX)/CSSW, dy=(e.clientY-S.lastY)/CSSH;
+    S.tyaw   += dx*3.0;
+    S.tpitch += dy*2.4;
+    S.tpitch = Math.max(-1.2,Math.min(1.2,S.tpitch));
+    S.lastX=e.clientX; S.lastY=e.clientY;
+  }
+  setLightFromClient(e.clientX,e.clientY);
+  fadeHint();
+},{passive:true});
+cv.addEventListener('pointerdown',e=>{
+  S.dragging=true; S.lastX=e.clientX; S.lastY=e.clientY;
+  cv.setPointerCapture && cv.setPointerCapture(e.pointerId);
+  fadeHint();
+});
+window.addEventListener('pointerup',e=>{
+  if(S.dragging){
+    // a tap (no real drag) = shatter pulse
+    const moved = Math.abs(e.clientX-S.lastX)+Math.abs(e.clientY-S.lastY);
+  }
+  S.dragging=false;
+});
+// click anywhere = shatter burst
+cv.addEventListener('click',()=>{ S.shatter = 1.0; fadeHint(); });
+
+/* ---- scroll / wheel = cut morph ---- */
+cv.addEventListener('wheel',e=>{
+  e.preventDefault();
+  S.tcut += (e.deltaY>0? 1:-1)*0.12;
+  S.tcut = Math.max(0,Math.min(1,S.tcut));
+  updateCutLabel();
+  fadeHint();
+},{passive:false});
+
+/* ---- touch: drag to turn, two-finger pinch maps to cut ---- */
+let pinchStart=null;
+cv.addEventListener('touchmove',e=>{
+  if(e.touches.length>=2){
+    const a=e.touches[0],b=e.touches[1];
+    const d=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);
+    if(pinchStart===null) pinchStart={d, cut:S.tcut};
+    S.tcut = Math.max(0,Math.min(1, pinchStart.cut + (pinchStart.d-d)/600));
+    updateCutLabel();
+    e.preventDefault();
+  }
+},{passive:false});
+cv.addEventListener('touchend',()=>{ pinchStart=null; });
+
+/* ---- hint auto fade after first interaction ---- */
+let hintFaded=false;
+const hintEl=document.getElementById('hint');
+function fadeHint(){
+  if(hintFaded) return; hintFaded=true;
+  setTimeout(()=>{ hintEl.style.opacity='0'; }, 2600);
+}
+// auto-fade even if idle
+setTimeout(fadeHint, 6000);
+
+/* ---------------- render loop ---------------- */
+let t0=performance.now();
+let fpsAcc=0, fpsN=0, lastFpsCheck=t0, autoQual=1;
+function frame(now){
+  const t=(now-t0)/1000;
+  // smoothing (springy)
+  S.mx   += (S.tmx-S.mx)*0.10;
+  S.my   += (S.tmy-S.my)*0.10;
+  S.yaw  += (S.tyaw-S.yaw)*0.12;
+  S.pitch+= (S.tpitch-S.pitch)*0.12;
+  S.cut  += (S.tcut-S.cut)*0.08;
+  S.shatter *= 0.90;            // decay
+  if(S.shatter<0.002) S.shatter=0;
+
+  if(!glReady || gl.isContextLost()){ requestAnimationFrame(frame); return; }
+
+  gl.uniform2f(U.res, cv.width, cv.height);
+  gl.uniform1f(U.t, t);
+  gl.uniform2f(U.mouse, S.mx, S.my);
+  gl.uniform1f(U.yaw, S.yaw);
+  gl.uniform1f(U.pitch, S.pitch);
+  gl.uniform1f(U.cut, S.cut);
+  gl.uniform1f(U.shatter, S.shatter);
+  gl.uniform1f(U.qual, autoQual);
+
+  gl.drawArrays(gl.TRIANGLES,0,3);
+
+  // adaptive quality: if fps sags, drop bounces
+  fpsN++;
+  if(now-lastFpsCheck>900){
+    const fps = fpsN*1000/(now-lastFpsCheck);
+    if(fps<42 && autoQual>0) autoQual=0;
+    else if(fps>56 && autoQual<1 && S.qual===1) autoQual=1;
+    fpsN=0; lastFpsCheck=now;
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+/* ---------------- expose for self-verification ---------------- */
+window.__brilliance = {
+  state(){ return {mx:S.mx,my:S.my,yaw:S.yaw,pitch:S.pitch,cut:S.cut,
+                   tcut:S.tcut,shatter:S.shatter,
+                   w:cv.width,h:cv.height}; },
+  light(x,y){ S.tmx=x; S.tmy=y; },
+  turn(dy,dp){ S.tyaw+=dy; S.tpitch+=dp; },
+  setCut(v){ S.tcut=Math.max(0,Math.min(1,v)); updateCutLabel(); },
+  shatter(){ S.shatter=1.0; },
+  glError(){ return gl.getError(); },
+};
+</script>
+</body>
+</html>

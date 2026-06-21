@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>EMBER GARDEN — falling sand</title>
+<style>
+  :root{ --ink:#f6ead6; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#07060a; }
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    -webkit-tap-highlight-color:transparent; touch-action:none; cursor:crosshair;
+  }
+  #stage{ position:fixed; inset:0; display:block; }
+  canvas{ position:absolute; inset:0; width:100%; height:100%; }
+  #glow{ mix-blend-mode:screen; opacity:.9; filter:blur(0px); pointer-events:none; }
+
+  /* ---- HUD ---- */
+  #hud{
+    position:fixed; left:0; right:0; bottom:0; z-index:20;
+    display:flex; gap:8px; align-items:center; justify-content:center;
+    padding:14px 16px calc(14px + env(safe-area-inset-bottom));
+    pointer-events:none;
+    background:linear-gradient(to top, rgba(7,6,10,.62), rgba(7,6,10,0));
+  }
+  .pal{ display:flex; gap:8px; pointer-events:auto; }
+  .swatch{
+    position:relative; width:46px; height:46px; border-radius:50%;
+    border:1.5px solid rgba(255,255,255,.16);
+    box-shadow:0 6px 22px rgba(0,0,0,.5), inset 0 0 0 0 rgba(255,255,255,0);
+    cursor:pointer; transition:transform .18s cubic-bezier(.2,.9,.3,1.3), box-shadow .18s, border-color .18s;
+    display:grid; place-items:center;
+  }
+  .swatch:hover{ transform:translateY(-3px) scale(1.04); }
+  .swatch.on{
+    transform:translateY(-6px) scale(1.12);
+    border-color:rgba(255,255,255,.9);
+    box-shadow:0 10px 30px rgba(0,0,0,.55), 0 0 0 3px rgba(255,255,255,.12), inset 0 0 18px rgba(255,255,255,.18);
+  }
+  .swatch span{ font-size:18px; filter:drop-shadow(0 1px 2px rgba(0,0,0,.6)); }
+  .swatch .lab{
+    position:absolute; bottom:-19px; left:50%; transform:translateX(-50%);
+    font-size:9px; letter-spacing:.16em; text-transform:uppercase;
+    color:rgba(246,234,214,.0); transition:color .18s; white-space:nowrap; font-weight:600;
+  }
+  .swatch.on .lab{ color:rgba(246,234,214,.72); }
+
+  #title{
+    position:fixed; top:18px; left:20px; z-index:20; pointer-events:none;
+    color:var(--ink); line-height:1;
+  }
+  #title b{ display:block; font-weight:800; font-size:15px; letter-spacing:.42em; opacity:.92; }
+  #title small{ display:block; margin-top:7px; font-size:10px; letter-spacing:.28em; opacity:.4; font-weight:500; }
+
+  #hint{
+    position:fixed; top:20px; right:20px; z-index:20; pointer-events:none; text-align:right;
+    color:rgba(246,234,214,.42); font-size:10px; letter-spacing:.18em; line-height:1.7;
+    transition:opacity 1s; font-weight:500;
+  }
+  #hint.gone{ opacity:0; }
+  kbd{
+    font:inherit; font-size:9px; letter-spacing:.1em; padding:1px 6px; border-radius:5px;
+    background:rgba(246,234,214,.08); border:1px solid rgba(246,234,214,.14); color:rgba(246,234,214,.7);
+  }
+  @media (max-width:620px){
+    #title b{ font-size:12px; letter-spacing:.32em; }
+    #title small{ display:none; }
+    #hint{ font-size:9px; }
+    .swatch{ width:42px; height:42px; }
+  }
+</style>
+</head>
+<body>
+  <div id="stage">
+    <canvas id="sand"></canvas>
+    <canvas id="glow"></canvas>
+  </div>
+
+  <div id="title"><b>EMBER&nbsp;GARDEN</b><small>a living field of sand · water · fire</small></div>
+  <div id="hint">
+    <div>드래그하여 <b style="opacity:.8">그리기</b></div>
+    <div><kbd>1-5</kbd> 원소 · <kbd>␣</kbd> 비우기 · <kbd>G</kbd> 중력</div>
+  </div>
+
+  <div id="hud">
+    <div class="pal" id="pal"></div>
+  </div>
+
+<script>
+"use strict";
+(function(){
+  /* ============================================================
+     EMBER GARDEN — a falling-sand cellular automaton
+     Single-file. Packed Uint8 grid. Cinematic dusk palette.
+     ============================================================ */
+
+  const sand = document.getElementById('sand');
+  const glow = document.getElementById('glow');
+  const sctx = sand.getContext('2d', { alpha:false });
+  const gctx = glow.getContext('2d');
+
+  // ---- materials -------------------------------------------------
+  const EMPTY=0, WALL=1, SAND=2, WATER=3, FIRE=4, SMOKE=5, EMBER=6, STEAM=7, PLANT=8, SPARK=9;
+  const NAMES = {2:'SAND',3:'WATER',4:'FIRE',8:'SEED',1:'STONE'};
+
+  // brush palette (id, emoji, accent)
+  const BRUSHES = [
+    {mat:SAND,  ic:'🟡', name:'모래',  col:'#e8b257'},
+    {mat:WATER, ic:'💧', name:'물',    col:'#3aa0e8'},
+    {mat:FIRE,  ic:'🔥', name:'불',    col:'#ff7a2e'},
+    {mat:PLANT, ic:'🌱', name:'씨앗',  col:'#5fd17a'},
+    {mat:WALL,  ic:'🪨', name:'돌',    col:'#9aa0ad'},
+  ];
+
+  // ---- grid sizing (cap resolution for perf) ---------------------
+  let CELL, GW, GH, W, H, dpr;
+  let grid, next, life, vx, fld, img, buf32;
+  let gridReady=false;
+
+  function setup(){
+    dpr = Math.min(window.devicePixelRatio||1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    // finer cells -> crisper, more painterly grain. keep perf via cell cap.
+    CELL = (W < 640) ? 2.4 : 2.8;
+    GW = Math.max(120, Math.floor(W / CELL));
+    GH = Math.max(120, Math.floor(H / CELL));
+    // cap total cells (perf guard)
+    const MAXCELLS = 330000;
+    while (GW*GH > MAXCELLS){ GW = Math.floor(GW*0.96); GH = Math.floor(GH*0.96); }
+
+    sand.width = GW; sand.height = GH;       // 1 canvas px == 1 cell, CSS scales up
+    sand.style.imageRendering = 'auto';      // smooth upscale = soft painterly look
+    glow.width = Math.floor(W*0.45); glow.height = Math.floor(H*0.45);
+
+    const N = GW*GH;
+    const og = grid;
+    grid = new Uint8Array(N);
+    next = new Uint8Array(N);
+    life = new Uint8Array(N);   // age / fuel timer
+    vx   = new Int8Array(N);    // lateral momentum for sand/water
+    fld  = new Float32Array(N); // attractor / wind scratch (reused per frame)
+    img  = sctx.createImageData(GW, GH);
+    buf32 = new Uint32Array(img.data.buffer);
+
+    if(og){ /* keep nothing on resize — reseed instead */ }
+    gridReady = true;
+  }
+
+  // ---- palette: precomputed ABGR colors (little-endian RGBA) -----
+  // background gradient baked per-row, particles tinted by material+age
+  const bgTop=[14,11,20], bgBot=[30,16,16];   // dusk → ember floor
+  let bgRow;  // Uint32 per grid row
+  function bakeBg(){
+    bgRow = new Uint32Array(GH);
+    for(let y=0;y<GH;y++){
+      const t=y/(GH-1);
+      // subtle vignette curve
+      const tt = t*t*(3-2*t);
+      const r=(bgTop[0]+(bgBot[0]-bgTop[0])*tt)|0;
+      const g=(bgTop[1]+(bgBot[1]-bgTop[1])*tt)|0;
+      const b=(bgTop[2]+(bgBot[2]-bgTop[2])*tt)|0;
+      bgRow[y] = (255<<24)|(b<<16)|(g<<8)|r;
+    }
+  }
+
+  function rgb(r,g,b){ return (255<<24)|((b&255)<<16)|((g&255)<<8)|(r&255); }
+
+  // sand color varies with a per-cell hue stored in vx-free way: use life as grain seed
+  function sandColor(seed){
+    // warm dune gradient
+    const s = (seed*1.93)%1;
+    const r = 224 + s*26;
+    const g = 168 + s*30 - 10;
+    const b = 78  + s*36;
+    return rgb(r,g,b);
+  }
+  // precompute small lookup tables for hot materials
+  const FIRE_LUT = (()=>{ const a=new Uint32Array(64);
+    for(let i=0;i<64;i++){ const t=i/63; // hot→cool
+      const r=255; const g=(60+t*180)|0; const b=(t*t*70)|0;
+      a[i]=rgb(r,g,b);} return a; })();
+  const WATER_LUT = (()=>{ const a=new Uint32Array(32);
+    for(let i=0;i<32;i++){ const t=i/31;
+      const r=(30+t*40)|0, g=(120+t*70)|0, b=(190+t*55)|0;
+      a[i]=rgb(r,g,b);} return a; })();
+  const SMOKE_LUT = (()=>{ const a=new Uint32Array(48);
+    for(let i=0;i<48;i++){ const t=i/47; const v=(40+t*120)|0;
+      a[i]=rgb(v*0.95,v*0.92,v); } return a; })();
+  const PLANT_LUT=(()=>{ const a=new Uint32Array(16);
+    for(let i=0;i<16;i++){ const t=i/15; a[i]=rgb(50+t*40,150+t*70,70+t*30);} return a;})();
+
+  // ---- RNG (fast xorshift) ---------------------------------------
+  let rs = 0x9e3779b1 ^ (Date.now()&0xffffffff);
+  function rnd(){ rs^=rs<<13; rs^=rs>>>17; rs^=rs<<5; return (rs>>>0)/4294967296; }
+  function ri(n){ rs^=rs<<13; rs^=rs>>>17; rs^=rs<<5; return (rs>>>0)%n; }
+
+  // ---------------------------------------------------------------
+  //  PHYSICS
+  // ---------------------------------------------------------------
+  let gravityDown = true;
+  let frame = 0;
+
+  function idx(x,y){ return y*GW+x; }
+
+  function step(){
+    const g = grid, lf = life, mv = vx;
+    const gw=GW, gh=GH;
+    // attractor field from pointer (gentle local pull when dragging with no brush? we use it for wind on drag)
+    const dirY = gravityDown ? 1 : -1;
+
+    // iterate bottom-up (or top-down if gravity flipped) so particles fall once per frame
+    const yStart = gravityDown ? gh-2 : 1;
+    const yEnd   = gravityDown ? -1 : gh;
+    const yStep  = gravityDown ? -1 : 1;
+
+    // alternate horizontal scan direction to avoid drift bias
+    const flip = (frame & 1) === 0;
+
+    for(let y=yStart; y!==yEnd; y+=yStep){
+      const xs = flip ? 0 : gw-1;
+      const xe = flip ? gw : -1;
+      const xstep = flip ? 1 : -1;
+      const row = y*gw;
+      for(let x=xs; x!==xe; x+=xstep){
+        const i = row+x;
+        const m = g[i];
+        if(m===EMPTY || m===WALL) continue;
+
+        // ---------- FIRE ----------
+        if(m===FIRE){
+          let l = lf[i];
+          // spread to flammable neighbours
+          const around = [i-1,i+1,i-gw,i+gw];
+          for(let k=0;k<4;k++){ const j=around[k];
+            if(j<0||j>=g.length) continue;
+            const t=g[j];
+            if(t===SAND && ri(40)===0){} // sand doesn't burn (it's just sand)
+            if(t===PLANT && ri(3)===0){ g[j]=FIRE; lf[j]=40+ri(24); }
+            if(t===WATER && ri(2)===0){ g[i]=STEAM; lf[i]=60+ri(30); l=0; break; }
+          }
+          if(g[i]!==FIRE) { continue; }
+          l--;
+          if(l<=0){ // burn out -> smoke or ember
+            g[i] = (ri(3)===0)?EMBER:SMOKE; lf[i]= (g[i]===EMBER)? 30+ri(20) : 28+ri(24); continue;
+          }
+          lf[i]=l;
+          // rise: fire prefers to climb up, flicker sideways
+          const up = i-gw;
+          if(up>=0 && (g[up]===EMPTY) && ri(2)===0){ g[up]=FIRE; lf[up]=l; g[i]=SMOKE; lf[i]=20+ri(20); continue; }
+          // small chance to spit a spark up
+          if(ri(22)===0 && up>=0 && g[up]===EMPTY){ g[up]=SPARK; lf[up]=8+ri(8); }
+          continue;
+        }
+
+        // ---------- EMBER (glowing falling cinder) ----------
+        if(m===EMBER){
+          let l=lf[i]; l--;
+          if(l<=0){ g[i]=SMOKE; lf[i]=20+ri(18); continue; }
+          lf[i]=l;
+          const below=i+gw*dirY;
+          if(below>=0 && below<g.length && g[below]===EMPTY){ g[below]=EMBER; lf[below]=l; g[i]=EMPTY; continue; }
+          // ignite plant it touches
+          const nb=[i-1,i+1,i+gw,i-gw];
+          for(let k=0;k<4;k++){const j=nb[k]; if(j>=0&&j<g.length&&g[j]===PLANT&&ri(4)===0){g[j]=FIRE;lf[j]=40+ri(20);}}
+          continue;
+        }
+
+        // ---------- SPARK (fast rising bright fleck) ----------
+        if(m===SPARK){
+          let l=lf[i]; l--;
+          if(l<=0){ g[i]=EMPTY; continue; }
+          lf[i]=l;
+          const up=i-gw; const dx=ri(3)-1; const t=up+dx;
+          if(up>=0 && g[t]===EMPTY){ g[t]=SPARK; lf[t]=l; g[i]=EMPTY; }
+          else if(up>=0 && g[up]===EMPTY){ g[up]=SPARK; lf[up]=l; g[i]=EMPTY; }
+          continue;
+        }
+
+        // ---------- SMOKE / STEAM (rise + dissipate) ----------
+        if(m===SMOKE || m===STEAM){
+          let l=lf[i]; l--;
+          if(l<=0){ g[i]=EMPTY; continue; }
+          lf[i]=l;
+          const up=i-gw;
+          const dx = ri(3)-1;
+          const cand=[up+dx, up, up-dx>=0?up-dx:up];
+          let moved=false;
+          for(let k=0;k<3;k++){ const j=cand[k];
+            if(j>=0 && (g[j]===EMPTY)){ g[j]=m; lf[j]=l; g[i]=EMPTY; moved=true; break; } }
+          if(!moved){ // drift sideways
+            const s = ri(2)?1:-1; const j=i+s;
+            if(j>=0&&j<g.length && (j%gw)!==( s>0?0:gw-1) && g[j]===EMPTY && ri(2)===0){ g[j]=m; lf[j]=l; g[i]=EMPTY; }
+          }
+          continue;
+        }
+
+        // ---------- PLANT (grows up along damp sand) ----------
+        if(m===PLANT){
+          let l=lf[i];
+          if(l===0){ // freshly placed seed: try to grow
+            // grow upward if there's empty above and support below
+            const up=i-gw, down=i+gw;
+            if(down<g.length && (g[down]===SAND||g[down]===PLANT||g[down]===WALL)){
+              if(up>=0 && g[up]===EMPTY && ri(7)===0){ g[up]=PLANT; lf[up]=1+ri(60); }
+              else if(ri(900)===0){ /* very rarely settle */ }
+            } else {
+              // unsupported seed falls like sand
+              if(down<g.length && g[down]===EMPTY){ g[down]=PLANT; lf[down]=0; g[i]=EMPTY; continue; }
+            }
+          } else { l--; lf[i]=l>0?l: 1; }
+          continue;
+        }
+
+        // ---------- SAND (granular) ----------
+        if(m===SAND){
+          const below = i+gw*dirY;
+          if(below<0||below>=g.length){ continue; }
+          const tb = g[below];
+          if(tb===EMPTY || tb===WATER){
+            // fall (sink through water)
+            g[below]=SAND; lf[below]=lf[i]; g[i]= (tb===WATER)?WATER:EMPTY; if(tb===WATER) lf[i]=12+ri(8);
+            continue;
+          }
+          // diagonal slide
+          const dl = (x>0), dr=(x<gw-1);
+          const bl = i+gw*dirY-1, br=i+gw*dirY+1;
+          const canL = dl && (g[bl]===EMPTY||g[bl]===WATER);
+          const canR = dr && (g[br]===EMPTY||g[br]===WATER);
+          if(canL&&canR){ const j=(ri(2)?br:bl); g[j]=SAND; lf[j]=lf[i]; g[i]=EMPTY; }
+          else if(canL){ g[bl]=SAND; lf[bl]=lf[i]; g[i]=EMPTY; }
+          else if(canR){ g[br]=SAND; lf[br]=lf[i]; g[i]=EMPTY; }
+          continue;
+        }
+
+        // ---------- WATER (fluid: fall, diagonal, then flow far) ----
+        if(m===WATER){
+          const below=i+gw*dirY;
+          if(below>=0&&below<g.length && g[below]===EMPTY){ g[below]=WATER; g[i]=EMPTY; continue; }
+          const dl=(x>0), dr=(x<gw-1);
+          const bl=i+gw*dirY-1, br=i+gw*dirY+1;
+          const cl = dl && (bl>=0&&bl<g.length&&g[bl]===EMPTY);
+          const cr = dr && (br>=0&&br<g.length&&g[br]===EMPTY);
+          if(cl&&cr){ const j=ri(2)?br:bl; g[j]=WATER; g[i]=EMPTY; continue; }
+          if(cl){ g[bl]=WATER; g[i]=EMPTY; continue; }
+          if(cr){ g[br]=WATER; g[i]=EMPTY; continue; }
+          // horizontal spread (seek level) — scan a few cells in momentum dir
+          let dir = mv[i]||(ri(2)?1:-1);
+          const reach=5;
+          let placed=false;
+          for(let s=1;s<=reach;s++){
+            const xx=x+dir*s; if(xx<0||xx>=gw) break;
+            const j=row+xx;
+            if(g[j]!==EMPTY) break;
+            // prefer to move if the cell below the new spot is empty (find a drop)
+            const jb=j+gw;
+            if(jb<g.length && g[jb]===EMPTY){ g[j]=WATER; g[i]=EMPTY; mv[j]=dir; placed=true; break; }
+            if(s===1){ // at least slide one
+              g[j]=WATER; g[i]=EMPTY; mv[j]=dir; placed=true; break;
+            }
+          }
+          if(!placed){ mv[i]= -dir; }
+          continue;
+        }
+      }
+    }
+    frame++;
+  }
+
+  // ---------------------------------------------------------------
+  //  RENDER
+  // ---------------------------------------------------------------
+  function render(){
+    const g=grid, lf=life, b=buf32, gw=GW, gh=GH;
+    let i=0;
+    for(let y=0;y<gh;y++){
+      const bg=bgRow[y];
+      for(let x=0;x<gw;x++,i++){
+        const m=g[i];
+        if(m===EMPTY){ b[i]=bg; continue; }
+        switch(m){
+          case WALL:  b[i]=rgb(120+((x*7+y*13)&31), 122+((x*5)&24), 132+((y*5)&24)); break;
+          case SAND:  b[i]=sandColor(lf[i]&7 ^ (x&3)); break;
+          case WATER: { let l=lf[i]; b[i]=WATER_LUT[(l>31?0:l)&31]; break; }
+          case FIRE:  { let l=lf[i]; let t=63-((l>63?63:l)); b[i]=FIRE_LUT[t&63]; break; }
+          case EMBER: b[i]=rgb(255, 140+ ((lf[i]*3)&80), 30); break;
+          case SPARK: b[i]=rgb(255,238,180); break;
+          case SMOKE: { let l=lf[i]; b[i]=SMOKE_LUT[(l>47?47:l)&47]; break; }
+          case STEAM: { let l=lf[i]; b[i]=rgb(200,210+((l)&30),225); break; }
+          case PLANT: b[i]=PLANT_LUT[(lf[i]&15)]; break;
+          default:    b[i]=bg;
+        }
+      }
+    }
+    sctx.putImageData(img,0,0);
+
+    // ---- bloom / glow pass: emissive cells -> soft halos on a low-res screen layer
+    const gw2=glow.width, gh2=glow.height;
+    gctx.clearRect(0,0,gw2,gh2);
+    gctx.save();
+    gctx.scale(gw2/gw, gh2/gh);
+    gctx.globalCompositeOperation='lighter';
+    // accumulate emissive blobs; bigger radius (in cell units) reads as real bloom
+    let drawn=0;
+    for(let yy=0; yy<gh; yy++){
+      const r=yy*gw;
+      for(let xx=0; xx<gw; xx++){
+        const m=g[r+xx];
+        if(m===FIRE||m===EMBER||m===SPARK){
+          let rad, col;
+          if(m===FIRE){ rad=5.5; col='rgba(255,150,46,0.10)'; }
+          else if(m===EMBER){ rad=4.5; col='rgba(255,110,30,0.085)'; }
+          else { rad=3.5; col='rgba(255,242,190,0.13)'; }
+          const grd=gctx.createRadialGradient(xx,yy,0,xx,yy,rad);
+          grd.addColorStop(0,col);
+          grd.addColorStop(1,'rgba(0,0,0,0)');
+          gctx.fillStyle=grd;
+          gctx.fillRect(xx-rad,yy-rad,rad*2,rad*2);
+          drawn++;
+          if(drawn>3200){ yy=gh; break; }
+        }
+      }
+    }
+    gctx.restore();
+  }
+
+  // ---------------------------------------------------------------
+  //  EMITTERS  (continuous ambient sources for a "living" first paint)
+  // ---------------------------------------------------------------
+  const emitters = [];
+  const fireBeds = [];   // {x,y} cells to keep relit -> persistent flames
+  function fillBlock(x,y,w,h,mat){ for(let j=0;j<h;j++)for(let k=0;k<w;k++){ const xx=x+k,yy=y+j; if(xx>0&&xx<GW&&yy>0&&yy<GH) grid[yy*GW+xx]=mat; } }
+
+  function seedScene(){
+    grid.fill(0); life.fill(0); vx.fill(0);
+    const gw=GW, gh=GH;
+    fireBeds.length=0;
+    // ---- terrain: floor + stepped stone ledges to catch & cascade material ----
+    for(let x=0;x<gw;x++){ for(let yy=gh-3;yy<gh;yy++) grid[yy*gw+x]=WALL; }
+    function ledge(cx, cy, len, slope, thick){
+      for(let k=0;k<len;k++){ const x=cx+k; const y=(cy+ (k*slope))|0;
+        for(let t=0;t<(thick||2);t++) if(x>0&&x<gw&&y+t>0&&y+t<gh) grid[(y+t)*gw+x]=WALL; }
+    }
+    ledge(Math.floor(gw*0.06), Math.floor(gh*0.40), Math.floor(gw*0.34), 0.085, 2);
+    ledge(Math.floor(gw*0.50), Math.floor(gh*0.55), Math.floor(gw*0.30), -0.06, 2);
+    ledge(Math.floor(gw*0.66), Math.floor(gh*0.30), Math.floor(gw*0.26), 0.07, 2);
+    // a basin wall on the right so water pools deep
+    for(let yy=Math.floor(gh*0.55); yy<gh-3; yy++){ const x=Math.floor(gw*0.96); grid[yy*gw+x]=WALL; }
+
+    // ---- starter dunes (already piled, correct repose) ----
+    function dune(cx, base, halfW){
+      for(let dx=-halfW;dx<=halfW;dx++){ const h=Math.floor((1-Math.abs(dx)/halfW)*halfW*0.9);
+        for(let dy=0;dy<h;dy++){ const x=cx+dx, y=base-dy; if(x>0&&x<gw&&y>0&&y<gh-3 && grid[y*gw+x]===EMPTY){ grid[y*gw+x]=SAND; life[y*gw+x]=ri(8);} } }
+    }
+    dune(Math.floor(gw*0.18), gh-4, Math.floor(gw*0.10));
+    dune(Math.floor(gw*0.40), Math.floor(gh*0.55), Math.floor(gw*0.06));
+
+    // ---- a pool of water settled in the right basin ----
+    for(let yy=gh-4; yy>gh-Math.floor(gh*0.14); yy--){
+      for(let x=Math.floor(gw*0.80); x<Math.floor(gw*0.96); x++){ if(grid[yy*gw+x]===EMPTY) grid[yy*gw+x]=WATER; }
+    }
+
+    // ---- plant tufts crowning the dune ----
+    for(let q=0;q<8;q++){ const x=Math.floor(gw*0.18)-Math.floor(gw*0.06)+ri(Math.floor(gw*0.12));
+      // find surface
+      for(let y=4;y<gh-4;y++){ if(grid[y*gw+x]===SAND){ grid[(y-1)*gw+x]=PLANT; life[(y-1)*gw+x]=0; break; } } }
+
+    // ---- persistent fire pits, seated ON a surface so they read as hearths ----
+    function pit(cx, w){
+      // find the top solid/sand surface at cx, place the bed one cell above it
+      let surfaceY = gh-4;
+      for(let y=4;y<gh-3;y++){ const m=grid[y*gw+cx]; if(m===WALL||m===SAND){ surfaceY=y-1; break; } }
+      for(let dx=-w;dx<=w;dx++){ const x=cx+dx,y=surfaceY; if(x>0&&x<gw&&y>0){ grid[y*gw+x]=FIRE; life[y*gw+x]=40+ri(30); fireBeds.push(y*gw+x);} }
+    }
+    pit(Math.floor(gw*0.78), Math.floor(gw*0.025));
+    pit(Math.floor(gw*0.18), Math.floor(gw*0.02));   // on the big dune crest
+
+    // ---- ambient sources: an "hourglass" sand stream, a fire wisp, a water drip ----
+    emitters.length=0;
+    emitters.push({x:Math.floor(gw*0.20), y:2, mat:SAND,  r:1, rate:0.42, jitter:Math.floor(gw*0.012)});
+    emitters.push({x:Math.floor(gw*0.86), y:2, mat:WATER, r:1, rate:0.30, jitter:Math.floor(gw*0.01)});
+  }
+
+  function runEmitters(){
+    for(const e of emitters){
+      if(rnd()>e.rate) continue;
+      const ex = e.x + (e.jitter? ri(e.jitter*2+1)-e.jitter : 0);
+      const ey = e.y;
+      for(let dx=-e.r;dx<=e.r;dx++) for(let dy=-e.r;dy<=e.r;dy++){
+        const x=ex+dx, y=ey+dy;
+        if(x<1||x>=GW-1||y<1||y>=GH-1) continue;
+        if(dx*dx+dy*dy>e.r*e.r+1) continue;
+        const i=y*GW+x;
+        if(e.mat===FIRE){
+          if(grid[i]===EMPTY||grid[i]===FIRE){ grid[i]=FIRE; life[i]=40+ri(28); }
+        } else if(grid[i]===EMPTY){ grid[i]=e.mat; life[i]= e.mat===WATER? 0 : ri(8); }
+      }
+    }
+    // keep the fire pits perpetually alive (the hearths of the garden)
+    for(const i of fireBeds){
+      if((grid[i]===EMPTY||grid[i]===SMOKE||grid[i]===EMBER) && ri(2)===0){ grid[i]=FIRE; life[i]=40+ri(28); }
+      // spit rising sparks for ambience
+      const up=i-GW; if(up>0 && grid[up]===EMPTY && ri(5)===0){ grid[up]=SPARK; life[up]=16+ri(22); }
+    }
+    // rare free-floating embers drifting through the upper air -> atmosphere at rest
+    if(ri(3)===0){ const x=1+ri(GW-2), y=2+ri(Math.floor(GH*0.45)); const i=y*GW+x;
+      if(grid[i]===EMPTY){ grid[i]=SPARK; life[i]=8+ri(10); } }
+  }
+
+  // ---------------------------------------------------------------
+  //  POINTER / PAINT
+  // ---------------------------------------------------------------
+  let brush = BRUSHES[0].mat;
+  let painting=false, px=-1, py=-1, lpx=-1, lpy=-1;
+  let brushR = 7;
+
+  function toGrid(clientX, clientY){
+    const rb = sand.getBoundingClientRect();
+    const gx = Math.floor((clientX-rb.left)/rb.width  * GW);
+    const gy = Math.floor((clientY-rb.top )/rb.height * GH);
+    return [gx,gy];
+  }
+
+  function paintAt(gx,gy){
+    const r=brushR;
+    for(let dx=-r;dx<=r;dx++) for(let dy=-r;dy<=r;dy++){
+      if(dx*dx+dy*dy>r*r) continue;
+      const x=gx+dx, y=gy+dy;
+      if(x<1||x>=GW-1||y<1||y>=GH-1) continue;
+      const i=y*GW+x;
+      if(brush===WALL){ grid[i]=WALL; continue; }
+      if(brush===FIRE){ if(grid[i]===EMPTY||grid[i]===SAND||grid[i]===PLANT){ grid[i]=FIRE; life[i]=40+ri(28);} continue; }
+      // density: don't fill every cell for fluids/sand -> nicer stream
+      if(grid[i]===EMPTY && rnd()<( brush===WATER?0.6:0.78 )){
+        grid[i]=brush; life[i]= brush===PLANT?0:ri(8);
+      }
+    }
+  }
+  function strokeLine(x0,y0,x1,y1){
+    const dx=Math.abs(x1-x0), dy=Math.abs(y1-y0);
+    const sx=x0<x1?1:-1, sy=y0<y1?1:-1;
+    let err=dx-dy, x=x0,y=y0, guard=0;
+    while(guard++<4000){
+      paintAt(x,y);
+      if(x===x1&&y===y1) break;
+      const e2=2*err;
+      if(e2>-dy){ err-=dy; x+=sx; }
+      if(e2<dx){ err+=dx; y+=sy; }
+    }
+  }
+
+  function down(cx,cy){ painting=true; const [x,y]=toGrid(cx,cy); px=x;py=y;lpx=x;lpy=y; paintAt(x,y); hideHint(); }
+  function move(cx,cy){ if(!painting)return; const [x,y]=toGrid(cx,cy); strokeLine(lpx,lpy,x,y); lpx=x;lpy=y; }
+  function up(){ painting=false; }
+
+  sand.addEventListener('mousedown', e=>{ down(e.clientX,e.clientY); });
+  window.addEventListener('mousemove', e=>{ move(e.clientX,e.clientY); });
+  window.addEventListener('mouseup', up);
+  sand.parentNode.addEventListener('mousedown', e=>{ if(e.target.id==='stage'||e.target.tagName==='CANVAS') down(e.clientX,e.clientY); });
+
+  glow.addEventListener('mousedown', e=>{ down(e.clientX,e.clientY); });
+
+  function tp(e){ const t=e.changedTouches[0]; return [t.clientX,t.clientY]; }
+  sand.addEventListener('touchstart', e=>{ e.preventDefault(); const [x,y]=tp(e); down(x,y); }, {passive:false});
+  glow.addEventListener('touchstart', e=>{ e.preventDefault(); const [x,y]=tp(e); down(x,y); }, {passive:false});
+  window.addEventListener('touchmove', e=>{ if(!painting)return; e.preventDefault(); const [x,y]=tp(e); move(x,y); }, {passive:false});
+  window.addEventListener('touchend', up);
+
+  // wheel adjusts brush size
+  window.addEventListener('wheel', e=>{ brushR = Math.max(2, Math.min(26, brushR + (e.deltaY<0?1:-1))); }, {passive:true});
+
+  // keyboard
+  window.addEventListener('keydown', e=>{
+    const k=e.key.toLowerCase();
+    if(k>='1'&&k<='5'){ selectBrush(parseInt(k)-1); }
+    else if(k===' '){ e.preventDefault(); seedScene(); bakeBg(); }
+    else if(k==='c'){ grid.fill(0); life.fill(0); rebuildWalls(); }
+    else if(k==='g'){ gravityDown=!gravityDown; }
+    else if(k==='r'){ seedScene(); bakeBg(); }
+  });
+
+  function rebuildWalls(){ /* keep floor/ledges after clear */
+    const gw=GW,gh=GH;
+    for(let x=0;x<gw;x++){ for(let yy=gh-3;yy<gh;yy++) grid[yy*gw+x]=WALL; }
+  }
+
+  // ---------------------------------------------------------------
+  //  HUD palette
+  // ---------------------------------------------------------------
+  const palEl = document.getElementById('pal');
+  let swatches=[];
+  BRUSHES.forEach((b,k)=>{
+    const d=document.createElement('div');
+    d.className='swatch'+(k===0?' on':'');
+    d.style.background = `radial-gradient(circle at 32% 28%, ${b.col}, ${shade(b.col,-46)})`;
+    d.innerHTML=`<div class="lab">${b.name}</div>`;
+    d.title=b.name;
+    d.addEventListener('click', ()=>selectBrush(k));
+    d.addEventListener('touchstart', (e)=>{ e.stopPropagation(); selectBrush(k); }, {passive:true});
+    palEl.appendChild(d); swatches.push(d);
+  });
+  function selectBrush(k){ brush=BRUSHES[k].mat; swatches.forEach((s,i)=>s.classList.toggle('on',i===k)); hideHint(); }
+  function shade(hex,amt){ let c=parseInt(hex.slice(1),16); let r=(c>>16)+amt,g=((c>>8)&255)+amt,b=(c&255)+amt; r=Math.max(0,Math.min(255,r));g=Math.max(0,Math.min(255,g));b=Math.max(0,Math.min(255,b)); return '#'+((1<<24)+(r<<16)+(g<<8)+b).toString(16).slice(1); }
+
+  let hintHidden=false; const hintEl=document.getElementById('hint');
+  function hideHint(){ if(hintHidden)return; hintHidden=true; hintEl.classList.add('gone'); }
+  setTimeout(hideHint, 8000);
+
+  // ---------------------------------------------------------------
+  //  MAIN LOOP
+  // ---------------------------------------------------------------
+  let last=performance.now(), acc=0, fpsAvg=60;
+  function frameLoop(now){
+    const dt=now-last; last=now;
+    fpsAvg += ((1000/Math.max(1,dt))-fpsAvg)*0.05;
+    runEmitters();
+    // run 1 physics step per frame; if we're fast, allow a 2nd for richer flow
+    step();
+    if(fpsAvg>55) step();
+    render();
+    requestAnimationFrame(frameLoop);
+  }
+
+  // ---------------------------------------------------------------
+  //  BOOT
+  // ---------------------------------------------------------------
+  function boot(){
+    setup(); bakeBg(); seedScene();
+    // pre-warm a few steps so first paint already shows motion settling in
+    for(let k=0;k<14;k++){ runEmitters(); step(); }
+    render();
+    requestAnimationFrame(frameLoop);
+  }
+  boot();
+
+  // resize (debounced) — rebuild grid & rescene
+  let rt;
+  window.addEventListener('resize', ()=>{
+    clearTimeout(rt);
+    rt=setTimeout(()=>{ setup(); bakeBg(); seedScene(); for(let k=0;k<8;k++){runEmitters();step();} render(); }, 180);
+  });
+
+  // expose for verification
+  window.__ember = {
+    grid:()=>grid, GW:()=>GW, GH:()=>GH,
+    nonEmpty:()=>{ let n=0; for(let i=0;i<grid.length;i++) if(grid[i]) n++; return n; },
+    fps:()=>fpsAvg, brush:()=>brush, selectBrush, seedScene,
+    paint:(gx,gy)=>paintAt(gx,gy), setBrush:(m)=>{brush=m;}
+  };
+})();
+</script>
+</body>
+</html>

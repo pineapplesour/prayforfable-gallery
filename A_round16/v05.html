@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>NEBULA — 볼류메트릭 성운</title>
+<style>
+  :root{ color-scheme: dark; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#03040a; }
+  #gl{ position:fixed; inset:0; width:100%; height:100%; display:block; touch-action:none; cursor:crosshair; }
+  /* ---- UI overlay ---- */
+  .ui{ position:fixed; z-index:10; font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+       color:#cdd6ff; -webkit-user-select:none; user-select:none; pointer-events:none; }
+  #title{ left:26px; top:22px; }
+  #title h1{ font-size:13px; letter-spacing:.42em; font-weight:600; color:#eaf0ff;
+       text-shadow:0 0 18px rgba(120,150,255,.55); }
+  #title h1 .dot{ color:#ff7fb0; }
+  #title p{ margin-top:7px; font-size:10.5px; letter-spacing:.16em; color:#7f8bc0; opacity:.85; }
+  #hint{ left:26px; bottom:20px; font-size:10px; letter-spacing:.13em; line-height:1.85; color:#6a76ad; }
+  #hint b{ color:#aeb9f5; font-weight:600; }
+  #hint .k{ display:inline-block; min-width:13px; padding:1px 5px; margin-right:2px; border-radius:4px;
+       background:rgba(120,140,230,.13); border:1px solid rgba(120,140,230,.22); color:#c3cdff; }
+  #readout{ right:24px; top:22px; text-align:right; font-size:9.5px; letter-spacing:.1em;
+       line-height:1.95; color:#566091; }
+  #readout b{ color:#9fb0ff; font-weight:600; }
+  #readout .bar{ display:inline-block; width:46px; height:4px; vertical-align:middle; margin-left:6px;
+       border-radius:3px; background:rgba(120,140,230,.14); overflow:hidden; }
+  #readout .bar i{ display:block; height:100%; width:50%;
+       background:linear-gradient(90deg,#4b7bff,#b06bff,#ff7fb0); }
+  /* palette dots */
+  #pal{ right:24px; bottom:20px; display:flex; gap:10px; pointer-events:auto; }
+  #pal .sw{ width:15px; height:15px; border-radius:50%; cursor:pointer; transition:transform .25s, box-shadow .25s;
+       border:1.5px solid rgba(255,255,255,.18); }
+  #pal .sw:hover{ transform:scale(1.28); }
+  #pal .sw.on{ transform:scale(1.32); box-shadow:0 0 0 2px rgba(255,255,255,.55), 0 0 16px currentColor; }
+  .fade{ animation:fadein 1.6s ease-out both; }
+  @keyframes fadein{ from{opacity:0; transform:translateY(6px);} to{opacity:1; transform:translateY(0);} }
+  @media (max-width:520px){
+    #title{ left:16px; top:14px; }
+    #title h1{ font-size:11px; letter-spacing:.32em; }
+    #title p{ font-size:9px; }
+    #readout{ right:14px; top:14px; font-size:8.5px; }
+    #hint{ left:16px; bottom:14px; font-size:9px; line-height:1.7; }
+    #pal{ right:14px; bottom:14px; gap:13px; }
+    #pal .sw{ width:18px; height:18px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+
+<div id="title" class="ui fade">
+  <h1>N E B U L A<span class="dot"> ·</span></h1>
+  <p>VOLUMETRIC RAYMARCHED GAS CLOUD</p>
+</div>
+
+<div id="readout" class="ui fade">
+  <div>FPS <b id="rFps">—</b></div>
+  <div>STEPS <b id="rSteps">—</b></div>
+  <div>DEPTH <span class="bar"><i id="rDepth"></i></span></div>
+</div>
+
+<div id="hint" class="ui fade">
+  <div><b>드래그</b> 성운을 돌려보기 · <span class="k">휠</span> 깊이로 비행</div>
+  <div><b>클릭</b> 에너지 분출 · <span class="k">SPACE</span> 초신성 · <span class="k">R</span> 재생성</div>
+</div>
+
+<div id="pal" class="ui fade">
+  <span class="sw on" data-p="0" style="background:#7aa2ff;color:#7aa2ff" title="Azure"></span>
+  <span class="sw" data-p="1" style="background:#ff7eb6;color:#ff7eb6" title="Rosette"></span>
+  <span class="sw" data-p="2" style="background:#5be0b0;color:#5be0b0" title="Veil"></span>
+  <span class="sw" data-p="3" style="background:#ffb45e;color:#ffb45e" title="Ember"></span>
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   NEBULA — single-file volumetric raymarcher (WebGL2)
+   First paint == artwork. No CDN, no backend.
+   ============================================================ */
+const cv = document.getElementById('gl');
+const gl = cv.getContext('webgl2', {antialias:false, alpha:false, premultipliedAlpha:false,
+                                    powerPreference:'high-performance', preserveDrawingBuffer:true});
+if(!gl){ document.body.innerHTML='<div style="color:#fff;font-family:monospace;padding:40px">WebGL2 not supported.</div>'; throw new Error('no webgl2'); }
+
+/* ---------- vertex (fullscreen triangle) ---------- */
+const VS = `#version 300 es
+precision highp float;
+out vec2 vUv;
+void main(){
+  vec2 p = vec2((gl_VertexID<<1)&2, gl_VertexID&2);
+  vUv = p;                      // 0..2
+  gl_Position = vec4(p*2.0-1.0, 0.0, 1.0);
+}`;
+
+/* ---------- fragment (the whole nebula) ---------- */
+const FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 frag;
+
+uniform vec2  uRes;
+uniform float uTime;
+uniform vec2  uRot;        // yaw, pitch
+uniform float uZoom;       // camera distance along -z
+uniform float uSteps;      // march steps
+uniform float uSeed;       // regenerate offset
+uniform int   uPalette;    // 0..3
+uniform float uDpr;
+// up to 6 energy pulses: xyz=center, w=birthTime
+uniform vec4  uPulse[6];
+uniform int   uPulseN;
+uniform float uSupernova;  // 0..1 envelope
+
+#define PI 3.14159265
+
+/* ---- hash / value-noise / fbm ---- */
+float hash(vec3 p){
+  p = fract(p*0.3183099 + vec3(0.1,0.2,0.3));
+  p *= 17.0;
+  return fract(p.x*p.y*p.z*(p.x+p.y+p.z));
+}
+float vnoise(vec3 x){
+  vec3 p = floor(x);
+  vec3 f = fract(x);
+  f = f*f*(3.0-2.0*f);
+  return mix(mix(mix(hash(p+vec3(0,0,0)),hash(p+vec3(1,0,0)),f.x),
+                 mix(hash(p+vec3(0,1,0)),hash(p+vec3(1,1,0)),f.x),f.y),
+             mix(mix(hash(p+vec3(0,0,1)),hash(p+vec3(1,0,1)),f.x),
+                 mix(hash(p+vec3(0,1,1)),hash(p+vec3(1,1,1)),f.x),f.y),f.z);
+}
+const mat3 M = mat3( 0.00, 0.80, 0.60,
+                    -0.80, 0.36,-0.48,
+                    -0.60,-0.48, 0.64 );
+float fbm(vec3 p){
+  float a=0.5, s=0.0;
+  for(int i=0;i<6;i++){
+    s += a*vnoise(p);
+    p = M*p*2.02;
+    a *= 0.5;
+  }
+  return s;
+}
+
+/* ---- nebula density field (signed -> clamped) ---- */
+float density(vec3 p){
+  // slow internal churn + regen seed
+  vec3 q = p;
+  q.xz *= mat2(cos(uTime*0.03),-sin(uTime*0.03),sin(uTime*0.03),cos(uTime*0.03));
+  float warp = fbm(q*0.9 + vec3(uSeed) + uTime*0.018);
+  float base = fbm(q*1.35 + warp*0.9 + vec3(0.0,uSeed*1.7,0.0));
+  // soft spherical envelope so the cloud is a cloud, not a fog wall
+  float r = length(p);
+  float shell = smoothstep(2.55, 0.55, r);
+  float d = (base - 0.50) * 2.0;
+  d = d*shell + 0.16*shell;
+  // carve dust lanes (dark filaments)
+  float lane = fbm(q*2.4 + 11.0 + uSeed);
+  d -= smoothstep(0.50,0.78,lane)*0.42;
+  // energy pulses puff up local density then fade
+  for(int i=0;i<6;i++){
+    if(i>=uPulseN) break;
+    float age = uTime - uPulse[i].w;
+    if(age<0.0||age>4.0) continue;
+    float rr = length(p - uPulse[i].xyz);
+    float ring = exp(-pow((rr - age*0.55)*2.4,2.0)); // expanding shell
+    d += ring * exp(-age*0.8) * 0.9;
+  }
+  return clamp(d, 0.0, 1.0);
+}
+
+/* ---- 4-stop gradient: deep edge -> mid -> hot -> white core ---- */
+vec3 grad(float t, vec3 a, vec3 b, vec3 c, vec3 d){
+  t = clamp(t,0.0,1.0);
+  if(t<0.34) return mix(a,b, t/0.34);
+  if(t<0.68) return mix(b,c,(t-0.34)/0.34);
+  return mix(c,d,(t-0.68)/0.32);
+}
+vec3 palette(float t){
+  if(uPalette==0){ // Azure — cobalt deep, cyan mid, white-blue hot
+    return grad(t, vec3(0.02,0.05,0.22), vec3(0.10,0.35,1.05),
+                   vec3(0.45,0.85,1.25), vec3(1.05,1.00,0.92));
+  } else if(uPalette==1){ // Rosette — violet deep, hot magenta, gold core
+    return grad(t, vec3(0.16,0.04,0.30), vec3(1.20,0.22,0.66),
+                   vec3(1.35,0.55,0.78), vec3(1.25,1.02,0.62));
+  } else if(uPalette==2){ // Veil — teal deep, emerald, mint core
+    return grad(t, vec3(0.02,0.18,0.22), vec3(0.10,0.95,0.70),
+                   vec3(0.55,1.25,0.92), vec3(0.92,1.25,1.05));
+  } else { // Ember — oxblood, orange, white-gold core
+    return grad(t, vec3(0.26,0.05,0.04), vec3(1.25,0.40,0.07),
+                   vec3(1.40,0.80,0.26), vec3(1.25,1.08,0.74));
+  }
+}
+
+/* ---- starfield behind the cloud ---- */
+vec3 stars(vec3 rd){
+  vec3 col = vec3(0.0);
+  vec3 p = rd*1.7;
+  for(int L=0;L<3;L++){
+    vec3 g = p*(6.0 + float(L)*9.0);
+    vec3 id = floor(g);
+    float h = hash(id+float(L)*31.0);
+    if(h>0.965){
+      vec3 fp = fract(g)-0.5;
+      float d = length(fp);
+      float tw = 0.6 + 0.4*sin(uTime*(2.0+h*5.0)+h*40.0);
+      float s = smoothstep(0.13,0.0,d)*tw*(h-0.965)*28.0;
+      vec3 sc = mix(vec3(0.8,0.85,1.0), vec3(1.0,0.85,0.7), hash(id+7.0));
+      col += sc*s;
+    }
+  }
+  return col;
+}
+
+/* Henyey-Greenstein phase */
+float hg(float c, float g){
+  float g2=g*g;
+  return (1.0-g2)/(4.0*PI*pow(1.0+g2-2.0*g*c,1.5));
+}
+
+mat3 rotY(float a){ float s=sin(a),c=cos(a); return mat3(c,0,-s, 0,1,0, s,0,c); }
+mat3 rotX(float a){ float s=sin(a),c=cos(a); return mat3(1,0,0, 0,c,-s, 0,s,c); }
+
+void main(){
+  vec2 uv = (gl_FragCoord.xy - 0.5*uRes) / uRes.y;
+
+  // camera
+  mat3 cam = rotY(uRot.x) * rotX(uRot.y);
+  vec3 ro = cam * vec3(0.0, 0.0, uZoom);
+  vec3 rd = normalize(cam * vec3(uv, -1.35));
+
+  // central star (light source) — the glowing heart, slightly off-centre
+  vec3 lightPos = vec3(0.22 + sin(uTime*0.07)*0.28, -0.14 + cos(uTime*0.05)*0.20, 0.10);
+  vec3 lightCol = palette(0.92);
+  // tint that the gas absorbs -> saturated colored depth (not grey)
+  vec3 absorbTint = mix(vec3(1.0), normalize(palette(0.45)+0.001), 0.55);
+
+  vec3 bg = stars(rd) + vec3(0.010,0.013,0.028); // deep space base
+
+  // raymarch the bounding sphere (radius 2.7)
+  float b = dot(rd, -ro);
+  float c2 = dot(ro,ro) - 2.7*2.7;
+  float disc = b*b - c2;
+  if(disc < 0.0){
+    // still add the radiant core halo seen through empty space
+    float coreFlare = 0.0;
+    frag = vec4(pow(bg,vec3(0.62)),1.0); return;
+  }
+  float sq = sqrt(disc);
+  float tmin = max(b - sq, 0.0);
+  float tmax = b + sq;
+
+  int STEPS = int(uSteps);
+  float dt = (tmax - tmin) / float(STEPS);
+  float dither = hash(vec3(gl_FragCoord.xy, uTime*60.0)); // kill banding
+  float t = tmin + dt*dither;
+
+  vec3 acc = vec3(0.0);
+  vec3 trans = vec3(1.0);          // colored transmittance
+  float coreAccum = 0.0;           // volumetric glow toward the star
+
+  for(int i=0;i<160;i++){
+    if(i>=STEPS) break;
+    if(max(trans.r,max(trans.g,trans.b)) < 0.015) break;
+    vec3 pos = ro + rd*t;
+    float dens = density(pos);
+
+    // distance to the radiant core (used for both glow & temperature)
+    float dcore = length(pos - lightPos);
+    // TIGHT core glow, occlusion-aware (trans-weighted) so it can't pile to white
+    float cg = exp(-dcore*7.0) * dt * dens * (1.0 + uSupernova*3.0);
+    coreAccum += dot(trans,vec3(0.333)) * cg;
+
+    if(dens > 0.002){
+      vec3 ldir = (lightPos - pos)/max(dcore,0.001);
+      // self-shadow toward the star (dark dust lanes -> contrast)
+      float shadow = 0.0, ls = 0.20;
+      for(int j=0;j<6;j++){ shadow += density(pos + ldir*ls*(float(j)+0.6)); }
+      float lightAtten = exp(-shadow*1.7) / (0.45 + dcore*dcore*1.4);
+      float phase = mix(hg(dot(rd,ldir),0.55), hg(dot(rd,ldir),-0.25), 0.25);
+
+      // temperature: hot near core / dense, cool & deep at the edges
+      float temp = clamp((1.0 - dcore*0.48) + dens*0.28, 0.0, 1.0);
+      vec3 baseCol = palette(temp);
+
+      // emission keyed to density variation so filaments read
+      float fil = smoothstep(0.15, 0.85, dens);          // structure mask
+      vec3 emit = baseCol * dens * (0.05 + fil*temp*0.30);
+      // in-scatter from the star, tinted by local color (kept modest)
+      vec3 scat = lightCol * baseCol * lightAtten * phase * dens * 0.95;
+      // supernova: brilliant pulse from the centre (restrained, trans-weighted via acc)
+      vec3 sn = palette(0.92) * uSupernova * dens * exp(-length(pos)*0.7) * 1.1;
+
+      float a = 1.0 - exp(-dens * 5.4 * dt);
+      acc += trans * (emit + scat + sn) * a;
+      // colored extinction keeps cores saturated, kills grey wash
+      trans *= exp(-dens * dt * 5.4 * (vec3(1.0)/max(absorbTint,0.15)) * 0.40);
+    }
+    t += dt;
+  }
+
+  // the radiant heart written into the image (restrained)
+  vec3 heart = lightCol * coreAccum * 0.60;
+
+  vec3 col = bg*trans + acc + heart;
+
+  // screen-space bloom lift around the bright centre (subtle accent)
+  float r2 = dot(uv,uv);
+  col += palette(0.80) * exp(-r2*4.5) * (0.05 + uSupernova*0.30);
+  col += palette(0.95) * exp(-r2*22.0) * (0.09 + uSupernova*0.55);
+
+  // filmic tonemap (ACES) + gamma
+  col *= 0.92;
+  col = (col*(2.51*col+0.03))/(col*(2.43*col+0.59)+0.14);
+  col = pow(clamp(col,0.0,1.0), vec3(0.86));
+
+  // gentle vignette to frame the cloud
+  vec2 vq = gl_FragCoord.xy/uRes;
+  col *= 0.42 + 0.58*pow(16.0*vq.x*vq.y*(1.0-vq.x)*(1.0-vq.y), 0.26);
+
+  frag = vec4(col, 1.0);
+}`;
+
+/* ---------- compile helpers ---------- */
+function sh(type,src){
+  const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){ console.error(gl.getShaderInfoLog(s)); throw new Error('shader'); }
+  return s;
+}
+const prog=gl.createProgram();
+gl.attachShader(prog,sh(gl.VERTEX_SHADER,VS));
+gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,FS));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog,gl.LINK_STATUS)){ console.error(gl.getProgramInfoLog(prog)); throw new Error('link'); }
+gl.useProgram(prog);
+const vao=gl.createVertexArray(); gl.bindVertexArray(vao);
+
+/* uniforms */
+const U={};
+['uRes','uTime','uRot','uZoom','uSteps','uSeed','uPalette','uDpr','uPulseN','uSupernova']
+  .forEach(n=>U[n]=gl.getUniformLocation(prog,n));
+U.uPulse = gl.getUniformLocation(prog,'uPulse');
+
+/* ---------- state ---------- */
+const S={
+  rotX:0.85, rotY:0.28, tRotX:0.85, tRotY:0.28,  // dynamic off-axis opening view
+  zoom:3.7, tZoom:3.7,                             // a touch closer -> fills the frame
+  seed:Math.random()*100,
+  palette:0,
+  steps:96,
+  supernova:0,
+  dragging:false, px:0, py:0,
+  autoYaw:0,
+  pulses:[],  // {x,y,z,t}
+  dpr:1, w:0, h:0, area:0,
+};
+
+/* ---------- resize w/ DPR + perf cap ---------- */
+function resize(){
+  const maxDpr = (window.innerWidth*window.innerHeight > 1200*900) ? 1.0 : 1.5;
+  S.dpr = Math.min(window.devicePixelRatio||1, maxDpr);
+  // cap total pixels for steady 60fps
+  let w = Math.round(window.innerWidth  * S.dpr);
+  let h = Math.round(window.innerHeight * S.dpr);
+  const CAP = 1280*720;             // internal render budget
+  const area = w*h;
+  if(area>CAP){ const s=Math.sqrt(CAP/area); w=Math.round(w*s); h=Math.round(h*s); }
+  cv.width=w; cv.height=h;
+  cv.style.width=window.innerWidth+'px'; cv.style.height=window.innerHeight+'px';
+  S.w=w; S.h=h; S.area=area;
+  gl.viewport(0,0,w,h);
+}
+window.addEventListener('resize',resize);
+resize();
+
+/* ---------- interaction ---------- */
+function pulseAt(clientX, clientY){
+  // unproject screen -> a point on/near the nebula along the ray (approx mid-sphere)
+  const uvx=(clientX/window.innerWidth-0.5)*2.0*(window.innerWidth/window.innerHeight);
+  const uvy=-(clientY/window.innerHeight-0.5)*2.0;
+  // place pulse inside the cloud, biased by aim
+  const r=1.3;
+  const x=Math.cos(S.rotY)*uvx*r + Math.sin(S.rotY)*0.0;
+  S.pulses.push({x:uvx*1.2, y:uvy*1.2, z:(Math.random()-0.5)*1.2, t:tNow});
+  if(S.pulses.length>6) S.pulses.shift();
+}
+function supernova(){
+  S.supernova=1.0;
+  for(let k=0;k<4;k++){
+    S.pulses.push({x:(Math.random()-0.5)*1.6,y:(Math.random()-0.5)*1.6,z:(Math.random()-0.5)*1.6,t:tNow+k*0.05});
+  }
+  while(S.pulses.length>6) S.pulses.shift();
+}
+function regen(){ S.seed=Math.random()*100; S.pulses.length=0; }
+
+let downX=0,downY=0,moved=false;
+function down(x,y){ S.dragging=true; S.px=x; S.py=y; downX=x; downY=y; moved=false; }
+function move(x,y){
+  if(!S.dragging) return;
+  const dx=(x-S.px)/window.innerWidth, dy=(y-S.py)/window.innerHeight;
+  if(Math.abs(x-downX)+Math.abs(y-downY)>6) moved=true;
+  S.tRotX += dx*3.4;
+  S.tRotY += dy*2.6;
+  S.tRotY = Math.max(-1.25, Math.min(1.25, S.tRotY));
+  S.px=x; S.py=y;
+}
+function up(x,y){
+  if(S.dragging && !moved){ pulseAt(x,y); }
+  S.dragging=false;
+}
+cv.addEventListener('mousedown',e=>down(e.clientX,e.clientY));
+window.addEventListener('mousemove',e=>move(e.clientX,e.clientY));
+window.addEventListener('mouseup',e=>up(e.clientX,e.clientY));
+cv.addEventListener('touchstart',e=>{e.preventDefault();const t=e.touches[0];down(t.clientX,t.clientY);},{passive:false});
+cv.addEventListener('touchmove',e=>{e.preventDefault();const t=e.touches[0];move(t.clientX,t.clientY);},{passive:false});
+cv.addEventListener('touchend',e=>{e.preventDefault();const t=e.changedTouches[0];up(t.clientX,t.clientY);},{passive:false});
+cv.addEventListener('wheel',e=>{
+  e.preventDefault();
+  S.tZoom += (e.deltaY>0?1:-1)*0.28;
+  S.tZoom = Math.max(1.6, Math.min(7.5, S.tZoom));
+},{passive:false});
+window.addEventListener('keydown',e=>{
+  if(e.code==='Space'){ e.preventDefault(); supernova(); }
+  else if(e.key==='r'||e.key==='R'){ regen(); }
+});
+/* palette swatches */
+document.querySelectorAll('#pal .sw').forEach(el=>{
+  el.addEventListener('click',()=>{
+    S.palette=parseInt(el.dataset.p,10);
+    document.querySelectorAll('#pal .sw').forEach(s=>s.classList.remove('on'));
+    el.classList.add('on');
+  });
+});
+
+/* ---------- readout dom ---------- */
+const rFps=document.getElementById('rFps'),
+      rSteps=document.getElementById('rSteps'),
+      rDepth=document.getElementById('rDepth');
+
+/* ---------- adaptive quality ---------- */
+let frames=0, fpsAcc=0, lastFpsT=0, fps=60;
+function adapt(dt){
+  // keep ~60fps by nudging march steps
+  if(fps<48 && S.steps>56){ S.steps-=4; }
+  else if(fps>58 && S.steps<128){ S.steps+=2; }
+}
+
+/* ---------- main loop ---------- */
+let tNow=0, last=performance.now()/1000, started=performance.now();
+function frame(now){
+  now/=1000;
+  let dt=now-last; last=now; if(dt>0.05)dt=0.05;
+  tNow=now;
+
+  // ease camera toward target (critically-damped feel)
+  S.rotX += (S.tRotX - S.rotX)*Math.min(1,dt*6.0);
+  S.rotY += (S.tRotY - S.rotY)*Math.min(1,dt*6.0);
+  S.zoom += (S.tZoom - S.zoom)*Math.min(1,dt*5.0);
+  // continuous slow spin when idle so the cloud always breathes
+  if(!S.dragging) S.tRotX += dt*0.05;
+
+  // supernova decay
+  if(S.supernova>0) S.supernova=Math.max(0,S.supernova-dt*0.9);
+
+  // fps
+  frames++; fpsAcc+=dt;
+  if(fpsAcc>0.5){ fps=frames/fpsAcc; frames=0; fpsAcc=0;
+    rFps.textContent=fps.toFixed(0);
+    rSteps.textContent=S.steps|0;
+    adapt(dt);
+  }
+  const depthPct = (1 - (S.zoom-1.6)/(7.5-1.6))*100;
+  rDepth.style.width = Math.max(4,Math.min(100,depthPct)).toFixed(0)+'%';
+
+  // upload uniforms
+  gl.uniform2f(U.uRes, S.w, S.h);
+  gl.uniform1f(U.uTime, now);
+  gl.uniform2f(U.uRot, S.rotX, S.rotY);
+  gl.uniform1f(U.uZoom, S.zoom);
+  gl.uniform1f(U.uSteps, S.steps);
+  gl.uniform1f(U.uSeed, S.seed);
+  gl.uniform1i(U.uPalette, S.palette);
+  gl.uniform1f(U.uDpr, S.dpr);
+  gl.uniform1f(U.uSupernova, S.supernova);
+  // pulses
+  const arr=new Float32Array(24);
+  const n=Math.min(6,S.pulses.length);
+  for(let i=0;i<n;i++){ const p=S.pulses[i]; arr[i*4]=p.x; arr[i*4+1]=p.y; arr[i*4+2]=p.z; arr[i*4+3]=p.t; }
+  gl.uniform4fv(U.uPulse, arr);
+  gl.uniform1i(U.uPulseN, n);
+
+  gl.drawArrays(gl.TRIANGLES,0,3);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+/* expose minimal hooks for verification */
+window.__nebula = {
+  state:()=>({rotX:S.rotX,rotY:S.rotY,zoom:S.zoom,steps:S.steps,palette:S.palette,
+              pulses:S.pulses.length,supernova:S.supernova,fps:fps,w:S.w,h:S.h}),
+  drag:(dx,dy)=>{ S.tRotX+=dx; S.tRotY+=dy; },
+  zoomBy:(d)=>{ S.tZoom=Math.max(1.6,Math.min(7.5,S.tZoom+d)); },
+  pulse:(x,y)=>pulseAt(x,y),
+  supernova, regen, setPalette:(p)=>{S.palette=p;}
+};
+</script>
+</body>
+</html>

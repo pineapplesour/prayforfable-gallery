@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>LUMA — Living Dot Matrix</title>
+<style>
+  :root{
+    --bg0:#05060a;
+    --bg1:#0a0d18;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:#04050a;
+    font-family:'SF Mono','JetBrains Mono','Menlo',ui-monospace,monospace;
+    -webkit-tap-highlight-color:transparent;cursor:crosshair;}
+  #stage{position:fixed;inset:0;display:block}
+  canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+
+  /* ---- HUD ---- */
+  .hud{position:fixed;z-index:10;color:#7fe9d6;pointer-events:none;
+    text-shadow:0 0 12px rgba(60,255,210,.35);user-select:none;
+    font-variant-numeric:tabular-nums;}
+  .tl{top:18px;left:22px}
+  .tr{top:18px;right:22px;text-align:right}
+  .bl{bottom:18px;left:22px}
+  .br{bottom:18px;right:22px;text-align:right}
+  .title{font-size:13px;letter-spacing:.5em;font-weight:600;color:#aef7e9;
+    text-shadow:0 0 18px rgba(80,255,220,.55)}
+  .sub{font-size:9.5px;letter-spacing:.32em;opacity:.55;margin-top:6px}
+  .stat{font-size:9.5px;letter-spacing:.18em;opacity:.6;line-height:1.7}
+  .stat b{color:#ffd86b;font-weight:600;text-shadow:0 0 10px rgba(255,200,80,.4)}
+  .hint{font-size:9.5px;letter-spacing:.22em;opacity:.0;transition:opacity 1.2s;
+    color:#9affe6}
+  .hint.show{opacity:.5}
+  .chips{pointer-events:auto;display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end;max-width:240px}
+  .chip{font-size:9px;letter-spacing:.18em;padding:5px 9px;border-radius:20px;
+    border:1px solid rgba(120,255,225,.22);color:#86f0dd;cursor:pointer;
+    background:rgba(10,30,28,.35);backdrop-filter:blur(4px);
+    transition:all .25s ease;user-select:none}
+  .chip:hover{border-color:rgba(120,255,225,.6);color:#d6fff5;
+    box-shadow:0 0 18px rgba(80,255,210,.25)}
+  .chip.on{background:rgba(70,255,210,.16);border-color:rgba(120,255,225,.8);
+    color:#eafff9;box-shadow:0 0 22px rgba(80,255,210,.4)}
+  @media (max-width:560px){
+    .title{font-size:11px;letter-spacing:.35em}
+    .sub{display:none}
+    .chips{max-width:150px}
+    .tr{top:14px;right:14px}.tl{top:14px;left:14px}
+    .bl{bottom:14px;left:14px}.br{bottom:14px;right:14px}
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="glow"></canvas>
+  <canvas id="dots"></canvas>
+</div>
+
+<div class="hud tl">
+  <div class="title">L U M A</div>
+  <div class="sub">LIVING&nbsp;DOT-MATRIX&nbsp;·&nbsp;v04</div>
+</div>
+<div class="hud tr">
+  <div class="chips" id="chips"></div>
+</div>
+<div class="hud bl">
+  <div class="stat">
+    DOTS&nbsp;&nbsp;<b id="sDots">—</b><br>
+    FPS&nbsp;&nbsp;&nbsp;<b id="sFps">—</b><br>
+    MODE&nbsp;&nbsp;<b id="sMode">RIPPLE</b>
+  </div>
+</div>
+<div class="hud br">
+  <div class="hint" id="hint">MOVE · CLICK · DRAG · SCROLL · SPACE</div>
+</div>
+
+<script>
+(()=>{
+"use strict";
+
+const glow = document.getElementById('glow');
+const dots = document.getElementById('dots');
+const gx = glow.getContext('2d');
+const ctx = dots.getContext('2d', {alpha:true});
+
+let W=0,H=0,DPR=1;
+let cols=0, rows=0, pitch=0, ox=0, oy=0, R=0;
+
+// grid arrays (flat)
+let GX=null, GY=null;      // base positions
+let lvl=null, lvlV=null;   // brightness level + velocity (spring)
+let hueA=null;             // per-dot hue accumulator
+let baseField=null;        // ambient field phase offsets
+
+// pointer
+const P = {x:-9999,y:-9999, px:-9999,py:-9999, down:false, vx:0,vy:0, active:false, lastMove:0};
+let scrollEnergy = 0;
+let glowDirty = false;
+
+// ripples (radial pulses from clicks)
+const ripples = [];
+
+// modes
+const MODES = ['RIPPLE','PLASMA','TEXT','RAIN','AURORA'];
+let modeIdx = 0;
+let mode = MODES[0];
+
+// text scroller content (rendered to offscreen for sampling)
+const TEXT = 'LUMA · 살아있는 빛 · MOVE THE LIGHT · ';
+let txtCanvas, txtCtx, txtW=0, txtScroll=0;
+
+let t0 = performance.now();
+let lastT = t0;
+let fpsAcc = 0, fpsN = 0, fpsShown = 60;
+
+/* ---------- layout ---------- */
+function rebuild(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  for(const c of [glow,dots]){
+    c.width = Math.floor(W*DPR); c.height = Math.floor(H*DPR);
+    c.style.width = W+'px'; c.style.height = H+'px';
+  }
+  gx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+
+  // choose pitch so total dots stay capped (~performance)
+  const target = (W<560) ? 2300 : 5000;
+  const area = W*H;
+  pitch = Math.max(12, Math.sqrt(area/target));
+  cols = Math.floor(W/pitch);
+  rows = Math.floor(H/pitch);
+  // recompute centered pitch
+  pitch = Math.min(W/cols, H/rows);
+  R = pitch*0.30;
+  ox = (W - (cols-1)*pitch)/2;
+  oy = (H - (rows-1)*pitch)/2;
+
+  const n = cols*rows;
+  GX = new Float32Array(n); GY = new Float32Array(n);
+  lvl = new Float32Array(n); lvlV = new Float32Array(n);
+  hueA = new Float32Array(n); baseField = new Float32Array(n);
+  for(let j=0;j<rows;j++){
+    for(let i=0;i<cols;i++){
+      const k = j*cols+i;
+      GX[k] = ox + i*pitch;
+      GY[k] = oy + j*pitch;
+      baseField[k] = Math.random()*Math.PI*2;
+      hueA[k] = 180;
+    }
+  }
+  buildText();
+  document.getElementById('sDots').textContent = n.toLocaleString();
+}
+
+/* ---------- text sampling buffer (rendered at GRID resolution: 1 px = 1 cell) ---------- */
+// Render text large on a high-res strip, then downscale to (txtW cells x rows) so
+// one bitmap pixel maps exactly to one grid cell when sampled by column index.
+function buildText(){
+  // Render each glyph tall (fills ~70% of grid height) at high res, downscale to
+  // CELL resolution, then threshold so the matrix shows crisp on/off LED letters.
+  const SS = 8;
+  const fh = Math.max(Math.round(rows*0.70)*SS, 12);  // glyph cap height in hi-res px
+  const meas = document.createElement('canvas').getContext('2d');
+  const FONT = `900 ${fh}px 'SF Mono','Menlo','Arial',sans-serif`;
+  meas.font = FONT;
+  const hiW = Math.ceil(meas.measureText(TEXT).width) + fh; // pad one glyph gap
+  const hiH = rows*SS;
+  const hi = document.createElement('canvas');
+  hi.width = hiW; hi.height = hiH;
+  const hc = hi.getContext('2d');
+  hc.font = FONT;
+  hc.fillStyle = '#fff';
+  hc.textBaseline = 'middle';
+  hc.textAlign = 'left';
+  hc.fillText(TEXT, fh*0.4, hiH/2);
+
+  txtW = Math.max(8, Math.round(hiW/SS));        // width in CELLS
+  txtCanvas = document.createElement('canvas');
+  txtCanvas.width = txtW; txtCanvas.height = rows;
+  txtCtx = txtCanvas.getContext('2d');
+  txtCtx.clearRect(0,0,txtW,rows);
+  txtCtx.imageSmoothingEnabled = true;
+  txtCtx.imageSmoothingQuality = 'high';
+  txtCtx.drawImage(hi, 0,0,hiW,hiH, 0,0,txtW,rows);
+}
+let txtData=null;
+function cacheTextData(){ if(txtCtx) txtData = txtCtx.getImageData(0,0,txtW,rows).data; }
+function txtAlpha(i,j,scroll){
+  if(!txtData) return 0;
+  const x = (((i + Math.floor(scroll)) % txtW) + txtW) % txtW;
+  const y = j;
+  if(y<0||y>=rows) return 0;
+  let a = txtData[(y*txtW + x)*4 + 3]/255;
+  // threshold -> crisp LED glyph (no gray haze), soft shoulder for one-cell AA
+  if(a < 0.30) return 0;
+  return Math.min(1, (a-0.30)/0.45);
+}
+
+/* ---------- noise (cheap value noise) ---------- */
+function n2(x,y){
+  let s = Math.sin(x*1.7+y*0.9)*43758.5453;
+  return s - Math.floor(s);
+}
+function fbm(x,y,t){
+  let v=0,a=0.5,f=1;
+  for(let o=0;o<3;o++){
+    v += a*Math.sin(x*f + t*0.7 + Math.cos(y*f*1.3 - t*0.5)*2.0);
+    f*=2.0; a*=0.5;
+  }
+  return v;
+}
+
+/* ---------- interaction ---------- */
+function setPointer(x,y){
+  P.px = (P.x<-9000)?x:P.x; P.py=(P.y<-9000)?y:P.y;
+  P.vx = x-P.px; P.vy = y-P.py;
+  P.x = x; P.y = y; P.active=true; P.lastMove=performance.now();
+}
+window.addEventListener('pointermove', e=>{ setPointer(e.clientX,e.clientY); }, {passive:true});
+window.addEventListener('pointerdown', e=>{
+  P.down=true; setPointer(e.clientX,e.clientY);
+  ripples.push({x:e.clientX,y:e.clientY,r:0,born:performance.now(),power:1});
+  hideHint();
+},{passive:true});
+window.addEventListener('pointerup', ()=>{ P.down=false; });
+window.addEventListener('pointerleave', ()=>{ P.active=false; P.x=-9999;P.y=-9999; });
+window.addEventListener('wheel', e=>{
+  scrollEnergy += Math.max(-1,Math.min(1, e.deltaY/200));
+  scrollEnergy = Math.max(-6, Math.min(6, scrollEnergy));
+  hideHint();
+}, {passive:true});
+
+let hintTimer = setTimeout(()=>document.getElementById('hint').classList.add('show'), 900);
+function hideHint(){ document.getElementById('hint').classList.remove('show'); }
+
+window.addEventListener('keydown', e=>{
+  if(e.code==='Space'){ e.preventDefault(); cycleMode(1); }
+});
+
+function cycleMode(d){
+  modeIdx = (modeIdx + d + MODES.length)%MODES.length;
+  mode = MODES[modeIdx];
+  document.getElementById('sMode').textContent = mode;
+  if(mode==='TEXT'){ cacheTextData(); txtScroll=0; }
+  syncChips();
+  // burst ripple from center on switch
+  ripples.push({x:W/2,y:H/2,r:0,born:performance.now(),power:1.4});
+}
+
+/* ---------- chips ---------- */
+const chipsEl = document.getElementById('chips');
+MODES.forEach((m,i)=>{
+  const c = document.createElement('div');
+  c.className='chip'+(i===0?' on':''); c.textContent=m;
+  c.addEventListener('click',()=>{ modeIdx=i; mode=MODES[i];
+    document.getElementById('sMode').textContent=mode;
+    if(mode==='TEXT'){cacheTextData();txtScroll=0;}
+    syncChips();
+    ripples.push({x:W/2,y:H/2,r:0,born:performance.now(),power:1.2});
+    hideHint();
+  });
+  chipsEl.appendChild(c);
+});
+function syncChips(){
+  [...chipsEl.children].forEach((c,i)=> c.classList.toggle('on', i===modeIdx));
+}
+
+/* ---------- palette ---------- */
+function hsl(h,s,l,a){ return `hsla(${h},${s}%,${l}%,${a})`; }
+
+/* ---------- main loop ---------- */
+function frame(now){
+  const dt = Math.min(0.05,(now-lastT)/1000); lastT=now;
+  const t = (now - t0)/1000;
+
+  // fps
+  fpsAcc += 1/Math.max(dt,1e-4); fpsN++;
+  if(fpsN>=20){ fpsShown = Math.round(fpsAcc/fpsN); fpsAcc=0; fpsN=0;
+    document.getElementById('sFps').textContent = fpsShown; }
+
+  // pointer velocity decay
+  P.vx*=0.82; P.vy*=0.82;
+  if(performance.now()-P.lastMove>120){ P.vx*=0.6; P.vy*=0.6; }
+  scrollEnergy *= 0.95;
+  txtScroll += (7 + scrollEnergy*9)*dt; // cells/sec; scroll wheel changes speed/direction
+
+  // update ripples
+  for(let r=ripples.length-1;r>=0;r--){
+    const rp = ripples[r];
+    rp.r += (520 + scrollEnergy*40)*dt;
+    if(rp.r > Math.hypot(W,H)+120) ripples.splice(r,1);
+  }
+
+  // Per-dot soft glow only when (a) grid is sparse AND (b) bright dots are sparse.
+  // PLASMA/AURORA light nearly every dot, so glow there = thousands of gradients -> skip.
+  const sparseBright = (mode==='RIPPLE'||mode==='TEXT'||mode==='RAIN');
+  const drawGlow = (cols*rows) < 3200 && sparseBright;
+
+  // ---- trails: fade dots (and glow layer only when used) ----
+  ctx.globalCompositeOperation='source-over';
+  ctx.fillStyle='rgba(4,5,10,0.30)';
+  ctx.fillRect(0,0,W,H);
+  if(drawGlow){
+    gx.globalCompositeOperation='source-over';
+    gx.fillStyle='rgba(4,5,10,0.22)';
+    gx.fillRect(0,0,W,H);
+    gx.globalCompositeOperation='lighter';
+    glowDirty=true;
+  } else if(glowDirty){
+    gx.clearRect(0,0,W,H);   // clear once when glow disabled
+    glowDirty=false;
+  }
+
+  ctx.globalCompositeOperation='lighter';
+
+  const px=P.x, py=P.y;
+  const pSpeed = Math.hypot(P.vx,P.vy);
+  const influR = pitch*7.5;            // pointer influence radius
+  const influR2 = influR*influR;
+
+  for(let j=0;j<rows;j++){
+    for(let i=0;i<cols;i++){
+      const k = j*cols+i;
+      const bx = GX[k], by = GY[k];
+
+      // --- target brightness per mode ---
+      let target = 0.04;            // ambient floor
+      let hue = 188;
+      let dx2=0, dy2=0;             // displacement
+
+      if(mode==='RIPPLE' || mode==='RAIN'){
+        // gentle breathing field
+        target = 0.05 + 0.05*(0.5+0.5*Math.sin(baseField[k]+t*0.8));
+        hue = 186 + 14*Math.sin(t*0.3 + i*0.05);
+      }
+
+      if(mode==='PLASMA'){
+        const v = fbm(i*0.16, j*0.16, t*0.9);
+        const e = 0.5+0.5*Math.sin(v*2.3 + t*0.6);
+        target = 0.05 + 0.62*Math.pow(e,2.0);     // lower ceiling -> keeps color, not white
+        hue = 250 + 90*Math.sin(v*1.6 + t*0.25);  // cyan/violet/magenta flow
+      }
+      else if(mode==='AURORA'){
+        const band = Math.sin(j*0.22 - t*1.1 + Math.sin(i*0.09 + t*0.4)*2.0);
+        const e = Math.pow(Math.max(0,band),2.2);
+        target = 0.06 + 0.9*e;
+        hue = 150 + 80*Math.sin(i*0.04 - t*0.5) + 40*e;
+        dy2 = Math.sin(i*0.2 + t*1.4)*pitch*0.10*e;
+      }
+      else if(mode==='TEXT'){
+        const a = txtAlpha(i, j, txtScroll);
+        target = 0.05 + 0.92*a;
+        hue = 46 + 18*Math.sin(t*0.6 + i*0.04);  // warm amber LED text
+      }
+      else if(mode==='RAIN'){
+        // vertical falling streaks
+        const speed = 6 + (i*37%5);
+        const head = ((t*speed + (i*53%rows)) % (rows+8));
+        const d = head - j;
+        if(d>=0 && d<7){ const e = 1 - d/7; target = Math.max(target, 0.15+0.85*e); hue = 150+90*e; }
+      }
+
+      // --- pointer interaction (magnetic light + push) ---
+      if(P.active && px>-9000){
+        const ddx = bx-px, ddy = by-py;
+        const d2 = ddx*ddx+ddy*ddy;
+        if(d2 < influR2){
+          const d = Math.sqrt(d2)+0.001;
+          const fall = 1 - d/influR;          // 0..1
+          const g = fall*fall;
+          target = Math.min(1.6, target + g*(0.9 + pSpeed*0.012));
+          hue = hue*(1-g*0.7) + (38 + pSpeed*0.5)*(g*0.7); // warms toward gold near cursor
+          // magnetic displacement: pushed outward, dragged by velocity
+          const push = g* (8 + pSpeed*0.25);
+          dx2 += (ddx/d)*push + P.vx*g*0.35;
+          dy2 += (ddy/d)*push + P.vy*g*0.35;
+        }
+      }
+
+      // --- ripples ---
+      for(let r=0;r<ripples.length;r++){
+        const rp = ripples[r];
+        const d = Math.hypot(bx-rp.x, by-rp.y);
+        const w = 46;                          // ring width
+        const off = Math.abs(d - rp.r);
+        if(off < w){
+          const e = (1-off/w);
+          const age = 1 - Math.min(1,(rp.r)/(Math.hypot(W,H)));
+          const power = e*e*age*rp.power;
+          target = Math.min(1.8, target + power*1.2);
+          hue = hue*(1-power*0.6) + (300 - rp.r*0.1)*(power*0.6);
+          const dirx=(bx-rp.x)/(d+.001), diry=(by-rp.y)/(d+.001);
+          dx2 += dirx*power*pitch*0.6;
+          dy2 += diry*power*pitch*0.6;
+        }
+      }
+
+      // --- spring toward target brightness (gives organic lag/glow decay) ---
+      const force = (target - lvl[k])*22 - lvlV[k]*8;
+      lvlV[k] += force*dt;
+      lvl[k]  += lvlV[k]*dt;
+      if(lvl[k]<0){lvl[k]=0;lvlV[k]*=-0.3;}
+      let L = lvl[k];
+      if(L<0.012) { hueA[k]=hue; continue; }   // skip near-dark dots (perf)
+
+      // smooth hue
+      hueA[k] += (hue-hueA[k])*Math.min(1,dt*6);
+      const Hd = hueA[k];
+
+      const fx = bx + dx2;
+      const fy = by + dy2;
+      const rad = R * (0.55 + Math.min(1.1,L)*0.85);
+      const light = 40 + Math.min(1,L)*26;   // cap ~66 so additive overlap stays colored
+      const sat = 92;
+
+      // --- soft glow layer (additive) ---
+      if(drawGlow && L>0.20){
+        const gr = rad*3.4;
+        const grd = gx.createRadialGradient(fx,fy,0,fx,fy,gr);
+        grd.addColorStop(0, hsl(Hd,sat,light, Math.min(0.5,L*0.5)));
+        grd.addColorStop(1, hsl(Hd,sat,light, 0));
+        gx.fillStyle=grd;
+        gx.beginPath(); gx.arc(fx,fy,gr,0,6.2832); gx.fill();
+      }
+
+      // --- the LED dot ---
+      ctx.beginPath();
+      ctx.arc(fx,fy,rad,0,6.2832);
+      ctx.fillStyle = hsl(Hd,sat,light, Math.min(1,0.35+L*0.75));
+      ctx.fill();
+      // hot core only for the very brightest dots (keeps arc count low under plasma)
+      if(L>0.85){
+        ctx.beginPath();
+        ctx.arc(fx,fy,rad*0.5,0,6.2832);
+        ctx.fillStyle = hsl(Hd,55, Math.min(96,light+30), Math.min(1,(L-0.85)*2.2));
+        ctx.fill();
+      }
+    }
+  }
+
+  // soft cursor aura (additive)
+  if(P.active && px>-9000){
+    const ar = pitch*7.5;
+    const ag = ctx.createRadialGradient(px,py,0,px,py,ar);
+    ag.addColorStop(0,'rgba(255,210,120,0.10)');
+    ag.addColorStop(1,'rgba(255,210,120,0)');
+    ctx.globalCompositeOperation='lighter';
+    ctx.fillStyle=ag; ctx.beginPath(); ctx.arc(px,py,ar,0,6.2832); ctx.fill();
+  }
+
+  requestAnimationFrame(frame);
+}
+
+/* ---------- boot ---------- */
+let resizeT=null;
+window.addEventListener('resize', ()=>{ clearTimeout(resizeT); resizeT=setTimeout(rebuild,120); });
+rebuild();
+cacheTextData();
+// first paint: instant ambient field already visible; kick a welcome ripple
+ripples.push({x:W/2,y:H*0.45,r:0,born:performance.now(),power:1.3});
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

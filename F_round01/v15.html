@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>森の天蓋 ─ 俯瞰</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#222a24;}
+  #c{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none;}
+  #cap{
+    position:fixed;left:50%;bottom:26px;transform:translateX(-50%);
+    color:rgba(228,232,214,.62);
+    font:300 11px/1.6 "JetBrains Mono",ui-monospace,monospace;
+    letter-spacing:.34em;text-transform:lowercase;
+    background:rgba(20,28,22,.30);padding:7px 22px 7px 24px;border-radius:99px;
+    backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px);
+    pointer-events:none;white-space:nowrap;user-select:none;
+    box-shadow:0 1px 14px rgba(0,0,0,.18) inset, 0 0 0 1px rgba(255,255,255,.04);
+  }
+  @media(max-width:480px){#cap{font-size:10px;letter-spacing:.26em;bottom:20px;padding:6px 16px;}}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="cap">forest canopy ─ slow drift from above</div>
+<script>
+'use strict';
+(()=>{
+const TAU=Math.PI*2;
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d');
+
+let W=0,H=0,DPR=1,DIAG=0;
+
+/* ---------- deterministic-ish prng for scene seeding ---------- */
+function rng(seed){let s=seed>>>0;return()=>{s^=s<<13;s^=s>>>17;s^=s<<5;return((s>>>0)/4294967296);};}
+
+/* ---------- muted palette (sage / olive / moss / dusty teal) ---------- */
+// canopy clusters tint toward green-olive; floor/gaps toward dark teal-brown
+function lerp(a,b,t){return a+(b-a)*t;}
+function clamp(v,a,b){return v<a?a:v>b?b:v;}
+
+/* ---------- offscreen layers ---------- */
+// We render the canopy into a few offscreen canvases at different blur depths,
+// then composite with slow parallax drift each frame. This gives the soft
+// depth-of-field, painterly look of the reference without per-frame cost.
+const layers=[]; // {can,ctx,blur,driftX,driftY,driftR,rot,scale,alpha,cx,cy}
+
+function makeLayer(){
+  const can=document.createElement('canvas');
+  return {can,ctx:can.getContext('2d')};
+}
+
+/* a single soft leaf-cluster blob, top-down: irregular lobed mass with
+   internal lighter highlights (sun hitting top leaves) + darker core (shade). */
+function paintCluster(c,x,y,r,baseHue,baseSat,baseLight,R){
+  const lobes=4+(R()*3|0);
+  // shadow gap under cluster (depth between canopy and ground)
+  c.save();
+  c.globalCompositeOperation='source-over';
+  const sg=c.createRadialGradient(x+r*0.16,y+r*0.20,r*0.1,x+r*0.16,y+r*0.20,r*1.25);
+  sg.addColorStop(0,'rgba(14,20,16,0.34)');
+  sg.addColorStop(1,'rgba(14,20,16,0)');
+  c.fillStyle=sg;
+  c.beginPath();c.arc(x+r*0.16,y+r*0.20,r*1.25,0,TAU);c.fill();
+  c.restore();
+
+  // build an irregular, leaf-edged outline of the canopy mass.
+  // pre-compute a per-lobe radius profile so highlight/clip share the same shape.
+  const N=lobes*3;                       // subdivisions for gently ragged leaf edge
+  const prof=[];
+  const phase=R()*TAU, lf1=2+(R()*3|0), lf2=5+(R()*4|0);
+  for(let i=0;i<N;i++){
+    const a=i/N*TAU;
+    // rounded billowy lobes (foliage clumps), only mildly rough at the edge
+    const big=Math.sin(a*lobes+phase);
+    const med=Math.sin(a*lf1-phase*1.3)*0.5;
+    const fine=Math.sin(a*lf2+phase*2.1)*0.22;
+    prof.push(0.80 + big*0.10 + med*0.07 + fine*0.05 + (R()-0.5)*0.05);
+  }
+  // pre-resolve points, then close the path with smooth quadratic curves
+  // through edge midpoints (Catmull-ish) so the crown reads as soft foliage.
+  function blob(rad,k,off){
+    const pts=[];
+    for(let i=0;i<N;i++){
+      const a=i/N*TAU, rr=rad*prof[i]*k;
+      pts.push([x+off.x+Math.cos(a)*rr, y+off.y+Math.sin(a)*rr*0.94]);
+    }
+    c.beginPath();
+    const m0x=(pts[N-1][0]+pts[0][0])/2, m0y=(pts[N-1][1]+pts[0][1])/2;
+    c.moveTo(m0x,m0y);
+    for(let i=0;i<N;i++){
+      const p=pts[i], q=pts[(i+1)%N];
+      c.quadraticCurveTo(p[0],p[1],(p[0]+q[0])/2,(p[1]+q[1])/2);
+    }
+    c.closePath();
+  }
+
+  // base mass (mid tone). light source upper-left -> brighter that side.
+  const g=c.createRadialGradient(x-r*0.34,y-r*0.40,r*0.1,x+r*0.10,y+r*0.06,r*1.08);
+  g.addColorStop(0,`hsl(${baseHue-4},${baseSat}%,${baseLight+15}%)`);
+  g.addColorStop(0.5,`hsl(${baseHue},${baseSat}%,${baseLight}%)`);
+  g.addColorStop(1,`hsl(${baseHue+8},${baseSat+5}%,${baseLight-17}%)`);
+  blob(r,1.0,{x:0,y:0});
+  c.fillStyle=g;c.fill();
+
+  // inner darker shade pockets (depth between leaf layers)
+  const pockets=3+(R()*3|0);
+  for(let i=0;i<pockets;i++){
+    const px=x+(R()-0.5)*r*0.9, py=y+(R()-0.5)*r*0.9, pr=r*(0.18+R()*0.26);
+    const pg=c.createRadialGradient(px,py,0,px,py,pr);
+    pg.addColorStop(0,`hsla(${baseHue+10},${baseSat}%,${baseLight-18}%,0.5)`);
+    pg.addColorStop(1,`hsla(${baseHue+10},${baseSat}%,${baseLight-18}%,0)`);
+    c.fillStyle=pg;c.beginPath();c.arc(px,py,pr,0,TAU);c.fill();
+  }
+
+  // sun-lit highlights on upper-left leaves (toward light source)
+  const lit=4+(R()*4|0);
+  for(let i=0;i<lit;i++){
+    const ang=-2.2+ (R()-0.5)*1.4; // upper-left-ish
+    const dd=r*(0.1+R()*0.55);
+    const px=x+Math.cos(ang)*dd, py=y+Math.sin(ang)*dd, pr=r*(0.10+R()*0.20);
+    const hl=c.createRadialGradient(px,py,0,px,py,pr);
+    const lh=clamp(baseLight+24+R()*10,0,72);
+    hl.addColorStop(0,`hsla(${baseHue-6},${clamp(baseSat-6,0,100)}%,${lh}%,0.55)`);
+    hl.addColorStop(1,`hsla(${baseHue-6},${clamp(baseSat-6,0,100)}%,${lh}%,0)`);
+    c.fillStyle=hl;c.beginPath();c.arc(px,py,pr,0,TAU);c.fill();
+  }
+
+  // fine leaf speckle inside the mass (painterly stipple) — tiny leaf flecks,
+  // brighter toward upper-left (lit), darker toward lower-right (shade).
+  c.save();
+  blob(r*0.99,1.0,{x:0,y:0});c.clip();
+  const sp=Math.round(r*r/55)+8;
+  for(let i=0;i<sp;i++){
+    const px=x+(R()-0.5)*r*2, py=y+(R()-0.5)*r*2;
+    const lit = ((x-px)+(y-py)) > 0;          // upper-left of centre
+    const fr = R()*1.9+0.5;
+    c.save();
+    c.translate(px,py);
+    c.rotate(R()*TAU);
+    c.fillStyle = lit
+      ? `hsla(${baseHue-10},${clamp(baseSat-4,0,100)}%,${clamp(baseLight+30,0,82)}%,${(0.05+R()*0.13).toFixed(3)})`
+      : `hsla(${baseHue+14},${baseSat}%,${clamp(baseLight-22,0,80)}%,${(0.06+R()*0.16).toFixed(3)})`;
+    // little leaf oval rather than a dot -> reads as foliage texture
+    c.beginPath();c.ellipse(0,0,fr*1.6,fr*0.7,0,0,TAU);c.fill();
+    c.restore();
+  }
+  c.restore();
+}
+
+/* paint one full canopy layer (offscreen). density/tone per depth. */
+function paintCanopyLayer(L,depth,seed){
+  const c=L.ctx, w=L.can.width, h=L.can.height;
+  const R=rng(seed);
+  c.setTransform(1,0,0,1,0,0);
+  c.clearRect(0,0,w,h);
+
+  // base ground/gaps wash for this layer (deeper = darker, cooler/teal)
+  const baseHue = lerp(150,86,depth);          // far=teal-ish, near=olive-green
+  const groundDark = depth<0.34;
+  if(depth<0.5){ // only deepest layer paints a full ground wash
+    const bg=c.createRadialGradient(w*0.5,h*0.44,0,w*0.5,h*0.5,Math.max(w,h)*0.72);
+    bg.addColorStop(0,'#3a4438');
+    bg.addColorStop(0.5,'#2f3a30');
+    bg.addColorStop(1,'#212a24');
+    c.fillStyle=bg;c.fillRect(0,0,w,h);
+    // dark moss/soil pockets seen through gaps
+    for(let i=0;i<10;i++){
+      const x=R()*w,y=R()*h,r=h*(0.12+R()*0.22);
+      const ag=c.createRadialGradient(x,y,0,x,y,r);
+      ag.addColorStop(0,'rgba(18,26,20,0.5)');ag.addColorStop(1,'rgba(18,26,20,0)');
+      c.fillStyle=ag;c.beginPath();c.arc(x,y,r,0,TAU);c.fill();
+    }
+  }
+
+  // cluster count + size scale by depth (near = fewer/larger)
+  const span=Math.max(w,h);
+  const baseR = span*(depth<0.34?0.075:depth<0.67?0.11:0.16);
+  const area=w*h;
+  const count = Math.round(area/(baseR*baseR* (depth<0.34?5.5:depth<0.67?6.5:9)));
+  // distribute with slight jitter-grid to avoid clumping/holes
+  const cols=Math.ceil(Math.sqrt(count*w/h));
+  const rows=Math.ceil(count/cols);
+  let k=0;
+  for(let gy=0;gy<rows;gy++){
+    for(let gx=0;gx<cols;gx++){
+      if(k++>count+4)break;
+      const jx=(R()-0.5), jy=(R()-0.5);
+      const x=(gx+0.5+jx*0.9)/cols*w;
+      const y=(gy+0.5+jy*0.9)/rows*h;
+      const r=baseR*(0.5+R()*R()*1.5);          // wider size spread (a few big crowns)
+      // occasional warm-yellow or deep blue-green crown for variety
+      let hue=baseHue + (R()-0.5)*26, sat=(groundDark?16:22)+R()*14;
+      const v=R();
+      if(v<0.16){ hue=baseHue+34+R()*16; sat+=8; }       // golden/yellow-green tree
+      else if(v>0.86){ hue=baseHue-30-R()*16; sat+=4; }  // dark blue-green conifer
+      const light=(depth<0.34?20:depth<0.67?27:34) + (R()-0.5)*8;
+      paintCluster(c,x,y,r,hue,clamp(sat,8,46),light,R);
+    }
+  }
+}
+
+/* ---------- floating motes (spores / pollen / dust caught in light) ---------- */
+let motes=[];
+function buildMotes(){
+  motes=[];
+  const n=Math.round(clamp(W*H/26000,26,90));
+  const R=rng(20240817);
+  for(let i=0;i<n;i++){
+    motes.push({
+      x:R()*W, y:R()*H,
+      r: 0.8+R()*2.6,
+      depth: R(),               // affects blur/alpha/parallax
+      vx:(R()-0.5)*5, vy:(R()-0.5)*5 - 2, // gentle upward bias
+      ph:R()*TAU, pv:0.3+R()*0.6,
+      tw:0.3+R()*0.7
+    });
+  }
+}
+
+/* ---------- a couple of slowly drifting leaves (foreground, soft blur) ---------- */
+let leaves=[];
+function buildLeaves(){
+  leaves=[];
+  const R=rng(99221);
+  const n=3;
+  for(let i=0;i<n;i++){
+    leaves.push({
+      x:R()*W, y:R()*H,
+      s: DIAG*(0.018+R()*0.016),
+      a:R()*TAU, va:(R()-0.5)*0.18,
+      vx:(R()-0.5)*7, vy:(R()-0.5)*7,
+      hue:70+R()*40, light:30+R()*14,
+      ph:R()*TAU
+    });
+  }
+}
+function drawLeaf(c,lf){
+  c.save();
+  c.translate(lf.x,lf.y);c.rotate(lf.a);
+  const s=lf.s;
+  c.beginPath();
+  c.moveTo(0,-s);
+  c.quadraticCurveTo(s*0.7,-s*0.2,0,s);
+  c.quadraticCurveTo(-s*0.7,-s*0.2,0,-s);
+  c.closePath();
+  const g=c.createLinearGradient(-s*0.5,-s,s*0.5,s);
+  g.addColorStop(0,`hsla(${lf.hue-8},26%,${lf.light+14}%,0.92)`);
+  g.addColorStop(1,`hsla(${lf.hue+6},30%,${lf.light-6}%,0.92)`);
+  c.fillStyle=g;c.fill();
+  c.strokeStyle=`hsla(${lf.hue},24%,${lf.light-14}%,0.5)`;
+  c.lineWidth=Math.max(0.5,s*0.04);
+  c.beginPath();c.moveTo(0,-s);c.lineTo(0,s);c.stroke();
+  c.restore();
+}
+
+/* ---------- light dapple overlay (slow moving sun patches) ---------- */
+let dapples=[];
+function buildDapples(){
+  dapples=[];
+  const R=rng(7777);
+  const n=6;
+  for(let i=0;i<n;i++){
+    dapples.push({
+      x:R()*W,y:R()*H,
+      r:DIAG*(0.18+R()*0.22),
+      vx:(R()-0.5)*8,vy:(R()-0.5)*6,
+      ph:R()*TAU, pv:0.12+R()*0.18,
+      amp:0.05+R()*0.07
+    });
+  }
+}
+
+/* ---------- static grain texture (tiled, drawn once) ---------- */
+let grain=null;
+function buildGrain(){
+  const g=document.createElement('canvas');
+  const gs=160;g.width=gs;g.height=gs;
+  const gc=g.getContext('2d');
+  const id=gc.createImageData(gs,gs);
+  const R=rng(424242);
+  for(let i=0;i<id.data.length;i+=4){
+    const v=200+R()*55|0;
+    id.data[i]=id.data[i+1]=id.data[i+2]=v;
+    id.data[i+3]=R()*255|0;
+  }
+  gc.putImageData(id,0,0);
+  grain=g;
+}
+
+/* ---------- build everything ---------- */
+function buildScene(){
+  // three depth layers: 0=far(deep,blurred), 1=mid, 2=near(sharpest, slight blur)
+  const depths=[0.18,0.5,0.85];
+  const blurs=[6,2.0,0.0];     // near layer is crisp -> reads as foliage
+  const alphas=[1,0.97,0.95];
+  const par=[0.22,0.5,1.0];    // parallax factor on drift
+  const renderScale = Math.min(DPR,1.6);
+  for(let i=0;i<3;i++){
+    let L=layers[i];
+    if(!L){L=makeLayer();layers[i]=L;}
+    // render at slightly larger than viewport so drift never reveals edges
+    const pad=Math.round(DIAG*0.10);
+    L.rw=W+pad*2; L.rh=H+pad*2; L.pad=pad;
+    L.can.width=Math.round(L.rw*renderScale);
+    L.can.height=Math.round(L.rh*renderScale);
+    L.ctx.setTransform(renderScale,0,0,renderScale,0,0);
+    paintCanopyLayer(L,depths[i],1000+i*131);
+    L.blur=blurs[i];
+    L.alpha=alphas[i];
+    L.par=par[i];
+    L.depth=depths[i];
+    L.scale=renderScale;
+  }
+  buildMotes();
+  buildLeaves();
+  buildDapples();
+  if(!grain)buildGrain();
+}
+
+/* ---------- resize ---------- */
+function resize(){
+  W=window.innerWidth;H=window.innerHeight;
+  DPR=Math.min(window.devicePixelRatio||1,2);
+  DIAG=Math.hypot(W,H);
+  cv.width=Math.round(W*DPR);
+  cv.height=Math.round(H*DPR);
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  buildScene();
+}
+window.addEventListener('resize',()=>{clearTimeout(resize._t);resize._t=setTimeout(resize,160);});
+
+/* ---------- pointer: gentle wind gust toward cursor ---------- */
+let gust={x:0,y:0,p:0};
+function gustAt(x,y){gust.x=x;gust.y=y;gust.p=1;}
+cv.addEventListener('pointerdown',e=>gustAt(e.clientX,e.clientY));
+cv.addEventListener('pointermove',e=>{ if(e.buttons||e.pressure>0) gustAt(e.clientX,e.clientY); });
+
+/* ---------- main render ---------- */
+let last=0, t0=0;
+function frame(ts){
+  requestAnimationFrame(frame);
+  const t=ts/1000; if(!t0)t0=t;
+  const T=t-t0;
+  const dt=Math.min(0.05,Math.max(0.001,t-last)); last=t;
+  gust.p*=Math.exp(-dt*0.9);
+
+  // soft base fill (covers any sub-pixel gaps, sets overall tone)
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.fillStyle='#262f28';
+  ctx.fillRect(0,0,W,H);
+
+  // ---- canopy layers with slow drift + breathing parallax ----
+  for(let i=0;i<layers.length;i++){
+    const L=layers[i];
+    if(!L||!L.can.width)continue;
+    // slow circular wind drift, depth-scaled
+    const driftX = Math.sin(T*0.045 + i*1.3)*DIAG*0.018*L.par
+                 + Math.sin(T*0.017 + i)*DIAG*0.010*L.par;
+    const driftY = Math.cos(T*0.038 + i*0.7)*DIAG*0.016*L.par
+                 + Math.cos(T*0.021 + i*1.7)*DIAG*0.009*L.par;
+    const breathe = 1 + Math.sin(T*0.05 + i)*0.006*L.par;
+    const rot = Math.sin(T*0.013 + i*2.1)*0.010*L.par;
+
+    ctx.save();
+    ctx.globalAlpha=L.alpha;
+    ctx.filter = L.blur>0.05 ? `blur(${L.blur}px)` : 'none';
+    // center the oversized layer and apply transforms
+    ctx.translate(W*0.5+driftX, H*0.5+driftY);
+    ctx.rotate(rot);
+    ctx.scale(breathe,breathe);
+    ctx.drawImage(L.can,
+      -(L.rw*0.5), -(L.rh*0.5), L.rw, L.rh);
+    ctx.restore();
+  }
+  ctx.filter='none';
+
+  // ---- moving sun dapples (warm light pooling over canopy) ----
+  ctx.save();
+  ctx.globalCompositeOperation='soft-light';
+  for(const d of dapples){
+    d.ph+=dt*d.pv;
+    const dx=d.x + Math.sin(d.ph)*DIAG*0.05 + d.vx*T*0.4;
+    const dy=d.y + Math.cos(d.ph*0.8)*DIAG*0.04 + d.vy*T*0.4;
+    const px=((dx% (W+400))+ (W+400))%(W+400) -200;
+    const py=((dy% (H+400))+ (H+400))%(H+400) -200;
+    const a=d.amp*(0.6+0.4*Math.sin(d.ph*1.3));
+    const g=ctx.createRadialGradient(px,py,0,px,py,d.r);
+    g.addColorStop(0,`rgba(255,244,206,${a})`);
+    g.addColorStop(0.6,`rgba(214,224,176,${a*0.4})`);
+    g.addColorStop(1,'rgba(214,224,176,0)');
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(px,py,d.r,0,TAU);ctx.fill();
+  }
+  ctx.restore();
+
+  // soft central glow (the look-up-through-the-leaves brightness)
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  const cg=ctx.createRadialGradient(W*0.42,H*0.40,0,W*0.5,H*0.5,DIAG*0.62);
+  cg.addColorStop(0,'rgba(196,206,150,0.10)');
+  cg.addColorStop(0.5,'rgba(150,170,130,0.04)');
+  cg.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=cg;ctx.fillRect(0,0,W,H);
+  ctx.restore();
+
+  // ---- floating motes (spores/pollen) ----
+  for(const m of motes){
+    m.ph+=dt*m.pv;
+    let wx=0,wy=0;
+    if(gust.p>0.01){
+      const dx=m.x-gust.x, dy=m.y-gust.y, dd=Math.hypot(dx,dy)+1;
+      const f=gust.p*1200/(dd);
+      wx=dx/dd*f; wy=dy/dd*f;
+    }
+    m.x+=(m.vx + Math.sin(m.ph)*6 + wx*m.depth)*dt;
+    m.y+=(m.vy + Math.cos(m.ph*0.7)*5 + wy*m.depth)*dt;
+    // wrap
+    if(m.x<-10)m.x=W+10; if(m.x>W+10)m.x=-10;
+    if(m.y<-10)m.y=H+10; if(m.y>H+10)m.y=-10;
+    const tw=0.35+0.65*(0.5+0.5*Math.sin(m.ph*2.0))*m.tw;
+    const blur = (1-m.depth)*1.6; // far motes softer
+    const a=clamp(0.10+m.depth*0.5,0,0.7)*tw;
+    ctx.save();
+    if(blur>0.3)ctx.filter=`blur(${blur}px)`;
+    const g=ctx.createRadialGradient(m.x,m.y,0,m.x,m.y,m.r*2.4);
+    g.addColorStop(0,`rgba(240,246,214,${a})`);
+    g.addColorStop(0.5,`rgba(220,232,190,${a*0.45})`);
+    g.addColorStop(1,'rgba(220,232,190,0)');
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(m.x,m.y,m.r*2.4,0,TAU);ctx.fill();
+    ctx.restore();
+  }
+
+  // ---- slowly drifting leaves (foreground, soft) ----
+  ctx.save();
+  ctx.filter='blur(1.4px)';
+  for(const lf of leaves){
+    lf.ph+=dt*0.5;
+    lf.a+=lf.va*dt + Math.sin(lf.ph)*0.004;
+    lf.x+=(lf.vx + Math.sin(lf.ph*0.8)*6)*dt;
+    lf.y+=(lf.vy + Math.cos(lf.ph)*5 + 3)*dt; // gentle settle
+    if(lf.x<-60)lf.x=W+60; if(lf.x>W+60)lf.x=-60;
+    if(lf.y<-60)lf.y=H+60; if(lf.y>H+60)lf.y=-60;
+    drawLeaf(ctx,lf);
+  }
+  ctx.restore();
+
+  // ---- depth vignette ----
+  ctx.save();
+  const vg=ctx.createRadialGradient(W*0.5,H*0.46,DIAG*0.16,W*0.5,H*0.5,DIAG*0.62);
+  vg.addColorStop(0,'rgba(0,0,0,0)');
+  vg.addColorStop(1,'rgba(10,16,12,0.52)');
+  ctx.fillStyle=vg;ctx.fillRect(0,0,W,H);
+  ctx.restore();
+
+  // ---- fine film grain (animated jitter) ----
+  if(grain){
+    ctx.save();
+    ctx.globalAlpha=0.045;
+    ctx.globalCompositeOperation='overlay';
+    const gs=grain.width;
+    const ox=(Math.sin(T*13.0)*gs)|0, oy=(Math.cos(T*11.0)*gs)|0;
+    for(let y=-gs+oy%gs; y<H; y+=gs)
+      for(let x=-gs+ox%gs; x<W; x+=gs)
+        ctx.drawImage(grain,x,y);
+    ctx.restore();
+  }
+}
+
+resize();
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

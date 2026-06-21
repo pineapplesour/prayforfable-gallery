@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>墨 · 山水 — Living Sumi-e</title>
+<style>
+  :root { --paper: #efe9dc; --ink: #1c1a17; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #d8d0bf; }
+  body {
+    font-family: "Songti SC", "STSong", "Noto Serif KR", "Nanum Myeongjo", serif;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+    cursor: crosshair;
+  }
+  #stage { position: fixed; inset: 0; display: block; }
+  /* canvas stack */
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; }
+  #c_paper { z-index: 1; }
+  #c_mist  { z-index: 2; }
+  #c_ink   { z-index: 3; }
+  #c_fx    { z-index: 4; pointer-events: none; }
+
+  /* seal / signature */
+  .seal {
+    position: fixed; z-index: 6; right: 26px; bottom: 24px;
+    width: 58px; height: 58px; border-radius: 6px;
+    background: #a23b2d; color: #f3ead6;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; line-height: 1.05; text-align: center;
+    letter-spacing: 1px; font-weight: 700;
+    box-shadow: 0 2px 10px rgba(120,30,20,.35);
+    opacity: .9; user-select: none; pointer-events: none;
+    transform: rotate(-1.5deg);
+    writing-mode: vertical-rl;
+    padding: 7px 0; font-family: "Songti SC","STSong",serif;
+  }
+  /* title — calligraphic, top-left, vertical */
+  .title {
+    position: fixed; z-index: 6; left: 30px; top: 26px;
+    writing-mode: vertical-rl; font-size: 30px; color: #2a2622;
+    letter-spacing: 6px; opacity: .82; user-select: none; pointer-events: none;
+    text-shadow: 0 1px 0 rgba(255,255,255,.3);
+  }
+  .hint {
+    position: fixed; z-index: 6; left: 50%; bottom: 20px; transform: translateX(-50%);
+    font-size: 12px; color: #5a5246; letter-spacing: 2px; opacity: .6;
+    user-select: none; pointer-events: none; white-space: nowrap;
+    transition: opacity 1.2s ease;
+  }
+  .hint.gone { opacity: 0; }
+  .toolbar {
+    position: fixed; z-index: 7; right: 18px; top: 18px;
+    display: flex; gap: 8px; align-items: center;
+  }
+  .tb {
+    width: 34px; height: 34px; border-radius: 50%;
+    border: 1px solid rgba(40,36,30,.25);
+    background: rgba(245,239,225,.55); color: #3a342c;
+    font-size: 15px; cursor: pointer; backdrop-filter: blur(3px);
+    display: flex; align-items: center; justify-content: center;
+    transition: transform .15s, background .2s; user-select: none;
+  }
+  .tb:hover { transform: scale(1.08); background: rgba(245,239,225,.85); }
+  .tb:active { transform: scale(.94); }
+  @media (max-width: 520px) {
+    .title { font-size: 22px; left: 18px; top: 18px; letter-spacing: 4px; }
+    .seal { width: 46px; height: 46px; font-size: 11px; right: 16px; bottom: 18px; }
+    .hint { font-size: 10px; }
+  }
+</style>
+</head>
+<body>
+  <canvas id="c_paper"></canvas>  <!-- static paper grain + vignette -->
+  <canvas id="c_mist"></canvas>   <!-- drifting mist / depth planes -->
+  <canvas id="c_ink"></canvas>    <!-- accumulated ink bleed (persistent) -->
+  <canvas id="c_fx"></canvas>     <!-- live brush tip, splatter, birds -->
+
+  <div class="title">墨韻山水</div>
+  <div class="seal">閑<br>居</div>
+  <div class="hint" id="hint">— 천천히 그으면 번지고, 빠르게 그으면 흩뿌려진다 · 스크롤로 안개를 가르다 —</div>
+  <div class="toolbar">
+    <div class="tb" id="btnInk" title="먹 농도">墨</div>
+    <div class="tb" id="btnWipe" title="씻어내기">水</div>
+  </div>
+
+<script>
+"use strict";
+/* ============================================================
+   墨韻山水 — Living Sumi-e Generative Landscape
+   Single-file. Canvas2D. No deps.
+   Layers: paper (static) / mist (drift) / ink (persistent bleed) / fx (live)
+   ============================================================ */
+
+const PAPER = '#efe9dc';
+const cPaper = document.getElementById('c_paper');
+const cMist  = document.getElementById('c_mist');
+const cInk   = document.getElementById('c_ink');
+const cFx    = document.getElementById('c_fx');
+const pctx = cPaper.getContext('2d');
+const mctx = cMist.getContext('2d');
+const ictx = cInk.getContext('2d', { willReadFrequently: false });
+const fctx = cFx.getContext('2d');
+
+let W = 0, H = 0, DPR = 1;
+let lowMips = false;            // perf clamp
+const isTouch = matchMedia('(pointer:coarse)').matches;
+
+/* ---------- deterministic-ish value noise (fast) ---------- */
+const _p = new Uint8Array(512);
+(function seedPerm(){
+  let perm = [];
+  for (let i=0;i<256;i++) perm[i]=i;
+  let s = 1337;
+  for (let i=255;i>0;i--){ s=(s*1103515245+12345)&0x7fffffff; const j=s%(i+1); [perm[i],perm[j]]=[perm[j],perm[i]]; }
+  for (let i=0;i<512;i++) _p[i]=perm[i&255];
+})();
+function fade(t){ return t*t*t*(t*(t*6-15)+10); }
+function lerp(a,b,t){ return a+(b-a)*t; }
+function grad(h,x,y){ const u=(h&1)?x:-x, v=(h&2)?y:-y; return u+v; }
+function pnoise(x,y){
+  const X=Math.floor(x)&255, Y=Math.floor(y)&255;
+  x-=Math.floor(x); y-=Math.floor(y);
+  const u=fade(x), v=fade(y);
+  const aa=_p[_p[X]+Y], ab=_p[_p[X]+Y+1], ba=_p[_p[X+1]+Y], bb=_p[_p[X+1]+Y+1];
+  return lerp(lerp(grad(aa,x,y),grad(ba,x-1,y),u),
+              lerp(grad(ab,x,y-1),grad(bb,x-1,y-1),u), v);
+}
+function fbm(x,y,oct){
+  let a=0.5, f=1, sum=0, norm=0;
+  for (let i=0;i<oct;i++){ sum+=a*pnoise(x*f,y*f); norm+=a; a*=0.5; f*=2; }
+  return sum/norm; // ~[-1,1]
+}
+
+/* ============================================================
+   PAPER LAYER — washi grain, deckle, subtle fold-light + vignette
+   ============================================================ */
+function paintPaper(){
+  pctx.clearRect(0,0,W,H);
+  // base gradient — slightly warmer top, cooler bottom (atmosphere)
+  const g = pctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#f4eeE1');
+  g.addColorStop(0.55,'#efe9dc');
+  g.addColorStop(1,'#e6ddcb');
+  pctx.fillStyle = g;
+  pctx.fillRect(0,0,W,H);
+
+  // large soft stains (tea-like) for organic feel
+  for (let i=0;i<7;i++){
+    const x=Math.random()*W, y=Math.random()*H, r=Math.min(W,H)*(0.18+Math.random()*0.3);
+    const rg=pctx.createRadialGradient(x,y,0,x,y,r);
+    const a=0.018+Math.random()*0.03;
+    rg.addColorStop(0,`rgba(150,120,70,${a})`);
+    rg.addColorStop(1,'rgba(150,120,70,0)');
+    pctx.fillStyle=rg; pctx.beginPath(); pctx.arc(x,y,r,0,7); pctx.fill();
+  }
+
+  // fiber grain via noise -> sparse dots (cheap)
+  const step = lowMips ? 3 : 2;
+  const id = pctx.getImageData(0,0,W,H);
+  const d = id.data;
+  for (let y=0;y<H;y+=step){
+    for (let x=0;x<W;x+=step){
+      const n = fbm(x*0.012, y*0.012, 3);
+      const fib = (pnoise(x*0.5, y*0.05) + pnoise(x*0.05, y*0.5))*0.5;
+      const v = (n*8 + fib*10);
+      const i=(y*W+x)*4;
+      d[i]   = Math.max(0,Math.min(255,d[i]  +v));
+      d[i+1] = Math.max(0,Math.min(255,d[i+1]+v));
+      d[i+2] = Math.max(0,Math.min(255,d[i+2]+v*0.85));
+      if (step===2){ // fill neighbor to avoid gaps
+        const i2=i+4; if(i2+2<d.length){ d[i2]=d[i];d[i2+1]=d[i+1];d[i2+2]=d[i+2]; }
+      }
+    }
+  }
+  pctx.putImageData(id,0,0);
+
+  // vignette
+  const vg=pctx.createRadialGradient(W/2,H*0.45,Math.min(W,H)*0.25,W/2,H*0.5,Math.max(W,H)*0.78);
+  vg.addColorStop(0,'rgba(0,0,0,0)');
+  vg.addColorStop(1,'rgba(60,50,35,0.16)');
+  pctx.fillStyle=vg; pctx.fillRect(0,0,W,H);
+
+  // deckle edge — irregular torn border
+  pctx.save();
+  pctx.strokeStyle='rgba(60,50,35,0.10)';
+  pctx.lineWidth=1;
+  pctx.beginPath();
+  const m=10;
+  for (let t=0;t<=1;t+=0.01){
+    const jx=fbm(t*20,0,3)*6, jy=fbm(0,t*20,3)*6;
+    const x = m+jx + t*(W-2*m), y=m+jy;
+    if(t===0)pctx.moveTo(x,y);else pctx.lineTo(x,y);
+  }
+  pctx.stroke(); pctx.restore();
+}
+
+/* ============================================================
+   INK LAYER — the heart. Persistent accumulation of ink bleed.
+   We never clear it (except wipe). Mountains are auto-drawn,
+   and the user paints onto the SAME layer so it composes.
+   ============================================================ */
+
+// brush dab: layered radial blots with feathered, fiber-broken edges
+function inkDab(ctx, x, y, r, alpha, hue){
+  // hue: 0 = pure ink, can tint slightly indigo/sepia by mode
+  const tint = hue || inkTint;
+  ctx.save();
+  ctx.globalCompositeOperation = 'multiply';
+  // core
+  const g = ctx.createRadialGradient(x,y,0,x,y,r);
+  g.addColorStop(0, `rgba(${tint.r},${tint.g},${tint.b},${alpha})`);
+  g.addColorStop(0.55, `rgba(${tint.r},${tint.g},${tint.b},${alpha*0.55})`);
+  g.addColorStop(1, `rgba(${tint.r},${tint.g},${tint.b},0)`);
+  ctx.fillStyle=g;
+  ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.fill();
+  ctx.restore();
+}
+
+// "feathered bleed" — random fiber tendrils shooting out (capillary action)
+function inkBleed(ctx, x, y, r, alpha, tint){
+  tint = tint || inkTint;
+  const n = lowMips ? 5 : 9;
+  ctx.save();
+  ctx.globalCompositeOperation='multiply';
+  for (let i=0;i<n;i++){
+    const a = Math.random()*Math.PI*2;
+    const len = r*(0.6+Math.random()*1.4);
+    const ex = x+Math.cos(a)*len, ey=y+Math.sin(a)*len;
+    const rr = r*(0.15+Math.random()*0.35);
+    const g=ctx.createRadialGradient(ex,ey,0,ex,ey,rr);
+    const al = alpha*(0.18+Math.random()*0.3);
+    g.addColorStop(0,`rgba(${tint.r},${tint.g},${tint.b},${al})`);
+    g.addColorStop(1,`rgba(${tint.r},${tint.g},${tint.b},0)`);
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(ex,ey,rr,0,7); ctx.fill();
+  }
+  ctx.restore();
+}
+
+// dry-brush splatter for fast strokes (飞白 — flying white)
+function inkSpray(ctx, x, y, dirx, diry, force, tint){
+  tint = tint || inkTint;
+  const n = Math.min(26, 6 + Math.floor(force*1.4));
+  ctx.save();
+  ctx.globalCompositeOperation='multiply';
+  for (let i=0;i<n;i++){
+    const spread = (Math.random()-0.5)*0.9;
+    const ca = Math.cos(spread), sa=Math.sin(spread);
+    const dx = dirx*ca - diry*sa, dy = dirx*sa + diry*ca;
+    const dist = Math.random()*force*1.6;
+    const px = x+dx*dist + (Math.random()-0.5)*8;
+    const py = y+dy*dist + (Math.random()-0.5)*8;
+    const rr = 0.6+Math.random()*2.4;
+    ctx.fillStyle=`rgba(${tint.r},${tint.g},${tint.b},${0.12+Math.random()*0.28})`;
+    ctx.beginPath(); ctx.arc(px,py,rr,0,7); ctx.fill();
+  }
+  ctx.restore();
+}
+
+/* ---------- generative mountain ranges (auto-composed) ---------- */
+let inkTint = { r:28, g:26, b:23 };
+const TINTS = {
+  ink:    { r:28, g:26, b:23 },
+  indigo: { r:34, g:42, b:62 },
+  sepia:  { r:74, g:52, b:30 },
+};
+let tintNames = ['ink','indigo','sepia'];
+let tintIdx = 0;
+
+// a mountain ridge as a filled silhouette with a soft ink-wash top edge
+function drawRidge(ctx, baseY, amp, rough, seedX, darkness, tint){
+  tint = tint || inkTint;
+  const pts=[];
+  const segs = lowMips ? 70 : 130;
+  for (let i=0;i<=segs;i++){
+    const t=i/segs;
+    const x=t*W;
+    let h = fbm(seedX + t*3.0, baseY*0.001, 5);
+    h += 0.4*fbm(seedX*2 + t*8.0, 11.3, 3);
+    const peak = Math.pow(Math.abs(h),0.85)*Math.sign(h);
+    const y = baseY - amp*(0.5+0.5*peak) - rough*Math.abs(fbm(t*22+seedX,7,2));
+    pts.push([x,y]);
+  }
+  // body fill (very light wash — distant fog tone)
+  ctx.save();
+  ctx.globalCompositeOperation='multiply';
+  ctx.beginPath();
+  ctx.moveTo(0,H);
+  ctx.lineTo(pts[0][0],pts[0][1]);
+  for (let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);
+  ctx.lineTo(W,H); ctx.closePath();
+  const g=ctx.createLinearGradient(0,baseY-amp,0,H);
+  g.addColorStop(0,`rgba(${tint.r},${tint.g},${tint.b},${darkness})`);
+  g.addColorStop(0.4,`rgba(${tint.r},${tint.g},${tint.b},${darkness*0.55})`);
+  g.addColorStop(1,`rgba(${tint.r},${tint.g},${tint.b},${darkness*0.15})`);
+  ctx.fillStyle=g; ctx.fill();
+  ctx.restore();
+
+  // crest bleed — feathery dark top edge where wet ink pooled
+  for (let i=0;i<pts.length;i+=2){
+    const [x,y]=pts[i];
+    inkDab(ctx, x, y, amp*0.18*(0.6+Math.random()*0.8), darkness*0.5, tint);
+  }
+  // a few texture strokes (cun 皴法) on near ridges
+  if (darkness>0.22){
+    for (let i=0;i<pts.length;i+=6){
+      const [x,y]=pts[i];
+      const len=amp*(0.2+Math.random()*0.5);
+      ctx.save(); ctx.globalCompositeOperation='multiply';
+      ctx.strokeStyle=`rgba(${tint.r},${tint.g},${tint.b},${darkness*0.35})`;
+      ctx.lineWidth=0.8+Math.random()*1.2;
+      ctx.beginPath();
+      ctx.moveTo(x,y);
+      ctx.quadraticCurveTo(x+(Math.random()-0.5)*8, y+len*0.5, x+(Math.random()-0.5)*6, y+len);
+      ctx.stroke(); ctx.restore();
+    }
+  }
+  return pts;
+}
+
+// a lone gnarled pine (literati motif) on a foreground ridge
+function drawPine(ctx, x, y, scale, tint){
+  tint = tint || inkTint;
+  ctx.save();
+  ctx.globalCompositeOperation='multiply';
+  ctx.strokeStyle=`rgba(${tint.r},${tint.g},${tint.b},0.55)`;
+  ctx.lineCap='round';
+  function branch(px,py,ang,len,w,depth){
+    if (depth<=0||len<3) return;
+    const ex=px+Math.cos(ang)*len, ey=py+Math.sin(ang)*len;
+    ctx.lineWidth=w;
+    ctx.beginPath(); ctx.moveTo(px,py);
+    const mx=px+Math.cos(ang)*len*0.5+(Math.random()-0.5)*len*0.3;
+    const my=py+Math.sin(ang)*len*0.5+(Math.random()-0.5)*len*0.2;
+    ctx.quadraticCurveTo(mx,my,ex,ey); ctx.stroke();
+    // foliage dabs at tips
+    if (depth<=2){
+      for (let k=0;k<3;k++){
+        inkDab(ctx, ex+(Math.random()-0.5)*8*scale, ey+(Math.random()-0.5)*8*scale, 3*scale*(0.6+Math.random()), 0.22, tint);
+      }
+    }
+    const nb = 2+(Math.random()<0.4?1:0);
+    for (let i=0;i<nb;i++){
+      branch(ex,ey, ang-0.5+Math.random()*1.0 - (i-0.5)*0.6, len*(0.62+Math.random()*0.12), w*0.66, depth-1);
+    }
+  }
+  branch(x,y,-Math.PI/2 - 0.2,26*scale,3.4*scale,5);
+  ctx.restore();
+}
+
+let ridgeCache = []; // store base composition so wipe/regen can rebuild
+function composeLandscape(tint){
+  tint = tint || inkTint;
+  ridgeCache = [];
+  // far -> near, lighter -> darker
+  const layers = [
+    { by:H*0.46, amp:H*0.10, rough:H*0.02, seed: 1.1, dark:0.10 },
+    { by:H*0.56, amp:H*0.14, rough:H*0.03, seed: 4.7, dark:0.16 },
+    { by:H*0.68, amp:H*0.18, rough:H*0.04, seed: 9.3, dark:0.26 },
+    { by:H*0.82, amp:H*0.22, rough:H*0.05, seed:14.8, dark:0.40 },
+  ];
+  for (const L of layers){
+    const pts=drawRidge(ictx, L.by, L.amp, L.rough, L.seed, L.dark, tint);
+    ridgeCache.push({L,pts});
+  }
+  // pines on nearest ridge
+  const near = ridgeCache[ridgeCache.length-1].pts;
+  const pineCount = lowMips?2:3;
+  for (let i=0;i<pineCount;i++){
+    const p = near[Math.floor((0.25+0.5*Math.random())*near.length)];
+    drawPine(ictx, p[0], p[1]-4, (W<560?0.9:1.3)*(0.8+Math.random()*0.5), tint);
+  }
+  // a hint of water reflection band + a tiny boat
+  ictx.save();
+  ictx.globalCompositeOperation='multiply';
+  ictx.strokeStyle=`rgba(${tint.r},${tint.g},${tint.b},0.10)`;
+  ictx.lineWidth=1;
+  for (let i=0;i<6;i++){
+    const y=H*0.88+i*6;
+    ictx.beginPath();
+    for (let x=0;x<=W;x+=16){
+      const yy=y+Math.sin(x*0.02+i)*2;
+      if(x===0)ictx.moveTo(x,yy);else ictx.lineTo(x,yy);
+    }
+    ictx.stroke();
+  }
+  ictx.restore();
+  // little boat
+  const bx=W*(0.62+Math.random()*0.2), by=H*0.9;
+  ictx.save(); ictx.globalCompositeOperation='multiply';
+  ictx.strokeStyle=`rgba(${tint.r},${tint.g},${tint.b},0.5)`; ictx.lineWidth=2;
+  ictx.beginPath(); ictx.moveTo(bx-14,by); ictx.quadraticCurveTo(bx,by+6,bx+14,by); ictx.stroke();
+  ictx.beginPath(); ictx.moveTo(bx-4,by-12); ictx.lineTo(bx-4,by); ictx.stroke();
+  ictx.restore();
+}
+
+/* ============================================================
+   MIST LAYER — drifting volumetric fog bands, parallax w/ scroll
+   ============================================================ */
+let scrollDepth = 0;     // virtual scroll (accumulated)
+let scrollTarget = 0;
+const mistBands = [];
+function initMist(){
+  mistBands.length=0;
+  const n = lowMips?4:6;
+  for (let i=0;i<n;i++){
+    mistBands.push({
+      y: H*(0.35+i*0.1),
+      baseY: H*(0.35+i*0.1),
+      speed: 0.06+i*0.04 + Math.random()*0.03,
+      amp: 14+i*8,
+      depth: (i+1)/n,        // 0..1 (near = 1)
+      ox: Math.random()*1000,
+      thick: 26+i*10,
+    });
+  }
+}
+function paintMist(time){
+  mctx.clearRect(0,0,W,H);
+  mctx.save();
+  for (const b of mistBands){
+    const par = scrollDepth * (0.25 + b.depth*0.9); // parallax
+    const yy = b.baseY - par;
+    const grad = mctx.createLinearGradient(0, yy-b.thick, 0, yy+b.thick);
+    const op = 0.05 + b.depth*0.07;
+    grad.addColorStop(0,'rgba(243,239,228,0)');
+    grad.addColorStop(0.5,`rgba(243,239,228,${op})`);
+    grad.addColorStop(1,'rgba(243,239,228,0)');
+    mctx.fillStyle=grad;
+    mctx.beginPath();
+    mctx.moveTo(0,yy);
+    for (let x=0;x<=W;x+=24){
+      const n=fbm(x*0.004 + b.ox + time*b.speed*0.0006, b.depth*5, 3);
+      mctx.lineTo(x, yy + n*b.amp);
+    }
+    mctx.lineTo(W,yy+b.thick); mctx.lineTo(0,yy+b.thick); mctx.closePath();
+    mctx.fill();
+  }
+  mctx.restore();
+}
+
+/* ============================================================
+   FX LAYER — live brush tip glow, ripples, drifting birds
+   ============================================================ */
+const birds=[];
+function spawnBird(){
+  birds.push({
+    x: -20, y: H*(0.18+Math.random()*0.2),
+    vx: 0.6+Math.random()*0.5, ph: Math.random()*6,
+    s: 0.7+Math.random()*0.6
+  });
+}
+function drawBirds(time){
+  for (let i=birds.length-1;i>=0;i--){
+    const b=birds[i];
+    b.x+=b.vx; b.y+=Math.sin(time*0.001+b.ph)*0.15;
+    if (b.x>W+30){ birds.splice(i,1); continue; }
+    const flap=Math.sin(time*0.012+b.ph)*0.5+0.5;
+    fctx.save();
+    fctx.strokeStyle='rgba(40,36,30,0.5)';
+    fctx.lineWidth=1.4*b.s; fctx.lineCap='round';
+    const w=9*b.s, h=(3+flap*4)*b.s;
+    fctx.beginPath();
+    fctx.moveTo(b.x-w,b.y);
+    fctx.quadraticCurveTo(b.x,b.y-h,b.x,b.y-1);
+    fctx.quadraticCurveTo(b.x,b.y-h,b.x+w,b.y);
+    fctx.stroke(); fctx.restore();
+  }
+}
+
+/* ---------- ripples where brush lifts ---------- */
+const ripples=[];
+function addRipple(x,y){ ripples.push({x,y,r:2,max:34+Math.random()*20,a:0.4}); }
+function drawRipples(){
+  for (let i=ripples.length-1;i>=0;i--){
+    const r=ripples[i];
+    r.r+=1.4; r.a*=0.94;
+    if (r.a<0.02){ ripples.splice(i,1); continue; }
+    fctx.save();
+    fctx.strokeStyle=`rgba(40,36,30,${r.a})`;
+    fctx.lineWidth=1; fctx.beginPath();
+    fctx.ellipse(r.x,r.y,r.r,r.r*0.85,0,0,7); fctx.stroke();
+    fctx.restore();
+  }
+}
+
+/* ============================================================
+   INPUT — brush dynamics. velocity -> wet/dry; pressure-ish from speed
+   ============================================================ */
+let px=0, py=0, drawing=false, lastT=0, hue=null;
+let lastVel=0;
+const trail=[];
+
+function pointerDown(e){
+  drawing=true;
+  const p=pos(e); px=p.x; py=p.y; lastT=performance.now();
+  hideHint();
+  // initial wet pool
+  inkDab(ictx, px, py, 9, 0.5);
+  inkBleed(ictx, px, py, 11, 0.4);
+  addRipple(px,py);
+}
+function pointerMove(e){
+  const p=pos(e);
+  // live tip always shown
+  liveTip.x=p.x; liveTip.y=p.y; liveTip.on=true; liveTip.t=performance.now();
+  if (!drawing){ px=p.x; py=p.y; return; }
+  const now=performance.now();
+  const dt=Math.max(8, now-lastT);
+  const dx=p.x-px, dy=p.y-py;
+  const dist=Math.hypot(dx,dy);
+  const vel=dist/dt; // px/ms
+  lastVel = lastVel*0.6 + vel*0.4;
+
+  // interpolate dabs along the stroke for smoothness
+  const steps=Math.max(1, Math.floor(dist/3));
+  const wet = Math.max(0, 1-Math.min(1,lastVel/0.9)); // slow = wet
+  for (let s=1;s<=steps;s++){
+    const t=s/steps;
+    const x=px+dx*t, y=py+dy*t;
+    const baseR = 4 + wet*14;          // wet -> fat, dry -> thin
+    const a = 0.10 + wet*0.30;
+    inkDab(ictx, x, y, baseR, a);
+    if (wet>0.4 && Math.random()<0.5) inkBleed(ictx, x, y, baseR*1.1, a*0.8);
+  }
+  // fast stroke -> dry splatter / flying white
+  if (lastVel>0.7){
+    const nx=dx/(dist||1), ny=dy/(dist||1);
+    inkSpray(ictx, p.x, p.y, nx, ny, lastVel*18);
+  }
+  px=p.x; py=p.y; lastT=now;
+}
+function pointerUp(){
+  if (drawing){ addRipple(px,py); inkBleed(ictx,px,py,10,0.3); }
+  drawing=false;
+}
+
+const liveTip={x:0,y:0,on:false,t:0};
+function drawLiveTip(time){
+  if (!liveTip.on) return;
+  if (time-liveTip.t>1500){ liveTip.on=false; return; }
+  const wet=Math.max(0,1-Math.min(1,lastVel/0.9));
+  const r= drawing ? (5+wet*14) : 8;
+  fctx.save();
+  fctx.globalCompositeOperation='multiply';
+  const g=fctx.createRadialGradient(liveTip.x,liveTip.y,0,liveTip.x,liveTip.y,r+6);
+  g.addColorStop(0,'rgba(28,26,23,0.30)');
+  g.addColorStop(1,'rgba(28,26,23,0)');
+  fctx.fillStyle=g; fctx.beginPath(); fctx.arc(liveTip.x,liveTip.y,r+6,0,7); fctx.fill();
+  // crosshair ring
+  fctx.strokeStyle='rgba(40,36,30,0.25)'; fctx.lineWidth=1;
+  fctx.beginPath(); fctx.arc(liveTip.x,liveTip.y,r+9,0,7); fctx.stroke();
+  fctx.restore();
+}
+
+/* ---------- scroll => part the mist + drift composition ---------- */
+function onWheel(e){
+  e.preventDefault();
+  scrollTarget += e.deltaY*0.25;
+  scrollTarget = Math.max(-H*0.4, Math.min(H*0.6, scrollTarget));
+  hideHint();
+}
+
+/* ---------- buttons ---------- */
+document.getElementById('btnInk').addEventListener('click', ()=>{
+  tintIdx=(tintIdx+1)%tintNames.length;
+  inkTint = TINTS[tintNames[tintIdx]];
+  flashSeal();
+});
+document.getElementById('btnWipe').addEventListener('click', ()=>{
+  // graceful "water wash" — fade ink then recompose
+  wipeFade=1;
+});
+let wipeFade=0;
+
+function flashSeal(){
+  const s=document.querySelector('.seal');
+  s.style.transition='transform .25s';
+  s.style.transform='rotate(-1.5deg) scale(1.18)';
+  setTimeout(()=>s.style.transform='rotate(-1.5deg) scale(1)',180);
+}
+
+let hintHidden=false;
+function hideHint(){ if(hintHidden)return; hintHidden=true; document.getElementById('hint').classList.add('gone'); }
+setTimeout(hideHint, 9000);
+
+/* ============================================================
+   RESIZE / SETUP
+   ============================================================ */
+function setup(){
+  DPR = Math.min(2, window.devicePixelRatio||1);
+  const w=window.innerWidth, h=window.innerHeight;
+  // perf clamp: if very large, lower internal res
+  const pixels = w*h*DPR*DPR;
+  if (pixels > 3.2e6){ DPR = Math.min(DPR, 1.5); lowMips = w*h > 1.3e6; }
+  W = Math.floor(w*DPR); H=Math.floor(h*DPR);
+  for (const c of [cPaper,cMist,cInk,cFx]){
+    c.width=W; c.height=H;
+  }
+  // we draw in device pixels directly (positions scaled below)
+  // scale pointer coords by DPR
+  paintPaper();
+  // preserve ink across resize? simplest: recompose
+  ictx.clearRect(0,0,W,H);
+  composeLandscape();
+  initMist();
+}
+
+// pointer coords need *DPR since canvas is device-pixel sized
+function pos(e){
+  const t = e.touches? e.touches[0] : e;
+  return { x:(t.clientX)*DPR, y:(t.clientY)*DPR };
+}
+
+/* ============================================================
+   MAIN LOOP
+   ============================================================ */
+let lastFrame=performance.now();
+let frameAcc=0, frameN=0, fpsLow=0;
+let birdTimer=0;
+
+function loop(now){
+  const dt = now-lastFrame; lastFrame=now;
+  // crude fps guard
+  frameAcc+=dt; frameN++;
+  if (frameN>=40){ const fps=1000/(frameAcc/frameN); if(fps<42)fpsLow++; else fpsLow=Math.max(0,fpsLow-1); frameAcc=0;frameN=0;
+    if (fpsLow>3 && !lowMips){ lowMips=true; } }
+
+  // smooth scroll
+  scrollDepth += (scrollTarget-scrollDepth)*0.08;
+
+  // mist
+  paintMist(now);
+
+  // fx layer (clear each frame)
+  fctx.clearRect(0,0,W,H);
+  drawRipples();
+  // birds
+  birdTimer+=dt;
+  if (birdTimer>5200 && birds.length< (lowMips?2:4)){ if(Math.random()<0.5) spawnBird(); birdTimer=0; }
+  drawBirds(now);
+  drawLiveTip(now);
+
+  // wipe animation — overlay paper-colored fade onto ink, then recompose
+  if (wipeFade>0){
+    ictx.save();
+    ictx.globalCompositeOperation='source-over';
+    ictx.fillStyle=`rgba(239,233,220,${0.12})`;
+    ictx.fillRect(0,0,W,H);
+    ictx.restore();
+    wipeFade-=0.02;
+    if (wipeFade<=0){
+      ictx.clearRect(0,0,W,H);
+      composeLandscape();
+    }
+  }
+
+  requestAnimationFrame(loop);
+}
+
+/* ============================================================
+   BOOT
+   ============================================================ */
+window.addEventListener('resize', ()=>{ clearTimeout(window.__rz); window.__rz=setTimeout(setup,200); });
+cFx.style.pointerEvents='none';
+// listen on top interactive element
+const interactive = cInk; // ink canvas receives pointer (it's below fx which is none)
+// but fx is on top with pointer-events none, ink is z3 -> gets events through? fx none lets through to ink
+window.addEventListener('mousedown', pointerDown);
+window.addEventListener('mousemove', pointerMove);
+window.addEventListener('mouseup', pointerUp);
+window.addEventListener('touchstart', (e)=>{pointerDown(e);}, {passive:true});
+window.addEventListener('touchmove', (e)=>{pointerMove(e); e.preventDefault();}, {passive:false});
+window.addEventListener('touchend', pointerUp);
+window.addEventListener('wheel', onWheel, {passive:false});
+// prevent toolbar clicks from painting
+document.querySelector('.toolbar').addEventListener('mousedown', e=>e.stopPropagation());
+
+setup();
+// first-paint signature flourish: a faint opening brush sweep
+(function openingStroke(){
+  const y0=H*0.5;
+  for (let i=0;i<60;i++){
+    const t=i/60; const x=W*0.1+t*W*0.4;
+    inkDab(ictx, x, y0 - Math.sin(t*3)*H*0.04, 3+ (1-t)*6, 0.06*(1-t)+0.02);
+  }
+})();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

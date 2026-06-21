@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>CYMATICA — 공명하는 모래</title>
+<style>
+  :root{ --bg:#05060a; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:var(--bg);
+    font-family:"Helvetica Neue",Arial,"Apple SD Gothic Neo","Noto Sans KR",sans-serif;
+    -webkit-tap-highlight-color:transparent; touch-action:none; cursor:crosshair; }
+  #stage{ position:fixed; inset:0; }
+  canvas{ position:absolute; inset:0; width:100%; height:100%; display:block; }
+  /* canvas layering: glow plate behind, particles on top */
+  #plate{ z-index:1; filter:saturate(1.05); }
+  #grain{ z-index:2; }
+
+  /* HUD */
+  .hud{ position:fixed; z-index:10; color:#e9f0ff; pointer-events:none;
+        mix-blend-mode:screen; font-weight:300; letter-spacing:.02em; }
+  #title{ top:26px; left:30px; }
+  #title h1{ font-size:13px; letter-spacing:.55em; font-weight:600;
+    color:#bcd2ff; text-shadow:0 0 18px rgba(120,170,255,.55); }
+  #title p{ margin-top:9px; font-size:11px; color:#7f93bf; letter-spacing:.12em; max-width:280px; line-height:1.55; }
+  #title .mode{ color:#9ad8ff; }
+
+  #readout{ top:26px; right:30px; text-align:right; font-variant-numeric:tabular-nums; }
+  #readout .freq{ font-size:34px; font-weight:200; color:#dfe9ff; letter-spacing:.01em;
+    text-shadow:0 0 24px rgba(120,170,255,.5); }
+  #readout .freq b{ font-size:14px; color:#7f93bf; font-weight:300; }
+  #readout .mn{ margin-top:4px; font-size:11px; letter-spacing:.18em; color:#86a0d8; }
+  #readout .fps{ margin-top:3px; font-size:10px; color:#4d5e85; letter-spacing:.1em; }
+
+  #hint{ bottom:24px; left:50%; transform:translateX(-50%); text-align:center;
+    font-size:11px; letter-spacing:.18em; color:#6e82b0;
+    transition:opacity 1.4s ease; }
+  #hint b{ color:#a8c2ff; font-weight:500; }
+  body.engaged #hint{ opacity:0; }
+
+  /* preset chips — first paint already art, chips are subtle */
+  #chips{ position:fixed; z-index:10; bottom:54px; left:50%; transform:translateX(-50%);
+    display:flex; gap:8px; pointer-events:auto; }
+  .chip{ pointer-events:auto; cursor:pointer; font-size:10px; letter-spacing:.14em;
+    color:#8fa6d6; padding:6px 12px; border:1px solid rgba(120,150,220,.22);
+    border-radius:30px; background:rgba(20,30,55,.28); backdrop-filter:blur(6px);
+    transition:.25s; user-select:none; }
+  .chip:hover{ color:#dce8ff; border-color:rgba(150,190,255,.55); background:rgba(40,60,110,.4); }
+  .chip.on{ color:#06101f; background:#9cc4ff; border-color:#9cc4ff;
+    box-shadow:0 0 18px rgba(140,190,255,.6); }
+
+  #snd{ position:fixed; z-index:10; bottom:54px; right:30px; pointer-events:auto;
+    cursor:pointer; font-size:10px; letter-spacing:.14em; color:#8fa6d6;
+    padding:6px 12px; border:1px solid rgba(120,150,220,.22); border-radius:30px;
+    background:rgba(20,30,55,.28); backdrop-filter:blur(6px); transition:.25s; user-select:none; }
+  #snd:hover{ color:#dce8ff; border-color:rgba(150,190,255,.55); }
+  #snd.on{ color:#06101f; background:#7fffd0; border-color:#7fffd0; box-shadow:0 0 18px rgba(120,255,200,.5); }
+
+  @media (max-width:520px){
+    #title{ left:18px; top:18px; }
+    #title p{ display:none; }
+    #readout{ right:18px; top:18px; }
+    #readout .freq{ font-size:26px; }
+    #chips{ bottom:46px; gap:6px; }
+    .chip{ padding:5px 9px; font-size:9px; letter-spacing:.1em; }
+    #snd{ right:18px; bottom:46px; }
+    #hint{ font-size:10px; }
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="plate"></canvas>
+  <canvas id="grain"></canvas>
+</div>
+
+<div id="title" class="hud">
+  <h1>C Y M A T I C A</h1>
+  <p>소리가 입자를 마디선으로 모은다. <span class="mode" id="modeLbl">손가락 = 진동의 진앙</span></p>
+</div>
+
+<div id="readout" class="hud">
+  <div class="freq"><span id="hz">432</span><b> Hz</b></div>
+  <div class="mn">MODE <span id="mn">3 · 2</span></div>
+  <div class="fps" id="fps">—</div>
+</div>
+
+<div id="hint" class="hud">움직여 진동시키고 · <b>클릭</b>으로 두드려라 · <b>스크롤</b>로 주파수</div>
+
+<div id="chips">
+  <div class="chip on" data-n="3" data-m="2" data-hz="432">432</div>
+  <div class="chip" data-n="4" data-m="3" data-hz="528">528</div>
+  <div class="chip" data-n="5" data-m="4" data-hz="639">639</div>
+  <div class="chip" data-n="6" data-m="5" data-hz="741">741</div>
+  <div class="chip" data-n="7" data-m="3" data-hz="852">852</div>
+</div>
+<div id="snd">SOUND OFF</div>
+
+<script>
+(()=>{ "use strict";
+//==================================================================
+//  CYMATICA — Chladni standing-wave sand simulation
+//  - vibration amplitude  A(x,y) = cos(nπx)cos(mπy) - cos(mπx)cos(nπy)
+//    (square plate, fixed edges)  rotated/blended with a moving source
+//  - particles random-walk away from high |A|, settle on nodal lines (A≈0)
+//  - WebAudio sine pair makes it actually audible
+//==================================================================
+const plate = document.getElementById('plate');
+const grain = document.getElementById('grain');
+const pctx  = plate.getContext('2d', { alpha:false });
+const gctx  = grain.getContext('2d');
+
+let W=0,H=0,DPR=1, MINSIDE=0;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  MINSIDE = Math.min(W,H);
+  for(const c of [plate,grain]){
+    c.width  = Math.floor(W*DPR);
+    c.height = Math.floor(H*DPR);
+    c.style.width=W+'px'; c.style.height=H+'px';
+  }
+  pctx.setTransform(DPR,0,0,DPR,0,0);
+  gctx.setTransform(DPR,0,0,DPR,0,0);
+  buildField();
+}
+
+//------------------------------------------------------------------
+//  STATE
+//------------------------------------------------------------------
+const S = {
+  n:3, m:2,            // current target mode integers
+  nf:3, mf:2,          // floating (animated) mode for smooth morph
+  hz:432,              // displayed / audio frequency
+  src:{x:0.5,y:0.5},   // excitation point (normalized 0..1) -> drift toward pointer
+  ptr:{x:0.5,y:0.5, active:false},
+  energy:0.0,          // 0..1 plate excitation (a strike pumps it up, decays)
+  phase:0,
+  rot:0,               // plate rotation driven by pointer drift
+  time:0,
+  soundOn:false,
+};
+
+// hz <-> mode mapping for chips / scroll
+function hzToMode(hz){
+  // map frequency band to integer-ish mode numbers (aesthetic, not physical)
+  const t = (hz-200)/(900-200); // 0..1
+  const n = 2 + t*6;            // 2..8
+  const m = 1.4 + t*4.2;        // ~1.4..5.6
+  return {n, m};
+}
+
+//------------------------------------------------------------------
+//  CHLADNI FIELD (low-res lookup, bilinear sampled by particles)
+//------------------------------------------------------------------
+const FN = 150;            // field grid resolution (FN x FN) — upscaled w/ smoothing
+let field = new Float32Array(FN*FN);     // signed amplitude
+let fieldAbs = new Float32Array(FN*FN);  // |amplitude| for shading
+function buildField(){ /* allocated once; recomputed each frame cheaply */ }
+
+const TAU = Math.PI*2;
+// amplitude of square Chladni plate at normalized u,v in [0,1] (no rotation —
+// rotation is applied at draw time / particle-sample time so the field stays
+// fully separable and cheap).
+function chladni(u,v,n,m){
+  return Math.cos(n*Math.PI*u)*Math.cos(m*Math.PI*v)
+       - Math.cos(m*Math.PI*u)*Math.cos(n*Math.PI*v);
+}
+
+// 1D cos tables — recompute only when mode changes appreciably.
+let cosN=new Float32Array(FN), cosM=new Float32Array(FN);
+let lastN=-1, lastM=-1;
+function recomputeField(){
+  const n=S.nf, m=S.mf;
+  // refresh 1D tables (cheap: 2*FN trig) — every frame is fine, FN small
+  for(let g=0; g<FN; g++){
+    const c = g/(FN-1)*Math.PI;
+    cosN[g]=Math.cos(n*c);
+    cosM[g]=Math.cos(m*c);
+  }
+  let i=0;
+  for(let gy=0; gy<FN; gy++){
+    const cnY=cosN[gy], cmY=cosM[gy];
+    for(let gx=0; gx<FN; gx++){
+      // separable: cos(nπu)cos(mπv) - cos(mπu)cos(nπv)
+      const a = cosN[gx]*cmY - cosM[gx]*cnY;
+      field[i]=a; fieldAbs[i]=a<0?-a:a; i++;
+    }
+  }
+}
+
+// bilinear sample of |amplitude| at normalized x,y
+function sampleAbs(x,y){
+  x=x<0?0:x>1?1:x; y=y<0?0:y>1?1:y;
+  const fx=x*(FN-1), fy=y*(FN-1);
+  const x0=fx|0, y0=fy|0;
+  const x1=x0<FN-1?x0+1:x0, y1=y0<FN-1?y0+1:y0;
+  const tx=fx-x0, ty=fy-y0;
+  const i00=y0*FN+x0, i10=y0*FN+x1, i01=y1*FN+x0, i11=y1*FN+x1;
+  const a=fieldAbs[i00]+(fieldAbs[i10]-fieldAbs[i00])*tx;
+  const b=fieldAbs[i01]+(fieldAbs[i11]-fieldAbs[i01])*tx;
+  return a+(b-a)*ty;
+}
+// signed sample (for gradient / direction)
+function sampleSigned(x,y){
+  x=x<0?0:x>1?1:x; y=y<0?0:y>1?1:y;
+  const fx=x*(FN-1), fy=y*(FN-1);
+  const x0=fx|0, y0=fy|0;
+  const x1=x0<FN-1?x0+1:x0, y1=y0<FN-1?y0+1:y0;
+  const tx=fx-x0, ty=fy-y0;
+  const i00=y0*FN+x0, i10=y0*FN+x1, i01=y1*FN+x0, i11=y1*FN+x1;
+  const a=field[i00]+(field[i10]-field[i00])*tx;
+  const b=field[i01]+(field[i11]-field[i01])*tx;
+  return a+(b-a)*ty;
+}
+
+//------------------------------------------------------------------
+//  PARTICLES (the "sand")
+//------------------------------------------------------------------
+let PARTS=0;          // allocated pool size (max)
+let activeParts=0;    // currently rendered (adaptive quality lowers this)
+let px,py,phue,plife;
+function initParticles(){
+  // particle count scales with area, capped for perf. The sand lines are the
+  // signature element so keep density generous; ~21% land outside the disc clip.
+  const target = Math.round( (W*H)/180 );
+  PARTS = Math.max(3800, Math.min(11000, target));
+  activeParts = PARTS;   // start full; adaptive loop trims if frames are slow
+  px=new Float32Array(PARTS);
+  py=new Float32Array(PARTS);
+  phue=new Float32Array(PARTS);
+  plife=new Float32Array(PARTS);
+  for(let i=0;i<PARTS;i++){
+    px[i]=Math.random(); py[i]=Math.random();
+    phue[i]=Math.random();
+    plife[i]=Math.random();
+  }
+}
+
+// the play area is a centered square (the "plate") within the viewport
+let plate0x=0, plate0y=0, plateSide=0;
+function computePlateRect(){
+  plateSide = MINSIDE*0.92;
+  plate0x = (W-plateSide)/2;
+  plate0y = (H-plateSide)/2;
+}
+
+//------------------------------------------------------------------
+//  AUDIO
+//------------------------------------------------------------------
+let AC=null, osc1=null, osc2=null, gain=null, lfo=null, lfoGain=null;
+function ensureAudio(){
+  if(AC) return;
+  try{
+    AC = new (window.AudioContext||window.webkitAudioContext)();
+    gain = AC.createGain(); gain.gain.value=0.0; gain.connect(AC.destination);
+    osc1 = AC.createOscillator(); osc1.type='sine';
+    osc2 = AC.createOscillator(); osc2.type='sine';
+    osc2.detune.value = 3.5; // slight beat
+    lfo = AC.createOscillator(); lfo.type='sine'; lfo.frequency.value=0.15;
+    lfoGain = AC.createGain(); lfoGain.gain.value=2.2;
+    lfo.connect(lfoGain); lfoGain.connect(osc1.detune);
+    osc1.connect(gain); osc2.connect(gain);
+    osc1.start(); osc2.start(); lfo.start();
+  }catch(e){ AC=null; }
+}
+function setAudioFreq(hz){
+  if(!AC) return;
+  const t=AC.currentTime;
+  osc1.frequency.setTargetAtTime(hz, t, 0.06);
+  osc2.frequency.setTargetAtTime(hz*1.5, t, 0.06); // perfect fifth for richness
+}
+function strikeAudio(){
+  if(!AC) return;
+  const t=AC.currentTime;
+  gain.gain.cancelScheduledValues(t);
+  gain.gain.setValueAtTime(gain.gain.value, t);
+  gain.gain.linearRampToValueAtTime(S.soundOn?0.14:0.0, t+0.02);
+  gain.gain.setTargetAtTime(S.soundOn?0.05:0.0, t+0.05, 0.6);
+}
+function setSound(on){
+  S.soundOn=on;
+  const el=document.getElementById('snd');
+  el.classList.toggle('on',on); el.textContent= on?'SOUND ON':'SOUND OFF';
+  if(on){ ensureAudio(); if(AC&&AC.state==='suspended')AC.resume(); setAudioFreq(S.hz);
+    if(gain) gain.gain.setTargetAtTime(0.05, AC.currentTime, 0.3); }
+  else if(gain){ gain.gain.setTargetAtTime(0.0, AC.currentTime, 0.15); }
+}
+
+//------------------------------------------------------------------
+//  INTERACTION
+//------------------------------------------------------------------
+function setMode(n,m,hz){
+  S.n=n; S.m=m; S.hz=hz;
+  document.getElementById('hz').textContent=Math.round(hz);
+  document.getElementById('mn').textContent=
+    (Math.round(n*10)/10)+' · '+(Math.round(m*10)/10);
+  setAudioFreq(hz);
+  S.energy=Math.min(1, S.energy+0.55);  // re-excite when mode changes
+  strikeAudio();
+}
+function strike(nx,ny){
+  S.ptr.x=nx; S.ptr.y=ny;
+  S.energy=1.0;
+  // jolt particles outward from strike point so they re-scatter, then resettle
+  for(let i=0;i<PARTS;i++){
+    const dx=px[i]-nx, dy=py[i]-ny;
+    const d=Math.hypot(dx,dy)+1e-4;
+    const k=0.05*Math.exp(-d*6);
+    px[i]+=dx/d*k + (Math.random()-0.5)*0.02;
+    py[i]+=dy/d*k + (Math.random()-0.5)*0.02;
+  }
+  ripples.push({x:nx,y:ny,t:0});
+  strikeAudio();
+  engage();
+}
+
+const ripples=[];
+
+function clientToPlateNorm(cx,cy){
+  // map viewport coords to plate-normalized [0,1] (clamped)
+  let nx=(cx-plate0x)/plateSide;
+  let ny=(cy-plate0y)/plateSide;
+  return {nx, ny};
+}
+
+let engaged=false;
+function engage(){ if(!engaged){ engaged=true; document.body.classList.add('engaged'); } }
+
+function pointerMove(cx,cy){
+  const {nx,ny}=clientToPlateNorm(cx,cy);
+  S.ptr.x=nx; S.ptr.y=ny; S.ptr.active=true;
+  engage();
+}
+
+window.addEventListener('mousemove', e=>pointerMove(e.clientX,e.clientY));
+window.addEventListener('mousedown', e=>{
+  if(e.target.closest('#chips')||e.target.closest('#snd'))return;
+  const {nx,ny}=clientToPlateNorm(e.clientX,e.clientY);
+  strike(nx,ny);
+});
+window.addEventListener('touchstart', e=>{
+  if(e.target.closest('#chips')||e.target.closest('#snd'))return;
+  if(e.touches.length){
+    const t=e.touches[0];
+    const {nx,ny}=clientToPlateNorm(t.clientX,t.clientY);
+    pointerMove(t.clientX,t.clientY);
+    strike(nx,ny);
+  }
+}, {passive:true});
+window.addEventListener('touchmove', e=>{
+  if(e.touches.length){ const t=e.touches[0]; pointerMove(t.clientX,t.clientY); }
+}, {passive:true});
+
+window.addEventListener('wheel', e=>{
+  e.preventDefault();
+  let hz=S.hz - e.deltaY*0.35;
+  hz=Math.max(180, Math.min(940, hz));
+  const md=hzToMode(hz);
+  setMode(md.n, md.m, hz);
+  clearChips();
+  engage();
+}, {passive:false});
+
+// chips
+document.querySelectorAll('.chip').forEach(c=>{
+  c.addEventListener('click', ()=>{
+    document.querySelectorAll('.chip').forEach(x=>x.classList.remove('on'));
+    c.classList.add('on');
+    setMode(+c.dataset.n, +c.dataset.m, +c.dataset.hz);
+    engage();
+  });
+});
+function clearChips(){ document.querySelectorAll('.chip').forEach(x=>x.classList.remove('on')); }
+document.getElementById('snd').addEventListener('click', ()=>setSound(!S.soundOn));
+
+// keyboard nicety
+window.addEventListener('keydown',e=>{
+  if(e.key===' '){ strike(S.ptr.x,S.ptr.y); e.preventDefault(); }
+  if(e.key==='s'||e.key==='S'){ setSound(!S.soundOn); }
+});
+
+//------------------------------------------------------------------
+//  RENDER
+//------------------------------------------------------------------
+// --- Spectral colour ramp for the glowing plate ---------------------------
+// We build the field image off-screen at FN x FN, then upscale (the upscale
+// itself gives a free soft bloom because the source is low-res), plus ONE
+// cheap additive blur pass. The plate is a luminous standing-wave membrane:
+// nodal lines (|A|~0) read dark, antinodes blaze in a frequency-tuned palette.
+//
+// Palette anchors (by frequency 0..1): low = indigo/cobalt, mid = teal/cyan,
+// high = magenta/amber. Interpolated per pixel by |A|.
+function ramp(hueShift){
+  // returns hues for current frequency band. Tuned so EVERY band is luminous:
+  // low hz -> cyan/teal+violet, high hz -> magenta/gold. Avoid pure indigo
+  // (perceptually too dark) by keeping hot hue in the cyan..magenta..gold arc.
+  const t=hueShift;                    // 0..1
+  const hotH = 0.50 - t*0.40;          // 0.50(cyan) -> 0.10(amber/gold)
+  const midH = 0.55 - t*0.18;          // teal, drifts slightly warm
+  const lowH = 0.72 - t*0.30;          // violet glow filling the troughs
+  return { hotH, midH, lowH };
+}
+
+// Render the vibrating plate as a glowing low-res image scaled up.
+let plateImg=null, plateImgData=null, plateBuf=null, pbctx=null;
+function ensurePlateImg(){
+  if(plateImg && plateImg.width===FN) return;
+  plateImg = pctx.createImageData(FN,FN);
+  plateImgData = plateImg.data;
+  // dedicated offscreen buffer for the FNxFN field (so we don't stamp the
+  // visible canvas top-left corner anymore)
+  plateBuf = document.createElement('canvas');
+  plateBuf.width=FN; plateBuf.height=FN;
+  pbctx = plateBuf.getContext('2d');
+}
+
+// precompute an HSL->rgb LUT-ish via inline hsl(); cheap enough at FN^2? no —
+// FN^2 = 40k px * hsl() each frame is heavy. Use direct rgb interpolation.
+function drawPlate(){
+  // background — deep space with a faint cool nebula so it's never flat black
+  const bg=pctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#070912');
+  bg.addColorStop(0.55,'#05060d');
+  bg.addColorStop(1,'#03040a');
+  pctx.fillStyle=bg; pctx.fillRect(0,0,W,H);
+
+  ensurePlateImg();
+  const d=plateImgData;
+  const energy=0.62+0.38*S.energy;          // keep the field luminous always
+  const hueShift=(S.hz-180)/(940-180);       // 0..1
+  const {hotH, midH, lowH}=ramp(hueShift);
+  // resolve rgb anchors once per frame — bright, saturated, high-contrast.
+  const cDark = hsl(lowH,      0.90, 0.14);              // troughs: violet ember
+  const cMid  = hsl(midH,      0.95, 0.40*energy+0.16);  // ramp colour
+  const cHot  = hsl(hotH,      1.00, 0.60*energy+0.26);  // antinode blaze
+  const cHot2 = hsl(hotH-0.06, 0.65, 0.78*energy+0.20);  // white-hot core
+  let i=0, p=0;
+  for(let gy=0; gy<FN; gy++){
+    for(let gx=0; gx<FN; gx++){
+      const a=fieldAbs[i];                   // 0 .. ~2
+      const t=a*0.55; const tc=t>1?1:t;      // 0..1 across antinode
+      let r,g,b;
+      if(tc<0.5){
+        const k=tc*2;
+        r=cDark[0]+(cMid[0]-cDark[0])*k;
+        g=cDark[1]+(cMid[1]-cDark[1])*k;
+        b=cDark[2]+(cMid[2]-cDark[2])*k;
+      } else {
+        const k=(tc-0.5)*2;
+        r=cMid[0]+(cHot[0]-cMid[0])*k;
+        g=cMid[1]+(cHot[1]-cMid[1])*k;
+        b=cMid[2]+(cHot[2]-cMid[2])*k;
+      }
+      // extra blaze toward the top of |A| (lower threshold = more glowing area)
+      if(a>1.25){ let k=(a-1.25)*0.9; if(k>1)k=1; r+= (cHot2[0]-r)*k; g+=(cHot2[1]-g)*k; b+=(cHot2[2]-b)*k; }
+      d[p]=r>255?255:r; d[p+1]=g>255?255:g; d[p+2]=b>255?255:b; d[p+3]=255;
+      i++; p+=4;
+    }
+  }
+  pbctx.putImageData(plateImg,0,0);
+
+  const cx0=plate0x+plateSide/2, cy0=plate0y+plateSide/2;
+  const R=plateSide*0.5;                       // disc radius
+  pctx.save();
+  pctx.imageSmoothingEnabled=true;
+  pctx.imageSmoothingQuality='high';
+  // CLIP to a circular disc — this is a vibrating Chladni plate, not a panel
+  pctx.beginPath(); pctx.arc(cx0,cy0,R,0,TAU); pctx.clip();
+  pctx.globalCompositeOperation='lighter';
+  // rotate around plate centre so the standing wave appears to swirl with input
+  pctx.translate(cx0,cy0); pctx.rotate(S.rot); pctx.translate(-cx0,-cy0);
+  // crisp luminous base (low-res upscale = naturally soft, no filter cost)
+  pctx.globalAlpha=1.0;
+  pctx.drawImage(plateBuf, 0,0,FN,FN, plate0x,plate0y,plateSide,plateSide);
+  // cheap bloom: one enlarged low-alpha redraw = soft additive glow
+  pctx.globalAlpha=0.42;
+  const o=plateSide*0.028;
+  pctx.drawImage(plateBuf, 0,0,FN,FN, plate0x-o,plate0y-o,plateSide+2*o,plateSide+2*o);
+  pctx.restore();
+
+  const cx=cx0, cy=cy0;
+  // inner shadow at disc edge (gives the membrane depth)
+  pctx.save();
+  pctx.beginPath(); pctx.arc(cx,cy,R,0,TAU); pctx.clip();
+  const inner=pctx.createRadialGradient(cx,cy,R*0.72,cx,cy,R);
+  inner.addColorStop(0,'rgba(0,0,0,0)');
+  inner.addColorStop(1,'rgba(2,3,8,0.85)');
+  pctx.fillStyle=inner; pctx.fillRect(plate0x,plate0y,plateSide,plateSide);
+  pctx.restore();
+
+  // luminous rim ring (frequency-tinted) — the polished edge of the plate
+  const rimC=hsl(midH,0.9,0.62);
+  pctx.save();
+  pctx.globalCompositeOperation='lighter';
+  pctx.lineWidth=Math.max(2,plateSide*0.006);
+  pctx.strokeStyle=`rgba(${rimC[0]},${rimC[1]},${rimC[2]},0.55)`;
+  pctx.beginPath(); pctx.arc(cx,cy,R*0.992,0,TAU); pctx.stroke();
+  pctx.lineWidth=Math.max(1,plateSide*0.0018);
+  pctx.strokeStyle=`rgba(255,255,255,0.4)`;
+  pctx.beginPath(); pctx.arc(cx,cy,R*0.992,0,TAU); pctx.stroke();
+  pctx.restore();
+
+  // soft outer halo of the plate (cheap radial, no per-pixel)
+  pctx.save();
+  pctx.globalCompositeOperation='lighter';
+  const ring=pctx.createRadialGradient(cx,cy,R*0.92,cx,cy,R*1.35);
+  const halo=hsl(midH,0.85,0.5);
+  ring.addColorStop(0,`rgba(${halo[0]},${halo[1]},${halo[2]},0.12)`);
+  ring.addColorStop(1,'rgba(0,0,0,0)');
+  pctx.fillStyle=ring; pctx.fillRect(0,0,W,H);
+  pctx.restore();
+
+  // vignette (gentle — let the plate breathe and glow to the edges)
+  const vg=pctx.createRadialGradient(cx,cy,plateSide*0.34,cx,cy,Math.max(W,H)*0.82);
+  vg.addColorStop(0,'rgba(0,0,0,0)');
+  vg.addColorStop(1,'rgba(0,0,0,0.55)');
+  pctx.fillStyle=vg; pctx.fillRect(0,0,W,H);
+}
+
+//------------------------------------------------------------------
+//  PARTICLE UPDATE + DRAW (the sand piling on nodal lines)
+//------------------------------------------------------------------
+function updateAndDrawParticles(dt){
+  // fade trail by REDUCING alpha (destination-out) so the glowing plate
+  // underneath stays visible — never paint opaque dark over it.
+  gctx.globalCompositeOperation='destination-out';
+  gctx.fillStyle='rgba(0,0,0,0.26)';   // erases ~26% of existing grain alpha
+  gctx.fillRect(0,0,W,H);
+
+  gctx.globalCompositeOperation='lighter';
+
+  const eps=1.0/FN;
+  const energy=S.energy;
+  // particle "jiggle" amount: more energy = more violent shaking (sand jumps)
+  const jiggle = 0.0009 + 0.010*energy;
+  const settle = 0.85; // how strongly particles seek nodes
+  const hueBase=(S.hz-180)/(940-180);
+
+  // pointer attraction (excitation focuses near pointer)
+  const pxN=S.ptr.x, pyN=S.ptr.y;
+
+  // draw particles in the rotated plate frame so sand aligns with visible nodes
+  const cx0=plate0x+plateSide/2, cy0=plate0y+plateSide/2;
+  const R=plateSide*0.5;
+  gctx.save();
+  // clip sand to the disc (circle is rotation-invariant)
+  gctx.beginPath(); gctx.arc(cx0,cy0,R*0.985,0,TAU); gctx.clip();
+  gctx.translate(cx0,cy0); gctx.rotate(S.rot); gctx.translate(-cx0,-cy0);
+
+  for(let i=0;i<activeParts;i++){
+    let x=px[i], y=py[i];
+
+    // gradient of |amplitude| (climb DOWN -> toward nodal lines where |A|~0)
+    const aC=sampleAbs(x,y);
+    const aX=sampleAbs(x+eps,y)-sampleAbs(x-eps,y);
+    const aY=sampleAbs(x,y+eps)-sampleAbs(x,y-eps);
+    const gmag=Math.hypot(aX,aY)+1e-6;
+    // move opposite to gradient (downhill in |A|)
+    const step = settle * (0.5+0.9*energy) * (0.020);
+    x -= (aX/gmag)*step*Math.min(1,aC*1.5);
+    y -= (aY/gmag)*step*Math.min(1,aC*1.5);
+
+    // random jiggle proportional to local amplitude (high vibration = more jump)
+    const j = jiggle*(0.3+aC);
+    x += (Math.random()-0.5)*j*3;
+    y += (Math.random()-0.5)*j*3;
+
+    // gentle pull toward excitation point so motion follows the finger
+    x += (pxN-x)*0.0006*(0.4+energy);
+    y += (pyN-y)*0.0006*(0.4+energy);
+
+    // bounds — reflect / respawn occasionally for life
+    if(x<0)x=-x; else if(x>1)x=2-x;
+    if(y<0)y=-y; else if(y>1)y=2-y;
+    plife[i]-=dt*0.04;
+    if(plife[i]<=0){ // respawn somewhere with energy
+      x=Math.random(); y=Math.random(); plife[i]=0.6+Math.random()*0.8;
+    }
+
+    px[i]=x; py[i]=y;
+
+    // screen coords
+    const sx=plate0x+x*plateSide;
+    const sy=plate0y+y*plateSide;
+
+    // colour: particles settled on nodes blaze in a frequency-tuned hue,
+    // particles still drifting through antinodes are dim & cool.
+    const onNode=1-Math.min(1,aC*1.4);  // 1 = sitting on a nodal line
+    // hue drifts with frequency (warm at high hz) + a touch of per-grain variance
+    const hue = (0.60 - hueBase*0.55) + phue[i]*0.08 - onNode*0.04;
+    const light = 0.42 + onNode*0.40;   // settled grains glow toward white-hot
+    const sat = 0.95 - onNode*0.45;     // keep colour, desaturate only at the core
+    const [cr,cg,cb]=hsl(hue, sat, light);
+    const alpha = 0.16 + onNode*0.62;
+
+    gctx.fillStyle='rgba('+cr+','+cg+','+cb+','+alpha+')';
+    const r = onNode>0.55 ? 1.25 : 0.85;
+    gctx.fillRect(sx-r, sy-r, r*2, r*2);
+  }
+
+  // bright pointer excitation marker
+  if(S.ptr.active || engaged){
+    const sx=plate0x+pxN*plateSide, sy=plate0y+pyN*plateSide;
+    const pr=18+10*Math.sin(S.time*4)+30*S.energy;
+    const grd=gctx.createRadialGradient(sx,sy,0,sx,sy,pr);
+    grd.addColorStop(0,'rgba(180,225,255,0.55)');
+    grd.addColorStop(0.4,'rgba(120,180,255,0.18)');
+    grd.addColorStop(1,'rgba(120,180,255,0)');
+    gctx.fillStyle=grd;
+    gctx.beginPath(); gctx.arc(sx,sy,pr,0,TAU); gctx.fill();
+  }
+
+  // ripples from strikes
+  gctx.lineWidth=1.4;
+  for(let k=ripples.length-1;k>=0;k--){
+    const rp=ripples[k]; rp.t+=dt;
+    const rad = rp.t*plateSide*0.9;
+    const a = Math.max(0, 0.5-rp.t*0.7);
+    if(a<=0){ ripples.splice(k,1); continue; }
+    const sx=plate0x+rp.x*plateSide, sy=plate0y+rp.y*plateSide;
+    gctx.strokeStyle='rgba(160,210,255,'+a+')';
+    gctx.beginPath(); gctx.arc(sx,sy,rad,0,TAU); gctx.stroke();
+  }
+
+  gctx.restore(); // exit rotated plate frame
+}
+
+// HSL(0..1) -> [r,g,b] 0..255
+function hsl(h,s,l){
+  h=((h%1)+1)%1;
+  const a=s*Math.min(l,1-l);
+  const f=n=>{const k=(n+h*12)%12; return l-a*Math.max(-1,Math.min(k-3,9-k,1));};
+  return [Math.round(f(0)*255),Math.round(f(8)*255),Math.round(f(4)*255)];
+}
+
+//------------------------------------------------------------------
+//  MAIN LOOP
+//------------------------------------------------------------------
+let last=performance.now();
+let fpsAcc=0, fpsCnt=0, fpsT=0;
+function frame(now){
+  let dt=(now-last)/1000; last=now;
+  if(dt>0.05)dt=0.05; // clamp after tab-away
+  S.time+=dt;
+
+  // smooth mode morph toward target
+  S.nf += (S.n-S.nf)*Math.min(1,dt*4);
+  S.mf += (S.m-S.mf)*Math.min(1,dt*4);
+
+  // pointer drift -> plate rotation (slow swirl, follows horizontal pointer)
+  const targetRot = (S.ptr.x-0.5)*0.9 + S.time*0.04;
+  S.rot += (targetRot - S.rot)*Math.min(1,dt*1.5);
+
+  // src eases toward pointer
+  S.src.x += (S.ptr.x-S.src.x)*Math.min(1,dt*2.5);
+  S.src.y += (S.ptr.y-S.src.y)*Math.min(1,dt*2.5);
+
+  // energy decay (the plate calms; nodal pattern sharpens)
+  S.energy += (0.18 - S.energy)*Math.min(1,dt*0.5);
+  if(S.energy<0.18)S.energy=0.18;
+
+  recomputeField();
+  drawPlate();
+  updateAndDrawParticles(dt);
+
+  // fps + adaptive quality (keep it smooth on any machine)
+  fpsAcc+=dt; fpsCnt++;
+  if(fpsAcc>=0.5){
+    const fps=Math.round(fpsCnt/fpsAcc);
+    // trim grains if struggling; restore (up to pool) when there's headroom
+    if(fps<42 && activeParts>1400){ activeParts=Math.max(1400, Math.round(activeParts*0.82)); }
+    else if(fps>56 && activeParts<PARTS){ activeParts=Math.min(PARTS, Math.round(activeParts*1.10)+200); }
+    document.getElementById('fps').textContent='⟳ '+fps+' fps · '+activeParts.toLocaleString()+' grains';
+    fpsAcc=0; fpsCnt=0;
+  }
+
+  requestAnimationFrame(frame);
+}
+
+//------------------------------------------------------------------
+//  BOOT
+//------------------------------------------------------------------
+function boot(){
+  resize();
+  computePlateRect();
+  initParticles();
+  // initial mode = 432 chip
+  setMode(3,2,432);
+  S.ptr.x=0.5; S.ptr.y=0.42; S.src.x=0.5; S.src.y=0.42;
+  S.energy=0.6;
+  requestAnimationFrame(frame);
+}
+window.addEventListener('resize', ()=>{ resize(); computePlateRect(); initParticles(); });
+boot();
+})();
+</script>
+</body>
+</html>

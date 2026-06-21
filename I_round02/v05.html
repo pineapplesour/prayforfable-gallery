@@ -1,0 +1,879 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Koi Pond · Liquid Glass</title>
+<style>
+  :root{ color-scheme: dark; }
+  html,body{margin:0;height:100%;overflow:hidden;background:#0b0907;
+    font-family:-apple-system,"SF Pro Display","Helvetica Neue","Segoe UI",sans-serif;}
+  #pond{position:fixed;inset:0;width:100%;height:100%;display:block;cursor:pointer;touch-action:none;}
+
+  /* ---------- floating liquid-glass octocat card ---------- */
+  #stage{position:fixed;inset:0;pointer-events:none;z-index:5;}
+  .card{
+    position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+    width:344px; pointer-events:auto;
+    border-radius:30px;
+    padding:26px 24px 24px;
+    /* the actual liquid-glass refraction layer is ::before; here = veil + light */
+    background:
+      radial-gradient(130% 100% at 30% 0%, rgba(255,206,140,.20), rgba(255,160,96,.06) 40%, rgba(24,17,12,.06) 100%),
+      linear-gradient(165deg, rgba(46,36,28,.26), rgba(18,14,11,.40));
+    box-shadow:
+      0 1px 0 rgba(255,232,200,.40) inset,          /* top sheen */
+      0 -1px 0 rgba(0,0,0,.30) inset,               /* bottom inner shade */
+      0 24px 60px -18px rgba(0,0,0,.62),            /* drop shadow on water */
+      0 4px 18px -6px rgba(0,0,0,.45);
+    overflow:hidden;
+    isolation:isolate;
+    -webkit-backdrop-filter:none; backdrop-filter:none; /* handled by ::before for distortion */
+  }
+  /* DISTORTING GLASS BODY — variable curvature.
+     ::before carries the backdrop blur + SVG displacement that bends the koi
+     behind it. The displacement map has a strong edge ramp -> rim curvature high. */
+  .card::before{
+    content:""; position:absolute; inset:0; border-radius:inherit; z-index:-2;
+    -webkit-backdrop-filter:blur(2px) saturate(135%) brightness(1.04);
+    backdrop-filter:blur(2px) saturate(135%) brightness(1.04);
+    filter:url(#glassWarp);
+  }
+  /* central FLAT frosted plate — sits above the warped rim, mild blur, no displacement */
+  .card::after{
+    content:""; position:absolute; inset:20px; border-radius:20px; z-index:-1;
+    -webkit-backdrop-filter:blur(7px) saturate(128%) brightness(1.05);
+    backdrop-filter:blur(7px) saturate(128%) brightness(1.05);
+    background:linear-gradient(180deg, rgba(34,25,18,.10), rgba(16,12,9,.18));
+    box-shadow:
+      0 0 0 1px rgba(255,228,196,.10) inset,
+      0 1px 14px rgba(255,200,140,.05) inset;
+    -webkit-mask-image:radial-gradient(120% 120% at 50% 40%, #000 60%, transparent 100%);
+            mask-image:radial-gradient(120% 120% at 50% 40%, #000 60%, transparent 100%);
+  }
+  /* bright specular rim highlight (curved-glass edge catching dawn light) */
+  .card .rimlight{
+    position:absolute; inset:0; border-radius:inherit; pointer-events:none; z-index:3;
+    background:
+      linear-gradient(145deg, rgba(255,238,210,.55), transparent 22%),
+      linear-gradient(305deg, rgba(255,180,120,.30), transparent 26%);
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite:xor; mask-composite:exclude;
+    padding:1.5px; /* ring thickness */
+    mix-blend-mode:screen;
+  }
+  /* faint moving glare sweep */
+  .card .glare{
+    position:absolute; inset:0; border-radius:inherit; pointer-events:none; z-index:2;
+    background:linear-gradient(115deg, transparent 30%, rgba(255,244,224,.16) 46%, transparent 60%);
+    transform:translateX(-30%);
+    animation:sweep 9s ease-in-out infinite;
+    mix-blend-mode:screen;
+  }
+  @keyframes sweep{0%,100%{transform:translateX(-40%)}50%{transform:translateX(40%)}}
+
+  .card *{position:relative; z-index:4;}
+
+  .head{display:flex; flex-direction:column; align-items:center; gap:2px;}
+  .ava{width:64px;height:64px;border-radius:50%;
+    background:radial-gradient(circle at 38% 30%, #3a4250, #1b2129 70%);
+    display:grid;place-items:center;
+    box-shadow:0 0 0 1px rgba(255,224,190,.25), 0 6px 18px -6px rgba(0,0,0,.6), 0 0 22px rgba(255,170,110,.18);
+  }
+  .ava svg{width:40px;height:40px;fill:#e9eef3;filter:drop-shadow(0 1px 2px rgba(0,0,0,.5));}
+  .name{font-size:21px;font-weight:700;color:#fdf3e8;margin-top:8px;letter-spacing:.2px;
+    text-shadow:0 1px 10px rgba(255,180,120,.25);}
+  .handle{font-size:13px;color:#e7b98e;font-weight:500;}
+  .sub{font-size:12.5px;line-height:1.55;color:rgba(255,238,220,.7);text-align:center;
+    margin:8px 4px 0;max-width:250px;}
+
+  .stats{display:flex;gap:8px;margin-top:16px;}
+  .stat{flex:1;border-radius:15px;padding:10px 4px;text-align:center;
+    background:linear-gradient(180deg, rgba(60,44,30,.30), rgba(22,16,11,.34));
+    box-shadow:0 0 0 1px rgba(255,222,184,.12) inset, 0 1px 0 rgba(255,236,206,.18) inset;}
+  .stat b{display:block;font-size:18px;font-weight:700;color:#ffe9c9;
+    text-shadow:0 1px 8px rgba(255,170,90,.3);}
+  .stat span{font-size:10.5px;color:rgba(255,232,206,.62);letter-spacing:.04em;}
+
+  .panel{margin-top:12px;border-radius:16px;padding:13px 14px;
+    background:linear-gradient(180deg, rgba(54,40,28,.26), rgba(20,15,10,.32));
+    box-shadow:0 0 0 1px rgba(255,222,184,.10) inset;}
+  .panel .row{display:flex;justify-content:space-between;align-items:center;}
+  .panel .row b{font-size:12.5px;color:#fbeede;font-weight:600;}
+  .panel .row span{font-size:11px;color:rgba(255,224,190,.62);}
+  .contrib{display:grid;grid-template-columns:repeat(26,1fr);gap:2px;margin-top:10px;}
+  .contrib i{aspect-ratio:1;border-radius:2px;background:rgba(255,210,160,.07);}
+  .foot{display:flex;gap:8px;margin-top:12px;}
+  .chip{flex:1;display:flex;align-items:center;justify-content:center;gap:5px;
+    font-size:11px;color:rgba(255,236,210,.78);border-radius:13px;padding:8px 6px;
+    background:linear-gradient(180deg, rgba(58,42,28,.28), rgba(20,15,10,.30));
+    box-shadow:0 0 0 1px rgba(255,222,184,.10) inset;}
+  .chip svg{width:12px;height:12px;fill:none;stroke:#e7b98e;stroke-width:1.6;}
+
+  #hint{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);z-index:6;
+    color:rgba(255,242,224,.82);font-size:12.5px;letter-spacing:.12em;
+    background:rgba(30,18,10,.34);padding:8px 20px;border-radius:99px;
+    -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
+    border:1px solid rgba(255,210,160,.16);
+    pointer-events:none;transition:opacity 1.4s;white-space:nowrap;}
+
+  @media (max-width:520px){
+    .card{width:min(330px,90vw); padding:22px 18px 20px;}
+    .name{font-size:19px;}
+  }
+</style>
+</head>
+<body>
+<canvas id="pond"></canvas>
+
+<!-- SVG displacement filter: variable curvature.
+     turbulence -> displacement, but masked so displacement scale is HIGH at the rim
+     and ~0 in the center (the central plate stays flat). -->
+<svg width="0" height="0" style="position:absolute">
+  <filter id="glassWarp" x="-25%" y="-25%" width="150%" height="150%" color-interpolation-filters="sRGB">
+    <feImage href="#warpmap" result="rampMap" x="0" y="0" width="100%" height="100%" preserveAspectRatio="none"/>
+    <!-- chromatic split: red channel bent more, blue less, then recombine -->
+    <feDisplacementMap in="SourceGraphic" in2="rampMap" result="dispR"
+        scale="74" xChannelSelector="R" yChannelSelector="G"/>
+    <feDisplacementMap in="SourceGraphic" in2="rampMap" result="dispB"
+        scale="60" xChannelSelector="R" yChannelSelector="G"/>
+    <feColorMatrix in="dispR" type="matrix" result="onlyR"
+        values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0"/>
+    <feColorMatrix in="dispB" type="matrix" result="onlyGB"
+        values="0 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 1 0"/>
+    <feBlend in="onlyR" in2="onlyGB" mode="screen"/>
+  </filter>
+</svg>
+
+<div id="stage">
+  <div class="card">
+    <span class="rimlight"></span>
+    <span class="glare"></span>
+    <div class="head">
+      <div class="ava">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      </div>
+      <div class="name">Octocat</div>
+      <div class="handle">@octocat</div>
+      <div class="sub">Building quietly at dawn. A liquid-glass profile floating over the koi pond.</div>
+    </div>
+    <div class="stats">
+      <div class="stat"><b>8</b><span>Repos</span></div>
+      <div class="stat"><b>9.0k</b><span>Followers</span></div>
+      <div class="stat"><b>9</b><span>Following</span></div>
+    </div>
+    <div class="panel">
+      <div class="row"><b>Contributions</b><span>248 this year</span></div>
+      <div class="contrib" id="contrib"></div>
+    </div>
+    <div class="foot">
+      <div class="chip"><svg viewBox="0 0 24 24"><path d="M12 21s-7-5.5-7-11a7 7 0 0114 0c0 5.5-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>San Francisco</div>
+      <div class="chip"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 9h16M8 3v4M16 3v4"/></svg>Joined 2011</div>
+    </div>
+  </div>
+</div>
+
+<div id="hint">수면을 클릭 — 먹이가 떨어지고 파동이 일며 코이가 모여듭니다</div>
+
+<!-- warp map image used by feImage. R/G encode displacement direction; built procedurally below. -->
+<img id="warpmap" style="display:none" alt="">
+
+<script>
+'use strict';
+/* =========================================================================
+   변위맵 생성 — 가변 곡률의 본질.
+   중앙(평평)=중립 회색(128,128) -> 변위 0.
+   가장자리(rim)로 갈수록 R,G가 바깥 방향으로 크게 벗어남 -> 강한 렌즈 굴절.
+   둥근 사각형 카드 형태에 맞춰 라운드 마스크.
+   ========================================================================= */
+(function buildWarpMap(){
+  const W=344, H=560, c=document.createElement('canvas');
+  c.width=W; c.height=H; const x=c.getContext('2d');
+  const img=x.createImageData(W,H), d=img.data;
+  const cx=W/2, cy=H/2, rad=30; // card radius
+  // signed distance to rounded-rect border (0=center .. 1=edge)
+  function edgeT(px,py){
+    // distance from center normalized per-axis, then blended toward corner roundness
+    const hw=W/2-1, hh=H/2-1;
+    let dx=Math.abs(px-cx), dy=Math.abs(py-cy);
+    // rounded-rect SDF
+    const qx=dx-(hw-rad), qy=dy-(hh-rad);
+    let dist;
+    if(qx>0&&qy>0) dist=Math.hypot(qx,qy)-rad;            // corner
+    else dist=Math.max(qx,qy)-0; // straight edges -> negative inside
+    // inside distance is negative; map -maxInset..0 -> 0..1
+    const inset=Math.min(hw,hh);
+    let t = 1 - Math.min(1, (-dist)/ (inset*0.92));
+    return Math.max(0,Math.min(1,t));
+  }
+  for(let py=0;py<H;py++){
+    for(let px=0;px<W;px++){
+      const i=(py*W+px)*4;
+      const t=edgeT(px,py);          // 0 center .. 1 rim
+      // curvature ramp: dead-flat plate in the middle (no warp), then a STEEP
+      // curved wall near the rim. smootherstep gives a clean flat->curved knee.
+      const knee = t<0.46 ? 0 : (t-0.46)/0.54;   // start curving at 46% out
+      const k = knee*knee*(3-2*knee);            // smoothstep
+      const ramp = Math.pow(k, 1.7);             // steep climb at the very rim
+      // outward direction
+      let nx=(px-cx), ny=(py-cy);
+      const L=Math.hypot(nx,ny)||1; nx/=L; ny/=L;
+      // displacement: rim pushes the sampled background OUTWARD (magnify/bend)
+      const amp = ramp; // 0..1
+      const r = 128 + nx*amp*127;
+      const g = 128 + ny*amp*127;
+      d[i]=Math.max(0,Math.min(255,r));
+      d[i+1]=Math.max(0,Math.min(255,g));
+      d[i+2]=128;
+      d[i+3]=255;
+    }
+  }
+  x.putImageData(img,0,0);
+  document.getElementById('warpmap').src=c.toDataURL();
+})();
+
+/* contribution graph fill */
+(function(){
+  const el=document.getElementById('contrib'); if(!el)return;
+  const cols=['rgba(255,210,160,.07)','rgba(255,180,110,.30)','rgba(255,160,80,.55)','rgba(255,140,60,.82)'];
+  let f='';
+  for(let i=0;i<26*4;i++){
+    const r=Math.random(); const lv = r<0.55?0 : r<0.78?1 : r<0.93?2 : 3;
+    f+='<i style="background:'+cols[lv]+'"></i>';
+  }
+  el.innerHTML=f;
+})();
+</script>
+
+<script>
+'use strict';
+/* =========================================================================
+   KOI POND — WebGL2 height-field water + canvas koi.
+   Dawn macro tone: warm gold/pink/teal light, shallow DOF bokeh on the
+   out-of-focus koi, glassy caustics, sparkle, fine particles.
+   Click -> ripple drop + food pellet -> koi steer toward food & gather.
+   (water sim & koi steering adapted from the frangollo reference, retoned)
+   ========================================================================= */
+(()=>{
+const TAU=Math.PI*2;
+const canvas=document.getElementById('pond');
+const hint=document.getElementById('hint');
+const gl=canvas.getContext('webgl2',{antialias:false,alpha:false});
+const has2dFallback=!gl;
+
+/* ---------------- shaders ---------------- */
+const VERT=`#version 300 es
+layout(location=0) in vec2 aPos;
+out vec2 vUv;
+void main(){vUv=aPos*0.5+0.5;gl_Position=vec4(aPos,0.,1.);}`;
+
+const SIM_FRAG=`#version 300 es
+precision highp float;
+uniform sampler2D uPrev;
+uniform vec2 uTexel;
+uniform vec4 uDrops[8];
+uniform int uCount;
+in vec2 vUv; out vec4 o;
+void main(){
+  vec2 c=texture(uPrev,vUv).rg;
+  float sum=
+    texture(uPrev,vUv+vec2(uTexel.x,0.)).r+
+    texture(uPrev,vUv-vec2(uTexel.x,0.)).r+
+    texture(uPrev,vUv+vec2(0.,uTexel.y)).r+
+    texture(uPrev,vUv-vec2(0.,uTexel.y)).r;
+  float nh=(sum*0.5-c.g)*0.993;
+  vec2 px=vUv/uTexel;
+  for(int i=0;i<8;i++){
+    if(i>=uCount)break;
+    vec4 d=uDrops[i];
+    float dist=distance(px,d.xy);
+    if(dist<d.z) nh+=d.w*(cos(dist/d.z*3.14159)*0.5+0.5);
+  }
+  vec2 e=min(vUv,1.0-vUv);
+  float edge=smoothstep(0.0,0.05,min(e.x,e.y));
+  nh*=mix(0.86,1.0,edge);
+  o=vec4(nh,c.r,0.,1.);
+}`;
+
+/* RENDER: dawn-toned water + shallow-DOF bokeh blur of the koi/bottom by depth.
+   uFocus marks an in-focus band; everything else gets a creamy radial bokeh. */
+const RENDER_FRAG=`#version 300 es
+precision highp float;
+uniform sampler2D uH;
+uniform sampler2D uBottom;
+uniform sampler2D uFish;
+uniform vec2 uTexel;
+uniform vec2 uRes;
+uniform float uT;
+in vec2 vUv; out vec4 o;
+
+vec3 sampleBokeh(sampler2D tex, vec2 uv, float rad){
+  // creamy circular bokeh — disc sampling, brighter samples bloom (dawn highlights)
+  vec3 acc=vec3(0.0); float wsum=0.0;
+  const int N=10;
+  for(int i=0;i<N;i++){
+    float a=float(i)/float(N)*6.2831853;
+    for(int j=1;j<=2;j++){
+      float rr=rad*float(j)/2.0;
+      vec2 off=vec2(cos(a),sin(a))*rr;
+      vec3 s=texture(tex,uv+off).rgb;
+      float lum=dot(s,vec3(0.299,0.587,0.114));
+      float w=0.6+1.4*smoothstep(0.55,0.95,lum); // bright bokeh balls pop
+      acc+=s*w; wsum+=w;
+    }
+  }
+  acc+=texture(tex,uv).rgb*1.2; wsum+=1.2;
+  return acc/wsum;
+}
+
+void main(){
+  vec2 d=uTexel*1.5;
+  float h =texture(uH,vUv).r;
+  float hL=texture(uH,vUv-vec2(d.x,0.)).r;
+  float hR=texture(uH,vUv+vec2(d.x,0.)).r;
+  float hB=texture(uH,vUv-vec2(0.,d.y)).r;
+  float hT=texture(uH,vUv+vec2(0.,d.y)).r;
+  vec3 n=normalize(vec3((hL-hR)*6.0,(hB-hT)*6.0,1.0));
+  // micro surface ripple normal
+  n.xy+=0.0030*vec2(
+    sin(vUv.x*150.0+uT*1.2)+sin(vUv.y*92.0-uT*0.7),
+    cos(vUv.x*80.0-uT*0.9)+cos(vUv.y*150.0+uT*1.4));
+  n=normalize(n);
+  vec2 off=n.xy*0.045;
+
+  // ---- shallow depth of field ----
+  // in-focus band: a soft horizontal stripe slightly below center (macro plane).
+  float focusY=0.54;
+  // tight sharp band, then ramps up fast -> strong shallow-DOF separation
+  float dof = smoothstep(0.04,0.30, abs(vUv.y-focusY));   // 0 sharp .. 1 blurred
+  // also blur more toward the frame corners (lens fall-off)
+  dof = clamp(dof + 0.55*pow(length(vUv-0.5),1.5), 0.0, 1.0);
+  float blurR = dof*0.026;
+
+  vec3 bottom = blurR>0.001 ? sampleBokeh(uBottom, vUv+off, blurR)
+                            : texture(uBottom,vUv+off).rgb;
+  float lap=(hL+hR+hB+hT-4.0*h);
+  // warm dawn caustics
+  float caust=min(max(-lap,0.0)*95.0,0.75);
+  bottom+=vec3(1.0,0.86,0.62)*caust*0.6;
+  bottom*=1.0-min(max(lap,0.0)*70.0,0.30);
+
+  float sh=texture(uFish,vUv+off+vec2(0.012,-0.016)).a;
+  bottom*=1.0-sh*0.30;
+
+  // water column tint — teal-green deep, warm near surface
+  vec3 waterDeep=vec3(0.06,0.20,0.21);
+  vec3 col=mix(bottom,waterDeep,0.24);
+
+  // koi (bokeh-blurred by same DOF)
+  vec4 fish = blurR>0.001 ? vec4(sampleBokeh(uFish,vUv+off*0.45,blurR), texture(uFish,vUv+off*0.45).a)
+                          : texture(uFish,vUv+off*0.45);
+  vec3 fcol=mix(fish.rgb,waterDeep,0.08);
+  col=mix(col,fcol,fish.a);
+
+  // specular dawn sparkle on the surface
+  vec3 L=normalize(vec3(-0.38,0.50,0.78));
+  float spec=pow(max(dot(reflect(vec3(0.,0.,-1.),n),L),0.0),150.0);
+  col+=vec3(1.0,0.92,0.74)*spec*1.05;
+  // secondary cool rim sparkle
+  float spec2=pow(max(dot(n,normalize(vec3(0.25,-0.30,0.92))),0.0),3.0);
+  col+=vec3(0.40,0.55,0.62)*spec2*0.07;
+
+  // dawn light gradient: warm gold top-left -> teal-pink elsewhere
+  vec2 g=vUv;
+  vec3 dawn = mix(vec3(0.30,0.22,0.18), vec3(0.14,0.16,0.16), g.y);
+  dawn += vec3(0.42,0.26,0.14)*pow(max(0.0,1.0-length(g-vec2(0.30,0.18))),2.4); // sun glow
+  dawn += vec3(0.18,0.10,0.16)*pow(max(0.0,1.0-length(g-vec2(0.85,0.85))),2.6); // pink corner
+  col = col*0.78 + dawn*0.42*(0.6+0.4*caust);
+  col = mix(col, col*dawn*2.0, 0.18);
+
+  // fine floating particles / motes (depth-faded)
+  float mote = fract(sin(dot(floor(vUv*vec2(220.0,340.0)),vec2(41.3,289.1)))*43758.5);
+  if(mote>0.9975){ col += vec3(1.0,0.9,0.72)*(0.5+0.5*sin(uT*2.0+mote*60.0))*0.5*(0.4+dof); }
+
+  // gentle bloom in highlights
+  float lum=dot(col,vec3(0.299,0.587,0.114));
+  col += vec3(1.0,0.86,0.64)*smoothstep(0.7,1.1,lum)*0.12;
+
+  // vignette + warm grade
+  float vg=smoothstep(1.05,0.30,length(vUv-0.5));
+  col*=mix(0.52,1.05,vg);
+  col=pow(col,vec3(0.94)); // lift
+  o=vec4(col,1.0);
+}`;
+
+let simProg,renProg,su,ru;
+function compile(type,src){
+  const s=gl.createShader(type);
+  gl.shaderSource(s,src);gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+function program(vs,fs){
+  const p=gl.createProgram();
+  gl.attachShader(p,compile(gl.VERTEX_SHADER,vs));
+  gl.attachShader(p,compile(gl.FRAGMENT_SHADER,fs));
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(p));
+  return p;
+}
+
+/* ---------------- textures / targets ---------------- */
+let cssW=0,cssH=0,dpr=1,fishScale=1;
+let simW=0,simH=0,texA=null,texB=null,fboA=null,fboB=null;
+const bCan=document.createElement('canvas'),bctx=bCan.getContext('2d');
+const fCan=document.createElement('canvas'),fctx=fCan.getContext('2d');
+let bottomTex,fishTex;
+let fishTexW=0,fishTexH=0;
+
+function texParams(){
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+}
+function makeTarget(w,h){
+  const t=gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D,t);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA16F,w,h,0,gl.RGBA,gl.HALF_FLOAT,null);
+  texParams();
+  const f=gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER,f);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,t,0);
+  gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);
+  return [t,f];
+}
+function createSim(){
+  if(texA){gl.deleteTexture(texA);gl.deleteTexture(texB);gl.deleteFramebuffer(fboA);gl.deleteFramebuffer(fboB);}
+  const scale=Math.min(0.5,768/Math.max(cssW,cssH));
+  simW=Math.max(64,Math.round(cssW*scale));
+  simH=Math.max(64,Math.round(cssH*scale));
+  [texA,fboA]=makeTarget(simW,simH);
+  [texB,fboB]=makeTarget(simW,simH);
+}
+function uploadBottom(){
+  gl.bindTexture(gl.TEXTURE_2D,bottomTex);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,bCan);
+  texParams();
+}
+function uploadFish(){
+  gl.bindTexture(gl.TEXTURE_2D,fishTex);
+  if(fishTexW!==fCan.width||fishTexH!==fCan.height){
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,fCan);
+    texParams();
+    fishTexW=fCan.width;fishTexH=fCan.height;
+  }else{
+    gl.texSubImage2D(gl.TEXTURE_2D,0,0,0,gl.RGBA,gl.UNSIGNED_BYTE,fCan);
+  }
+}
+
+/* ---------------- pond bottom (dawn-warm silt + pebbles) ---------------- */
+function paintBottom(){
+  const c=bctx,w=cssW,h=cssH;
+  c.setTransform(fishScale,0,0,fishScale,0,0);
+  const g=c.createRadialGradient(w*0.32,h*0.30,0,w*0.5,h*0.5,Math.max(w,h)*0.85);
+  g.addColorStop(0,'#6e5230');g.addColorStop(0.5,'#4d4329');g.addColorStop(1,'#27301f');
+  c.fillStyle=g;c.fillRect(0,0,w,h);
+  for(let i=0;i<10;i++){
+    const x=Math.random()*w,y=Math.random()*h,r=80+Math.random()*200;
+    const ag=c.createRadialGradient(x,y,0,x,y,r);
+    ag.addColorStop(0,'rgba(30,46,24,0.30)');ag.addColorStop(1,'rgba(30,46,24,0)');
+    c.fillStyle=ag;c.beginPath();c.arc(x,y,r,0,TAU);c.fill();
+  }
+  // warm silt speckle
+  for(let i=0;i<2600;i++){
+    const x=Math.random()*w,y=Math.random()*h,r=Math.random()*1.7+0.4;
+    c.fillStyle=Math.random()<0.5
+      ?'rgba(255,224,170,'+(Math.random()*0.10).toFixed(3)+')'
+      :'rgba(18,22,12,'+(Math.random()*0.13).toFixed(3)+')';
+    c.beginPath();c.arc(x,y,r,0,TAU);c.fill();
+  }
+  const np=Math.max(14,Math.round(w*h/52000));
+  for(let i=0;i<np;i++){
+    drawPebble(c,Math.random()*w,Math.random()*h,12+Math.random()*46,Math.random()*TAU);
+  }
+}
+function drawPebble(c,x,y,r,rot){
+  c.save();c.translate(x,y);c.rotate(rot);
+  const ry=r*(0.62+Math.random()*0.3);
+  c.fillStyle='rgba(0,0,0,0.30)';
+  c.beginPath();c.ellipse(r*0.13,ry*0.2,r*1.02,ry*1.02,0,0,TAU);c.fill();
+  const hue=26+Math.random()*30,sat=8+Math.random()*16,li=36+Math.random()*26;
+  const g=c.createRadialGradient(-r*0.35,-ry*0.4,r*0.08,0,0,r*1.15);
+  g.addColorStop(0,'hsl('+hue+','+sat+'%,'+(li+18)+'%)');
+  g.addColorStop(0.7,'hsl('+hue+','+sat+'%,'+li+'%)');
+  g.addColorStop(1,'hsl('+hue+','+(sat+6)+'%,'+(li-14)+'%)');
+  c.fillStyle=g;
+  c.beginPath();c.ellipse(0,0,r,ry,0,0,TAU);c.fill();
+  c.restore();
+}
+
+/* ---------------- koi ---------------- */
+function palette(type){
+  if(type==='orange')return{core:'#ffcf6e',mid:'#ff8a2a',edge:'#cf4f0a',fin:'rgba(255,150,50,',patches:[]};
+  if(type==='red')return{core:'#ff9258',mid:'#f0500f',edge:'#a82803',fin:'rgba(238,80,28,',patches:[]};
+  if(type==='kohaku'){
+    const p=[];const n=3+(Math.random()*2|0);
+    for(let i=0;i<n;i++)p.push({s:0.10+Math.random()*0.62,o:(Math.random()-0.5)*1.2,r:0.13+Math.random()*0.13,col:'rgba(241,80,24,0.92)'});
+    return{core:'#fff7ec',mid:'#f6efe0',edge:'#d2c2a6',fin:'rgba(255,238,216,',patches:p};
+  }
+  if(type==='calico'){
+    const p=[];
+    for(let i=0;i<3;i++)p.push({s:0.12+Math.random()*0.58,o:(Math.random()-0.5)*1.3,r:0.12+Math.random()*0.12,col:'rgba(249,120,36,0.9)'});
+    for(let i=0;i<3;i++)p.push({s:0.10+Math.random()*0.68,o:(Math.random()-0.5)*1.4,r:0.05+Math.random()*0.07,col:'rgba(40,38,50,0.85)'});
+    return{core:'#fff7ec',mid:'#f3ebdb',edge:'#cabca2',fin:'rgba(255,242,224,',patches:p};
+  }
+  return{core:'#fffaf2',mid:'#f8f0e3',edge:'#d6c7ae',fin:'rgba(255,240,224,',
+    patches:[{s:0.07,o:0,r:0.12,col:'rgba(236,46,20,0.95)'}]};
+}
+function makeFish(type,len){
+  const pal=palette(type);
+  return{
+    x:120+Math.random()*Math.max(60,cssW-240),
+    y:120+Math.random()*Math.max(60,cssH-240),
+    a:Math.random()*TAU,len,
+    phase:Math.random()*10,speed:28,spT:30,turn:0,
+    changeT:Math.random()*3,wakeT:Math.random()*0.2,speedN:0.3,
+    po:Math.random()*TAU,
+    core:pal.core,mid:pal.mid,edge:pal.edge,fin:pal.fin,patches:pal.patches
+  };
+}
+let fishes=[];
+const foods=[];
+const angDiff=(a,b)=>{let d=a-b;while(d>Math.PI)d-=TAU;while(d<-Math.PI)d+=TAU;return d;};
+
+function updateFish(f,dt){
+  f.changeT-=dt;
+  if(f.changeT<=0){
+    f.spT=18+Math.random()*40;
+    if(Math.random()<0.16)f.spT=95+Math.random()*45;
+    f.changeT=2+Math.random()*4;
+  }
+  f.turn+=(Math.random()-0.5)*3.2*dt;
+  f.turn*=Math.exp(-dt*1.4);
+  let target=null,fdist=1e9;
+  for(const fd of foods){
+    const d=Math.hypot(fd.x-f.x,fd.y-f.y);
+    if(d<fdist){fdist=d;target=fd;}
+  }
+  let ta;
+  if(target&&fdist<600){
+    ta=Math.atan2(target.y-f.y,target.x-f.x);
+    f.spT=Math.max(f.spT,fdist<90?60:100);
+  }else{target=null;ta=f.a+f.turn;}
+  const m=85;
+  if(f.x<m||f.y<m||f.x>cssW-m||f.y>cssH-m)
+    ta=Math.atan2(cssH*0.5-f.y,cssW*0.5-f.x);
+  for(const g of fishes){
+    if(g===f)continue;
+    const dx=f.x-g.x,dy=f.y-g.y;
+    if(dx*dx+dy*dy<5600){ta=Math.atan2(dy,dx);break;}
+  }
+  const da=angDiff(ta,f.a);
+  const mt=(target?2.7:1.1)*dt;
+  f.a+=Math.max(-mt,Math.min(mt,da));
+  f.speed+=(f.spT-f.speed)*Math.min(1,dt*1.8);
+  f.x+=Math.cos(f.a)*f.speed*dt;
+  f.y+=Math.sin(f.a)*f.speed*dt;
+  f.x=Math.max(24,Math.min(cssW-24,f.x));
+  f.y=Math.max(24,Math.min(cssH-24,f.y));
+  f.speedN=Math.min(1,f.speed/120);
+  f.phase+=dt*(3.5+f.speed*0.075)*2.4;
+  f.wakeT-=dt;
+  if(f.wakeT<=0&&f.speed>30){
+    addDrop(f.x+Math.cos(f.a)*f.len*0.42,f.y+Math.sin(f.a)*f.len*0.42,
+      6+f.speedN*8,0.05+0.16*f.speedN);
+    f.wakeT=0.10+Math.random()*0.08;
+  }
+  if(target&&fdist<16){
+    foods.splice(foods.indexOf(target),1);
+    addDrop(f.x,f.y,11,0.55);
+    f.spT=14;f.changeT=1.2;
+  }
+}
+
+function bodyOutline(pts,wfun){
+  const top=[],bot=[];
+  for(let i=0;i<pts.length;i++){
+    const p=pts[i];
+    const pa=pts[Math.max(0,i-1)],pb=pts[Math.min(pts.length-1,i+1)];
+    let dx=pb.x-pa.x,dy=pb.y-pa.y;
+    const l=Math.hypot(dx,dy)||1;dx/=l;dy/=l;
+    const w=wfun(p.s);
+    top.push({x:p.x-dy*w,y:p.y+dx*w});
+    bot.push({x:p.x+dy*w,y:p.y-dx*w});
+  }
+  return{top,bot};
+}
+function tailLobe(c,len,spread,sw){
+  const ty=spread+sw;
+  c.beginPath();
+  c.moveTo(0,0);
+  c.bezierCurveTo(len*0.32,spread*0.06+sw*0.2,len*0.72,ty*0.6,len,ty);
+  c.bezierCurveTo(len*0.78,ty*0.98,len*0.30,spread*0.55+sw*0.25,0,0);
+  c.closePath();c.fill();
+}
+function finShape(c,x,y,ang,len,flip){
+  c.save();c.translate(x,y);c.rotate(ang);
+  if(flip)c.scale(1,-1);
+  c.beginPath();c.moveTo(0,0);
+  c.quadraticCurveTo(len*0.55,-len*0.10,len,len*0.22);
+  c.quadraticCurveTo(len*0.45,len*0.34,0,0);
+  c.closePath();c.fill();c.restore();
+}
+function drawFish(c,f){
+  const L=f.len;
+  c.save();
+  c.translate(f.x,f.y);c.rotate(f.a);
+  const segs=16,pts=[];
+  const amp=L*(0.05+0.06*f.speedN);
+  for(let i=0;i<=segs;i++){
+    const s=i/segs;
+    pts.push({x:L*0.48-s*L*0.96,y:Math.sin(f.phase-s*4.4)*amp*Math.pow(s,1.5),s});
+  }
+  const wmax=L*0.16;
+  const wf=s=>wmax*Math.pow(Math.sin(Math.PI*Math.min(0.10+s*0.90,1)),0.85)*(1-0.58*s)+L*0.018;
+  /* tail */
+  const tp=pts[segs],tq=pts[segs-1];
+  const tang=Math.atan2(tp.y-tq.y,tp.x-tq.x);
+  c.save();c.translate(tp.x,tp.y);c.rotate(tang);
+  const tl=L*0.66;
+  const sw=Math.sin(f.phase-5.2)*tl*0.30;
+  const tg=c.createRadialGradient(0,0,tl*0.06,0,0,tl);
+  tg.addColorStop(0,f.fin+'0.85)');
+  tg.addColorStop(0.55,f.fin+'0.5)');
+  tg.addColorStop(1,f.fin+'0)');
+  c.fillStyle=tg;
+  tailLobe(c,tl,tl*0.52,sw);
+  tailLobe(c,tl,-tl*0.52,sw*0.85);
+  tailLobe(c,tl*0.72,tl*0.16,sw*0.7);
+  tailLobe(c,tl*0.72,-tl*0.16,sw*0.6);
+  c.restore();
+  /* pectoral fins */
+  const pp=pts[5],wp=wf(pts[5].s);
+  const fl=Math.sin(f.phase*1.2+f.po)*0.22;
+  c.fillStyle=f.fin+'0.55)';
+  finShape(c,pp.x,pp.y+wp*0.85,2.3+fl,L*0.24,false);
+  finShape(c,pp.x,pp.y-wp*0.85,-2.3-fl,L*0.24,true);
+  /* body */
+  const o=bodyOutline(pts,wf);
+  const path=()=>{
+    c.beginPath();
+    c.moveTo(o.top[0].x,o.top[0].y);
+    for(let i=1;i<o.top.length;i++)c.lineTo(o.top[i].x,o.top[i].y);
+    for(let i=o.bot.length-1;i>=0;i--)c.lineTo(o.bot[i].x,o.bot[i].y);
+    c.quadraticCurveTo(pts[0].x+L*0.16,pts[0].y,o.top[0].x,o.top[0].y);
+    c.closePath();
+  };
+  const bg=c.createRadialGradient(L*0.12,0,L*0.05,L*0.05,0,L*0.62);
+  bg.addColorStop(0,f.core);bg.addColorStop(0.55,f.mid);bg.addColorStop(1,f.edge);
+  path();c.fillStyle=bg;c.fill();
+  if(f.patches.length){
+    c.save();path();c.clip();
+    for(const p of f.patches){
+      const i=Math.min(segs,Math.round(p.s*segs));
+      const pt=pts[i],w=wf(p.s);
+      c.beginPath();c.ellipse(pt.x,pt.y+p.o*w,p.r*L,p.r*L*0.75,0,0,TAU);
+      c.fillStyle=p.col;c.fill();
+    }
+    c.restore();
+  }
+  c.save();path();c.clip();
+  const hg=c.createRadialGradient(L*0.15,0,0,L*0.10,0,L*0.5);
+  hg.addColorStop(0,'rgba(255,255,255,0.32)');hg.addColorStop(1,'rgba(255,255,255,0)');
+  c.fillStyle=hg;
+  c.beginPath();c.ellipse(L*0.10,0,L*0.45,wmax*0.55,0,0,TAU);c.fill();
+  c.strokeStyle='rgba(60,20,0,0.18)';c.lineWidth=L*0.016;
+  c.beginPath();c.moveTo(pts[3].x,pts[3].y);
+  for(let i=4;i<=11;i++)c.lineTo(pts[i].x,pts[i].y);
+  c.stroke();
+  c.strokeStyle='rgba(0,0,0,0.10)';c.lineWidth=L*0.012;
+  c.beginPath();c.arc(pts[2].x-L*0.02,pts[2].y,wf(pts[2].s)*0.85,-1.2,1.2);c.stroke();
+  c.restore();
+  path();c.strokeStyle='rgba(40,15,0,0.18)';c.lineWidth=1;c.stroke();
+  /* eyes */
+  const ep=pts[1],ew=wf(pts[1].s);
+  c.fillStyle='#19120a';
+  c.beginPath();c.arc(ep.x,ep.y+ew*0.72,L*0.026,0,TAU);c.fill();
+  c.beginPath();c.arc(ep.x,ep.y-ew*0.72,L*0.026,0,TAU);c.fill();
+  c.fillStyle='rgba(255,255,255,0.6)';
+  c.beginPath();c.arc(ep.x-L*0.008,ep.y+ew*0.72-L*0.008,L*0.008,0,TAU);c.fill();
+  c.beginPath();c.arc(ep.x-L*0.008,ep.y-ew*0.72-L*0.008,L*0.008,0,TAU);c.fill();
+  c.restore();
+}
+function drawFishCanvas(t){
+  fctx.setTransform(fishScale,0,0,fishScale,0,0);
+  fctx.clearRect(0,0,cssW,cssH);
+  for(const fd of foods){
+    const bob=Math.sin(t*3+fd.ph)*1.3;
+    fctx.fillStyle='rgba(255,228,164,0.95)';
+    fctx.beginPath();fctx.arc(fd.x+bob,fd.y+Math.cos(t*2.4+fd.ph)*1.1,2.6,0,TAU);fctx.fill();
+  }
+  for(const f of fishes)drawFish(fctx,f);
+}
+
+/* ---------------- ripples ---------------- */
+const drops=[];
+function addDrop(x,y,r,s){
+  drops.push({x,y,r,s});
+  if(drops.length>24)drops.shift();
+}
+const dropArr=new Float32Array(32);
+function simulate(){
+  gl.useProgram(simProg);
+  gl.viewport(0,0,simW,simH);
+  gl.uniform2f(su.texel,1/simW,1/simH);
+  for(let step=0;step<2;step++){
+    let n=0;
+    if(step===0){
+      n=Math.min(drops.length,8);
+      for(let j=0;j<n;j++){
+        const d=drops[j];
+        dropArr[j*4]=d.x/cssW*simW;
+        dropArr[j*4+1]=(1-d.y/cssH)*simH;
+        dropArr[j*4+2]=Math.max(2,d.r*simW/cssW);
+        dropArr[j*4+3]=d.s;
+      }
+      drops.splice(0,n);
+    }
+    gl.uniform4fv(su.drops,dropArr);
+    gl.uniform1i(su.count,n);
+    gl.bindFramebuffer(gl.FRAMEBUFFER,fboB);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D,texA);
+    gl.uniform1i(su.prev,0);
+    gl.drawArrays(gl.TRIANGLES,0,3);
+    let tt=texA;texA=texB;texB=tt;
+    tt=fboA;fboA=fboB;fboB=tt;
+  }
+}
+function render(t){
+  gl.useProgram(renProg);
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+  gl.viewport(0,0,canvas.width,canvas.height);
+  gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,texA);gl.uniform1i(ru.h,0);
+  gl.activeTexture(gl.TEXTURE1);gl.bindTexture(gl.TEXTURE_2D,bottomTex);gl.uniform1i(ru.bottom,1);
+  gl.activeTexture(gl.TEXTURE2);gl.bindTexture(gl.TEXTURE_2D,fishTex);gl.uniform1i(ru.fish,2);
+  gl.uniform2f(ru.texel,1/simW,1/simH);
+  gl.uniform2f(ru.res,canvas.width,canvas.height);
+  gl.uniform1f(ru.t,t);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+}
+
+/* ---------------- layout / input ---------------- */
+function resize(){
+  cssW=window.innerWidth;cssH=window.innerHeight;
+  dpr=Math.min(window.devicePixelRatio||1,2);
+  canvas.width=Math.round(cssW*dpr);
+  canvas.height=Math.round(cssH*dpr);
+  fishScale=Math.min(dpr,1.5);
+  fCan.width=Math.round(cssW*fishScale);
+  fCan.height=Math.round(cssH*fishScale);
+  fishTexW=0;
+  bCan.width=fCan.width;bCan.height=fCan.height;
+  paintBottom();
+  if(gl){uploadBottom();createSim();}
+  for(const f of fishes){
+    f.x=Math.max(40,Math.min(cssW-40,f.x));
+    f.y=Math.max(40,Math.min(cssH-40,f.y));
+  }
+}
+
+function feed(x,y){
+  addDrop(x,y,18,1.3);
+  if(foods.length<25)
+    foods.push({x:x+(Math.random()-0.5)*16,y:y+(Math.random()-0.5)*16,ph:Math.random()*TAU});
+  hint.style.opacity=0;
+}
+window.addEventListener('resize',resize);
+canvas.addEventListener('pointerdown',e=>feed(e.clientX,e.clientY));
+// allow clicks that land on the glass card to also feed the pond (so the koi
+// gather under the floating window too)
+document.getElementById('stage').addEventListener('pointerdown',e=>feed(e.clientX,e.clientY));
+let lmx=-1,lmy=-1;
+canvas.addEventListener('pointermove',e=>{
+  if(lmx<0){lmx=e.clientX;lmy=e.clientY;return;}
+  const d=Math.hypot(e.clientX-lmx,e.clientY-lmy);
+  if(d>26){addDrop(e.clientX,e.clientY,7,0.06);lmx=e.clientX;lmy=e.clientY;}
+});
+
+/* ---------------- 2D fallback (no WebGL2) ---------------- */
+function fallbackFrame(t){
+  const c=canvas.getContext('2d');
+  c.setTransform(1,0,0,1,0,0);
+  c.drawImage(bCan,0,0,canvas.width,canvas.height);
+  // koi
+  c.save();c.scale(canvas.width/(cssW*fishScale),canvas.height/(cssH*fishScale));
+  c.drawImage(fCan,0,0);c.restore();
+}
+
+/* ---------------- init ---------------- */
+if(!has2dFallback){
+  simProg=program(VERT,SIM_FRAG); renProg=program(VERT,RENDER_FRAG);
+  su={prev:gl.getUniformLocation(simProg,'uPrev'),
+      texel:gl.getUniformLocation(simProg,'uTexel'),
+      drops:gl.getUniformLocation(simProg,'uDrops[0]'),
+      count:gl.getUniformLocation(simProg,'uCount')};
+  ru={h:gl.getUniformLocation(renProg,'uH'),
+      bottom:gl.getUniformLocation(renProg,'uBottom'),
+      fish:gl.getUniformLocation(renProg,'uFish'),
+      texel:gl.getUniformLocation(renProg,'uTexel'),
+      res:gl.getUniformLocation(renProg,'uRes'),
+      t:gl.getUniformLocation(renProg,'uT')};
+  gl.getExtension('EXT_color_buffer_float');
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,true);
+  bottomTex=gl.createTexture();fishTex=gl.createTexture();
+  const quad=gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER,quad);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
+}
+
+resize();
+fishes=[
+  makeFish('orange',122),
+  makeFish('kohaku',106),
+  makeFish('calico',94),
+  makeFish('red',132),
+  makeFish('orange',76),
+  makeFish('tancho',88),
+  makeFish('kohaku',98)
+];
+for(let i=0;i<3;i++)
+  addDrop(Math.random()*cssW,Math.random()*cssH,14,0.6);
+setTimeout(()=>{hint.style.opacity=0;},9000);
+
+let ambT=3,last=0;
+function frame(ts){
+  requestAnimationFrame(frame);
+  const t=ts/1000;
+  const dt=Math.min(0.05,Math.max(0.001,t-last));
+  last=t;
+  ambT-=dt;
+  if(ambT<=0){
+    addDrop(Math.random()*cssW,Math.random()*cssH,8,0.32);
+    ambT=3+Math.random()*5;
+  }
+  // food bobbing handled in draw; remove eaten handled in updateFish
+  for(let i=foods.length-1;i>=0;i--){ foods[i].life=(foods[i].life||0)+dt; }
+  for(const f of fishes)updateFish(f,dt);
+  drawFishCanvas(t);
+  if(!has2dFallback){
+    uploadFish();
+    simulate();
+    render(t);
+  }else{
+    fallbackFrame(t);
+  }
+}
+requestAnimationFrame(frame);
+
+// expose for self-test
+window.__pond={feed,foods,fishes};
+})();
+</script>
+</body>
+</html>

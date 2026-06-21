@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>ENGRAVE — a living etching</title>
+<style>
+  html,body{margin:0;height:100%;background:#07060a;overflow:hidden;
+    font-family:"Cormorant Garamond",Georgia,"Times New Roman",serif;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;cursor:crosshair;}
+  #stage{position:fixed;inset:0;display:block;touch-action:none;}
+  /* engraved title plate */
+  #hud{position:fixed;left:0;right:0;top:0;pointer-events:none;z-index:5;
+    padding:26px 34px 0;display:flex;justify-content:space-between;align-items:flex-start;
+    mix-blend-mode:screen;}
+  #ttl{font-size:13px;letter-spacing:.62em;text-transform:uppercase;color:#e8c98a;
+    text-shadow:0 0 12px rgba(214,168,92,.5),0 1px 0 rgba(0,0,0,.8);font-weight:600;
+    opacity:.92;}
+  #ttl small{display:block;letter-spacing:.34em;font-size:9.5px;color:#b88a4a;margin-top:7px;
+    font-weight:600;opacity:.8;}
+  #plate{font-size:9.5px;letter-spacing:.34em;text-transform:uppercase;color:#9a7440;
+    text-align:right;line-height:1.9;opacity:.78;}
+  #plate b{color:#e8c98a;font-weight:600;}
+  #hint{position:fixed;left:0;right:0;bottom:18px;text-align:center;z-index:5;pointer-events:none;
+    font-size:10px;letter-spacing:.4em;text-transform:uppercase;color:#7d5e34;
+    mix-blend-mode:screen;transition:opacity 1.4s ease;opacity:.85;}
+  #hint b{color:#d6a85c;}
+  .fade{opacity:0 !important;}
+  @media(max-width:560px){
+    #hud{padding:18px 18px 0;}
+    #ttl{font-size:11px;letter-spacing:.42em;}
+    #plate{font-size:8px;letter-spacing:.22em;}
+    #hint{font-size:8.5px;letter-spacing:.28em;bottom:14px;}
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="hud">
+  <div id="ttl">Engrave<small>copperplate · living specimen</small></div>
+  <div id="plate"><b>drag</b> to scratch the burin<br><b>scroll / pinch</b> shifts the depth<br>release · the plate breathes</div>
+</div>
+<div id="hint">drag anywhere to <b>etch the light</b></div>
+
+<script>
+"use strict";
+(function(){
+const cv = document.getElementById('stage');
+const gl = cv.getContext('webgl', {antialias:false, premultipliedAlpha:false, alpha:false, preserveDrawingBuffer:false});
+const hint = document.getElementById('hint');
+
+/* ---------- WebGL fallback guard ---------- */
+if(!gl){
+  document.body.innerHTML='<div style="color:#c99;font:14px serif;padding:40px">WebGL unavailable.</div>';
+  return;
+}
+
+gl.getExtension('OES_standard_derivatives');
+
+let DPR = Math.min(window.devicePixelRatio||1, 2);
+let W=0,H=0, AR=1;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = Math.floor(innerWidth*DPR); H = Math.floor(innerHeight*DPR);
+  cv.width=W; cv.height=H; cv.style.width=innerWidth+'px'; cv.style.height=innerHeight+'px';
+  AR = innerWidth/innerHeight;
+  gl.viewport(0,0,W,H);
+}
+addEventListener('resize', resize);
+resize();
+
+/* ===================================================================
+   The "scratch field": a small RG texture that ping-pongs.
+   R = how much coating has been scratched away (revealed light), 0..1
+   G = freshness of the scratch (drives the hot bleed along grooves)
+   We seed it on load with a pre-etched specimen so first paint is art.
+=================================================================== */
+const SIM = 256;                    // simulation resolution (square, cheap)
+function makeTex(data){
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,SIM,SIM,0,gl.RGBA,gl.UNSIGNED_BYTE,data||null);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  return t;
+}
+// seed: a flowing pre-etched glyph so the canvas is never empty
+const seed = new Uint8Array(SIM*SIM*4);
+(function seedField(){
+  for(let y=0;y<SIM;y++){
+    for(let x=0;x<SIM;x++){
+      const i=(y*SIM+x)*4;
+      const u=x/SIM, v=y/SIM;
+      // a few sweeping engraved arcs (parametric ribbons)
+      const cx=0.5, cy=0.5;
+      const dx=u-cx, dy=v-cy;
+      const r=Math.sqrt(dx*dx+dy*dy);
+      const ang=Math.atan2(dy,dx);
+      let s=0;
+      // ---- a radiant engraved sun/eye emblem with real negative space ----
+      const R=r;
+      // (1) bright core disc
+      const core = Math.exp(-Math.pow(R/0.07,2));
+      // (2) thin iris ring (crisp, not a wide band)
+      const iris = Math.exp(-Math.pow((R-0.15)/0.035,2))*0.9;
+      // (3) radiating rays — distinct petals with dark gaps between them
+      const petal = Math.pow(Math.max(0,Math.cos(ang*9.0)), 6.0); // sharp petals
+      const rayEnv = Math.exp(-Math.pow((R-0.30)/0.13,2));
+      const rays = petal*rayEnv;
+      // (4) a single outer ring (engraved border)
+      const ring = Math.exp(-Math.pow((R-0.46)/0.018,2))*0.8;
+      // (5) faint corona flecks only along the rays
+      const fleck = Math.pow(Math.max(0,Math.cos(ang*9.0)),3.0)
+                  * Math.exp(-Math.pow((R-0.40)/0.06,2))*0.5;
+      s = core + iris + rays + ring + fleck;
+      // multiplicative dark mask so the plate between forms stays black
+      s = Math.min(1, s);
+      s *= 0.92; // keep a touch of headroom (nothing fully saturates)
+      s = Math.max(0, s);
+      seed[i]   = (s*255)|0;     // revealed
+      seed[i+1] = (s*40)|0;      // mild freshness so it glows a touch at first
+      seed[i+2] = 0;
+      seed[i+3] = 255;
+    }
+  }
+})();
+let texA = makeTex(seed);
+let texB = makeTex(null);
+
+// framebuffer
+const fbo = gl.createFramebuffer();
+function bindFBO(tex){
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+}
+
+/* ---------- shader plumbing ---------- */
+function sh(type, src){
+  const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)+"\n"+src);
+  return s;
+}
+function prog(vs,fs){
+  const p=gl.createProgram();
+  gl.attachShader(p, sh(gl.VERTEX_SHADER,vs));
+  gl.attachShader(p, sh(gl.FRAGMENT_SHADER,fs));
+  gl.bindAttribLocation(p,0,'p');
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  return p;
+}
+const quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+
+const VS = `attribute vec2 p; varying vec2 uv;
+void main(){ uv = p*0.5+0.5; gl_Position=vec4(p,0.0,1.0); }`;
+
+/* ---------- SIM update shader ----------
+   advect/diffuse light along an engraved curl-noise flow, decay (heal),
+   add new scratches under the burin. */
+const SIM_FS = `precision highp float;
+varying vec2 uv;
+uniform sampler2D field;
+uniform vec2 pen;        // pen pos in sim-uv
+uniform vec2 penPrev;
+uniform float penDown;   // 0/1
+uniform float penR;      // radius
+uniform float penPow;    // strength (speed)
+uniform float t;
+uniform float heal;      // decay rate
+
+// cheap value noise
+float hash(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
+float noise(vec2 p){
+  vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+  float a=hash(i), b=hash(i+vec2(1,0)), c=hash(i+vec2(0,1)), d=hash(i+vec2(1,1));
+  return mix(mix(a,b,f.x),mix(c,d,f.x),f.y);
+}
+float fbm(vec2 p){ float s=0.0,a=0.5; for(int k=0;k<4;k++){ s+=a*noise(p); p*=2.02; a*=0.5;} return s; }
+// curl of fbm -> divergence free flow that makes light crawl along grooves
+vec2 curl(vec2 p){
+  float e=0.035;
+  float n1=fbm(p+vec2(0.,e)), n2=fbm(p-vec2(0.,e));
+  float n3=fbm(p+vec2(e,0.)), n4=fbm(p-vec2(e,0.));
+  return vec2(n1-n2, n4-n3)/(2.0*e);
+}
+
+// distance to segment for the burin stroke
+float segd(vec2 p, vec2 a, vec2 b){
+  vec2 pa=p-a, ba=b-a; float h=clamp(dot(pa,ba)/max(dot(ba,ba),1e-6),0.,1.);
+  return length(pa-ba*h);
+}
+
+void main(){
+  vec2 px = vec2(1.0/256.0);
+  vec4 c = texture2D(field, uv);
+
+  // --- flow advection: pull from upstream along curl field ---
+  vec2 fl = curl(uv*3.2 + t*0.05);
+  // bias flow to follow existing grooves (gradient of revealed channel)
+  float gx = texture2D(field, uv+vec2(px.x,0.)).r - texture2D(field, uv-vec2(px.x,0.)).r;
+  float gy = texture2D(field, uv+vec2(0.,px.y)).r - texture2D(field, uv-vec2(0.,px.y)).r;
+  vec2 grad = vec2(-gy,gx); // along the groove (perpendicular to gradient)
+  fl = normalize(fl + grad*2.4 + 1e-4) ;
+  vec2 src = uv - fl*px*1.6;
+  vec4 adv = texture2D(field, src);
+
+  // freshness (G) advects + diffuses + decays fast -> the hot bleed
+  float fresh = adv.g*0.965;
+  float blur = ( texture2D(field,uv+vec2(px.x,0.)).g + texture2D(field,uv-vec2(px.x,0.)).g
+              + texture2D(field,uv+vec2(0.,px.y)).g + texture2D(field,uv-vec2(0.,px.y)).g )*0.25;
+  fresh = mix(fresh, blur, 0.28);
+
+  // revealed (R) slowly heals back (coating creeps in)
+  float rev = c.r*heal;
+
+  // --- new scratch from burin (segment penPrev->pen) ---
+  if(penDown>0.5){
+    float d = segd(uv, penPrev, pen);
+    // fine multi-line hatching: the burin lays several parallel grooves
+    float across = dot(uv-pen, normalize(vec2(-(pen-penPrev).y,(pen-penPrev).x)+1e-4));
+    float hatch = 0.55+0.45*sin(across*420.0);   // tine lines
+    float fall = smoothstep(penR, 0.0, d);
+    float amt = fall*(0.55+0.6*penPow)*mix(0.5,1.0,hatch);
+    rev = max(rev, amt);
+    fresh = max(fresh, amt*1.15);
+  }
+
+  rev = clamp(rev,0.0,1.0);
+  fresh = clamp(fresh,0.0,1.2);
+  gl_FragColor = vec4(rev, fresh, 0.0, 1.0);
+}`;
+
+/* ---------- RENDER shader: turn the field into a copper etching ---------- */
+const REN_FS = `#extension GL_OES_standard_derivatives : enable
+precision highp float;
+varying vec2 uv;
+uniform sampler2D field;
+uniform vec2 res;
+uniform float t;
+uniform float depth;     // scroll-driven palette/depth shift 0..1
+uniform vec2 mouse;      // screen uv (aspect corrected handled in js->here raw)
+uniform float aspect;
+
+float hash(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
+float noise(vec2 p){
+  vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+  float a=hash(i), b=hash(i+vec2(1,0)), c=hash(i+vec2(0,1)), d=hash(i+vec2(1,1));
+  return mix(mix(a,b,f.x),mix(c,d,f.x),f.y);
+}
+float fbm(vec2 p){ float s=0.0,a=0.5; for(int k=0;k<3;k++){ s+=a*noise(p); p*=2.03; a*=0.5;} return s; }
+
+// anti-aliased engraved line: 1.0 on the bright groove, fades at the edges,
+// width grows with tone (burin pressure). screen-space AA kills moire.
+float hatch(float coord, float w){
+  float tri = abs(fract(coord)-0.5)*2.0;     // 0 center -> 1 between lines
+  float aa = fwidth(coord)*1.6 + 0.001;
+  return smoothstep(w+aa, w-aa, tri);
+}
+
+void main(){
+  vec2 t1 = 1.0/res;
+  float rev   = texture2D(field, uv).r;
+  float fresh = texture2D(field, uv).g;
+
+  // --- field gradient -> groove direction (engraving follows the flow) ---
+  float l = texture2D(field, uv-vec2(t1.x,0.)).r;
+  float r = texture2D(field, uv+vec2(t1.x,0.)).r;
+  float d = texture2D(field, uv-vec2(0.,t1.y)).r;
+  float u = texture2D(field, uv+vec2(0.,t1.y)).r;
+  vec2  grad = vec2(r-l, u-d);
+  vec2  flow = normalize(vec2(-grad.y, grad.x) + 1e-5); // along iso-tone (the groove)
+  vec3  nrm  = normalize(vec3((l-r)*2.2,(d-u)*2.2,0.05));
+
+  // aspect-corrected position for hatching geometry
+  vec2 P = vec2(uv.x*aspect, uv.y);
+
+  // ============ TRUE ENGRAVED HATCHING (tone-masked, AA'd) ============
+  vec2 across = vec2(-flow.y, flow.x);
+  float freq = 95.0;                          // engraving line density
+  float wobble = fbm(P*6.0 + flow*2.0)*0.5;   // hand-cut imperfection
+  float tone = smoothstep(0.03, 0.80, rev);   // revealed tone
+
+  // primary grooves run along the flow; width grows with tone
+  float lw1 = mix(0.06, 0.80, tone);
+  float primary = hatch(dot(P,across)*freq + wobble*5.0, lw1);
+
+  // cross-hatch only in the deeper (brighter) tones
+  float cw = mix(0.0, 0.55, smoothstep(0.45,0.95,tone));
+  float cross = hatch(dot(P,flow)*freq*0.9 - wobble*4.0, cw);
+
+  // stipple in the faint transition zone -> classic etching mid-tone
+  float stip = smoothstep(0.55,0.9,fbm(P*70.0)) * smoothstep(0.04,0.30,rev)*(1.0-tone);
+
+  // crisp etched contour of the revealed shapes
+  float edge = smoothstep(0.0,0.16,abs(l-r)+abs(u-d)) * smoothstep(0.02,0.22,rev);
+
+  // combine, then MASK by tone so the bare plate stays clean black
+  float engrave = max(max(primary, cross*0.9), max(stip*0.6, edge*0.95));
+  engrave *= smoothstep(0.015, 0.12, rev);    // no lines where nothing is revealed
+
+  // ============ PLATE (black inked copperplate w/ paper grain) ============
+  float grain = fbm(P*180.0)*0.9;
+  float fiber = fbm(P*vec2(6.0,150.0))*0.5 + fbm(P*vec2(150.0,6.0))*0.5;
+  vec3 plate = vec3(0.026,0.022,0.034) + grain*0.016 + fiber*0.009;
+  float vig = smoothstep(1.30,0.20,length((uv-0.5)*vec2(aspect,1.0)));
+  plate *= mix(0.5,1.0,vig);
+
+  // ============ THE METAL UNDER THE COAT ============
+  // depth sweeps copper -> gold -> rose -> verdigris patina
+  vec3 copper = vec3(0.92,0.45,0.16);
+  vec3 gold   = vec3(1.00,0.82,0.36);
+  vec3 rose   = vec3(0.98,0.58,0.52);
+  vec3 patina = vec3(0.24,0.86,0.70);
+  vec3 metal = mix(copper, gold, smoothstep(0.0,0.40,depth));
+  metal = mix(metal, rose,   smoothstep(0.40,0.66,depth));
+  metal = mix(metal, patina, smoothstep(0.66,1.0,depth));
+  // spatial variety: warmer copper toward the rim, hotter gold at the core
+  float rr = length((uv-0.5)*vec2(aspect,1.0));
+  metal = mix(metal*vec3(1.06,0.92,0.78), metal*vec3(1.0,1.04,1.02), smoothstep(0.05,0.5,rr));
+
+  // thin-film iridescence riding the groove relief + viewing angle
+  float relief = (abs(l-r)+abs(u-d));
+  float film = relief*30.0 + dot(P,flow)*6.0 + t*0.4 + depth*3.0;
+  vec3 irid = 0.5+0.5*cos(vec3(film) + vec3(0.0,2.094,4.188));
+  metal = mix(metal, metal*0.55+irid*0.7, 0.22*smoothstep(0.1,0.6,relief));
+
+  // raking light across the burin grooves
+  vec3 L = normalize(vec3(cos(t*0.22)*0.75, 0.55, 0.85));
+  float spec = pow(max(dot(nrm,L),0.0), 10.0);
+  float diff = max(dot(nrm,L),0.0);
+
+  // breathing emission of the whole specimen
+  float breath = 0.55+0.45*sin(t*0.55 + length(uv-0.5)*4.0);
+
+  vec3 light = metal*(0.40+0.85*tone) + spec*vec3(1.0,0.95,0.85)*1.6
+             + diff*metal*0.35;
+  light += metal*0.10*breath;
+
+  // ============ HOT FRESH BLEED (molten light crawling new cuts) ============
+  vec3 hot = mix(vec3(1.0,0.50,0.12), vec3(1.0,0.97,0.80), clamp(fresh,0.0,1.0));
+  float pulse = 1.0 + 0.7*sin(t*4.0 + dot(P,flow)*40.0);
+  light += hot * clamp(fresh,0.0,1.2) * pulse * 1.3;
+
+  // composite engraved light over the inked plate
+  float reveal = clamp(engrave, 0.0, 1.0);
+  vec3 col = mix(plate, light, reveal);
+
+  // fresh cuts also brighten regardless of hatch (so a new stroke glows live)
+  col += hot * clamp(fresh,0.0,1.0) * 1.0;
+
+  // cursor: a cold burin gleam where it hovers
+  float md = length((uv-mouse)*vec2(aspect,1.0));
+  col += vec3(0.65,0.82,1.0)*0.07*smoothstep(0.09,0.0,md);
+  // faint inner ring (the burin tip)
+  col += vec3(1.0,0.9,0.7)*0.5*smoothstep(0.006,0.0,abs(md-0.012));
+
+  // film grain + soft filmic tonemap
+  col += (hash(uv*res+t)-0.5)*0.018;
+  col = col/(col+0.82);
+  col = pow(col, vec3(0.90));
+  col *= mix(0.62,1.0,vig);
+
+  gl_FragColor = vec4(col,1.0);
+}`;
+
+const simP = prog(VS, SIM_FS);
+const renP = prog(VS, REN_FS);
+
+// uniform locations
+const U = {
+  field: gl.getUniformLocation(simP,'field'),
+  pen: gl.getUniformLocation(simP,'pen'),
+  penPrev: gl.getUniformLocation(simP,'penPrev'),
+  penDown: gl.getUniformLocation(simP,'penDown'),
+  penR: gl.getUniformLocation(simP,'penR'),
+  penPow: gl.getUniformLocation(simP,'penPow'),
+  t: gl.getUniformLocation(simP,'t'),
+  heal: gl.getUniformLocation(simP,'heal'),
+};
+const R = {
+  field: gl.getUniformLocation(renP,'field'),
+  res: gl.getUniformLocation(renP,'res'),
+  t: gl.getUniformLocation(renP,'t'),
+  depth: gl.getUniformLocation(renP,'depth'),
+  mouse: gl.getUniformLocation(renP,'mouse'),
+  aspect: gl.getUniformLocation(renP,'aspect'),
+};
+
+function drawQuad(p){
+  gl.useProgram(p);
+  gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+}
+
+/* ---------- input ---------- */
+let pen={x:0.5,y:0.5}, penPrev={x:0.5,y:0.5}, penDown=0, penPow=0;
+let mouse={x:0.5,y:0.5};
+let depth=0.18, depthTarget=0.18;
+let interacted=false;
+
+function setPenFromEvent(cx,cy){
+  const x = cx/innerWidth, y = 1.0-(cy/innerHeight); // flip y for tex
+  penPrev = {x:pen.x,y:pen.y};
+  // speed -> power
+  const dx=(x-pen.x), dy=(y-pen.y);
+  const sp=Math.sqrt(dx*dx+dy*dy);
+  penPow = Math.min(1.0, sp*9.0);
+  pen={x,y};
+  mouse={x:cx/innerWidth, y:1.0-(cy/innerHeight)};
+}
+function hideHint(){ if(!interacted){ interacted=true; hint.classList.add('fade'); } }
+
+cv.addEventListener('pointerdown', e=>{ penDown=1; pen={x:e.clientX/innerWidth,y:1.0-e.clientY/innerHeight}; penPrev={...pen}; setPenFromEvent(e.clientX,e.clientY); hideHint(); cv.setPointerCapture(e.pointerId); });
+cv.addEventListener('pointermove', e=>{ mouse={x:e.clientX/innerWidth,y:1.0-e.clientY/innerHeight}; if(penDown) setPenFromEvent(e.clientX,e.clientY); });
+addEventListener('pointerup',  ()=>{ penDown=0; });
+addEventListener('pointercancel',()=>{ penDown=0; });
+
+addEventListener('wheel', e=>{ depthTarget = Math.min(1, Math.max(0, depthTarget + (e.deltaY>0?0.11:-0.11))); hideHint(); }, {passive:true});
+// pinch -> depth on touch
+let pinch0=null;
+cv.addEventListener('touchmove', e=>{
+  if(e.touches.length===2){
+    const a=e.touches[0],b=e.touches[1];
+    const d=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);
+    if(pinch0!=null){ depthTarget=Math.min(1,Math.max(0,depthTarget+(d-pinch0)*0.0012)); }
+    pinch0=d; penDown=0; hideHint();
+  }
+},{passive:true});
+cv.addEventListener('touchend', ()=>{ pinch0=null; });
+
+/* auto-demo: a slow ghost burin draws on its own until the user touches,
+   so even an untouched plate is visibly alive */
+let demoT=Math.random()*10;
+function demoStroke(time){
+  if(interacted) return;
+  demoT = time;
+  const a = time*0.00035;
+  const x = 0.5 + Math.cos(a*1.3)*0.26 + Math.cos(a*0.5)*0.1;
+  const y = 0.5 + Math.sin(a*1.7)*0.24 + Math.sin(a*0.9)*0.08;
+  penPrev={x:pen.x,y:pen.y};
+  pen={x,y};
+  penPow=0.35;
+  penDown=1;
+}
+
+/* ---------- main loop ---------- */
+let t0=performance.now();
+let frame=0;
+function loop(now){
+  const time=(now-t0)/1000;
+  frame++;
+  depth += (depthTarget-depth)*0.06;
+
+  if(!interacted) demoStroke(now);
+
+  // ---- simulate (a couple substeps for crisp flow) ----
+  const steps=2;
+  gl.disable(gl.BLEND);
+  gl.viewport(0,0,SIM,SIM);
+  for(let s=0;s<steps;s++){
+    bindFBO(texB);
+    gl.useProgram(simP);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texA);
+    gl.uniform1i(U.field,0);
+    gl.uniform2f(U.pen, pen.x, pen.y);
+    gl.uniform2f(U.penPrev, penPrev.x, penPrev.y);
+    gl.uniform1f(U.penDown, penDown);
+    gl.uniform1f(U.penR, 0.018 + penPow*0.05);
+    gl.uniform1f(U.penPow, penPow);
+    gl.uniform1f(U.t, time);
+    gl.uniform1f(U.heal, 0.9965);       // slow heal
+    drawQuad(simP);
+    // swap
+    const tmp=texA; texA=texB; texB=tmp;
+    // after first substep, stop re-adding the segment (avoid double-burn)
+    if(s===0 && penDown && !interacted){ /* keep demo light */ }
+  }
+  // demo turns the pen off between frames so it draws a continuous trail not a blob
+  if(!interacted) penDown=0;
+
+  // ---- render to screen ----
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0,0,W,H);
+  gl.useProgram(renP);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texA);
+  gl.uniform1i(R.field,0);
+  gl.uniform2f(R.res, SIM, SIM);
+  gl.uniform1f(R.t, time);
+  gl.uniform1f(R.depth, depth);
+  gl.uniform2f(R.mouse, mouse.x, mouse.y);
+  gl.uniform1f(R.aspect, AR);
+  drawQuad(renP);
+
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>

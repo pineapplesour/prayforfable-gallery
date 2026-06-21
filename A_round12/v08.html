@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>LEVIATHAN — 심해</title>
+<style>
+  :root{ color-scheme: dark; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#01040a; }
+  body{
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    cursor: crosshair;
+  }
+  #stage{ position:fixed; inset:0; display:block; }
+  /* layered canvases: far light/dust, then whale+plankton */
+  canvas{ position:fixed; inset:0; width:100%; height:100%; display:block; }
+  #c_back{ z-index:1; }
+  #c_main{ z-index:2; }
+
+  .ui{ position:fixed; z-index:5; pointer-events:none;
+       color:#cfe7ff; mix-blend-mode:screen; user-select:none; }
+  #title{
+    left:clamp(18px,4.2vw,64px); top:clamp(16px,3.6vh,40px);
+    letter-spacing:.42em; font-weight:200;
+    font-size:clamp(13px,1.5vw,20px);
+    text-shadow:0 0 22px rgba(80,150,220,.5);
+  }
+  #title b{ display:block; font-weight:600; letter-spacing:.30em;
+            font-size:clamp(26px,4.6vw,62px); line-height:.95;
+            background:linear-gradient(180deg,#eaf6ff,#5fa6e8 70%,#2b6bb0);
+            -webkit-background-clip:text; background-clip:text; color:transparent;
+            text-shadow:none; filter:drop-shadow(0 0 30px rgba(70,140,230,.45)); }
+  #sub{ left:clamp(18px,4.2vw,64px); bottom:clamp(16px,3.4vh,34px);
+        font-size:clamp(10px,1.05vw,13px); font-weight:300; letter-spacing:.24em;
+        opacity:.62; line-height:1.9; }
+  #sub i{ color:#7fd0ff; font-style:normal; opacity:.95; }
+  #depth{ right:clamp(16px,3vw,40px); top:50%; transform:translateY(-50%);
+          text-align:right; font-variant-numeric:tabular-nums;
+          font-size:clamp(10px,1vw,12px); letter-spacing:.2em; opacity:.5;
+          writing-mode:vertical-rl; }
+  #depthv{ display:inline-block; font-size:clamp(15px,1.8vw,24px); font-weight:500;
+           letter-spacing:.05em; color:#9fdcff; opacity:.92; }
+  #hint{ left:50%; bottom:clamp(14px,3vh,30px); transform:translateX(-50%);
+         text-align:center; font-size:clamp(9px,1vw,12px); letter-spacing:.32em;
+         opacity:.38; font-weight:300; transition:opacity 1.4s; }
+  .vig{ position:fixed; inset:0; z-index:4; pointer-events:none;
+        background:radial-gradient(130% 100% at 50% 38%,
+          rgba(0,0,0,0) 42%, rgba(0,2,8,.55) 86%, rgba(0,1,5,.92) 100%); }
+  @media (max-width:520px){
+    #depth{ display:none; }
+    #title{ letter-spacing:.3em; }
+  }
+</style>
+</head>
+<body>
+  <canvas id="c_back"></canvas>
+  <canvas id="c_main"></canvas>
+  <div class="vig"></div>
+
+  <div class="ui" id="title">심해<b>LEVIATHAN</b></div>
+  <div class="ui" id="sub">
+    움직여 — <i>해류</i> · 눌러 — <i>소나</i> · 스크롤 — <i>하강</i>
+  </div>
+  <div class="ui" id="depth"><span id="depthv">1200</span>&nbsp;m · ABYSS</div>
+  <div class="ui" id="hint">CLICK TO SEND A PULSE</div>
+
+<script>
+(()=>{
+"use strict";
+
+const back = document.getElementById('c_back');
+const main = document.getElementById('c_main');
+const bx = back.getContext('2d');
+const mx = main.getContext('2d');
+
+let W=0,H=0,DPR=1,DIAG=1;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  DIAG = Math.hypot(W,H);
+  for(const c of [back,main]){
+    c.width = Math.floor(W*DPR);
+    c.height= Math.floor(H*DPR);
+  }
+  bx.setTransform(DPR,0,0,DPR,0,0);
+  mx.setTransform(DPR,0,0,DPR,0,0);
+  buildSnow(); buildPlankton();
+}
+window.addEventListener('resize', resize);
+
+/* ---------- interaction state ---------- */
+const pointer = { x:.5, y:.42, tx:.5, ty:.42, has:false };
+let depth = 1200;           // metres
+let depthTarget = 1200;
+const DMIN=600, DMAX=4200;
+const pulses = [];          // sonar shockwaves
+
+function setPointer(px,py){
+  pointer.tx = px / W; pointer.ty = py / H; pointer.has=true;
+  hideHint();
+}
+let hintTimer=null, hintHidden=false;
+function hideHint(){
+  if(hintHidden) return; hintHidden=true;
+  document.getElementById('hint').style.opacity='0';
+}
+
+main.addEventListener('mousemove', e=> setPointer(e.clientX, e.clientY));
+main.addEventListener('mouseleave', ()=> pointer.has=false);
+function emitPulse(px,py){
+  pulses.push({ x:px, y:py, r:0, life:1, max: DIAG*1.05 });
+  if(pulses.length>6) pulses.shift();
+  hideHint();
+}
+main.addEventListener('mousedown', e=>{ setPointer(e.clientX,e.clientY); emitPulse(e.clientX,e.clientY); });
+main.addEventListener('touchstart', e=>{
+  const t=e.touches[0]; setPointer(t.clientX,t.clientY); emitPulse(t.clientX,t.clientY);
+}, {passive:true});
+main.addEventListener('touchmove', e=>{
+  const t=e.touches[0]; setPointer(t.clientX,t.clientY);
+}, {passive:true});
+window.addEventListener('wheel', e=>{
+  depthTarget = Math.max(DMIN, Math.min(DMAX, depthTarget + e.deltaY*0.6));
+}, {passive:true});
+// touch vertical drag -> depth (when two-axis)
+let lastTy=null;
+main.addEventListener('touchmove', e=>{
+  const t=e.touches[0];
+  if(lastTy!=null) depthTarget = Math.max(DMIN, Math.min(DMAX, depthTarget + (lastTy - t.clientY)*1.4));
+  lastTy=t.clientY;
+}, {passive:true});
+main.addEventListener('touchend', ()=> lastTy=null);
+
+/* ---------- color by depth ---------- */
+// returns palette interpolated across depth (shallower=teal, deeper=ink-violet)
+function pal(d){
+  const t = (d-DMIN)/(DMAX-DMIN); // 0..1
+  // top water hue
+  const top = mixc([10,40,70],[3,8,26], t);
+  const mid = mixc([8,60,96],[10,12,40], t);
+  const ray = mixc([120,200,255],[70,120,210], t);
+  const plk = mixc([120,235,255],[150,180,255], t);
+  return {t, top, mid, ray, plk};
+}
+function mixc(a,b,t){ return [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t]; }
+function rgba(c,a){ return `rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a})`; }
+
+/* ---------- marine snow (back layer) ---------- */
+let snow=[];
+function buildSnow(){
+  const n = Math.round( Math.min(W*H/5200, 360) );
+  snow = [];
+  for(let i=0;i<n;i++){
+    snow.push({
+      x: Math.random()*W, y: Math.random()*H,
+      z: Math.random(),                 // depth-in-layer for parallax/size
+      s: 0.6+Math.random()*2.2,
+      vy: 0.10+Math.random()*0.5,
+      ph: Math.random()*6.28, fr: .4+Math.random()*1.2
+    });
+  }
+}
+
+/* ---------- bioluminescent plankton (main layer) ---------- */
+let plk=[];
+function buildPlankton(){
+  const n = Math.round( Math.min(W*H/9000, 240) );
+  plk = [];
+  for(let i=0;i<n;i++){
+    plk.push({
+      x: Math.random()*W, y: Math.random()*H,
+      z: .3+Math.random()*.7,
+      r: .7+Math.random()*1.8,
+      glow: 0,                          // current excitation 0..1
+      ph: Math.random()*6.28, fr:.5+Math.random()*1.3,
+      vx:0, vy:0
+    });
+  }
+}
+
+/* ---------- the whale ---------- */
+// Built from a parametric centerline + thickness profile -> closed silhouette.
+// It "swims": centerline undulates; tail beats. Returns polygon points in screen space.
+const whale = {
+  cx:.5, cy:.5, len:1.0, dir:1, phase:0, beat:0, arc:1,
+  // smoothed pose
+  sx:.5, sy:.5
+};
+function whaleParams(){
+  // size scales with viewport; long sweeping body
+  const base = Math.min(W,H);
+  const L = Math.min(W*0.78, base*1.5);    // body length (snout->peduncle)
+  const TH = base*0.130;                    // max body half-thickness
+  return {L, TH};
+}
+
+// DORSAL (top) and VENTRAL (bottom) profiles along u in [0,1]
+//   u=0  : snout tip (front)
+//   u~1  : peduncle (tail stock) -> fluke attaches
+// Returned as fractions of TH. Asymmetric so the belly/jaw read like a whale.
+function profTop(u){
+  // smooth rounded head, slight dorsal hump, long taper to thin peduncle
+  if(u<0.16){                       // snout -> top of head: quick rise, rounded
+    const k=u/0.16; return 0.30 + 0.62*Math.sin(k*Math.PI*0.5);
+  } else if(u<0.46){                // shoulders, broadest, small dorsal hump
+    const k=(u-0.16)/0.30;
+    const hump = Math.exp(-Math.pow((u-0.30)/0.10,2))*0.16;
+    return 0.92 + hump - 0.06*k;
+  } else if(u<0.80){                // long taper toward tail stock
+    const k=(u-0.46)/0.34; return 0.86*(1-k) + 0.10;
+  } else {                          // peduncle pinch
+    const k=(u-0.80)/0.20; return 0.10*(1-k) + 0.045;
+  }
+}
+function profBot(u){
+  // big lower jaw at front (the rorqual chin), bulky belly, taper to peduncle
+  if(u<0.10){                       // jaw tip
+    const k=u/0.10; return 0.34 + 0.50*k;
+  } else if(u<0.30){                // throat/jaw bulge (largest under head)
+    const k=(u-0.10)/0.20; return 0.84 + 0.20*Math.sin(k*Math.PI);
+  } else if(u<0.50){                // belly, broad
+    const k=(u-0.30)/0.20; return 0.92 - 0.04*k;
+  } else if(u<0.80){                // taper
+    const k=(u-0.50)/0.30; return 0.88*(1-k) + 0.10;
+  } else {                          // peduncle
+    const k=(u-0.80)/0.20; return 0.10*(1-k) + 0.045;
+  }
+}
+
+// build whale silhouette polygon at time t, with pose (cx,cy in px, ang radians, flip)
+function whalePoly(time){
+  const {L,TH} = whaleParams();
+  const cx = whale.sx*W, cy = whale.sy*H;
+  const dir = whale.dir;                 // +1 -> facing/heading right
+  const beat = whale.beat;               // tail beat strength 0..1
+  const N = 60;
+  const top=[], bot=[], axis=[];
+  const swimT = time*0.0010;
+
+  // centerline = gentle body S-undulation + slow overall arc (diving curve)
+  // amplitude grows toward the tail; the peduncle leads the fluke beat.
+  function spineY(u){
+    const undul = Math.sin(u*3.4 - swimT*4.4) * TH*0.10*(0.15+u*1.1);
+    const arc   = (u-0.45)*(u-0.45)*TH*0.55*whale.arc;   // subtle banana arc
+    return undul + arc;
+  }
+  function spineAng(u){ // local slope of spine, for thickness normal
+    const e=0.01; return Math.atan2(spineY(u+e)-spineY(u-e), e*2*L/N*N) ;
+  }
+
+  let minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
+  for(let i=0;i<=N;i++){
+    const u = i/N;
+    const along = (u-0.44)*L;             // snout-forward centering
+    const ax = cx - dir*along;            // x decreases toward tail (whale heads +dir)
+    const ay = cy + spineY(u);
+    axis.push([ax,ay,u]);
+
+    // thickness normal ~ vertical (whale is long & low); slight tilt by slope
+    const tH = profTop(u)*TH;
+    const bH = profBot(u)*TH;
+    const tx=ax, ty=ay - tH;
+    const bxp=ax, byp=ay + bH;
+    top.push([tx,ty]); bot.push([bxp,byp]);
+    if(tx<minx)minx=tx; if(tx>maxx)maxx=tx;
+    if(ty<miny)miny=ty; if(byp>maxy)maxy=byp;
+  }
+
+  // ---- FLUKE: wide horizontal tail with two swept lobes + center notch ----
+  const tail = axis[N];                   // peduncle end
+  const tx = tail[0], ty = tail[1];
+  const sweep = Math.sin(swimT*4.4)*0.55*beat;      // up/down beat phase
+  const fl   = TH*1.55;                    // half-span of fluke (dramatic)
+  const reach= dir*TH*0.95;               // how far fluke extends past peduncle
+  const drop = TH*0.85;                    // vertical spread of each lobe
+  // base of fluke near peduncle, lobes spread back & out
+  const cyf = ty + sweep*TH*0.7;
+  const fluke = [
+    [tx,                 cyf - drop*0.10],
+    [tx - reach*0.55,    cyf - drop*0.55 - fl*0.05],
+    [tx - reach*1.15,    cyf - drop*0.85 - fl*0.02 - sweep*TH*0.5], // upper lobe tip
+    [tx - reach*0.95,    cyf - drop*0.35],
+    [tx - reach*0.45,    cyf - drop*0.04],     // notch top
+    [tx - reach*0.45,    cyf + drop*0.04],     // notch bot
+    [tx - reach*0.95,    cyf + drop*0.35],
+    [tx - reach*1.15,    cyf + drop*0.85 + fl*0.02 - sweep*TH*0.5], // lower lobe tip
+    [tx - reach*0.55,    cyf + drop*0.55 + fl*0.05],
+    [tx,                 cyf + drop*0.10],
+  ];
+  for(const p of fluke){ if(p[0]<minx)minx=p[0]; if(p[0]>maxx)maxx=p[0];
+    if(p[1]<miny)miny=p[1]; if(p[1]>maxy)maxy=p[1]; }
+
+  // ---- PECTORAL FLIPPER: long sickle flipper from the chest (u~0.30) ----
+  const uF=0.30; const aF = axis[Math.round(uF*N)];
+  const fx = aF[0], fy = aF[1] + profBot(uF)*TH*0.45;   // attach low on body
+  const finLen = TH*1.7;
+  const wob = Math.sin(swimT*4.4+0.8)*0.22*beat;
+  const ang = 1.15 + wob;                  // points down & slightly back
+  const nx = -dir*Math.cos(ang)*finLen;    // back
+  const ny =  Math.sin(ang)*finLen;        // down
+  const px = -dir*Math.sin(ang)*TH*0.16;   // width perp
+  const py =  Math.cos(ang)*TH*0.16;
+  const finPts = [
+    [fx - dir*TH*0.10, fy - TH*0.10],
+    [fx + nx*0.5 + px, fy + ny*0.5 + py],
+    [fx + nx + px*0.4, fy + ny + py*0.4],          // tip
+    [fx + nx - px,     fy + ny - py],
+    [fx + dir*TH*0.10 - px*0.5, fy + TH*0.18 - py*0.5]
+  ];
+
+  return {cx,cy,L,TH,top,bot,axis,fluke,finPts,
+          bbox:[minx,miny,maxx,maxy]};
+}
+
+// signed-ish distance helper for plankton scatter (cheap): nearest along approximation
+// We instead use the rasterised whale mask sampled from an offscreen path test.
+let whaleMaskPath=null;
+function buildWhalePath(geo){
+  const p=new Path2D();
+  // body outline
+  p.moveTo(geo.top[0][0],geo.top[0][1]);
+  for(let i=1;i<geo.top.length;i++) p.lineTo(geo.top[i][0],geo.top[i][1]);
+  for(let i=0;i<geo.fluke.length;i++) p.lineTo(geo.fluke[i][0],geo.fluke[i][1]);
+  for(let i=geo.bot.length-1;i>=0;i--) p.lineTo(geo.bot[i][0],geo.bot[i][1]);
+  p.closePath();
+  return p;
+}
+
+/* ---------- god rays (volumetric shafts from above) ---------- */
+function drawRays(time, P){
+  const t=time*0.00006;
+  bx.save();
+  bx.globalCompositeOperation='screen';
+  const shafts=5;
+  const originY = -H*0.22;
+  for(let i=0;i<shafts;i++){
+    const baseX = (i+0.5)/shafts*W + Math.sin(t*3 + i*1.7)*W*0.06
+                + (pointer.x-0.5)*W*0.10*(0.4+i*0.12);
+    const ox = baseX + Math.sin(t*1.3+i)*40;
+    const spread = W*(0.05+0.03*((i*53)%7)/7) + Math.sin(t*2+i)*8;
+    const a = (0.05 + 0.05*((i*31)%5)/5) * (1-P.t*0.55);
+    const g = bx.createLinearGradient(ox, originY, ox+spread*1.3, H*1.05);
+    g.addColorStop(0, rgba(P.ray, a*1.4));
+    g.addColorStop(0.55, rgba(P.ray, a*0.5));
+    g.addColorStop(1, rgba(P.ray, 0));
+    bx.fillStyle=g;
+    bx.beginPath();
+    bx.moveTo(ox- spread*0.18, originY);
+    bx.lineTo(ox+ spread*0.18, originY);
+    bx.lineTo(ox+ spread*1.5,  H*1.05);
+    bx.lineTo(ox- spread*1.2,  H*1.05);
+    bx.closePath(); bx.fill();
+  }
+  bx.restore();
+}
+
+/* ---------- caustic shimmer near surface (subtle) ---------- */
+function drawBackground(time, P){
+  // depth gradient
+  const g = bx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0, rgba(P.top, 1));
+  g.addColorStop(0.45, rgba(P.mid, 1));
+  g.addColorStop(1, rgba([P.mid[0]*0.4, P.mid[1]*0.4, P.mid[2]*0.55+4], 1));
+  bx.fillStyle=g; bx.fillRect(0,0,W,H);
+  // faint top glow (distant surface)
+  const sg = bx.createRadialGradient(W*0.5,-H*0.25,0, W*0.5,-H*0.25, H*1.1);
+  sg.addColorStop(0, rgba(P.ray, 0.16*(1-P.t*0.6)));
+  sg.addColorStop(1, rgba(P.ray,0));
+  bx.fillStyle=sg; bx.fillRect(0,0,W,H);
+}
+
+/* ---------- main loop ---------- */
+let t0=performance.now(), last=t0;
+let fps=60, frameAcc=0, frameN=0;
+let quality=1;             // 1 full, scales particle alpha if slow
+
+function step(now){
+  const dt = Math.min(50, now-last); last=now;
+  const time = now - t0;
+
+  // smooth pointer & depth
+  pointer.x += (pointer.tx - pointer.x)*0.08;
+  pointer.y += (pointer.ty - pointer.y)*0.08;
+  depth += (depthTarget - depth)*0.06;
+  document.getElementById('depthv').textContent = Math.round(depth);
+
+  const P = pal(depth);
+
+  // ---- whale pose: drifts slowly across, gentle vertical bob, follows current ----
+  // baseline cruise: slow horizontal travel looping
+  // slow ping-pong glide: stays mostly on-screen, brings full body+fluke into view.
+  const ph = time*0.000050;                  // ~125s full cycle
+  const swing = Math.sin(ph);                // -1..1
+  // whale heads in its travel direction; flip near the turns
+  whale.dir = (Math.cos(ph) >= 0) ? 1 : -1;
+  // horizontal: center +/- 28% of width (keeps the long body within frame margins)
+  let tcx = 0.50 + swing*0.26;
+  // gentle dive arc tied to direction & a slow vertical glide
+  let tcy = 0.52 + Math.sin(ph*1.7)*0.10 + (pointer.y-0.5)*0.10;
+  // banana-arc of the body bends with travel (down-curve when descending)
+  whale.arc += ((0.6 + 0.8*Math.cos(ph*1.7)*-1) - whale.arc)*0.01;
+  // parallax pull from pointer (the whale leans into current)
+  tcx += (pointer.x-0.5)*0.05;
+  whale.sx += (tcx - whale.sx)*0.012;
+  whale.sy += (tcy - whale.sy)*0.03;
+  // beat intensity: stronger when "swimming", eases
+  whale.beat += ((0.75+0.25*Math.sin(time*0.0007)) - whale.beat)*0.02;
+
+  const geo = whalePoly(time);
+  const path = buildWhalePath(geo);
+
+  // ================= BACK CANVAS =================
+  drawBackground(time, P);
+  drawRays(time, P);
+
+  // marine snow (parallax, gently sinking)
+  bx.save();
+  bx.globalCompositeOperation='screen';
+  const drift = (pointer.x-0.5);
+  for(const s of snow){
+    s.y += s.vy*(0.5+s.z)*dt*0.06;
+    s.x += (drift*(0.3+s.z*1.4))*dt*0.02 + Math.sin(time*0.0008*s.fr+s.ph)*0.12;
+    if(s.y>H+4){ s.y=-4; s.x=Math.random()*W; }
+    if(s.x<-6) s.x=W+6; else if(s.x>W+6) s.x=-6;
+    const tw = 0.45+0.55*Math.abs(Math.sin(time*0.001*s.fr+s.ph));
+    const a = (0.06+0.20*s.z)*tw*(1-P.t*0.3);
+    const r = s.s*(0.6+s.z*1.1);
+    bx.fillStyle = rgba([200,225,255], a);
+    bx.beginPath(); bx.arc(s.x,s.y,r,0,6.283); bx.fill();
+  }
+  bx.restore();
+
+  // ================= MAIN CANVAS =================
+  mx.clearRect(0,0,W,H);
+
+  // --- sonar pulses: expanding rings ---
+  for(let i=pulses.length-1;i>=0;i--){
+    const pu=pulses[i];
+    pu.r += dt*0.55;
+    pu.life = 1 - pu.r/pu.max;
+    if(pu.life<=0){ pulses.splice(i,1); continue; }
+    mx.save();
+    mx.globalCompositeOperation='screen';
+    mx.strokeStyle = rgba(P.plk, 0.45*pu.life*pu.life);
+    mx.lineWidth = 2.2;
+    mx.beginPath(); mx.arc(pu.x,pu.y,pu.r,0,6.283); mx.stroke();
+    mx.strokeStyle = rgba([255,255,255], 0.18*pu.life);
+    mx.lineWidth = 1;
+    mx.beginPath(); mx.arc(pu.x,pu.y,pu.r*0.96,0,6.283); mx.stroke();
+    mx.restore();
+  }
+
+  // --- plankton: excited by pointer proximity and by passing pulse wavefronts ---
+  mx.save();
+  mx.globalCompositeOperation='screen';
+  const mxp=pointer.x*W, myp=pointer.y*H;
+  for(const pk of plk){
+    // brownian + gentle current
+    pk.vx += (Math.sin(time*0.0006*pk.fr+pk.ph))*0.02 + (drift*0.08);
+    pk.vy += (Math.cos(time*0.0005*pk.fr+pk.ph))*0.02 + 0.02;
+    pk.vx*=0.92; pk.vy*=0.92;
+    pk.x += pk.vx*pk.z*dt*0.1; pk.y += pk.vy*pk.z*dt*0.1;
+    if(pk.x<0)pk.x+=W; else if(pk.x>W)pk.x-=W;
+    if(pk.y<0)pk.y+=H; else if(pk.y>H)pk.y-=H;
+
+    // pointer excitation
+    const dxp=pk.x-mxp, dyp=pk.y-myp; const dp=Math.hypot(dxp,dyp);
+    if(pointer.has && dp<150){
+      const e=(1-dp/150);
+      pk.glow = Math.min(1, pk.glow + e*0.18);
+      // push away from pointer (the body parts the water)
+      pk.vx += dxp/dp * e*0.5; pk.vy += dyp/dp * e*0.5;
+    }
+    // pulse wavefront excitation
+    for(const pu of pulses){
+      const d = Math.abs(Math.hypot(pk.x-pu.x, pk.y-pu.y) - pu.r);
+      if(d<26){ pk.glow = Math.min(1.3, pk.glow + (1-d/26)*0.9*pu.life); }
+    }
+    // whale-edge scatter: if plankton is inside or near whale mask, flee + flare
+    const bb=geo.bbox;
+    const inside = (pk.x>bb[0]&&pk.x<bb[2]&&pk.y>bb[1]&&pk.y<bb[3])
+                && mx.isPointInPath(path, pk.x*DPR, pk.y*DPR);
+    if(inside){
+      // push toward nearest edge using gradient of body center
+      const gx=pk.x-geo.cx, gy=pk.y-geo.cy; const gl=Math.hypot(gx,gy)||1;
+      pk.vx += gx/gl*0.9; pk.vy += gy/gl*0.9;
+      pk.glow = Math.min(1.3, pk.glow+0.12);
+    }
+
+    pk.glow *= 0.95;
+    const base = 0.10 + 0.06*pk.z;
+    const a = base + pk.glow*0.9;
+    const r = pk.r*(1+pk.glow*1.6)*(0.6+pk.z);
+    if(a>0.02){
+      mx.fillStyle = rgba(P.plk, Math.min(1,a));
+      mx.beginPath(); mx.arc(pk.x,pk.y,r,0,6.283); mx.fill();
+      if(pk.glow>0.25){ // bloom
+        mx.fillStyle = rgba(P.plk, pk.glow*0.18);
+        mx.beginPath(); mx.arc(pk.x,pk.y,r*3.4,0,6.283); mx.fill();
+      }
+    }
+  }
+  mx.restore();
+
+  // --- the whale silhouette ---
+  drawWhale(geo, path, time, P);
+
+  // depth pressure tint overlay (darker/bluer as you go deeper)
+  if(P.t>0.02){
+    mx.save();
+    mx.globalCompositeOperation='multiply';
+    mx.fillStyle = rgba([ 40+ P.t* -20, 50 - P.t*30, 90 - P.t*30 ], 0.06+P.t*0.10);
+    mx.fillRect(0,0,W,H);
+    mx.restore();
+  }
+
+  // perf adapt
+  frameAcc += dt; frameN++;
+  if(frameAcc>700){ fps = 1000/(frameAcc/frameN); frameAcc=0; frameN=0;
+    if(fps<42 && quality>0.55) quality-=0.08;
+    else if(fps>57 && quality<1) quality+=0.04;
+  }
+
+  requestAnimationFrame(step);
+}
+
+function drawWhale(geo, path, time, P){
+  // The whale is a near-silhouette: dark mass with a faint rim of scattered light
+  // and bioluminescent freckles along the back. It reads as negative space.
+  mx.save();
+
+  // 1) shadow/mass — slightly darker than water, with internal volume gradient
+  mx.save();
+  mx.clip(path);
+  const cx=geo.cx, cy=geo.cy, TH=geo.TH;
+  const bg = mx.createLinearGradient(cx, cy-TH, cx, cy+TH*1.2);
+  bg.addColorStop(0, rgba([ 6+P.t*2, 16, 34 ], 0.92));
+  bg.addColorStop(0.5,rgba([ 2, 6, 16 ], 0.97));
+  bg.addColorStop(1, rgba([ 0, 1, 6 ], 0.99));
+  mx.fillStyle=bg;
+  mx.fillRect(cx-geo.L, cy-TH*3, geo.L*2.2, TH*6);
+
+  // top-lit dorsal sheen (light from surface skimming the back)
+  mx.globalCompositeOperation='screen';
+  const sheen = mx.createLinearGradient(cx, cy-TH*1.1, cx, cy+TH*0.1);
+  sheen.addColorStop(0, rgba(P.ray, 0.20*(1-P.t*0.5)));
+  sheen.addColorStop(1, rgba(P.ray, 0));
+  mx.fillStyle=sheen;
+  mx.fillRect(cx-geo.L, cy-TH*3, geo.L*2.2, TH*6);
+  mx.restore();
+
+  // 2) pectoral fin + body share the silhouette: draw fin mass
+  mx.save();
+  mx.fillStyle = rgba([2,7,18], 0.95);
+  mx.beginPath();
+  mx.moveTo(geo.finPts[0][0],geo.finPts[0][1]);
+  for(let i=1;i<geo.finPts.length;i++) mx.lineTo(geo.finPts[i][0],geo.finPts[i][1]);
+  mx.closePath(); mx.fill();
+  mx.restore();
+
+  // 3) rim light — light catching the leading/upper edge, with a soft halo
+  mx.save();
+  mx.globalCompositeOperation='screen';
+  mx.lineJoin='round'; mx.lineCap='round';
+  const tracePath=()=>{
+    mx.beginPath();
+    mx.moveTo(geo.top[0][0],geo.top[0][1]);
+    for(let i=1;i<geo.top.length;i++) mx.lineTo(geo.top[i][0],geo.top[i][1]);
+  };
+  // wide soft bioluminescent halo along the back (the water glows where it parts)
+  tracePath();
+  mx.strokeStyle = rgba(P.plk, 0.10*(1-P.t*0.3));
+  mx.lineWidth=9; mx.stroke();
+  tracePath();
+  mx.strokeStyle = rgba(P.plk, 0.14);
+  mx.lineWidth=4; mx.stroke();
+  // crisp rim
+  tracePath();
+  mx.strokeStyle = rgba(P.ray, 0.55*(1-P.t*0.4));
+  mx.lineWidth=1.8; mx.stroke();
+  tracePath();
+  mx.strokeStyle = rgba([225,242,255], 0.22);
+  mx.lineWidth=0.7; mx.stroke();
+  // fluke edge
+  mx.beginPath();
+  mx.moveTo(geo.fluke[0][0],geo.fluke[0][1]);
+  for(let i=1;i<geo.fluke.length;i++) mx.lineTo(geo.fluke[i][0],geo.fluke[i][1]);
+  mx.strokeStyle = rgba(P.plk, 0.30);
+  mx.lineWidth=1.2; mx.stroke();
+  mx.restore();
+
+  // 4) bioluminescent freckles riding the back (a soft constellation)
+  mx.save();
+  mx.globalCompositeOperation='screen';
+  const N=geo.top.length;
+  for(let i=2;i<N-2;i+=1){
+    const u=i/N;
+    if(u<0.08||u>0.78) continue;
+    const a = (Math.sin(u*40 + time*0.002)+1)*0.5;
+    if(a<0.55) continue;
+    const px=geo.top[i][0], py=geo.top[i][1];
+    // settle just inside the back
+    const insetX = px, insetY = py + geo.TH*0.10*(0.5+u);
+    const tw = 0.4+0.6*Math.abs(Math.sin(time*0.003 + i));
+    const rr = 1.3*tw;
+    mx.fillStyle = rgba(P.plk, 0.5*tw);
+    mx.beginPath(); mx.arc(insetX, insetY, rr, 0, 6.283); mx.fill();
+    mx.fillStyle = rgba(P.plk, 0.10*tw);
+    mx.beginPath(); mx.arc(insetX, insetY, rr*4, 0, 6.283); mx.fill();
+  }
+  mx.restore();
+
+  // 5) eye — a single faint luminous point at the jaw corner (low, behind head)
+  const uEye=0.185;
+  const eIdx = Math.round(uEye*(geo.axis.length-1));
+  const ea = geo.axis[eIdx];
+  const ex = ea[0], ey = ea[1] + geo.TH*0.34;   // low on the head
+  const ePulse = 0.55+0.45*Math.sin(time*0.0016);
+  mx.save();
+  mx.globalCompositeOperation='screen';
+  mx.fillStyle = rgba([180,230,255], 0.5*ePulse);
+  mx.beginPath(); mx.arc(ex,ey,2.4,0,6.283); mx.fill();
+  mx.fillStyle = rgba([150,210,255], 0.14*ePulse);
+  mx.beginPath(); mx.arc(ex,ey,11,0,6.283); mx.fill();
+  mx.restore();
+
+  mx.restore();
+}
+
+resize();
+requestAnimationFrame(step);
+
+// idle: auto-emit a gentle pulse once so first viewers see the effect (after a beat)
+setTimeout(()=>{ if(pulses.length===0 && !hintHidden) emitPulseSoft(); }, 4200);
+function emitPulseSoft(){
+  pulses.push({ x:whale.sx*W, y:whale.sy*H, r:0, life:1, max: DIAG*0.9 });
+}
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>無限階段 — Impossible Ascent</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#070710; }
+  body { font-family:"Helvetica Neue",Arial,"Apple SD Gothic Neo","Noto Sans KR",sans-serif; }
+  #stage { position:fixed; inset:0; touch-action:none; display:block; cursor:crosshair; }
+  #view {
+    position:fixed; left:0; top:0; padding:20px 22px; z-index:5;
+    pointer-events:none; user-select:none; mix-blend-mode:screen; color:#d3d9ff; line-height:1.5;
+  }
+  #view .title { font-size:13px; letter-spacing:.46em; font-weight:300; opacity:.9; }
+  #view .sub   { font-size:10px; letter-spacing:.32em; font-weight:300; opacity:.45; margin-top:7px; }
+  #hint {
+    position:fixed; right:18px; bottom:16px; z-index:5; text-align:right;
+    color:#9aa3d8; font-size:10px; letter-spacing:.18em; opacity:.42;
+    pointer-events:none; user-select:none; mix-blend-mode:screen; line-height:1.7;
+  }
+  @media (max-width:480px){
+    #view{ padding:15px 16px; }
+    #view .title{ font-size:11px; letter-spacing:.36em; }
+    #hint{ font-size:9px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="view">
+  <div class="title">無 限 階 段</div>
+  <div class="sub">PENROSE / IMPOSSIBLE / ENDLESS ASCENT</div>
+</div>
+<div id="hint">DRAG to orbit · SCROLL to climb forever · MOVE the light</div>
+
+<script>
+(() => {
+'use strict';
+
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', { alpha:false });
+
+let W=0,H=0,DPR=1,CX=0,CY=0,UNIT=1;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = (W*DPR)|0; cv.height = (H*DPR)|0;
+  cv.style.width = W+'px'; cv.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  CX = W*0.5; CY = H*0.52;
+  UNIT = Math.min(W,H) / 11.2;   // one step footprint in px
+}
+window.addEventListener('resize', resize, {passive:true});
+resize();
+
+const clamp=(v,a,b)=>v<a?a:(v>b?b:v);
+const lerp=(a,b,t)=>a+(b-a)*t;
+const TAU=Math.PI*2;
+
+// ---------------- interaction ----------------
+const I = {
+  orbit:0, orbitS:0,            // drag yaw (rotates whole figure in screen plane via iso basis swap-ish)
+  pitch:0.0, pitchS:0.0,
+  climb:0, climbS:0,            // scroll -> phase of the marching steps (endless ascent)
+  px:0.5, py:0.5, pxS:0.5, pyS:0.5,   // cursor (light position)
+  energy:0,
+  dragging:false, lx:0, ly:0
+};
+function setCursor(x,y){
+  I.px=clamp(x/W,0,1); I.py=clamp(y/H,0,1);
+}
+cv.addEventListener('pointermove', e=>{
+  setCursor(e.clientX,e.clientY);
+  if(I.dragging){
+    I.orbit = clamp(I.orbit + (e.clientX-I.lx)/W*1.6, -0.8, 0.8);
+    I.pitch = clamp(I.pitch + (e.clientY-I.ly)/H*0.9, -0.55, 0.55);
+    I.lx=e.clientX; I.ly=e.clientY;
+  }
+});
+cv.addEventListener('pointerdown', e=>{
+  I.dragging=true; I.lx=e.clientX; I.ly=e.clientY;
+  I.energy=Math.min(1,I.energy+0.85);
+  try{cv.setPointerCapture(e.pointerId);}catch(_){}
+});
+const up=()=>I.dragging=false;
+cv.addEventListener('pointerup',up); cv.addEventListener('pointercancel',up);
+cv.addEventListener('wheel', e=>{ e.preventDefault(); I.climb += e.deltaY*0.0022; }, {passive:false});
+let tY=null;
+cv.addEventListener('touchstart', e=>{ if(e.touches.length)tY=e.touches[0].clientY; }, {passive:true});
+cv.addEventListener('touchmove', e=>{
+  if(e.touches.length===1){ const t=e.touches[0]; if(tY!==null)I.climb+=(tY-t.clientY)*0.003; tY=t.clientY; setCursor(t.clientX,t.clientY); }
+}, {passive:true});
+cv.addEventListener('touchend', ()=>tY=null, {passive:true});
+
+// ---------------- Penrose staircase construction ----------------
+// We build the impossible loop in *screen space* directly. The loop is a square
+// of 4 flights. Each flight has STEPS_PER_FLIGHT steps. As you go around the
+// square once, you rise by exactly one full flight's worth of steps — but the
+// 2D iso projection makes the top step land visually on the bottom step, closing
+// the loop. This is the classic Penrose trick: it only "works" in projection.
+//
+// Iso basis (screen px per world unit). We keep a fixed isometric look but let
+// `orbit`/`pitch` warp the basis slightly for a live, hand-held feel without
+// breaking the illusion (small warps preserve the impossible join visually).
+//
+// World axes: A = along-east, B = along-north, U = up.
+// Step geometry: each step is a rectangular prism. We render its top + 2 sides.
+
+// ===== Axonometric Penrose construction (screen-anchor polyline) =====
+//
+// Each step is a cuboid. Steps are placed by walking a closed polyline of step
+// ANCHORS in a local (still-orthographic) frame. The frame has 3 unit screen
+// vectors: EX (one ground axis), EY (other ground axis), UP (vertical). All are
+// parallel-projection constants -> no perspective.
+//
+// A single step ALWAYS advances by:  forward(ground) + UP(rise).
+// Around the loop the ground direction turns 90 deg four times, so the four
+// flights' ground-forward vectors sum to ZERO (the square closes in plan).
+// The UP component, however, accumulates -> the figure really gains height.
+// THE PENROSE TRICK: we cancel that accumulated height by *also* drifting each
+// step a little in the -depth direction, i.e. every step the whole anchor moves
+// down-screen by exactly (totalRise / NSTEPS). That makes the polyline close in
+// SCREEN SPACE while each individual step still steps UP relative to its
+// neighbour. The contradiction (last step is "really" higher than first) is
+// hidden because the last steps are drawn first (back) and the first steps,
+// drawn last, paint over the seam at the near corner.
+
+const FLIGHTS = 4;
+const SPF = 6;                       // steps per flight
+const NSTEPS = FLIGHTS * SPF;        // 24 total steps
+const STEP_TH = 0.92;                // cuboid riser height (UP units)
+const HALF = 0.74;                   // half step width across the path (wider tread)
+
+// local frame unit vectors (set per frame in setBasis), in screen px
+const F = { exX:0,exY:0, eyX:0,eyY:0, upX:0,upY:0, riseY:0, runLen:0 };
+
+function setBasis(T){
+  const sc = UNIT;
+  const orbit = I.orbitS + Math.sin(T*0.05)*0.10;     // live sway + drag
+  const pitch = 0.72 + I.pitchS*0.40;                  // higher = more top-down, flat treads
+  const ang = Math.PI/6 + orbit;                       // ~30deg iso, orbitable
+  const run = sc*1.0;                                  // tread depth in screen px
+  // two ground axes 90deg apart in plan, projected
+  F.exX =  Math.cos(ang)*run;        F.exY =  Math.sin(ang)*run*pitch;
+  F.eyX =  Math.cos(ang+Math.PI*0.5)*run; F.eyY = Math.sin(ang+Math.PI*0.5)*run*pitch;
+  F.upX =  0;                        F.upY = -sc*0.62; // riser screen height
+  F.runLen = run;                                      // step run length
+}
+
+// ground-forward unit vector for a given flight (turns 90deg each flight)
+function flightDir(flight){
+  // flight 0:+EX, 1:+EY, 2:-EX, 3:-EY  -> sums to zero
+  switch(((flight%4)+4)%4){
+    case 0: return { x: F.exX, y: F.exY };
+    case 1: return { x: F.eyX, y: F.eyY };
+    case 2: return { x:-F.exX, y:-F.exY };
+    default:return { x:-F.eyX, y:-F.eyY };
+  }
+}
+function flightSide(flight){
+  // the across-path (width) vector = 90deg CW from forward
+  const d = flightDir(flight);
+  return { x: d.y, y: -d.x };       // perpendicular
+}
+
+// Per-step rise (UP units). Each step's tread sits this much above the previous
+// step's tread -> a real visible staircase. STEP_TH below should match so the
+// box top meets the next box bottom (closed risers).
+const RISE_PER_STEP = STEP_TH;      // each step = one riser tall -> seamless flight
+const CLOSE_FRAC = 0.93;            // <1 -> flights visibly climb; near-corner occludes seam
+// Anchor of step k = its FRONT-BOTTOM-CENTER in screen px.
+// Walk: each step moves forward by one tread (flightDir) and UP by one riser.
+// Then a uniform down-screen drift cancels the net rise so the loop closes in
+// screen space (Penrose). Because the drift is uniform, the *relative* riser
+// between adjacent steps is preserved -> they still clearly step up.
+function stepAnchor(k){
+  const kk = ((k % NSTEPS) + NSTEPS) % NSTEPS;
+  let x=0, y=0, done=0;
+  for(let fl=0; fl<FLIGHTS && done < kk; fl++){
+    const segSteps = Math.min(SPF, kk - done);
+    const d = flightDir(fl);
+    x += d.x * segSteps;
+    y += d.y * segSteps;
+    y += F.upY * RISE_PER_STEP * segSteps;   // rise (upY<0 -> goes up)
+    done += segSteps;
+  }
+  // closure drift per step. Cancelling 100% gives a flat ring (looks possible).
+  // We cancel only ~90% so each flight VISIBLY climbs up-screen; the leftover
+  // net rise over the loop is absorbed at the near corner by draw-order
+  // occlusion -> the eye reads a perpetual ascent that impossibly returns.
+  const driftY = -(F.upY * RISE_PER_STEP) * CLOSE_FRAC;
+  y += driftY * kk;
+  return { x: CX + x + ANCHOR_OFF.x, y: CY + y + ANCHOR_OFF.y };
+}
+// fixed recenter offset (computed once basis-independent-ish; recomputed cheap)
+const ANCHOR_OFF = { x:0, y:0 };
+function recenter(){
+  // average all integer-step anchors (pre-offset) and push center to (CX,CY-ish)
+  let sx=0, sy=0;
+  const save = { x:ANCHOR_OFF.x, y:ANCHOR_OFF.y };
+  ANCHOR_OFF.x=0; ANCHOR_OFF.y=0;
+  for(let k=0;k<NSTEPS;k++){ const a=stepAnchor(k); sx+=a.x-CX; sy+=a.y-CY; }
+  ANCHOR_OFF.x = -sx/NSTEPS;
+  ANCHOR_OFF.y = -sy/NSTEPS - UNIT*0.3;   // nudge up a touch
+}
+
+// ---------------- color ----------------
+const hsl=(h,s,l,a)=>`hsla(${((h%360)+360)%360},${s}%,${l}%,${a==null?1:a})`;
+
+// ---------------- main loop ----------------
+let t0=performance.now(), frames=0, last=t0, avgDt=16;
+function frame(now){
+  const dt=Math.min(40, now-last); last=now;
+  avgDt=lerp(avgDt,dt,0.1);
+  const T=(now-t0)*0.001; frames++;
+
+  I.orbitS=lerp(I.orbitS,I.orbit,0.07);
+  I.pitchS=lerp(I.pitchS,I.pitch,0.07);
+  I.climbS=lerp(I.climbS,I.climb,0.10);
+  I.pxS=lerp(I.pxS,I.px,0.08); I.pyS=lerp(I.pyS,I.py,0.08);
+  I.energy=Math.max(0,I.energy-dt*0.0016);
+
+  setBasis(T);
+  recenter();
+  drawBG(T);
+  drawStairs(T);
+  drawGrain();
+  requestAnimationFrame(frame);
+}
+
+// ---------------- background ----------------
+const STARS=[];
+for(let i=0;i<150;i++) STARS.push({x:Math.random(),y:Math.random(),z:0.25+Math.random()*0.75,s:Math.random()*1.5+0.3,ph:Math.random()*TAU});
+function drawBG(T){
+  const hb=(T*5)%360;
+  const g=ctx.createLinearGradient(0,0,0,H);
+  const eb=I.energy*8;
+  g.addColorStop(0, hsl(hb+225,40,6+eb*0.3));
+  g.addColorStop(0.5, hsl(hb+255,34,9+eb*0.4));
+  g.addColorStop(1, hsl(hb+205,30,3));
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+
+  const gx=CX+(I.pxS-0.5)*W*0.34, gy=CY+(I.pyS-0.5)*H*0.24;
+  const rg=ctx.createRadialGradient(gx,gy,0,gx,gy,Math.max(W,H)*0.7);
+  rg.addColorStop(0, hsl(hb+45,65,14+I.energy*16,0.55));
+  rg.addColorStop(0.5, hsl(hb+15,42,7,0.18));
+  rg.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=rg; ctx.fillRect(0,0,W,H);
+
+  for(const st of STARS){
+    const par=1-st.z;
+    let x=(st.x*W+(I.pxS-0.5)*par*120)%W; if(x<0)x+=W;
+    let y=(st.y*H+(I.pyS-0.5)*par*90+Math.sin(T*0.2+st.ph)*4)%H; if(y<0)y+=H;
+    const tw=0.4+0.6*Math.abs(Math.sin(T*0.8+st.ph));
+    ctx.beginPath();
+    ctx.fillStyle=hsl(hb+60,28,72,0.08+tw*0.2*st.z);
+    ctx.arc(x,y,st.s*st.z,0,TAU); ctx.fill();
+  }
+}
+
+// ---------------- the impossible staircase ----------------
+//
+// CLOSED PENROSE LOOP. The four flights tile a square. Within each flight the
+// steps rise by STEP_RISE. Crucially the height field is *periodic per flight*:
+// step k of every flight has height = k*STEP_RISE plus a per-flight base that is
+// chosen so that the TOP of the last step of one flight lands, in screen space,
+// exactly on the BOTTOM of the first step of the next flight — and the last
+// flight's top closes onto the first flight's bottom. Because every flight is
+// identical and we draw strictly back-to-front, the corner where the loop
+// "should" break is always occluded by a nearer, higher step. That occlusion is
+// what makes the impossible ascent read as continuous.
+//
+// We march the whole texture (steps slide along the loop) for the endless-climb
+// animation; because the field is loop-periodic the figure itself is invariant.
+
+// Build the cuboid corners for the step whose FRONT-BOTTOM-CENTER is `anchor`,
+// belonging to `flight`. We orient the cuboid by the flight's forward (run) and
+// side vectors. front-bottom-center is the anchor; the block extends:
+//   along -forward by 1 run (the tread runs backward into the figure),
+//   across by +/- HALF (side),
+//   up by STEP_TH.
+function stepCorners(anchor, flight){
+  const d = flightDir(flight);                 // forward (run) screen vec, len=UNIT
+  const sV = flightSide(flight);               // side screen vec, len=UNIT
+  const up = { x:F.upX*STEP_TH, y:F.upY*STEP_TH };
+  const hsX = sV.x*HALF, hsY = sV.y*HALF;
+  // front edge (near camera) at anchor +/- side ; back edge = front - forward
+  const fL = { x:anchor.x - hsX, y:anchor.y - hsY };          // front-left-bottom
+  const fR = { x:anchor.x + hsX, y:anchor.y + hsY };          // front-right-bottom
+  const bL = { x:fL.x + d.x, y:fL.y + d.y };                  // back-left-bottom
+  const bR = { x:fR.x + d.x, y:fR.y + d.y };                  // back-right-bottom
+  return {
+    // bottom
+    fLb:fL, fRb:fR, bLb:bL, bRb:bR,
+    // top (= bottom + up)
+    fLt:{x:fL.x+up.x,y:fL.y+up.y}, fRt:{x:fR.x+up.x,y:fR.y+up.y},
+    bLt:{x:bL.x+up.x,y:bL.y+up.y}, bRt:{x:bR.x+up.x,y:bR.y+up.y}
+  };
+}
+
+function drawStairs(T){
+  const hb=(T*5)%360;
+  const climb = I.climbS + T*0.16;            // endless ascent (scroll + auto)
+  // Geometry is STATIC (seam stays in one place, hidden). The endless-ascent
+  // illusion comes from the spectrum hue FLOWING along the steps + walkers
+  // marching up the loop. So anchors use fixed integer k.
+  const hueFlow = climb * 26;                  // degrees of hue scroll per loop
+
+  const steps=[];
+  for(let i=0;i<NSTEPS;i++){
+    const anchor = stepAnchor(i);
+    const flight = Math.floor(i/SPF);
+    steps.push({ i, k:i, anchor, flight });
+  }
+
+  // painter order: anchors lower on screen (bigger y) are nearer -> drawn last.
+  for(const s of steps) s.key = s.anchor.y;
+  steps.sort((p,q)=> p.key - q.key);
+  drawStairs._hueFlow = hueFlow;
+
+  const lightX=(I.pxS-0.5);
+  for(const s of steps) drawStep(s, hb, T, lightX, climb);
+
+  drawWalkers(T, hb, climb);
+}
+
+function drawStep(s, hb, T, lightX, climb){
+  const e=I.energy;
+  const C = stepCorners(s.anchor, s.flight);
+
+  const ribbon = s.i/NSTEPS;
+  // hue flows DOWN the loop (toward lower steps) so color appears to pour
+  // endlessly up the staircase -> reinforces the impossible perpetual ascent.
+  const localHue = hb + ribbon*330 + (drawStairs._hueFlow||0) + Math.sin(T*0.6+s.i*0.4)*8;
+  const shimmer = 0.5+0.5*Math.sin(s.i*0.9 - T*1.4 - (drawStairs._hueFlow||0)*0.04);
+
+  // ---- top face: fLt, fRt, bRt, bLt ----
+  ctx.beginPath();
+  ctx.moveTo(C.fLt.x,C.fLt.y); ctx.lineTo(C.fRt.x,C.fRt.y);
+  ctx.lineTo(C.bRt.x,C.bRt.y); ctx.lineTo(C.bLt.x,C.bLt.y); ctx.closePath();
+  const topL = 56 + shimmer*12 + e*14;
+  const tg=ctx.createLinearGradient(C.fLt.x,C.fLt.y,C.bRt.x,C.bRt.y);
+  tg.addColorStop(0, hsl(localHue,74,topL+6));
+  tg.addColorStop(1, hsl(localHue-14,68,topL-10));
+  ctx.fillStyle=tg; ctx.fill();
+
+  // ---- front face (the riser, facing camera): fLt,fRt,fRb,fLb ----
+  ctx.beginPath();
+  ctx.moveTo(C.fLt.x,C.fLt.y); ctx.lineTo(C.fRt.x,C.fRt.y);
+  ctx.lineTo(C.fRb.x,C.fRb.y); ctx.lineTo(C.fLb.x,C.fLb.y); ctx.closePath();
+  const fl = 34 + lightX*14 + e*8;
+  ctx.fillStyle=hsl(localHue,66,clamp(fl,14,54)); ctx.fill();
+
+  // ---- right side face: fRt,bRt,bRb,fRb ----
+  ctx.beginPath();
+  ctx.moveTo(C.fRt.x,C.fRt.y); ctx.lineTo(C.bRt.x,C.bRt.y);
+  ctx.lineTo(C.bRb.x,C.bRb.y); ctx.lineTo(C.fRb.x,C.fRb.y); ctx.closePath();
+  const sl = 22 - lightX*10 + e*6;
+  ctx.fillStyle=hsl(localHue-6,60,clamp(sl,9,44)); ctx.fill();
+
+  // ---- bright top edge along the front of the tread ----
+  ctx.beginPath();
+  ctx.moveTo(C.bLt.x,C.bLt.y); ctx.lineTo(C.fLt.x,C.fLt.y); ctx.lineTo(C.fRt.x,C.fRt.y);
+  ctx.strokeStyle=hsl(localHue,92,82,0.55+e*0.3);
+  ctx.lineWidth=1.1; ctx.lineJoin='round'; ctx.stroke();
+
+  // ---- glow seam where this step meets the next (front-top edge) ----
+  ctx.beginPath();
+  ctx.moveTo(C.fLt.x,C.fLt.y); ctx.lineTo(C.fRt.x,C.fRt.y);
+  ctx.strokeStyle=hsl(localHue+20,96,70,0.22+shimmer*0.20);
+  ctx.lineWidth=1.5; ctx.stroke();
+}
+
+// tiny luminous figures that climb the loop endlessly
+function drawWalkers(T, hb, climb){
+  const N=5;
+  for(let k=0;k<N;k++){
+    let pos = (climb*1.0 + k*(NSTEPS/N));
+    const a = stepAnchor(pos);
+    const flight = Math.floor((((pos%NSTEPS)+NSTEPS)%NSTEPS)/SPF);
+    const d = flightDir(flight);
+    // stand on the middle of the tread top
+    const up={x:F.upX*STEP_TH,y:F.upY*STEP_TH};
+    const foot={ x:a.x + d.x*0.5 + up.x, y:a.y + d.y*0.5 + up.y };
+    const bob=Math.sin(T*7+k*1.3)*1.4;
+    const figH=UNIT*0.17 + Math.sin(T*3+k)*1.4;
+    const hue=hb + (((pos%NSTEPS)+NSTEPS)%NSTEPS)/NSTEPS*330 + (drawStairs._hueFlow||0);
+    ctx.beginPath();
+    ctx.fillStyle=hsl(hue,96,74,0.20+I.energy*0.3);
+    ctx.arc(foot.x, foot.y-figH*0.5+bob, figH*0.7, 0, TAU); ctx.fill();
+    ctx.beginPath();
+    ctx.strokeStyle=hsl(hue,16,5,0.92); ctx.lineWidth=Math.max(1.8,UNIT*0.03); ctx.lineCap='round';
+    ctx.moveTo(foot.x, foot.y+bob); ctx.lineTo(foot.x, foot.y-figH+bob); ctx.stroke();
+    ctx.beginPath();
+    ctx.fillStyle=hsl(hue,20,7,0.94);
+    ctx.arc(foot.x, foot.y-figH-figH*0.22+bob, Math.max(2,UNIT*0.026), 0, TAU); ctx.fill();
+  }
+}
+
+// ---------------- film grain ----------------
+let gC=null,gX=null,gT=0;
+function drawGrain(){
+  if(!gC){ gC=document.createElement('canvas'); gC.width=100; gC.height=100; gX=gC.getContext('2d'); }
+  if((gT++%3)===0){
+    const id=gX.createImageData(100,100), d=id.data;
+    for(let i=0;i<d.length;i+=4){ const v=(Math.random()*255)|0; d[i]=d[i+1]=d[i+2]=v; d[i+3]=12; }
+    gX.putImageData(id,0,0);
+  }
+  const pat=ctx.createPattern(gC,'repeat');
+  ctx.save(); ctx.globalCompositeOperation='overlay'; ctx.fillStyle=pat; ctx.fillRect(0,0,W,H); ctx.restore();
+}
+
+requestAnimationFrame(frame);
+
+// ---------------- verification hooks ----------------
+window.__art={
+  state(){ return { frames, orbit:I.orbitS, pitch:I.pitchS, climb:I.climbS, px:I.pxS, py:I.pyS, energy:I.energy }; },
+  scrollBy(v){ I.climb+=v; },
+  pulse(){ I.energy=1; },
+  setOrbit(v){ I.orbit=v; }
+};
+})();
+</script>
+</body>
+</html>

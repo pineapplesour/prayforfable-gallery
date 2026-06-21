@@ -1,0 +1,968 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>GRAND ARENA TOURNEY</title>
+<style>
+  :root{ --ink:#cfe6d2; --bg:#0a0d0a; --dim:#5f7a62; --hot:#ff5a2a; --rail:#79e0ff; --shard:#ffd54a; }
+  html,body{ margin:0; height:100%; overflow:hidden; background:var(--bg); }
+  body{ font:13px/13px ui-monospace,"SF Mono",Menlo,Consolas,monospace; color:var(--ink); -webkit-user-select:none; user-select:none; touch-action:none; }
+  #wrap{ position:fixed; inset:0; }
+  #view{
+    position:absolute; inset:0; margin:0; white-space:pre; overflow:hidden;
+    font:inherit; letter-spacing:0; cursor:crosshair;
+    background:radial-gradient(120% 90% at 50% 38%, #11160f 0%, #070907 70%, #050605 100%);
+  }
+  /* HUD */
+  #hud{ position:absolute; inset:0; pointer-events:none; }
+  .bar{
+    position:absolute; bottom:10px; padding:6px 12px; border:1px solid #2c3a2d;
+    background:rgba(8,12,8,.72); border-radius:4px; font-size:13px; line-height:18px;
+    text-shadow:0 0 6px #000; backdrop-filter:blur(2px);
+  }
+  #hp{ left:12px; }
+  #wp{ left:50%; transform:translateX(-50%); text-align:center; }
+  #frags{ right:12px; text-align:right; }
+  .big{ font-size:20px; font-weight:700; }
+  .lab{ color:var(--dim); font-size:11px; letter-spacing:1px; }
+  #cross{
+    position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    color:#dfeede; font-size:18px; text-shadow:0 0 8px #000,0 0 4px #ff6a3a55; opacity:.85;
+  }
+  #flash{ position:absolute; inset:0; background:#ff2a00; opacity:0; pointer-events:none; transition:opacity .12s; }
+  #toast{
+    position:absolute; left:50%; top:18%; transform:translateX(-50%);
+    color:var(--shard); font-size:14px; text-shadow:0 0 8px #000; opacity:0; transition:opacity .25s;
+    white-space:nowrap; text-align:center;
+  }
+  #minimap{
+    position:absolute; top:10px; right:12px; white-space:pre; font-size:9px; line-height:9px;
+    color:#8fd29a; background:rgba(6,10,6,.6); border:1px solid #243; padding:5px 7px; border-radius:4px;
+    text-shadow:0 0 4px #000;
+  }
+  #credit{
+    position:absolute; left:50%; bottom:2px; transform:translateX(-50%);
+    color:#4d5c4f; font-size:10px; letter-spacing:.5px; pointer-events:none; text-align:center; width:96%;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  /* Overlays */
+  .ovl{
+    position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    text-align:center; background:rgba(6,9,6,.93); z-index:20; padding:24px; transition:opacity .5s;
+  }
+  .ovl h1{ font-size:36px; letter-spacing:8px; margin:0 0 6px; color:#e7f3e6; text-shadow:0 0 18px #2e9c4d; }
+  .ovl .sub{ color:var(--hot); letter-spacing:6px; font-size:13px; margin-bottom:22px; }
+  .ovl p{ max-width:560px; line-height:1.9; color:#a9c2ab; font-size:13px; margin:5px 0; }
+  .ovl .keys{ color:#7f9881; margin-top:18px; font-size:12px; line-height:1.8; }
+  .ovl b{ color:#e7f3e6; }
+  .btn{
+    margin-top:22px; pointer-events:auto; cursor:pointer; border:1px solid #3a7f4a;
+    background:#12351c; color:#dff5e1; padding:12px 30px; font:inherit; font-size:15px; letter-spacing:3px;
+    border-radius:5px; box-shadow:0 0 18px #1c5c2e88;
+  }
+  .btn:active{ transform:scale(.97); }
+  .hide{ opacity:0; pointer-events:none; }
+  .col-hot{color:var(--hot)} .col-rail{color:var(--rail)} .col-shard{color:var(--shard)}
+  /* touch controls */
+  #touch{ position:absolute; inset:0; z-index:8; display:none; }
+  .tbtn{
+    position:absolute; pointer-events:auto; border:1px solid #2c4a30; background:rgba(12,22,14,.5);
+    color:#cfe6d2; border-radius:50%; display:flex; align-items:center; justify-content:center;
+    font-size:18px; text-shadow:0 0 4px #000;
+  }
+  #pad{ left:14px; bottom:96px; width:150px; height:150px; }
+  #stick{ position:absolute; width:54px; height:54px; left:48px; top:48px; border-radius:50%;
+    background:rgba(80,140,90,.5); border:1px solid #6fb37c; pointer-events:none; }
+  .tact{ width:62px; height:62px; }
+  #fire{ right:18px; bottom:120px; width:84px; height:84px; background:rgba(120,40,20,.55); border-color:#a8492c; font-size:13px;}
+  #jump{ right:108px; bottom:60px; }
+  #swap{ right:22px; bottom:60px; }
+  @media (pointer:coarse){ #minimap{ font-size:8px; line-height:8px; } }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <pre id="view"></pre>
+  <div id="hud">
+    <div id="cross">+</div>
+    <pre id="minimap"></pre>
+    <div id="toast"></div>
+    <div class="bar" id="hp"></div>
+    <div class="bar" id="wp"></div>
+    <div class="bar" id="frags"></div>
+    <div id="credit">Quake (id Software)에서 영감 — © id Software. 본 작품은 오리지널 구현입니다.</div>
+    <div id="flash"></div>
+  </div>
+  <div id="touch">
+    <div class="tbtn" id="pad"><div id="stick"></div></div>
+    <div class="tbtn tact" id="fire">FIRE</div>
+    <div class="tbtn tact" id="jump">JMP</div>
+    <div class="tbtn tact" id="swap">WPN</div>
+  </div>
+
+  <div class="ovl" id="intro">
+    <h1>GRAND&nbsp;ARENA</h1>
+    <div class="sub">— BOT TOURNEY —</div>
+    <p>철강 격납고를 개조한 <b>그랜드 아레나</b>. 너는 토너먼트에 던져진 인간 출전자다.<br>
+    벽은 이 문서의 글자로 지어졌고, 적 봇 셋이 너를 노린다.</p>
+    <p>먼저 <b class="col-hot">20 프래그</b>를 따면 우승. 죽으면 즉시 리스폰.</p>
+    <p class="keys">
+      <b>WASD</b> 이동 · <b>마우스</b> 조준(화면 클릭=조준잠금) · <b>←→</b> 회전<br>
+      <b>좌클릭/Space</b> 발사 · <b>1 2 3 / 휠</b> 무기교체 · <b>Shift</b> 질주 · <b>F/E</b> 점프<br>
+      <span class="col-hot">RKT-9</span> 로켓(스플래시·로켓점프) · <span class="col-shard">SHARD</span> 연사 · <span class="col-rail">LANCE</span> 레일관통
+    </p>
+    <div class="btn" id="startBtn">ENTER ARENA</div>
+  </div>
+
+  <div class="ovl hide" id="over">
+    <h1 id="overTitle">VICTORY</h1>
+    <div class="sub" id="overSub"></div>
+    <p id="overBody"></p>
+    <div class="btn" id="againBtn">REMATCH</div>
+  </div>
+</div>
+
+<script>
+(() => {
+"use strict";
+
+/* ============================================================
+   GRAND ARENA TOURNEY
+   - DDA raycast ASCII renderer (lineage of 2_내부.html)
+   - Original Quake-inspired arena deathmatch. No assets copied.
+   ============================================================ */
+
+// ---- source text becomes wall material (homage to reference) ----
+const rawSrc = document.documentElement.outerHTML;
+const SRC = (rawSrc.replace(/[^\x21-\x7E]/g,"") || "GRANDARENA").slice(0, 60000);
+
+// ---- elements ----
+const view = document.getElementById("view");
+const hpEl = document.getElementById("hp");
+const wpEl = document.getElementById("wp");
+const fragsEl = document.getElementById("frags");
+const miniEl = document.getElementById("minimap");
+const toastEl = document.getElementById("toast");
+const flashEl = document.getElementById("flash");
+const crossEl = document.getElementById("cross");
+const introEl = document.getElementById("intro");
+const overEl = document.getElementById("over");
+
+// ============================================================
+// MAP  (original arena, 0=floor 1=wall 2=jumppad)
+// ============================================================
+// Open arena: wide plaza + symmetric cover pillars + perimeter lanes.
+// J = jump pad. Designed for sightlines & fast deathmatch flow.
+// Compact open arena (24x18) tuned for constant 4-fighter combat.
+// J = jump pad. Few cover pillars, long sightlines, no dead ends.
+const MAP = [
+"########################",
+"#......................#",
+"#..##....JJ......##....#",
+"#..##............##....#",
+"#.........####.........#",
+"#.....#...#..#...#.....#",
+"#.JJ..#..........#..JJ.#",
+"#.....#..........#.....#",
+"#.........#..#.........#",
+"#.........#..#.........#",
+"#.....#..........#.....#",
+"#.JJ..#..........#..JJ.#",
+"#.....#...#..#...#.....#",
+"#.........####.........#",
+"#..##............##....#",
+"#..##....JJ......##....#",
+"#......................#",
+"########################",
+];
+const MH = MAP.length, MW = MAP[0].length;
+const grid = [];
+const pads = [];
+for (let y=0;y<MH;y++){ grid[y]=[]; for (let x=0;x<MW;x++){
+  const c = MAP[y][x];
+  if (c === "#"){ grid[y][x]=1; }
+  else if (c === "J"){ grid[y][x]=0; pads.push([x+0.5,y+0.5]); }
+  else grid[y][x]=0;
+}}
+function isWall(x,y){ if(x<0||y<0||x>=MW||y>=MH) return true; return grid[y|0][x|0]===1; }
+const spawns = [
+  [2.5,2.5],[MW-2.5,2.5],[2.5,MH-2.5],[MW-2.5,MH-2.5],
+  [MW/2,2.5],[MW/2,MH-2.5],[2.5,MH/2],[MW-2.5,MH/2],
+  [MW/2-3.5,MH/2],[MW/2+3.5,MH/2],[MW/2,MH/2-2.5],[MW/2,MH/2+2.5]
+].filter(s=>!isWall(s[0],s[1]));
+// keep a valid spawn even if some are walls
+if(!spawns.length){ for(let y=1;y<MH-1;y++)for(let x=1;x<MW-1;x++) if(!isWall(x+0.5,y+0.5)) spawns.push([x+0.5,y+0.5]); }
+// pick a spawn maximizing min-distance to others, but if "near" requested cap the distance
+function openSpawn(awayFrom, near){
+  let best=spawns[0], bestScore=-1e9;
+  const shuf=[...spawns].sort(()=>Math.random()-0.5);
+  for (const s of shuf){
+    if (isWall(s[0],s[1])) continue;
+    let d=999;
+    for (const a of awayFrom){ d=Math.min(d, Math.hypot(s[0]-a[0],s[1]-a[1])); }
+    // far enough to not telefrag (>=4), but for bots prefer mid-range to the target
+    let score = d<4 ? -100+d : (near? -Math.abs(d-7) : d);
+    if (score>bestScore){ bestScore=score; best=s; }
+  }
+  return [best[0],best[1]];
+}
+
+// ============================================================
+// WEAPONS (original names)
+// ============================================================
+const WEAPONS = {
+  rkt:   { name:"RKT-9",  kind:"rocket",  dmg:55, splash:2.2, splashDmg:45, speed:9,  rate:0.85, spread:0,    color:"hot",   sym:"●", knock:6.5, ammo:Infinity },
+  shard: { name:"SHARD",  kind:"hitscan", dmg:9,  splash:0,   splashDmg:0,  speed:0,  rate:0.09, spread:0.07, color:"shard", sym:"·", range:14, knock:0.4 },
+  lance: { name:"LANCE",  kind:"rail",    dmg:42, splash:0,   splashDmg:0,  speed:0,  rate:1.05, spread:0,    color:"rail",  sym:"|", range:30, pierce:true, knock:1.5 },
+};
+const WORDER = ["rkt","shard","lance"];
+
+// ============================================================
+// STATE
+// ============================================================
+const TARGET_FRAGS = 20;
+const P = { x:2.5,y:2.5, dir:0, vz:0, z:0, hp:100, armor:0, wp:"rkt",
+            ammo:{rkt:Infinity,shard:200,lance:25}, frags:0, deaths:0, alive:true, respawnAt:0,
+            cooldown:0, bob:0, hurt:0, fire:0 };
+let bots = [];
+let projectiles = [];
+let pickups = [];
+let beams = []; // rail/hitscan tracer fx [{x0,y0,x1,y1,life,color}]
+let running=false, gameOver=false;
+let kills = 0;
+
+function spawnBots(){
+  const names=["VEX-7","HRKN","SABLE"];
+  const cols=["#ff7a4a","#79e0ff","#ffd54a"];
+  bots = names.map((n,i)=>{
+    const s=openSpawn([[P.x,P.y]], true);
+    return { name:n, color:cols[i], x:s[0],y:s[1], dir:Math.random()*6.28,
+      hp:75, maxhp:75, alive:true, respawnAt:0, cooldown:Math.random()*0.6,
+      wp:WORDER[i%3], frags:0, state:"roam", target:null, strafe:Math.random()<.5?1:-1,
+      strafeT:0, moveT:0, mvx:0,mvy:0 };
+  });
+}
+
+// pick an open (non-wall) cell near (x,y), spiral out if blocked
+function openNear(x,y){
+  if(!isWall(x,y)) return [x,y];
+  for(let r=1;r<6;r++) for(const [dx,dy] of [[r,0],[-r,0],[0,r],[0,-r],[r,r],[-r,-r],[r,-r],[-r,r]]){
+    if(!isWall(x+dx,y+dy)) return [x+dx,y+dy];
+  }
+  return [x,y];
+}
+function placePickups(){
+  const spec = [
+    { type:"health", x:MW/2+0.5, y:MH/2+0.5, val:35, sym:"+", color:"#5cff7a" },
+    { type:"armor",  x:3.5,      y:MH/2,     val:50, sym:"▲", color:"#79e0ff" },
+    { type:"armor",  x:MW-3.5,   y:MH/2,     val:50, sym:"▲", color:"#79e0ff" },
+    { type:"ammo",   x:MW/2+0.5, y:2.5,      wp:"lance", val:10, sym:"|", color:"#79e0ff" },
+    { type:"ammo",   x:MW/2+0.5, y:MH-2.5,   wp:"shard", val:80, sym:"·", color:"#ffd54a" },
+    { type:"health", x:4.5,      y:4.5,      val:25, sym:"+", color:"#5cff7a" },
+    { type:"health", x:MW-4.5,   y:MH-4.5,   val:25, sym:"+", color:"#5cff7a" },
+    { type:"mega",   x:MW/2+0.5, y:6.5,      val:100, sym:"✦", color:"#ff5a2a" },
+  ];
+  pickups = spec.map(s=>{ const [x,y]=openNear(s.x,s.y); return {...s, x, y, live:true, t:0, respawnAt:0}; });
+}
+
+function resetGame(){
+  P.x=2.5;P.y=2.5;P.dir=0.6;P.vz=0;P.z=0;P.hp=100;P.armor=0;P.wp="rkt";
+  P.ammo={rkt:Infinity,shard:200,lance:25};P.frags=0;P.deaths=0;P.alive=true;
+  P.cooldown=0;P.hurt=0;
+  const s=openSpawn([[MW/2,MH/2]]); P.x=s[0];P.y=s[1];
+  projectiles=[];beams=[];gameOver=false;kills=0;
+  spawnBots(); placePickups();
+}
+
+// ============================================================
+// RENDER  (DDA raycaster, ASCII)
+// ============================================================
+let W=120,H=44,CW=7.8;
+function fit(){
+  const probe=document.createElement("span");
+  probe.style.cssText="position:absolute;visibility:hidden;font:13px/13px ui-monospace,Menlo,monospace;white-space:pre";
+  probe.textContent="M".repeat(100); document.body.appendChild(probe);
+  CW=probe.getBoundingClientRect().width/100||7.8; probe.remove();
+  W=Math.max(60,Math.min(240,Math.floor(innerWidth/CW)-1));
+  H=Math.max(28,Math.min(70,Math.floor(innerHeight/13)));
+}
+fit(); addEventListener("resize",fit);
+
+const FLOOR=" ..::;+".split("");
+const CEIL = " ...`'".split("");
+const FOV=0.72; // half-plane scale
+const zbuf=new Float32Array(512);
+
+function texChar(ix,iy,tx,ty,d,side){
+  const dd = d + (side?1.4:0);
+  if (dd>15) return "·";
+  if (dd>11) return /[a-z0-9]/i.test(SRC[(ix*131+iy*37)%SRC.length])?":":".";
+  const seed=((ix*73856093)^(iy*19349663))>>>0;
+  const idx=(seed + ((tx*23)|0)*131 + ((ty*29)|0)*37) % SRC.length;
+  let ch=SRC[idx];
+  if (dd>6.5) return /[a-z0-9]/i.test(ch)?ch.toLowerCase():":";
+  return ch;
+}
+
+// world-space sprite list each frame: {x,y,sym,color,scale}
+let sprites=[];
+
+function render(){
+  const horizonBase=H*0.5;
+  const horizon = horizonBase + P.z*H*0.5 - Math.sin(P.bob)*1.4;
+  const cols=new Array(W);
+  const cosD=Math.cos(P.dir), sinD=Math.sin(P.dir);
+  const planeX=-sinD*FOV, planeY=cosD*FOV;
+  for (let x=0;x<W;x++){
+    const cam=(2*x)/W-1;
+    const rdx=cosD+planeX*cam, rdy=sinD+planeY*cam;
+    let mx=P.x|0,my=P.y|0;
+    const ddx=Math.abs(1/(rdx||1e-9)), ddy=Math.abs(1/(rdy||1e-9));
+    let sx,sy,sdx,sdy,side=0;
+    if(rdx<0){sx=-1;sdx=(P.x-mx)*ddx;}else{sx=1;sdx=(mx+1-P.x)*ddx;}
+    if(rdy<0){sy=-1;sdy=(P.y-my)*ddy;}else{sy=1;sdy=(my+1-P.y)*ddy;}
+    let hit=0,g=0;
+    while(!hit&&g++<96){
+      if(sdx<sdy){sdx+=ddx;mx+=sx;side=0;}else{sdy+=ddy;my+=sy;side=1;}
+      if(mx<0||my<0||mx>=MW||my>=MH||grid[my][mx])hit=1;
+    }
+    let dist=Math.max(0.05, side===0?sdx-ddx:sdy-ddy);
+    const corr=dist*Math.cos(Math.atan2(planeX*cam,1)); // keep perspective
+    const lh=Math.min(H*4,(H/dist)|0);
+    const ds=Math.max(0,(horizon-lh*0.5)|0);
+    const de=Math.min(H-1,(horizon+lh*0.5)|0);
+    let wallX=side===0?P.y+dist*rdy:P.x+dist*rdx; wallX-=wallX|0;
+    cols[x]={ds,de,mx,my,wallX,dist,lh,side};
+    if(x<zbuf.length) zbuf[x]=dist;
+  }
+
+  // build char grid
+  const buf=new Array(H);
+  for(let y=0;y<H;y++) buf[y]=new Array(W);
+  for(let x=0;x<W;x++){
+    const c=cols[x];
+    for(let y=0;y<H;y++){
+      if(y<c.ds){
+        const cd=(c.ds-y)/Math.max(1,horizon);
+        buf[y][x]=CEIL[Math.min(CEIL.length-1,(cd*CEIL.length)|0)]||" ";
+      } else if(y>c.de){
+        const fd=(y-horizon)/Math.max(1,(H-horizon));
+        buf[y][x]=FLOOR[Math.min(FLOOR.length-1,((fd)*FLOOR.length)|0)]||" ";
+      } else {
+        const ty=c.lh>0?(y-(horizon-c.lh*0.5))/c.lh:0;
+        buf[y][x]=texChar(c.mx,c.my,c.wallX,Math.abs(ty%1),c.dist,c.side);
+      }
+    }
+  }
+
+  // ---- sprite pass (bots, projectiles, pickups, beams) ----
+  // build sprite list
+  sprites=[];
+  for(const b of bots){ if(b.alive) sprites.push(botSprite(b)); }
+  for(const pr of projectiles){ sprites.push({x:pr.x,y:pr.y,glyph:pr.glyph||["●"],color:pr.col,scale:0.45,solid:false}); }
+  for(const pk of pickups){ if(pk.live) sprites.push({x:pk.x,y:pk.y,glyph:[pk.sym],color:pk.color,scale:0.55,bob:pk.t}); }
+
+  // depth sort far->near
+  for(const s of sprites){ s._d=(s.x-P.x)*(s.x-P.x)+(s.y-P.y)*(s.y-P.y); }
+  sprites.sort((a,b)=>b._d-a._d);
+
+  for(const s of sprites){
+    const relX=s.x-P.x, relY=s.y-P.y;
+    const invDet=1/(planeX*sinD - cosD*planeY || 1e-9);
+    const tx=invDet*(sinD*relX - cosD*relY);
+    const ty=invDet*(-planeY*relX + planeX*relY);
+    if(ty<=0.15) continue;
+    const sxScreen=((W/2)*(1+tx/ty))|0;
+    const dist=ty;
+    const sh=Math.min(H*3,Math.abs((H/ty)*s.scale)|0);
+    const sw=Math.max(1,(sh* (s.glyph.length>1?1.1:0.8))|0);
+    const vMove = s.bob!==undefined ? Math.sin(s.bob*3)*sh*0.18 : 0;
+    const cy=horizon + (s.scale<0.5?sh*0.4:sh*0.5) + vMove; // pickups float, bots stand on floor
+    const top=(cy-sh)|0, bot=cy|0;
+    const left=(sxScreen-sw*0.5)|0, right=(sxScreen+sw*0.5)|0;
+    const G=s.glyph; const gh=G.length;
+    for(let sxp=left;sxp<right;sxp++){
+      if(sxp<0||sxp>=W) continue;
+      if(sxp<zbuf.length && dist>=zbuf[sxp]) continue; // wall occlusion
+      const u=(sxp-left)/Math.max(1,(right-left));
+      for(let syp=top;syp<bot;syp++){
+        if(syp<0||syp>=H) continue;
+        const v=(syp-top)/Math.max(1,(bot-top));
+        const gline=G[Math.min(gh-1,(v*gh)|0)];
+        if(!gline||gline.length===0) continue;
+        const ci=Math.min(gline.length-1,(u*gline.length)|0);
+        const ch=gline[ci];
+        if(ch===" "||ch===undefined) continue;
+        buf[syp][sxp]=ch;
+      }
+    }
+    // tag color via span injection later — we store colored cells
+    s._screen={left,right,top,bot};
+  }
+
+  // ---- compose to colored HTML ----
+  // We color: walls = default; sprites colored by overlay map.
+  // For perf, color only sprite cells via a cell-color map.
+  const colorMap = {}; // "y,x" -> color
+  for(const s of sprites){
+    if(!s._screen) continue;
+    const {left,right,top,bot}=s._screen;
+    const G=s.glyph, gh=G.length;
+    for(let sxp=Math.max(0,left); sxp<Math.min(W,right); sxp++){
+      if(sxp<zbuf.length && s._d!==undefined){}
+      for(let syp=Math.max(0,top); syp<Math.min(H,bot); syp++){
+        // only mark cells we actually drew (non-space matches current buf char from this sprite)
+      }
+    }
+  }
+
+  // Simpler: re-rasterize sprite color directly while drawing -> use a parallel color buffer.
+  // (Recompute inline below for correctness & color.)
+  view.innerHTML = composeColored(buf, cols, horizon);
+
+  drawMinimap();
+}
+
+// color-aware composition: redo sprite raster into a color buffer
+function composeColored(buf, cols, horizon){
+  const cbuf=new Array(H); for(let y=0;y<H;y++) cbuf[y]=new Array(W).fill(null);
+  // wall shading color by distance
+  // (kept default ink for speed; only mark special)
+  // re-raster sprites for color
+  const cosD=Math.cos(P.dir), sinD=Math.sin(P.dir);
+  const planeX=-sinD*FOV, planeY=cosD*FOV;
+  for(const s of sprites){
+    const relX=s.x-P.x, relY=s.y-P.y;
+    const invDet=1/(planeX*sinD - cosD*planeY || 1e-9);
+    const tx=invDet*(sinD*relX - cosD*relY);
+    const ty=invDet*(-planeY*relX + planeX*relY);
+    if(ty<=0.15) continue;
+    const sxScreen=((W/2)*(1+tx/ty))|0;
+    const dist=ty;
+    const sh=Math.min(H*3,Math.abs((H/ty)*s.scale)|0);
+    const sw=Math.max(1,(sh*(s.glyph.length>1?1.1:0.8))|0);
+    const vMove = s.bob!==undefined ? Math.sin(s.bob*3)*sh*0.18 : 0;
+    const cy=horizon + (s.scale<0.5?sh*0.4:sh*0.5) + vMove;
+    const top=(cy-sh)|0, bot=cy|0;
+    const left=(sxScreen-sw*0.5)|0, right=(sxScreen+sw*0.5)|0;
+    const G=s.glyph, gh=G.length;
+    for(let sxp=left;sxp<right;sxp++){
+      if(sxp<0||sxp>=W) continue;
+      if(sxp<zbuf.length && dist>=zbuf[sxp]) continue;
+      const u=(sxp-left)/Math.max(1,(right-left));
+      for(let syp=top;syp<bot;syp++){
+        if(syp<0||syp>=H) continue;
+        const v=(syp-top)/Math.max(1,(bot-top));
+        const gline=G[Math.min(gh-1,(v*gh)|0)];
+        if(!gline||!gline.length) continue;
+        const ch=gline[Math.min(gline.length-1,(u*gline.length)|0)];
+        if(ch===" "||ch===undefined) continue;
+        cbuf[syp][sxp]=s.color;
+      }
+    }
+  }
+  // build html line by line, grouping by color
+  let out="";
+  for(let y=0;y<H;y++){
+    let line="", curColor=null, run="";
+    for(let x=0;x<W;x++){
+      let ch=buf[y][x];
+      const col=cbuf[y][x];
+      // wall depth dim
+      if(col!==curColor){
+        if(run) line += curColor? `<span style="color:${curColor}">${esc(run)}</span>` : esc(run);
+        run=""; curColor=col;
+      }
+      run+=ch;
+    }
+    if(run) line += curColor? `<span style="color:${curColor}">${esc(run)}</span>` : esc(run);
+    out += line + (y<H-1?"\n":"");
+  }
+  return out;
+}
+function esc(s){ return s.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+
+// bot drawn as an ASCII figure
+function botSprite(b){
+  const hpPct=b.hp/100;
+  const g = [
+    "  ▟█▙  ",
+    " ◢███◣ ",
+    "▐█▆█▆█▌",
+    " ▜███▛ ",
+    "  █ █  ",
+    " ▟   ▙ ",
+  ];
+  return { x:b.x, y:b.y, glyph:g, color:b.color, scale:0.62 };
+}
+
+// ============================================================
+// MINIMAP
+// ============================================================
+function drawMinimap(){
+  // build a char+color grid so we can show bots/pickups/player
+  const ch=[], col=[];
+  for(let y=0;y<MH;y++){ ch[y]=[]; col[y]=[];
+    for(let x=0;x<MW;x++){ ch[y][x]=grid[y][x]?"█":"·"; col[y][x]=grid[y][x]?"#3f5a42":"#1d2e20"; }
+  }
+  for(const pk of pickups){ if(pk.live){ const X=pk.x|0,Y=pk.y|0; if(ch[Y]){ ch[Y][X]="◆"; col[Y][X]=pk.color; } } }
+  for(const b of bots){ if(b.alive){ const X=b.x|0,Y=b.y|0; if(ch[Y]){ ch[Y][X]="✦"; col[Y][X]=b.color; } } }
+  const PX=P.x|0, PY=P.y|0;
+  if(ch[PY]){ ch[PY][PX]="◉"; col[PY][PX]="#eaffe6"; }
+  // facing arrow one cell ahead
+  const fX=(P.x+Math.cos(P.dir))|0, fY=(P.y+Math.sin(P.dir))|0;
+  if(ch[fY]&&ch[fY][fX] && !(fX===PX&&fY===PY) && !grid[fY][fX]){ ch[fY][fX]="∙"; col[fY][fX]="#9effb0"; }
+  let html="";
+  for(let y=0;y<MH;y++){
+    let line="", cur=null, run="";
+    for(let x=0;x<MW;x++){
+      const c=col[y][x];
+      if(c!==cur){ if(run) line+=`<span style="color:${cur}">${run}</span>`; run=""; cur=c; }
+      run+=ch[y][x];
+    }
+    if(run) line+=`<span style="color:${cur}">${run}</span>`;
+    html+=line+(y<MH-1?"\n":"");
+  }
+  miniEl.innerHTML=html;
+}
+
+// ============================================================
+// COMBAT
+// ============================================================
+function toast(msg,color){
+  toastEl.innerHTML=msg; toastEl.style.color=color||"#ffd54a"; toastEl.style.opacity="1";
+  clearTimeout(toast._t); toast._t=setTimeout(()=>toastEl.style.opacity="0",1400);
+}
+function hurtFlash(){ flashEl.style.opacity="0.5"; setTimeout(()=>flashEl.style.opacity="0",110); }
+
+function damagePlayer(d, fromName){
+  if(!P.alive) return;
+  let dmg=d;
+  if(P.armor>0){ const absorbed=Math.min(P.armor,dmg*0.6); P.armor-=absorbed; dmg-=absorbed; }
+  P.hp-=dmg; P.hurt=0.4; hurtFlash();
+  if(P.hp<=0){ playerDie(fromName); }
+}
+function playerDie(by){
+  P.alive=false; P.deaths++; P.hp=0;
+  P.respawnAt=performance.now()+1600;
+  toast(`${by||"아레나"}에게 격추됨 — 리스폰 중…`, "#ff7a4a");
+}
+function respawnPlayer(){
+  const s=openSpawn(bots.filter(b=>b.alive).map(b=>[b.x,b.y]));
+  P.x=s[0];P.y=s[1];P.hp=100;P.armor=Math.max(0,P.armor);P.alive=true;P.vz=0;P.z=0;
+  P.dir=Math.atan2(MH/2-P.y,MW/2-P.x);
+}
+
+function damageBot(b, d, splash){
+  if(!b.alive) return false;
+  if(window.__dbg) window.__dbg.botDmg++;
+  b.hp-=d;
+  if(b.hp<=0){
+    b.alive=false; b.respawnAt=performance.now()+1500;
+    P.frags++; kills++;
+    toast(`▸ ${b.name} 프래그! &nbsp;(${P.frags}/${TARGET_FRAGS})`, "#5cff7a");
+    if(P.frags>=TARGET_FRAGS){ endGame(true); }
+    return true;
+  }
+  return false;
+}
+function respawnBot(b){
+  const s=openSpawn([[P.x,P.y],...bots.filter(x=>x.alive).map(x=>[x.x,x.y])], true);
+  b.x=s[0];b.y=s[1];b.hp=75;b.alive=true;b.cooldown=0.6;b.wp=WORDER[(Math.random()*3)|0];
+}
+
+function fireWeapon(shooter, dir, fromPlayer){
+  const w = WEAPONS[shooter.wp];
+  const sp = (Math.random()-0.5)*w.spread*2;
+  const ang = dir + sp;
+  const ox = shooter.x + Math.cos(ang)*0.4, oy = shooter.y + Math.sin(ang)*0.4;
+  if(w.kind==="rocket"){
+    projectiles.push({ x:ox,y:oy, vx:Math.cos(ang)*w.speed, vy:Math.sin(ang)*w.speed,
+      owner:fromPlayer?"player":shooter, col:"#ff7a3a", glyph:["◉"], life:3,
+      dmg:w.dmg, splash:w.splash, splashDmg:w.splashDmg, knock:w.knock });
+  } else if(w.kind==="hitscan"||w.kind==="rail"){
+    hitscan(shooter, ang, w, fromPlayer);
+  }
+  if(fromPlayer){ P.fire=0.12; P.vz += w.kind==="rocket"?0:0; }
+}
+
+// distance from point (px,py) to ray origin (ox,oy)+t*(dx,dy), t in [0,maxT]
+function rayPointDist(ox,oy,dx,dy,px,py,maxT){
+  const t = Math.max(0, Math.min(maxT, (px-ox)*dx + (py-oy)*dy));
+  const cx=ox+dx*t, cy=oy+dy*t;
+  return { d:Math.hypot(px-cx,py-cy), t };
+}
+// march only to find the first wall along the ray (sub-cell resolution)
+function rayWallT(ox,oy,dx,dy,maxT){
+  const step=0.06;
+  for(let t=step; t<=maxT; t+=step){ if(isWall(ox+dx*t, oy+dy*t)) return t; }
+  return maxT;
+}
+function hitscan(shooter, ang, w, fromPlayer){
+  const ox=shooter.x, oy=shooter.y;
+  const dx=Math.cos(ang), dy=Math.sin(ang);
+  const wallT = rayWallT(ox,oy,dx,dy,w.range);   // ray stops at first wall
+  let endT = wallT;
+  const RAD=0.5;
+  if(fromPlayer){
+    // collect bots whose center is within RAD of the ray and in front of the wall
+    const hits=[];
+    for(const b of bots){
+      if(!b.alive) continue;
+      const r=rayPointDist(ox,oy,dx,dy,b.x,b.y,wallT);
+      if(r.d<RAD && r.t>0.1){ hits.push({b, t:r.t}); }
+    }
+    hits.sort((a,c)=>a.t-c.t);
+    if(w.pierce){
+      for(const h of hits){ damageBot(h.b, w.dmg); }            // rail pierces all
+    } else if(hits.length){
+      damageBot(hits[0].b, w.dmg); endT=hits[0].t;              // shard hits nearest only
+    }
+  } else {
+    if(P.alive){
+      const r=rayPointDist(ox,oy,dx,dy,P.x,P.y,wallT);
+      if(r.d<RAD && r.t>0.1){ damagePlayer(w.dmg, shooter.name); endT=r.t; }
+    }
+  }
+  beams.push({ x0:ox,y0:oy,x1:ox+dx*endT,y1:oy+dy*endT, life: w.kind==="rail"?0.32:0.06,
+    color: w.color==="rail"?"#79e0ff":"#ffe07a", kind:w.kind });
+}
+
+function updateProjectiles(dt){
+  for(const pr of projectiles){
+    const nx=pr.x+pr.vx*dt, ny=pr.y+pr.vy*dt;
+    pr.life-=dt;
+    let boom=false;
+    if(isWall(nx,ny)) boom=true;
+    // entity collision
+    if(pr.owner==="player"){
+      for(const b of bots){ if(b.alive && Math.hypot(b.x-nx,b.y-ny)<0.65){ boom=true; break; } }
+    } else {
+      if(P.alive && Math.hypot(P.x-nx,P.y-ny)<0.6) boom=true;
+    }
+    pr.x=nx; pr.y=ny;
+    if(pr.life<=0) boom=true;
+    if(boom){ explode(pr); pr.dead=true; }
+  }
+  projectiles=projectiles.filter(p=>!p.dead);
+}
+
+function explode(pr){
+  beams.push({burst:true,x:pr.x,y:pr.y,life:0.22,color:"#ffae5a"});
+  // splash to bots
+  for(const b of bots){
+    if(!b.alive) continue;
+    const d=Math.hypot(b.x-pr.x,b.y-pr.y);
+    if(d<pr.splash){
+      const f=1-d/pr.splash;
+      if(pr.owner==="player"){ damageBot(b, pr.dmg*(d<0.65?1:0)+pr.splashDmg*f); }
+      else if(pr.owner!=="player"){ damageBot(b, 0); }
+    }
+  }
+  // splash to player (incl. self for rocket jump!)
+  if(P.alive){
+    const d=Math.hypot(P.x-pr.x,P.y-pr.y);
+    if(d<pr.splash){
+      const f=1-d/pr.splash;
+      // knockback / rocket jump
+      const ang=Math.atan2(P.y-pr.y, P.x-pr.x);
+      const k=pr.knock*f;
+      const kx=Math.cos(ang)*k*0.16, ky=Math.sin(ang)*k*0.16;
+      moveEntity(P, kx, ky);
+      P.vz += k*0.5; // launch up -> rocket jump
+      if(pr.owner==="player"){
+        // self-damage reduced (encourage rocket jump)
+        damagePlayer(pr.splashDmg*f*0.35, "자기 로켓");
+      } else {
+        damagePlayer(pr.splashDmg*f, pr.owner.name||"봇 로켓");
+      }
+    }
+  }
+}
+
+// ============================================================
+// MOVEMENT
+// ============================================================
+function moveEntity(e, dx, dy){
+  const r=0.22;
+  if(!isWall(e.x+dx+Math.sign(dx)*r, e.y)) e.x+=dx;
+  if(!isWall(e.x, e.y+dy+Math.sign(dy)*r)) e.y+=dy;
+}
+
+function updatePlayer(dt){
+  if(!P.alive){
+    if(performance.now()>=P.respawnAt) respawnPlayer();
+    return;
+  }
+  const sprint = (keys["shift"]?1.6:1);
+  const ms=3.2*dt*sprint, rs=2.6*dt;
+  if(keys["arrowleft"]) P.dir-=rs;
+  if(keys["arrowright"]) P.dir+=rs;
+  const fx=Math.cos(P.dir), fy=Math.sin(P.dir);
+  let mvx=0,mvy=0;
+  if(keys["w"]||keys["arrowup"]){ mvx+=fx; mvy+=fy; }
+  if(keys["s"]||keys["arrowdown"]){ mvx-=fx; mvy-=fy; }
+  if(keys["a"]){ mvx+=fy; mvy-=fx; }
+  if(keys["d"]){ mvx-=fy; mvy+=fx; }
+  // touch stick
+  mvx+=touchMove.fx; mvy+=touchMove.fy;
+  const len=Math.hypot(mvx,mvy)||1;
+  if(Math.hypot(mvx,mvy)>0.01){
+    moveEntity(P, mvx/len*ms, mvy/len*ms);
+    P.bob += dt*10*sprint;
+  }
+  // jump / gravity
+  P.vz -= 9*dt;
+  P.z += P.vz*dt;
+  if(P.z<=0){ P.z=0; if(P.vz<0)P.vz=0; }
+  if((keys["f"]||keys["e"]||keys[" "]&&false) && P.z<=0.001){ P.vz=4.2; }
+  // jump pad
+  for(const pd of pads){ if(Math.hypot(P.x-pd[0],P.y-pd[1])<0.6 && P.z<0.2){ P.vz=7.2; toast("점프패드 ▲","#79e0ff"); } }
+  // pickups
+  for(const pk of pickups){
+    if(!pk.live) continue;
+    if(Math.hypot(P.x-pk.x,P.y-pk.y)<0.55){ grabPickup(pk); }
+  }
+  // cooldown / fire
+  if(P.cooldown>0) P.cooldown-=dt;
+  if(P.hurt>0) P.hurt-=dt;
+  if(P.fire>0) P.fire-=dt;
+  const wantFire = mouseDown || keys[" "] || touchFire;
+  if(wantFire && P.cooldown<=0 && P.ammo[P.wp]>0){
+    fireWeapon(P, P.dir, true);
+    P.cooldown=WEAPONS[P.wp].rate;
+    if(P.ammo[P.wp]!==Infinity) P.ammo[P.wp]--;
+    if(window.__dbg) window.__dbg.shots++;
+  }
+}
+
+function grabPickup(pk){
+  if(pk.type==="health"){ if(P.hp>=100&&pk.val<100) {return;} P.hp=Math.min(100,P.hp+pk.val); toast(`+${pk.val} 체력`,"#5cff7a"); }
+  else if(pk.type==="mega"){ P.hp=Math.min(200,P.hp+pk.val); toast("MEGA 체력 +100","#ff5a2a"); }
+  else if(pk.type==="armor"){ if(P.armor>=100){return;} P.armor=Math.min(100,P.armor+pk.val); toast(`+${pk.val} 아머`,"#79e0ff"); }
+  else if(pk.type==="ammo"){ if(P.ammo[pk.wp]>=999){return;} P.ammo[pk.wp]=(P.ammo[pk.wp]===Infinity?Infinity:P.ammo[pk.wp]+pk.val); toast(`+${pk.val} ${WEAPONS[pk.wp].name} 탄`, pk.color); }
+  pk.live=false; pk.respawnAt=performance.now()+ (pk.type==="mega"?12000:6000);
+}
+
+// ============================================================
+// BOT AI
+// ============================================================
+function updateBots(dt){
+  if(window.__BOTFREEZE) return;
+  for(const b of bots){
+    if(!b.alive){ if(performance.now()>=b.respawnAt) respawnBot(b); continue; }
+    const dxp=P.x-b.x, dyp=P.y-b.y;
+    const distP=Math.hypot(dxp,dyp);
+    const canSee = P.alive && lineOfSight(b.x,b.y,P.x,P.y);
+    const w=WEAPONS[b.wp];
+
+    if(canSee && P.alive){
+      if(window.__dbg) window.__dbg.botSee++;
+      b.state="fight";
+      // aim toward player with slight lead/error
+      const aim=Math.atan2(dyp,dxp);
+      const err=(Math.random()-0.5)*0.18*(distP/8+0.4);
+      b.dir += clampAngle(aim+err - b.dir)*Math.min(1,dt*7);
+      // movement: keep range, strafe
+      b.strafeT-=dt; if(b.strafeT<=0){ b.strafe=Math.random()<.5?1:-1; b.strafeT=0.6+Math.random()*1.2; }
+      const ideal = b.wp==="lance"?7: b.wp==="shard"?4.5:5.5;
+      let towards = distP>ideal? 1 : (distP<ideal*0.6? -1 : 0);
+      const fx=Math.cos(b.dir), fy=Math.sin(b.dir);
+      const sxv=-Math.sin(b.dir)*b.strafe*0.7, syv=Math.cos(b.dir)*b.strafe*0.7;
+      const sp=1.95*dt;
+      moveEntity(b, (fx*towards+sxv)*sp, (fy*towards+syv)*sp);
+      // fire
+      b.cooldown-=dt;
+      if(b.cooldown<=0 && Math.abs(clampAngle(aim-b.dir))<0.3){
+        fireWeapon(b, b.dir, false);
+        b.cooldown=w.rate*(1.2+Math.random()*0.6);
+        if(window.__dbg) window.__dbg.botShots=(window.__dbg.botShots||0)+1;
+      }
+    } else {
+      // HUNT: bots actively seek the player (tournament aggression) with light wander
+      b.state="hunt";
+      b.cooldown-=dt;
+      b.moveT-=dt;
+      if(b.moveT<=0 || (b.mvx===0&&b.mvy===0)){
+        // 75% head toward player's last-known area, 25% wander to break stalemates
+        let tx,ty;
+        if(P.alive && Math.random()<0.75){ tx=P.x; ty=P.y; }
+        else { tx=3+Math.random()*(MW-6); ty=3+Math.random()*(MH-6); }
+        const baseDir=Math.atan2(ty-b.y, tx-b.x);
+        b.dir=baseDir + (Math.random()-0.5)*0.6; // slight angle so they fan out
+        b.mvx=Math.cos(b.dir); b.mvy=Math.sin(b.dir);
+        b.moveT=0.7+Math.random()*1.1;
+      }
+      const sp=2.3*dt;
+      const before=[b.x,b.y];
+      moveEntity(b, b.mvx*sp, b.mvy*sp);
+      if(Math.hypot(b.x-before[0],b.y-before[1])<sp*0.35){ // stuck -> pick a fresh dir (wall-follow-ish)
+        b.moveT=0; b.dir+=(Math.random()<.5?1:-1)*(0.8+Math.random());
+        b.mvx=Math.cos(b.dir); b.mvy=Math.sin(b.dir);
+      }
+      // grab nearby health when hurt
+      for(const pk of pickups){
+        if(pk.live && (pk.type==="health"||pk.type==="mega") && b.hp<b.maxhp*0.7 && Math.hypot(b.x-pk.x,b.y-pk.y)<0.55){
+          b.hp=Math.min(b.maxhp,b.hp+pk.val); pk.live=false; pk.respawnAt=performance.now()+6000;
+        }
+      }
+    }
+  }
+}
+function clampAngle(a){ while(a>Math.PI)a-=2*Math.PI; while(a<-Math.PI)a+=2*Math.PI; return a; }
+function lineOfSight(x0,y0,x1,y1){
+  const d=Math.hypot(x1-x0,y1-y0); const steps=Math.ceil(d/0.2);
+  for(let i=1;i<steps;i++){ const t=i/steps; if(isWall(x0+(x1-x0)*t, y0+(y1-y0)*t)) return false; }
+  return true;
+}
+
+function updatePickups(){
+  const now=performance.now();
+  for(const pk of pickups){ pk.t+=0.05; if(!pk.live && pk.respawnAt && now>=pk.respawnAt){ pk.live=true; pk.respawnAt=0; } }
+}
+function updateBeams(dt){ for(const bm of beams){ bm.life-=dt; } beams=beams.filter(b=>b.life>0); }
+
+// ============================================================
+// HUD
+// ============================================================
+function updateHUD(){
+  const wp=WEAPONS[P.wp];
+  const ammo = P.ammo[P.wp]===Infinity?"∞":P.ammo[P.wp];
+  const hpc = P.hp>60?"#5cff7a":P.hp>25?"#ffd54a":"#ff5a2a";
+  hpEl.innerHTML = `<span class="lab">HEALTH</span> <span class="big" style="color:${hpc}">${Math.max(0,Math.ceil(P.hp))}</span>`
+    + (P.armor>0?`&nbsp;&nbsp;<span class="lab">ARMOR</span> <span class="big" style="color:#79e0ff">${Math.ceil(P.armor)}</span>`:``);
+  let wsel="";
+  for(const k of WORDER){
+    const a=P.ammo[k]===Infinity?"∞":P.ammo[k];
+    const cur = k===P.wp;
+    wsel += `<span style="opacity:${cur?1:0.4};color:${cur?`var(--${WEAPONS[k].color})`:'#9bb59d'}">${WEAPONS[k].name}<small style="opacity:.7">·${a}</small></span>&nbsp;&nbsp;`;
+  }
+  wpEl.innerHTML = `<div>${wsel}</div>`;
+  // frag table
+  const lines = [...bots.map(b=>`<span style="color:${b.color}">${b.name}</span> ${b.frags}`)];
+  fragsEl.innerHTML = `<span class="lab">FRAGS &nbsp;${P.frags}/${TARGET_FRAGS}</span><br><span class="big" style="color:#5cff7a">YOU ${P.frags}</span>`;
+  crossEl.style.color = P.fire>0? "#ffcaa0":"#dfeede";
+}
+
+// ============================================================
+// LOOP
+// ============================================================
+let lastT=performance.now(), acc=0;
+function loop(t){
+  const dt=Math.min(0.05,(t-lastT)/1000); lastT=t;
+  if(running && !gameOver){
+    updatePlayer(dt);
+    updateBots(dt);
+    updateProjectiles(dt);
+    updateBeams(dt);
+    updatePickups();
+  }
+  acc+=dt;
+  if(acc>1/40){ acc=0; render(); updateHUD(); }
+  requestAnimationFrame(loop);
+}
+
+// ============================================================
+// END / FLOW
+// ============================================================
+function endGame(win){
+  gameOver=true; running=false;
+  document.getElementById("overTitle").textContent = win?"VICTORY":"DEFEAT";
+  document.getElementById("overTitle").style.color = win?"#5cff7a":"#ff5a2a";
+  document.getElementById("overSub").textContent = win?"— TOURNEY CHAMPION —":"— ELIMINATED —";
+  document.getElementById("overBody").innerHTML =
+    `최종 프래그 <b>${P.frags}</b> · 사망 <b>${P.deaths}</b><br>` +
+    bots.map(b=>`<span style="color:${b.color}">${b.name}</span>`).join(" · ") + ` 를 상대로.`;
+  overEl.classList.remove("hide");
+}
+
+// ============================================================
+// INPUT
+// ============================================================
+const keys={};
+let mouseDown=false;
+addEventListener("keydown",e=>{
+  const k=e.key.toLowerCase();
+  keys[k]=true;
+  if(["arrowup","arrowdown","arrowleft","arrowright"," "].includes(k)) e.preventDefault();
+  if(k==="1") switchWeapon("rkt");
+  if(k==="2") switchWeapon("shard");
+  if(k==="3") switchWeapon("lance");
+  if(k==="q"){ cycleWeapon(-1); }
+});
+addEventListener("keyup",e=>{ keys[e.key.toLowerCase()]=false; });
+function switchWeapon(w){ if(WEAPONS[w]){ P.wp=w; } }
+function cycleWeapon(d){ const i=WORDER.indexOf(P.wp); P.wp=WORDER[(i+d+WORDER.length)%WORDER.length]; }
+addEventListener("wheel",e=>{ if(running){ cycleWeapon(e.deltaY>0?1:-1); e.preventDefault(); } },{passive:false});
+
+// mouse aim via pointer lock
+view.addEventListener("click",()=>{ if(running && !pointerLocked && !isTouch){ view.requestPointerLock&&view.requestPointerLock(); } });
+let pointerLocked=false;
+document.addEventListener("pointerlockchange",()=>{ pointerLocked=document.pointerLockElement===view; });
+addEventListener("mousemove",e=>{ if(pointerLocked){ P.dir += e.movementX*0.0024; } });
+addEventListener("mousedown",e=>{ if(running && (pointerLocked|| e.target===view || e.target===crossEl)) { mouseDown=true; } });
+addEventListener("mouseup",()=>{ mouseDown=false; });
+
+// touch
+let isTouch=false;
+const touchMove={fx:0,fy:0};
+let touchFire=false;
+const padEl=document.getElementById("pad"), stickEl=document.getElementById("stick");
+function setupTouch(){
+  document.getElementById("touch").style.display="block";
+  crossEl.style.fontSize="22px";
+  isTouch=true;
+  let padId=null, pcx=0,pcy=0;
+  padEl.addEventListener("touchstart",e=>{ const t=e.changedTouches[0]; padId=t.identifier; const r=padEl.getBoundingClientRect(); pcx=r.left+r.width/2; pcy=r.top+r.height/2; e.preventDefault(); },{passive:false});
+  addEventListener("touchmove",e=>{
+    for(const t of e.changedTouches){ if(t.identifier===padId){
+      let dx=t.clientX-pcx, dy=t.clientY-pcy; const m=Math.hypot(dx,dy)||1; const cl=Math.min(1,m/55);
+      dx/=m; dy/=m;
+      stickEl.style.left=(48+dx*cl*40)+"px"; stickEl.style.top=(48+dy*cl*40)+"px";
+      // forward = up on stick; turn via horizontal
+      const f=Math.cos(P.dir), s=Math.sin(P.dir);
+      touchMove.fx = -dy*cl*f; touchMove.fy = -dy*cl*s;
+      P.dir += dx*cl*0.05;
+    }}
+  },{passive:false});
+  addEventListener("touchend",e=>{
+    for(const t of e.changedTouches){ if(t.identifier===padId){ padId=null; touchMove.fx=touchMove.fy=0; stickEl.style.left="48px"; stickEl.style.top="48px"; } }
+  });
+  document.getElementById("fire").addEventListener("touchstart",e=>{touchFire=true;e.preventDefault();},{passive:false});
+  document.getElementById("fire").addEventListener("touchend",e=>{touchFire=false;});
+  document.getElementById("jump").addEventListener("touchstart",e=>{ if(P.z<=0.01)P.vz=4.2; e.preventDefault();},{passive:false});
+  document.getElementById("swap").addEventListener("touchstart",e=>{ cycleWeapon(1); e.preventDefault();},{passive:false});
+}
+addEventListener("touchstart",()=>{ if(!isTouch) setupTouch(); },{once:true});
+
+// ============================================================
+// START
+// ============================================================
+function startGame(){
+  resetGame();
+  introEl.classList.add("hide");
+  overEl.classList.add("hide");
+  running=true; gameOver=false;
+  if(!isTouch && !pointerLocked){ /* user can click to lock */ }
+}
+document.getElementById("startBtn").addEventListener("click",startGame);
+document.getElementById("againBtn").addEventListener("click",startGame);
+// keyboard enter starts too
+addEventListener("keydown",e=>{ if(!running && !gameOver && (e.key==="Enter"||e.key===" ")) startGame(); },{once:false});
+
+// boot: render an idle frame behind intro
+resetGame(); running=false;
+render();
+requestAnimationFrame(loop);
+
+// debug handle (harmless; used by self-verification)
+window.__G = { P, bots:()=>bots, proj:()=>projectiles, sprites:()=>sprites, start:startGame,
+  freeze:(v)=>{ window.__BOTFREEZE=v; },
+  faceBot:(i)=>{ const b=bots[i]; if(b){ P.dir=Math.atan2(b.y-P.y,b.x-P.x); } },
+  put:(bx,by,px,py)=>{ if(bots[0]){bots[0].x=bx;bots[0].y=by;bots[0].alive=true;bots[0].hp=100;} P.x=px;P.y=py; } };
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>TRACE / 살아있는 회로</title>
+<style>
+  :root { --bg:#04070a; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:var(--bg); cursor:crosshair; }
+  body { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; -webkit-tap-highlight-color:transparent; }
+  #stage { position:fixed; inset:0; display:block; }
+  .hud {
+    position:fixed; z-index:5; color:#7fffd4; pointer-events:none;
+    text-transform:uppercase; letter-spacing:.28em; mix-blend-mode:screen;
+    text-shadow:0 0 12px rgba(60,255,200,.55);
+  }
+  #title { top:26px; left:30px; font-size:13px; font-weight:600; }
+  #title b { color:#eafff7; font-weight:700; letter-spacing:.42em; }
+  #title span { display:block; margin-top:7px; font-size:10px; letter-spacing:.3em; color:#3fd7b0; opacity:.78; }
+  #legend { bottom:24px; left:30px; font-size:9.5px; line-height:1.85; color:#39c7a6; opacity:.72; }
+  #legend i { color:#ffd166; font-style:normal; }
+  #meta { bottom:24px; right:30px; font-size:9.5px; text-align:right; line-height:1.85; color:#39c7a6; opacity:.72; }
+  #meta b { color:#7fffd4; font-weight:600; }
+  @media (max-width:560px){
+    #title{ top:18px; left:18px; font-size:11px; }
+    #title b{ letter-spacing:.3em; }
+    #legend{ left:18px; bottom:18px; font-size:8.5px; }
+    #meta{ right:18px; bottom:18px; font-size:8.5px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="title" class="hud"><b>T R A C E</b><span>living circuit · signal routing</span></div>
+<div id="legend" class="hud">
+  마우스 — <i>자기장</i> 신호가 휘어짐<br>
+  클릭 / 탭 — <i>라우팅 펄스</i> 분사<br>
+  스크롤 / 드래그 — <i>에칭 색</i> 변조
+</div>
+<div id="meta" class="hud">NODES <b id="mNodes">0</b><br>SIGNALS <b id="mSig">0</b><br><b id="mFps">60</b> FPS</div>
+
+<script>
+(() => {
+"use strict";
+
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', { alpha:false });
+let W=0, H=0, DPR=1, CX=0, CY=0;
+let isMobile = false;
+
+// ---- color themes (etch hue shifts via scroll/drag) ----
+let hueShift = 0;            // animated target
+let hueTarget = 0;
+function pal(h){
+  // h in [0,1) -> family of related neon families
+  const base = (h*360);
+  return {
+    trace:  `hsl(${(base+150)%360} 70% 30%)`,
+    traceHi:`hsl(${(base+155)%360} 95% 58%)`,
+    pad:    `hsl(${(base+150)%360} 60% 22%)`,
+    sig:    (l)=>`hsl(${(base+165)%360} 100% ${l}%)`,
+    node:   `hsl(${(base+45)%360} 100% 62%)`,
+    glow:   (a)=>`hsla(${(base+170)%360} 100% 60% / ${a})`,
+    vcc:    `hsl(${(base+5)%360} 100% 60%)`,
+  };
+}
+
+// ---- resize ----
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  isMobile = W < 560;
+  cv.width = Math.round(W*DPR); cv.height = Math.round(H*DPR);
+  cv.style.width = W+'px'; cv.style.height = H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  CX = W/2; CY = H/2;
+  buildBoard();
+}
+
+// ===================================================================
+//  BOARD GRAPH  — nodes connected by Manhattan/45° copper traces.
+//  Signals travel edges; arriving signals "energize" the node.
+// ===================================================================
+let NODES=[], EDGES=[], SIGNALS=[], PULSES=[], FLOW=[];
+let GRID = 34;
+
+// segments of a trace path (sequence of points), with cached length
+function pathPoints(a, b){
+  // Route a -> b with a single dog-leg using a 45° diagonal segment
+  // mimicking PCB autorouting aesthetics.
+  const ax=a.x, ay=a.y, bx=b.x, by=b.y;
+  const dx=bx-ax, dy=by-ay;
+  const adx=Math.abs(dx), ady=Math.abs(dy);
+  const diag=Math.min(adx,ady);
+  const sx=Math.sign(dx)||1, sy=Math.sign(dy)||1;
+  const pts=[{x:ax,y:ay}];
+  // diagonal first, then straight (or vice versa based on parity for variety)
+  if((a.i+b.i)&1){
+    pts.push({x:ax+sx*diag, y:ay+sy*diag});
+    pts.push({x:bx, y:by});
+  } else {
+    // straight then diagonal
+    if(adx>ady){ pts.push({x:bx-sx*diag, y:ay}); }
+    else { pts.push({x:ax, y:by-sy*diag}); }
+    pts.push({x:bx, y:by});
+  }
+  // length cache
+  let len=0; const segLen=[];
+  for(let k=0;k<pts.length-1;k++){
+    const l=Math.hypot(pts[k+1].x-pts[k].x, pts[k+1].y-pts[k].y);
+    segLen.push(l); len+=l;
+  }
+  return {pts, segLen, len};
+}
+function lerpPath(path, t){ // t in [0,1] -> point + tangent
+  let d=t*path.len, k=0;
+  while(k<path.segLen.length-1 && d>path.segLen[k]){ d-=path.segLen[k]; k++; }
+  const a=path.pts[k], b=path.pts[k+1];
+  const sl=path.segLen[k]||1;
+  const f=Math.max(0,Math.min(1,d/sl));
+  return {
+    x:a.x+(b.x-a.x)*f, y:a.y+(b.y-a.y)*f,
+    tx:(b.x-a.x)/sl, ty:(b.y-a.y)/sl
+  };
+}
+
+function buildBoard(){
+  NODES=[]; EDGES=[]; SIGNALS=[]; PULSES=[]; FLOW=[];
+  GRID = isMobile ? 30 : 38;
+
+  // jittered grid of pads on a sub-grid -> organic but aligned look
+  const cols = Math.max(6, Math.floor(W/GRID));
+  const rows = Math.max(8, Math.floor(H/GRID));
+  const offX = (W-(cols-1)*GRID)/2;
+  const offY = (H-(rows-1)*GRID)/2;
+
+  // place nodes probabilistically; cap density on mobile
+  const density = isMobile?0.18:0.16;
+  const grid = {};
+  let idx=0;
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      if(Math.random()>density) continue;
+      const jx=(Math.random()-.5)*GRID*0.28;
+      const jy=(Math.random()-.5)*GRID*0.28;
+      const n={
+        i:idx, x:offX+c*GRID+jx, y:offY+r*GRID+jy,
+        r:1.6+Math.random()*2.2,
+        c, gr:r,
+        energy:0, base:Math.random(),
+        chip: Math.random()<0.10,   // some nodes are chips (square)
+        kind: Math.random()<0.5?'pad':'via',
+        deg:0
+      };
+      if(n.chip){ n.w = GRID*(0.7+Math.random()*0.9); n.h = GRID*(0.7+Math.random()*0.9); }
+      NODES.push(n);
+      grid[c+'_'+r]=n;
+      idx++;
+    }
+  }
+
+  // connect each node to a few nearby ones forming a routed net
+  const maxConn = isMobile?3:4;
+  for(const n of NODES){
+    // find candidate neighbors within radius, prefer aligned (horiz/vert/diag)
+    const cands=[];
+    for(const m of NODES){
+      if(m===n) continue;
+      const dx=m.x-n.x, dy=m.y-n.y;
+      const d=Math.hypot(dx,dy);
+      if(d < GRID*4.0 && d>4){
+        // alignment bonus
+        const ang=Math.atan2(Math.abs(dy),Math.abs(dx));
+        const aligned = Math.min(
+          Math.abs(ang), Math.abs(ang-Math.PI/4), Math.abs(ang-Math.PI/2)
+        );
+        cands.push({m,d, score:d + aligned*GRID*1.6});
+      }
+    }
+    cands.sort((p,q)=>p.score-q.score);
+    let added=0;
+    for(const cd of cands){
+      if(added>=maxConn) break;
+      if(n.deg>=maxConn || cd.m.deg>=maxConn+1) continue;
+      // avoid duplicate edges
+      if(EDGES.some(e=>(e.a===n&&e.b===cd.m)||(e.a===cd.m&&e.b===n))) continue;
+      const path=pathPoints(n,cd.m);
+      EDGES.push({a:n,b:cd.m, path, charge:0, lastSpawn:0});
+      n.deg++; cd.m.deg++; added++;
+    }
+  }
+
+  // adjacency for signal routing
+  for(const n of NODES) n.edges=[];
+  for(const e of EDGES){ e.a.edges.push(e); e.b.edges.push(e); }
+
+  // seed some flowing signals
+  const seedN = isMobile?14:26;
+  for(let s=0;s<seedN;s++) spawnSignal();
+
+  // ambient flow dots cap
+  document.getElementById('mNodes').textContent = NODES.length;
+}
+
+function spawnSignal(fromNode){
+  const start = fromNode || NODES[(Math.random()*NODES.length)|0];
+  if(!start || !start.edges || !start.edges.length) return;
+  const e = start.edges[(Math.random()*start.edges.length)|0];
+  const forward = e.a===start;
+  SIGNALS.push({
+    edge:e, t:0, dir:1, from:start,
+    forward,
+    speed:(0.18+Math.random()*0.22)/Math.max(40,e.path.len),
+    life: 1, hue:Math.random(),
+    head: 1
+  });
+}
+
+// ===================================================================
+//  INTERACTION
+// ===================================================================
+const mouse={x:-9999,y:-9999, px:-9999,py:-9999, vx:0,vy:0, down:false, active:false};
+let lastMoveT=0;
+
+function setMouse(x,y){
+  mouse.px=mouse.x; mouse.py=mouse.y;
+  mouse.x=x; mouse.y=y;
+  mouse.vx=mouse.x-mouse.px; mouse.vy=mouse.y-mouse.py;
+  mouse.active=true; lastMoveT=performance.now();
+}
+window.addEventListener('mousemove',e=>setMouse(e.clientX,e.clientY));
+window.addEventListener('mousedown',e=>{ mouse.down=true; ripple(e.clientX,e.clientY); });
+window.addEventListener('mouseup',()=>mouse.down=false);
+window.addEventListener('mouseleave',()=>{ mouse.active=false; mouse.x=-9999; mouse.y=-9999; });
+
+// touch
+let touchPrev=null;
+window.addEventListener('touchstart',e=>{
+  const t=e.touches[0]; setMouse(t.clientX,t.clientY); mouse.down=true;
+  ripple(t.clientX,t.clientY); touchPrev={x:t.clientX,y:t.clientY};
+},{passive:true});
+window.addEventListener('touchmove',e=>{
+  const t=e.touches[0]; setMouse(t.clientX,t.clientY);
+  if(touchPrev){ // vertical drag -> hue (like scroll)
+    hueTarget += (touchPrev.y - t.clientY)*0.0008;
+    touchPrev={x:t.clientX,y:t.clientY};
+  }
+},{passive:true});
+window.addEventListener('touchend',()=>{ mouse.down=false; mouse.active=false; touchPrev=null; });
+
+// scroll -> hue / etch color
+window.addEventListener('wheel',e=>{
+  hueTarget += e.deltaY*0.00035;
+  // also nudge field for tactile feel
+}, {passive:true});
+
+// click ripple: energize nearest nodes + launch a routing burst
+function ripple(x,y){
+  PULSES.push({x,y,r:0,max:Math.max(W,H)*0.42, life:1});
+  // find nearest node and inject signals outward
+  let best=null,bd=1e9;
+  for(const n of NODES){ const d=(n.x-x)**2+(n.y-y)**2; if(d<bd){bd=d;best=n;} }
+  if(best){
+    best.energy=1.4;
+    const k = isMobile?4:7;
+    for(let i=0;i<k;i++){ spawnSignal(best); }
+    // chain to its neighbors
+    for(const e of best.edges){
+      const o = e.a===best?e.b:e.a; o.energy=Math.max(o.energy,.8);
+    }
+  }
+}
+
+// ===================================================================
+//  UPDATE
+// ===================================================================
+let P = pal(0);
+let fpsAvg=60, lastFrame=performance.now();
+let perfCap = 130; // adaptive, tuned by frame loop
+const SIG_CAP = () => isMobile ? Math.min(60, perfCap) : perfCap;
+
+function update(dt){
+  // ease hue
+  hueShift += (hueTarget - hueShift)*0.06;
+  P = pal(((hueShift%1)+1)%1);
+
+  // mouse idle decay
+  if(performance.now()-lastMoveT>120){ mouse.vx*=0.9; mouse.vy*=0.9; }
+
+  // nodes: energy decay + ambient breathe; mouse proximity excites
+  for(const n of NODES){
+    n.energy *= 0.94;
+    if(mouse.active){
+      const d=Math.hypot(n.x-mouse.x,n.y-mouse.y);
+      if(d<120){ n.energy=Math.max(n.energy,(1-d/120)*0.6); }
+    }
+    // occasionally auto-fire from energized nodes -> living feeling
+    if(n.energy>0.55 && Math.random()<0.04 && SIGNALS.length<SIG_CAP()){
+      spawnSignal(n);
+    }
+  }
+
+  // edge charge decay
+  for(const e of EDGES){ e.charge*=0.92; }
+
+  // signals advance along edges, route at nodes
+  const FORCE_R=140, FORCE_R2=FORCE_R*FORCE_R;
+  for(let i=SIGNALS.length-1;i>=0;i--){
+    const s=SIGNALS[i];
+    s.t += s.speed*dt*60;
+    if(s.t>=1){
+      // arrived at far node -> energize + maybe continue routing
+      const arrive = s.forward ? s.edge.b : s.edge.a;
+      arrive.energy = Math.min(1.6, arrive.energy+0.7);
+      s.edge.charge = 1;
+      // route onward
+      const opts = arrive.edges.filter(e=>e!==s.edge);
+      if(opts.length && Math.random()<0.82 && SIGNALS.length<SIG_CAP()){
+        const ne=opts[(Math.random()*opts.length)|0];
+        s.edge=ne; s.from=arrive; s.forward=(ne.a===arrive);
+        s.t=0; s.speed=(0.18+Math.random()*0.24)/Math.max(40,ne.path.len);
+        s.life*=0.985;
+      } else { SIGNALS.splice(i,1); continue; }
+    }
+    if(s.life<0.12){ SIGNALS.splice(i,1); }
+  }
+  // keep population alive
+  if(SIGNALS.length < (isMobile?12:22) && Math.random()<0.5) spawnSignal();
+  if(SIGNALS.length > SIG_CAP()) SIGNALS.splice(0, SIGNALS.length-SIG_CAP());
+
+  // pulses (click rings)
+  for(let i=PULSES.length-1;i>=0;i--){
+    const p=PULSES[i]; p.r += (p.max-p.r)*0.06 + 4; p.life-=0.012;
+    if(p.life<=0||p.r>=p.max) PULSES.splice(i,1);
+  }
+
+  // hud
+  document.getElementById('mSig').textContent = SIGNALS.length;
+}
+
+// ===================================================================
+//  RENDER
+// ===================================================================
+function render(){
+  // dark board fill with subtle vignette + faint silkscreen grid
+  ctx.fillStyle = '#04080b';
+  ctx.fillRect(0,0,W,H);
+
+  // soldermask radial glow
+  const g = ctx.createRadialGradient(CX,CY,40,CX,CY,Math.max(W,H)*0.72);
+  g.addColorStop(0, P.glow(0.06));
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+
+  // faint background micro-grid (silkscreen)
+  ctx.lineWidth=1;
+  ctx.strokeStyle = P.glow(0.035);
+  ctx.beginPath();
+  const step=GRID;
+  for(let x=(W%step)/2;x<W;x+=step){ ctx.moveTo(x,0); ctx.lineTo(x,H); }
+  for(let y=(H%step)/2;y<H;y+=step){ ctx.moveTo(0,y); ctx.lineTo(W,y); }
+  ctx.stroke();
+
+  // ---- traces (copper) ----
+  ctx.lineJoin='round'; ctx.lineCap='round';
+  // base copper
+  for(const e of EDGES){
+    const pts=e.path.pts;
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x,pts[0].y);
+    for(let k=1;k<pts.length;k++) ctx.lineTo(pts[k].x,pts[k].y);
+    const hot = e.charge;
+    ctx.lineWidth = 1.4 + hot*1.2;
+    ctx.strokeStyle = hot>0.05 ? P.traceHi : P.trace;
+    ctx.globalAlpha = 0.35 + hot*0.65;
+    if(hot>0.1){ ctx.shadowColor=P.glow(0.9); ctx.shadowBlur=8*hot; }
+    ctx.stroke();
+    ctx.shadowBlur=0; ctx.globalAlpha=1;
+  }
+
+  // ---- signals (luminous packets riding traces) ----
+  ctx.globalCompositeOperation='lighter';
+  for(const s of SIGNALS){
+    const tt = s.forward ? s.t : 1-s.t;
+    const pt = lerpPath(s.edge.path, tt);
+    // field bend: displace head perpendicular when near mouse
+    let px=pt.x, py=pt.y;
+    if(mouse.active){
+      const dx=px-mouse.x, dy=py-mouse.y; const d2=dx*dx+dy*dy;
+      if(d2<140*140 && d2>1){
+        const d=Math.sqrt(d2); const f=(1-d/140);
+        const nx=-pt.ty, ny=pt.tx;            // perpendicular
+        const side=Math.sign(dx*nx+dy*ny)||1;
+        px += nx*side*f*14; py += ny*side*f*14;
+      }
+    }
+    const l = Math.min(85, 60 + s.life*8);
+    const sz = 1.6 + s.life*1.6;
+    // comet trail (3 segs, no shadow = cheap)
+    ctx.fillStyle = P.sig(l);
+    for(let k=1;k<=3;k++){
+      const off=k*0.045;
+      const tk = s.forward ? Math.max(0,s.t-off) : Math.min(1,s.t+off);
+      const cp = lerpPath(s.edge.path, s.forward?tk:1-tk);
+      ctx.globalAlpha = (1-k/4)*0.5*s.life;
+      ctx.beginPath(); ctx.arc(cp.x,cp.y, sz*(1-k/6), 0, 6.283); ctx.fill();
+    }
+    // bright head (glow batched at end)
+    ctx.globalAlpha=1;
+    ctx.fillStyle=P.sig(82);
+    ctx.beginPath(); ctx.arc(px,py, sz, 0, 6.283); ctx.fill();
+    s._hx=px; s._hy=py; s._hs=sz; // remember head for glow pass
+  }
+  // single batched glow pass for all heads (one shadow context switch)
+  ctx.shadowColor=P.glow(1); ctx.shadowBlur=11;
+  ctx.fillStyle=P.sig(80);
+  for(const s of SIGNALS){
+    if(s._hx===undefined) continue;
+    ctx.beginPath(); ctx.arc(s._hx,s._hy, s._hs*0.9, 0, 6.283); ctx.fill();
+  }
+  ctx.shadowBlur=0;
+  ctx.globalCompositeOperation='source-over';
+
+  // ---- nodes (pads / vias / chips) ----
+  for(const n of NODES){
+    const e=n.energy;
+    if(n.chip){
+      // chip body
+      ctx.fillStyle='#0a1418';
+      ctx.strokeStyle = e>0.2? P.traceHi : P.pad;
+      ctx.lineWidth=1.2;
+      const w=n.w,h=n.h;
+      roundRect(n.x-w/2,n.y-h/2,w,h,3);
+      ctx.fill(); ctx.stroke();
+      // pins
+      ctx.strokeStyle=P.pad; ctx.lineWidth=1;
+      const pins=4;
+      for(let k=0;k<pins;k++){
+        const fy=n.y-h/2+ (k+0.5)/pins*h;
+        ctx.beginPath(); ctx.moveTo(n.x-w/2,fy); ctx.lineTo(n.x-w/2-4,fy);
+        ctx.moveTo(n.x+w/2,fy); ctx.lineTo(n.x+w/2+4,fy); ctx.stroke();
+      }
+      if(e>0.05){
+        ctx.globalCompositeOperation='lighter';
+        ctx.fillStyle=P.glow(Math.min(0.5,e*0.4));
+        roundRect(n.x-w/2,n.y-h/2,w,h,3); ctx.fill();
+        ctx.globalCompositeOperation='source-over';
+      }
+    } else {
+      // pad ring
+      const rr=n.r + e*2.2;
+      if(e>0.04){
+        ctx.globalCompositeOperation='lighter';
+        // cheap layered glow (no per-frame gradient alloc)
+        ctx.fillStyle=P.glow(1);
+        ctx.globalAlpha=Math.min(0.5,e)*0.30; ctx.beginPath(); ctx.arc(n.x,n.y,rr*4.2,0,6.283); ctx.fill();
+        ctx.globalAlpha=Math.min(0.7,e)*0.40; ctx.beginPath(); ctx.arc(n.x,n.y,rr*2.4,0,6.283); ctx.fill();
+        ctx.globalAlpha=1;
+        ctx.globalCompositeOperation='source-over';
+      }
+      ctx.beginPath(); ctx.arc(n.x,n.y,rr,0,6.283);
+      ctx.fillStyle = e>0.3 ? P.node : '#08161a';
+      ctx.fill();
+      ctx.lineWidth=1.1; ctx.strokeStyle = e>0.15? P.traceHi: P.pad; ctx.stroke();
+      // via hole
+      if(n.kind==='via'){ ctx.beginPath(); ctx.arc(n.x,n.y,Math.max(0.6,rr*0.4),0,6.283); ctx.fillStyle='#020405'; ctx.fill(); }
+    }
+  }
+
+  // ---- click pulses (expanding etch rings) ----
+  ctx.globalCompositeOperation='lighter';
+  for(const p of PULSES){
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,6.283);
+    ctx.lineWidth=2.2*p.life; ctx.strokeStyle=P.glow(p.life*0.5); ctx.stroke();
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.r*0.6,0,6.283);
+    ctx.lineWidth=1.2*p.life; ctx.strokeStyle=P.sig(70); ctx.globalAlpha=p.life*0.4; ctx.stroke();
+    ctx.globalAlpha=1;
+  }
+  ctx.globalCompositeOperation='source-over';
+
+  // ---- mouse field cursor (magnetic coil) ----
+  if(mouse.active){
+    ctx.globalCompositeOperation='lighter';
+    const mg=ctx.createRadialGradient(mouse.x,mouse.y,0,mouse.x,mouse.y,140);
+    mg.addColorStop(0,P.glow(0.18)); mg.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=mg; ctx.beginPath(); ctx.arc(mouse.x,mouse.y,140,0,6.283); ctx.fill();
+    ctx.strokeStyle=P.glow(0.5); ctx.lineWidth=1;
+    ctx.beginPath(); ctx.arc(mouse.x,mouse.y,14+Math.sin(performance.now()*0.004)*3,0,6.283); ctx.stroke();
+    ctx.globalCompositeOperation='source-over';
+  }
+
+  // vignette
+  const vg=ctx.createRadialGradient(CX,CY,Math.min(W,H)*0.3,CX,CY,Math.max(W,H)*0.75);
+  vg.addColorStop(0,'rgba(0,0,0,0)'); vg.addColorStop(1,'rgba(0,0,0,0.55)');
+  ctx.fillStyle=vg; ctx.fillRect(0,0,W,H);
+}
+
+function roundRect(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+}
+
+// ===================================================================
+//  LOOP
+// ===================================================================
+function frame(now){
+  const dt = Math.min(2.4, (now-lastFrame)/16.67);
+  lastFrame=now;
+  fpsAvg = fpsAvg*0.92 + (1000/Math.max(1,(now-(frame._p||now))))*0.08;
+  frame._p=now;
+  if((frame._c=(frame._c||0)+1)%18===0){
+    document.getElementById('mFps').textContent = Math.min(60,Math.round(fpsAvg));
+    // adaptive load control: throttle particle budget if we dip below 50fps
+    if(fpsAvg<46) perfCap = Math.max(isMobile?28:48, perfCap-12);
+    else if(fpsAvg>56) perfCap = Math.min(isMobile?60:130, perfCap+6);
+  }
+  update(dt);
+  render();
+  requestAnimationFrame(frame);
+}
+
+window.addEventListener('resize', ()=>{ clearTimeout(window._rt); window._rt=setTimeout(resize,150); });
+resize();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

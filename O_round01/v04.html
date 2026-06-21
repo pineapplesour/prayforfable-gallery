@@ -1,0 +1,1047 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>GLYPHDELVE — ASCII Voxel Sandbox</title>
+<style>
+  :root{
+    --bg:#05070a; --panel:#0c1118; --panel2:#121a26; --ink:#cfe3d0; --dim:#5d7384;
+    --acc:#7fe3a0; --warn:#ffb454; --hp:#ff5d6c; --food:#ffc24b; --line:#1d2a3a;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
+    font-family:"Cascadia Mono","DejaVu Sans Mono","Consolas",ui-monospace,monospace;
+    overflow:hidden;user-select:none;-webkit-user-select:none;}
+  #app{position:fixed;inset:0;display:flex;flex-direction:column;}
+  canvas{display:block;image-rendering:pixelated;background:#04060a;flex:0 0 auto;margin:0 auto;}
+  #hud{flex:0 0 auto;background:var(--panel);border-top:1px solid var(--line);
+    padding:6px 8px;display:flex;flex-direction:column;gap:6px;}
+  .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+  .stat{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--dim);}
+  .bar{width:120px;height:10px;background:#0a0f16;border:1px solid var(--line);position:relative;overflow:hidden;}
+  .bar>i{display:block;height:100%;}
+  #hotbar{display:flex;gap:4px;}
+  .slot{width:46px;height:46px;background:var(--panel2);border:1px solid var(--line);
+    position:relative;display:flex;align-items:center;justify-content:center;
+    font-size:22px;cursor:pointer;border-radius:4px;line-height:1;}
+  .slot.sel{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc) inset;}
+  .slot .cnt{position:absolute;right:2px;bottom:0;font-size:11px;color:var(--ink);
+    text-shadow:0 0 3px #000,0 0 3px #000;}
+  .slot .key{position:absolute;left:2px;top:0;font-size:9px;color:var(--dim);}
+  .btn{background:var(--panel2);border:1px solid var(--line);color:var(--ink);
+    font-family:inherit;font-size:12px;padding:6px 10px;border-radius:4px;cursor:pointer;}
+  .btn:active{background:#1a2536;}
+  .btn.acc{border-color:var(--acc);color:var(--acc);}
+  #msg{font-size:12px;color:var(--warn);min-height:15px;}
+  #credit{font-size:10px;color:var(--dim);text-align:center;padding:2px;}
+  /* overlays */
+  .overlay{position:fixed;inset:0;background:rgba(3,5,9,.93);z-index:30;
+    display:flex;align-items:center;justify-content:center;flex-direction:column;
+    padding:18px;text-align:center;}
+  .overlay h1{font-size:30px;margin:.1em 0;letter-spacing:3px;color:var(--acc);
+    text-shadow:0 0 14px rgba(127,227,160,.4);}
+  .overlay h2{font-size:15px;margin:.2em 0;color:var(--warn);}
+  .overlay p{max-width:560px;color:var(--ink);font-size:13px;line-height:1.6;}
+  .overlay .small{color:var(--dim);font-size:11px;}
+  pre.logo{color:var(--acc);font-size:11px;line-height:1.05;margin:0 0 6px;
+    text-shadow:0 0 10px rgba(127,227,160,.35);}
+  /* crafting */
+  #craftPanel{position:fixed;inset:0;z-index:25;background:rgba(3,5,9,.92);
+    display:none;flex-direction:column;padding:14px;overflow:auto;}
+  #craftPanel.open{display:flex;}
+  .recipe{display:flex;align-items:center;gap:10px;background:var(--panel);
+    border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin:5px 0;}
+  .recipe .out{font-size:24px;width:34px;text-align:center;}
+  .recipe .info{flex:1;text-align:left;}
+  .recipe .info b{color:var(--acc);}
+  .recipe .info small{color:var(--dim);display:block;font-size:11px;}
+  .recipe.no{opacity:.45;}
+  /* touch controls */
+  #touch{position:fixed;inset:0;z-index:10;pointer-events:none;display:none;}
+  #touch .pad{position:absolute;pointer-events:auto;}
+  #dpad{left:14px;bottom:120px;width:150px;height:150px;}
+  .tbtn{position:absolute;width:48px;height:48px;background:rgba(18,26,38,.8);
+    border:1px solid var(--line);border-radius:8px;color:var(--ink);font-size:20px;
+    display:flex;align-items:center;justify-content:center;pointer-events:auto;}
+  .tbtn:active{background:rgba(40,60,86,.9);}
+  #actBtns{right:14px;bottom:120px;width:150px;height:150px;}
+  @media (max-width:760px){ .bar{width:88px;} .slot{width:40px;height:40px;font-size:19px;} }
+</style>
+</head>
+<body>
+<div id="app">
+  <canvas id="cv"></canvas>
+  <div id="hud">
+    <div id="msg"></div>
+    <div class="row">
+      <div class="stat">HP <div class="bar"><i id="hpBar" style="width:100%;background:var(--hp)"></i></div></div>
+      <div class="stat">기력 <div class="bar"><i id="foodBar" style="width:100%;background:var(--food)"></i></div></div>
+      <div class="stat" id="clock">☀ 06:00</div>
+      <button class="btn acc" id="craftBtn">제작 [C]</button>
+      <button class="btn" id="diveBtn">심층동굴 [G]</button>
+      <button class="btn" id="helpBtn">도움말 [H]</button>
+    </div>
+    <div class="row" style="justify-content:center">
+      <div id="hotbar"></div>
+    </div>
+    <div id="credit">Minecraft에서 영감 — © Mojang/Microsoft. 본 작품은 오리지널 구현(GLYPHDELVE) 입니다.</div>
+  </div>
+</div>
+
+<!-- Crafting panel -->
+<div id="craftPanel">
+  <div class="row" style="justify-content:space-between">
+    <h2 style="color:var(--acc);margin:4px 0">⚒ 제작대 — GLYPHDELVE</h2>
+    <button class="btn" id="closeCraft">닫기 [C/Esc]</button>
+  </div>
+  <div class="small" style="color:var(--dim);margin-bottom:6px">재료가 충분한 항목만 활성화됩니다.</div>
+  <div id="recipes"></div>
+</div>
+
+<!-- Touch controls -->
+<div id="touch">
+  <div id="dpad" class="pad">
+    <div class="tbtn" data-k="left"  style="left:0;top:50px">◀</div>
+    <div class="tbtn" data-k="right" style="left:100px;top:50px">▶</div>
+    <div class="tbtn" data-k="up"    style="left:50px;top:0">⤒</div>
+    <div class="tbtn" data-k="down"  style="left:50px;top:100px">⬇</div>
+  </div>
+  <div id="actBtns" class="pad">
+    <div class="tbtn" data-k="mine"  style="left:0;top:50px;color:var(--warn)">⛏</div>
+    <div class="tbtn" data-k="place" style="left:100px;top:50px;color:var(--acc)">▣</div>
+    <div class="tbtn" data-k="jump"  style="left:50px;top:0">⤴</div>
+    <div class="tbtn" data-k="next"  style="left:50px;top:100px">↻</div>
+  </div>
+</div>
+
+<!-- Intro -->
+<div class="overlay" id="intro">
+  <pre class="logo">
+  ____ _    _   _ ____  _   _ ____  _____ _    __     _______
+ / ___| |  | | | |  _ \| | | |  _ \| ____| |   \ \   / / ____|
+| |  _| |  | | | | |_) | |_| | | | |  _| | |    \ \ / /|  _|
+| |_| | |__| |_| |  __/|  _  | |_| | |___| |___  \ V / | |___
+ \____|_____\___/|_|   |_| |_|____/|_____|_____|  \_/  |_____|
+  </pre>
+  <h2>아스키 복셀 샌드박스 · 깊은 동굴 채굴 변주</h2>
+  <p>문자로 깎아낸 세계에서 <b>채굴 · 설치 · 수집 · 제작</b>하며 살아남으세요.
+  지표 아래에는 광맥과 동굴이 숨어 있고, 더 깊이 파면 <b>심층 균열(深層 龜裂)</b>로 들어갈 수 있습니다.</p>
+  <p class="small">
+  PC: ←/→ 이동 · ↑/Space 점프 · ↓ 내려파기 · 마우스 좌클릭 채굴 / 우클릭 설치 ·
+  1~9 핫바 · C 제작 · G 심층동굴 · H 도움말<br>
+  모바일: 좌측 방향패드 · 우측 ⛏채굴/▣설치/⤴점프/↻전환
+  </p>
+  <div class="row" style="justify-content:center;margin-top:10px">
+    <button class="btn acc" id="startBtn" style="font-size:15px;padding:9px 20px">세계 생성 · 시작</button>
+  </div>
+  <p class="small" style="margin-top:14px">Minecraft에서 영감을 받음 — © Mojang/Microsoft. 텍스처·몹·차원명·레시피·코드 일체 미복제, 오리지널 구현.</p>
+</div>
+
+<script>
+"use strict";
+//=================================================================
+// GLYPHDELVE — single-file ASCII voxel sandbox
+// Original work inspired by Minecraft (© Mojang/Microsoft). No assets copied.
+//=================================================================
+
+//---------------- Block registry (original names/glyphs) ----------
+// id:0 = air. Each block: name, glyph, fg color, bg color, hardness, solid, drops
+const AIR=0;
+const B = {
+  0:  {name:"공기",     g:" ",  fg:"#000", bg:null,      hard:0,  solid:false},
+  1:  {name:"흙더미",   g:"≈",  fg:"#6b4a2b", bg:"#3a2a18", hard:2,  solid:true,  drop:1},
+  2:  {name:"풀결",     g:"\"", fg:"#7fe3a0", bg:"#2c5a32", hard:2,  solid:true,  drop:1, dropId:1},
+  3:  {name:"석심",     g:"▒",  fg:"#9aa6b2", bg:"#454f5a", hard:5,  solid:true,  drop:3, tool:"pick"},
+  4:  {name:"모래알",   g:":",  fg:"#e8d49a", bg:"#b39a5a", hard:1,  solid:true,  drop:4, gravity:true},
+  5:  {name:"나무기둥", g:"║",  fg:"#b07b3a", bg:"#5a3d1c", hard:3,  solid:true,  drop:5},
+  6:  {name:"잎무리",   g:"*",  fg:"#5fbf72", bg:"#234d27", hard:1,  solid:true,  drop:6, leaf:true},
+  7:  {name:"판자",     g:"=",  fg:"#caa15f", bg:"#6e4f23", hard:3,  solid:true,  drop:7},
+  8:  {name:"화톳불",   g:"♨",  fg:"#ffb454", bg:"#5a2d10", hard:2,  solid:true,  drop:8, light:9},
+  9:  {name:"홰불",     g:"i",  fg:"#ffd86b", bg:null,      hard:0,  solid:false, drop:9, light:11, attach:true},
+  10: {name:"단단돌",   g:"#",  fg:"#7d8893", bg:"#2f363d", hard:9,  solid:true,  drop:3, tool:"pick"},
+  11: {name:"기반암",   g:"█",  fg:"#1a1f26", bg:"#0a0d11", hard:99, solid:true},
+  // ores
+  20: {name:"탄정광",   g:"●",  fg:"#2a2a2a", bg:"#454f5a", hard:6,  solid:true,  drop:40, tool:"pick", oreLight:0},
+  21: {name:"적동광",   g:"◆",  fg:"#d9794a", bg:"#454f5a", hard:7,  solid:true,  drop:41, tool:"pick"},
+  22: {name:"은정광",   g:"◈",  fg:"#dfe6ee", bg:"#454f5a", hard:8,  solid:true,  drop:42, tool:"pick"},
+  23: {name:"청휘석",   g:"❖",  fg:"#5fd0ff", bg:"#454f5a", hard:10, solid:true,  drop:43, tool:"pick"},
+  24: {name:"심홍정",   g:"✦",  fg:"#ff5d8a", bg:"#3a2030", hard:12, solid:true,  drop:44, tool:"pick", light:6}, // deep glow
+  // crafted/placeable blocks
+  30: {name:"화로돌",   g:"▤",  fg:"#cfd6dd", bg:"#3a4048", hard:5,  solid:true,  drop:30},
+  31: {name:"적동벽돌", g:"▦",  fg:"#e08a5a", bg:"#7a4426", hard:6,  solid:true,  drop:31},
+  32: {name:"빛수정",   g:"◇",  fg:"#aef0ff", bg:"#2c4a5a", hard:4,  solid:true,  drop:32, light:13},
+};
+// item-only ids (not placed as blocks): 40+ are raw drops, 50+ ingots/food/tools
+const ITEM = {
+  40:{name:"탄덩이", g:"●", fg:"#2a2a2a"},
+  41:{name:"적동원석",g:"◆", fg:"#d9794a"},
+  42:{name:"은원석", g:"◈", fg:"#dfe6ee"},
+  43:{name:"청휘결정",g:"❖", fg:"#5fd0ff"},
+  44:{name:"심홍보석",g:"✦", fg:"#ff5d8a"},
+  50:{name:"막대",   g:"╿", fg:"#caa15f"},
+  51:{name:"적동괴", g:"▬", fg:"#e08a5a"},
+  52:{name:"은괴",   g:"▭", fg:"#eef3f8"},
+  53:{name:"돌곡괭이",g:"T", fg:"#9aa6b2", tool:"pick", tier:1, dur:80},
+  54:{name:"적동곡괭이",g:"T", fg:"#e08a5a", tool:"pick", tier:2, dur:180},
+  55:{name:"은곡괭이",g:"Y", fg:"#eef3f8", tool:"pick", tier:3, dur:420},
+  56:{name:"구운버섯",g:"♣", fg:"#e6b06b", food:6},
+  57:{name:"체력단약",g:"✚", fg:"#ff7d8c", heal:8},
+};
+function meta(id){ return B[id]||ITEM[id]||{name:"?",g:"?",fg:"#fff"}; }
+function isBlock(id){ return id in B; }
+
+//---------------- World gen (procedural) -------------------------
+const SEED = (Math.random()*1e9)|0;
+function hash(x){ let h=(x^SEED)*374761393; h=(h^(h>>>13))*1274126177; return ((h^(h>>>16))>>>0)/4294967296; }
+function lerp(a,b,t){return a+(b-a)*t;}
+function smooth(t){return t*t*(3-2*t);}
+function vnoise(x,scale){ const xi=Math.floor(x/scale); const f=smooth((x/scale)-xi);
+  return lerp(hash(xi), hash(xi+1), f); }
+function octave(x){ return vnoise(x,40)*0.55 + vnoise(x,16)*0.3 + vnoise(x,6)*0.15; }
+
+const WORLD_W = 1600;        // wide world
+const WORLD_H = 140;         // depth
+const SURFACE = 38;          // baseline surface row
+const SEA = 46;
+const cols = new Map();      // x -> Int8Array column (cache), but we keep full array for simplicity
+let world = null;            // Int16Array [x*WORLD_H + y]
+let biomeAt = null;          // x -> biome string
+
+function gen(){
+  world = new Int16Array(WORLD_W*WORLD_H).fill(AIR);
+  biomeAt = new Array(WORLD_W);
+  for(let x=0;x<WORLD_W;x++){
+    const b = octave(x*1.0);
+    const biomeN = vnoise(x,260);
+    let biome = biomeN<0.34 ? "사막고원" : biomeN<0.7 ? "이끼평원" : "침엽숲";
+    biomeAt[x]=biome;
+    let h = Math.floor(SURFACE + (b-0.5)*26);
+    if(biome==="사막고원") h -= 3;
+    h = Math.max(20, Math.min(WORLD_H-30, h));
+    for(let y=0;y<WORLD_H;y++){
+      let id=AIR;
+      if(y===WORLD_H-1) id=11;                          // bedrock
+      else if(y>=WORLD_H-3 && hash(x*7+y*13)>0.4) id=11;
+      else if(y>h){
+        const d=y-h;
+        if(d===0) id = biome==="사막고원"?4:2;           // top
+        else if(d<4) id = biome==="사막고원"?4:1;        // dirt/sand
+        else id = 3;                                      // stone
+        // deeper hard stone
+        if(d>40) id = (hash(x*3+y*5)>0.55)?10:3;
+      }
+      world[x*WORLD_H+y]=id;
+    }
+  }
+  // caves (procedural worms) — deeper = bigger network (my variant)
+  carveCaves();
+  carveOres();
+  growTrees();
+  placeSpawnKit();
+}
+function setIf(x,y,id,onlyStone){
+  if(x<0||x>=WORLD_W||y<0||y>=WORLD_H-1) return;
+  const i=x*WORLD_H+y;
+  if(onlyStone && !(world[i]===3||world[i]===10)) return;
+  world[i]=id;
+}
+function carveCaves(){
+  const count = 220;
+  for(let c=0;c<count;c++){
+    let x = Math.floor(hash(c*91+1)*WORLD_W);
+    let y = Math.floor(SURFACE+8 + hash(c*53+9)*(WORLD_H-SURFACE-14));
+    let ang = hash(c*17+3)*Math.PI*2;
+    const deep = y>SURFACE+45;                          // deep caverns bigger
+    const len = (deep?80:40) + Math.floor(hash(c*7)*60);
+    let r = deep? 2.4 : 1.4;
+    for(let s=0;s<len;s++){
+      ang += (hash(c*101+s)-0.5)*0.9;
+      x += Math.cos(ang)*1.6;
+      y += Math.sin(ang)*1.1 + (deep?0.04:0);
+      const rr = r + Math.sin(s*0.3)*0.8;
+      for(let dx=-rr;dx<=rr;dx++)for(let dy=-rr;dy<=rr;dy++){
+        if(dx*dx+dy*dy<=rr*rr){
+          const xx=Math.round(x+dx), yy=Math.round(y+dy);
+          if(yy>SURFACE+2 && yy<WORLD_H-2) setIf(xx,yy,AIR);
+        }
+      }
+    }
+  }
+}
+function carveOres(){
+  // ore: id, minDepth(from surface), rarity(lower=rarer), veinMax
+  const ores=[
+    {id:20,min:6, rate:0.020,vmax:6},   // coal common
+    {id:21,min:14,rate:0.012,vmax:5},   // copper
+    {id:22,min:34,rate:0.007,vmax:4},   // silver deeper
+    {id:23,min:55,rate:0.004,vmax:3},   // azurite deep
+    {id:24,min:78,rate:0.0028,vmax:3},  // crimson very deep (glows)
+  ];
+  for(let x=0;x<WORLD_W;x++){
+    for(let y=SURFACE;y<WORLD_H-2;y++){
+      const i=x*WORLD_H+y;
+      if(world[i]!==3 && world[i]!==10) continue;
+      const depth=y-SURFACE;
+      for(const o of ores){
+        if(depth<o.min) continue;
+        if(hash(x*131+y*977+o.id*13)<o.rate){
+          // small vein
+          const vm=2+Math.floor(hash(x+y+o.id)*o.vmax);
+          for(let k=0;k<vm;k++){
+            const ox=x+Math.floor((hash(x*3+k)-0.5)*4);
+            const oy=y+Math.floor((hash(y*3+k+7)-0.5)*4);
+            setIf(ox,oy,o.id,true);
+          }
+          break;
+        }
+      }
+    }
+  }
+}
+function growTrees(){
+  for(let x=4;x<WORLD_W-4;x++){
+    if(biomeAt[x]==="사막고원") continue;
+    // find surface
+    let sy=-1;
+    for(let y=10;y<WORLD_H;y++){ if(world[x*WORLD_H+y]===2){sy=y;break;} }
+    if(sy<0) continue;
+    const dense = biomeAt[x]==="침엽숲"?0.16:0.07;
+    if(hash(x*555+3)<dense){
+      const th=3+Math.floor(hash(x*9)*3);
+      for(let t=1;t<=th;t++) setIf(x,sy-t,5);
+      // canopy
+      for(let dx=-2;dx<=2;dx++)for(let dy=-2;dy<=0;dy++){
+        if(Math.abs(dx)+Math.abs(dy)<=3) setIf(x+dx, sy-th-1+dy, 6);
+      }
+      setIf(x,sy-th-1,6);
+      x+=2;
+    }
+  }
+}
+function placeSpawnKit(){ /* nothing buried; player starts with basics */ }
+
+//---------------- Player & entities -----------------------------
+const player = {
+  x: WORLD_W/2, y: 10, vx:0, vy:0, w:0.6, h:1.8,
+  hp:20, maxhp:20, food:20, maxfood:20, onGround:false, face:1,
+  reach: 4.5, sel:0, breakT:0, breakTarget:null, hurtT:0, dim:"표층"
+};
+// hotbar: array of {id,count} ; inventory mirrors hotbar (simple)
+const hotbar = new Array(9).fill(null);
+function addItem(id,n=1){
+  // stack into existing
+  for(const s of hotbar){ if(s && s.id===id && !meta(id).tool){ s.count+=n; return true; } }
+  for(let i=0;i<9;i++){ if(!hotbar[i]){ hotbar[i]={id,count:n}; return true; } }
+  return false; // full
+}
+function countItem(id){ let c=0; for(const s of hotbar) if(s&&s.id===id) c+=s.count; return c; }
+function removeItem(id,n){
+  for(const s of hotbar){ if(s&&s.id===id){ const t=Math.min(s.count,n); s.count-=t; n-=t;
+    if(s.count<=0){const idx=hotbar.indexOf(s); hotbar[idx]=null;} if(n<=0) return true; } }
+  return n<=0;
+}
+function startKit(){
+  addItem(7,8);  // planks
+  addItem(9,4);  // torches
+  addItem(53,1); // stone pick
+}
+
+// drops on ground: {x,y,id,vy,t}
+let drops=[];
+function spawnDrop(x,y,id){ drops.push({x:x+0.5,y:y+0.2,vx:(Math.random()-0.5)*1.5,vy:-2,id,t:0}); }
+
+// mobs (original): 0=동굴포자(cave spore, passive glow), 1=점착괴(slug hostile), 2=어스름박쥐(dusk bat)
+let mobs=[];
+function spawnMob(type,x,y){ mobs.push({type,x,y,vx:0,vy:0,hp:type===1?12:6,face:1,t:Math.random()*99,onGround:false}); }
+
+//---------------- World access ----------------------------------
+function get(x,y){ x|=0;y|=0; if(x<0||x>=WORLD_W||y<0||y>=WORLD_H) return 11; return world[x*WORLD_H+y]; }
+function set(x,y,id){ if(x<0||x>=WORLD_W||y<0||y>=WORLD_H) return; world[x*WORLD_H+y]=id; }
+function solid(x,y){ const m=B[get(x,y)]; return m&&m.solid; }
+
+//---------------- Lighting (simple flood from sky + light blocks)-
+let lightMap=null; // Float per cell 0..1, recomputed per view window
+let timeOfDay=0.27; // 0..1 ; 0.25=morning
+function skyLevel(){ // 0 night .. 1 day
+  const t=timeOfDay;
+  const day = Math.max(0, Math.sin((t-0.0)*Math.PI*2 - Math.PI/2)*0.5+0.5);
+  return day;
+}
+
+//---------------- Rendering -------------------------------------
+const cv=document.getElementById("cv"), ctx=cv.getContext("2d");
+let CW=0,CH=0,CELL=18,VCOLS=0,VROWS=0;
+function fit(){
+  const aw=window.innerWidth;
+  const hudH=document.getElementById("hud").offsetHeight;
+  const ah=window.innerHeight - hudH;
+  CELL = aw<760 ? 16 : 20;
+  VCOLS=Math.floor(aw/CELL); VROWS=Math.floor(ah/CELL);
+  CW=VCOLS*CELL; CH=VROWS*CELL;
+  cv.width=CW; cv.height=CH;
+  ctx.font = (CELL-2)+"px 'Cascadia Mono','DejaVu Sans Mono',monospace";
+  ctx.textBaseline="middle"; ctx.textAlign="center";
+}
+window.addEventListener("resize",()=>{fit();});
+
+let camX=0,camY=0;
+function render(){
+  // camera centers player
+  camX = player.x - VCOLS/2;
+  camY = player.y - VROWS/2;
+  camX=Math.max(0,Math.min(WORLD_W-VCOLS,camX));
+  camY=Math.max(0,Math.min(WORLD_H-VROWS,camY));
+  const x0=Math.floor(camX), y0=Math.floor(camY);
+  const ox=(camX-x0)*CELL, oy=(camY-y0)*CELL;
+
+  const sky=skyLevel();
+  // sky gradient bg
+  const grd=ctx.createLinearGradient(0,0,0,CH);
+  const top = sky>0.5 ? `rgb(${20+sky*40},${40+sky*80},${70+sky*120})` : `rgb(${6+sky*20},${8+sky*30},${16+sky*40})`;
+  grd.addColorStop(0,top); grd.addColorStop(1,"#04060a");
+  ctx.fillStyle=grd; ctx.fillRect(0,0,CW,CH);
+
+  // recompute light for window
+  computeLight(x0,y0,sky);
+
+  for(let vy=0;vy<=VROWS;vy++){
+    for(let vx=0;vx<=VCOLS;vx++){
+      const wx=x0+vx, wy=y0+vy;
+      if(wx<0||wx>=WORLD_W||wy<0||wy>=WORLD_H) continue;
+      const id=world[wx*WORLD_H+wy];
+      const px=vx*CELL-ox, py=vy*CELL-oy + CELL/2;
+      const L=lightMap[vx*(VROWS+2)+vy] ?? 0;
+      if(id===AIR){
+        // faint cave darkness already via bg gradient; if underground & dark show dots
+        if(wy>SURFACE+2 && L<0.12){ /* pitch */ }
+        continue;
+      }
+      const m=B[id]; if(!m) continue;
+      // bg
+      if(m.bg){
+        ctx.fillStyle=shade(m.bg,L);
+        ctx.fillRect(vx*CELL-ox, vy*CELL-oy, CELL, CELL);
+      }
+      // glyph
+      ctx.fillStyle=shade(m.fg,Math.max(L,0.05));
+      ctx.fillText(m.g, px+CELL/2-0.5, py);
+      // break overlay
+      if(player.breakTarget && player.breakTarget.x===wx && player.breakTarget.y===wy){
+        const p=player.breakT;
+        ctx.fillStyle="rgba(255,255,255,"+(0.15+p*0.25)+")";
+        const crack="·:+xX#"[Math.min(5,Math.floor(p*6))];
+        ctx.fillStyle="rgba(255,255,255,.65)";
+        ctx.fillText(crack, px+CELL/2-0.5, py);
+      }
+    }
+  }
+  // drops
+  for(const d of drops){
+    const px=(d.x-camX)*CELL, py=(d.y-camY)*CELL;
+    if(px<-CELL||px>CW||py<-CELL||py>CH) continue;
+    const m=meta(d.id);
+    ctx.fillStyle=m.fg;
+    ctx.font=(CELL-6)+"px monospace";
+    ctx.fillText(m.g, px, py);
+    ctx.font=(CELL-2)+"px 'Cascadia Mono','DejaVu Sans Mono',monospace";
+  }
+  // mobs
+  for(const mo of mobs){
+    const px=(mo.x-camX)*CELL, py=(mo.y-camY)*CELL;
+    if(px<-CELL||px>CW) continue;
+    const def = mo.type===0?{g:"§",c:"#9be8c0"}:mo.type===1?{g:"@",c:"#a98cff"}:{g:"^",c:"#8aa0b8"};
+    ctx.fillStyle=def.c;
+    ctx.fillText(def.g, px, py);
+  }
+  // player
+  drawPlayer();
+  // reach cursor (mouse)
+  drawCursor(x0,y0,ox,oy);
+  // vignette underground
+  if(player.y>SURFACE+4){
+    const vg=ctx.createRadialGradient(CW/2,CH/2,CELL*3,CW/2,CH/2,CW*0.7);
+    vg.addColorStop(0,"rgba(0,0,0,0)"); vg.addColorStop(1,"rgba(0,0,0,.55)");
+    ctx.fillStyle=vg; ctx.fillRect(0,0,CW,CH);
+  }
+  if(player.hurtT>0){ ctx.fillStyle="rgba(255,40,60,"+(player.hurtT*0.4)+")"; ctx.fillRect(0,0,CW,CH); }
+}
+function drawPlayer(){
+  const px=(player.x-camX)*CELL, py=(player.y-camY)*CELL;
+  // body two cells tall: head + body
+  ctx.fillStyle="#0b0e13";
+  ctx.fillRect(px-CELL*0.32, py-CELL*1.5, CELL*0.64, CELL*1.7);
+  ctx.fillStyle="#cfe3d0";
+  ctx.fillText("Ö", px, py-CELL*0.9);   // head (original glyph, not Steve)
+  ctx.fillStyle="#7fe3a0";
+  ctx.fillText(player.face>0?"╣":"╠", px, py-CELL*0.05); // body facing
+}
+function drawCursor(x0,y0,ox,oy){
+  if(isTouch) return;
+  if(mouse.wx==null) return;
+  const vx=mouse.wx-x0, vy=mouse.wy-y0;
+  const px=vx*CELL-ox, py=vy*CELL-oy;
+  const dist=Math.hypot(mouse.wx+0.5-player.x, mouse.wy+0.5-player.y);
+  ctx.strokeStyle = dist<=player.reach ? "rgba(127,227,160,.85)":"rgba(255,90,90,.6)";
+  ctx.lineWidth=1.5;
+  ctx.strokeRect(px+1,py+1,CELL-2,CELL-2);
+}
+function shade(hex,L){
+  L=Math.max(0,Math.min(1,L));
+  const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
+  const f=0.12+L*0.88;
+  return `rgb(${Math.round(r*f)},${Math.round(g*f)},${Math.round(b*f)})`;
+}
+
+//---------------- Lighting compute (windowed BFS) ----------------
+function computeLight(x0,y0,sky){
+  const W=VCOLS+2,H=VROWS+2;
+  if(!lightMap||lightMap.length!==W*H) lightMap=new Float32Array(W*H);
+  lightMap.fill(0);
+  // sky light: cast down columns
+  const q=[]; const li=(vx,vy)=>vx*H+vy;
+  for(let vx=0;vx<W;vx++){
+    const wx=x0+vx; if(wx<0||wx>=WORLD_W) continue;
+    let lit=true;
+    for(let vy=0;vy<H;vy++){
+      const wy=y0+vy; if(wy<0||wy>=WORLD_H) continue;
+      const id=world[wx*WORLD_H+wy];
+      const m=B[id];
+      if(lit){
+        const v=(id===AIR||!m.solid)? sky : sky*0.0;
+        if(v>0){ lightMap[li(vx,vy)]=Math.max(lightMap[li(vx,vy)],v); if(v>0.05)q.push([vx,vy,v]); }
+        if(m && m.solid && !m.leaf) lit=false; // blocked below
+      }
+      // block light sources
+      if(m && m.light){ const lv=m.light/14; lightMap[li(vx,vy)]=Math.max(lightMap[li(vx,vy)],lv); q.push([vx,vy,lv]); }
+      if(m && m.oreLight===0){}
+    }
+  }
+  // ore glow (crimson) already via light. flood BFS
+  let head=0;
+  while(head<q.length){
+    const [vx,vy,v]=q[head++];
+    if(v<=0.06) continue;
+    const nv=v-0.10;
+    const nbr=[[1,0],[-1,0],[0,1],[0,-1]];
+    for(const [dx,dy] of nbr){
+      const nx=vx+dx, ny=vy+dy;
+      if(nx<0||nx>=W||ny<0||ny>=H) continue;
+      const wx=x0+nx, wy=y0+ny;
+      if(wx<0||wx>=WORLD_W||wy<0||wy>=WORLD_H) continue;
+      const m=B[world[wx*WORLD_H+wy]];
+      const passLoss = (m&&m.solid&&!m.leaf)?0.06:0; // light dims more through solids? keep flowing a bit
+      const val=nv-passLoss;
+      if(val>lightMap[li(nx,ny)]+0.001){ lightMap[li(nx,ny)]=val; q.push([nx,ny,val]); }
+    }
+  }
+  // player torch ambient (small)
+  const pvx=Math.round(player.x-x0), pvy=Math.round(player.y-y0);
+  if(pvx>=0&&pvx<W&&pvy>=0&&pvy<H){ lightMap[li(pvx,pvy)]=Math.max(lightMap[li(pvx,pvy)],0.22); }
+}
+
+//---------------- Physics & movement ----------------------------
+const keys={};
+function aabbSolid(nx,ny){
+  // feet at ny, body spans (ny-h .. ny). Bottom edge is exclusive so a player
+  // resting exactly on top of a block (ny == integer floor row) is NOT clipping.
+  const eps=1e-4;
+  const x1=nx-player.w/2, x2=nx+player.w/2, y1=ny-player.h+eps, y2=ny-eps;
+  for(let x=Math.floor(x1);x<=Math.floor(x2);x++)
+    for(let y=Math.floor(y1);y<=Math.floor(y2);y++)
+      if(solid(x,y)) return true;
+  return false;
+}
+function physics(dt){
+  const sp=6.0, jump=9.2, grav=26;
+  let mv=0;
+  if(keys.left||touchState.left) mv-=1;
+  if(keys.right||touchState.right) mv+=1;
+  if(mv!==0) player.face=mv;
+  player.vx = mv*sp;
+  // jump
+  if((keys.up||touchState.up||touchState.jump) && player.onGround){ player.vy=-jump; player.onGround=false; }
+  player.vy += grav*dt;
+  if(player.vy>30) player.vy=30;
+
+  // X move
+  let nx=player.x + player.vx*dt;
+  if(!aabbSolid(nx,player.y)) player.x=nx;
+  else { while(!aabbSolid(player.x+Math.sign(player.vx)*0.05,player.y) && Math.abs(player.x-nx)>0.05){player.x+=Math.sign(player.vx)*0.05;} player.vx=0; }
+  // Y move
+  let ny=player.y + player.vy*dt;
+  if(!aabbSolid(player.x,ny)){ player.y=ny; player.onGround=false; }
+  else {
+    if(player.vy>0){ // landed: snap feet to top edge of the solid cell below
+      player.onGround=true; player.y=Math.floor(ny);
+    } else { // hit ceiling: snap just below it
+      player.y=Math.ceil(ny);
+    }
+    player.vy=0;
+  }
+  // ground check (feet just below)
+  player.onGround = solid(Math.floor(player.x-player.w/2),Math.floor(player.y+0.05))
+                 || solid(Math.floor(player.x+player.w/2),Math.floor(player.y+0.05));
+  // bounds
+  player.x=Math.max(1,Math.min(WORLD_W-2,player.x));
+  if(player.y>WORLD_H-1){ player.y=WORLD_H-1; }
+}
+
+//---------------- Mining / placing ------------------------------
+let mouse={px:0,py:0,wx:null,wy:null,down:false,btn:0};
+function worldFromMouse(){
+  const x0=Math.floor(camX), y0=Math.floor(camY);
+  const ox=(camX-x0)*CELL, oy=(camY-y0)*CELL;
+  mouse.wx = x0 + Math.floor((mouse.px+ox)/CELL);
+  mouse.wy = y0 + Math.floor((mouse.py+oy)/CELL);
+}
+function currentTool(){
+  const s=hotbar[player.sel];
+  if(s){ const m=meta(s.id); if(m.tool) return m; }
+  return null;
+}
+function hardnessTime(id){
+  const m=B[id]; if(!m) return 0.3;
+  let t=m.hard*0.18;
+  const tool=currentTool();
+  if(m.tool==="pick"){
+    if(tool&&tool.tool==="pick"){ t/= (1+tool.tier*0.9); }
+    else t*=3; // bare hand on stone is slow
+  } else if(tool&&tool.tool==="pick"){ t*=0.6; }
+  return Math.max(0.08,t);
+}
+function canDrop(id){ // need correct tier to get drop from hard ores
+  const m=B[id];
+  if(!m||!m.tool) return true;
+  if(m.tool==="pick"){
+    const tool=currentTool();
+    if(!tool||tool.tool!=="pick") return false;
+    // tier gating: silver+ needs tier2+, azurite/crimson needs tier3
+    if((id===22||id===21)&&tool.tier<1) return false;
+    if((id===23||id===24)&&tool.tier<2) return false;
+  }
+  return true;
+}
+function tryMine(wx,wy,dt){
+  if(wx==null) return;
+  const id=get(wx,wy);
+  if(id===AIR||id===11){ player.breakTarget=null; player.breakT=0; return; }
+  const dist=Math.hypot(wx+0.5-player.x, wy+0.5-player.y);
+  if(dist>player.reach){ player.breakTarget=null; player.breakT=0; return; }
+  if(!player.breakTarget||player.breakTarget.x!==wx||player.breakTarget.y!==wy){
+    player.breakTarget={x:wx,y:wy}; player.breakT=0;
+  }
+  const need=hardnessTime(id);
+  player.breakT += dt/need;
+  if(player.breakT>=1){
+    breakBlock(wx,wy);
+    player.breakTarget=null; player.breakT=0;
+  }
+}
+function breakBlock(wx,wy){
+  const id=get(wx,wy); if(id===AIR||id===11) return;
+  const m=B[id];
+  set(wx,wy,AIR);
+  // tool durability
+  const tool=currentTool();
+  if(tool&&m.tool){ const s=hotbar[player.sel]; s.dur=(s.dur??tool.dur)-1; if(s.dur<=0){ hotbar[player.sel]=null; flash("도구가 부서졌다: "+tool.name); } }
+  // drop
+  if(canDrop(id)){
+    let dropId = m.dropId!=null? m.dropId : (m.drop!=null? m.drop : id);
+    if(m.leaf){ if(Math.random()<0.25) spawnDrop(wx,wy,6); if(Math.random()<0.08) spawnDrop(wx,wy,5);/* rare stick? */ return; }
+    spawnDrop(wx,wy,dropId);
+  } else {
+    flash("적절한 곡괭이가 필요하다");
+  }
+  // gravity: sand falls
+  settleGravity(wx,wy-1);
+  // grass->dirt if covered? skip. leaves decay quick optional.
+}
+function settleGravity(x,y){
+  for(let yy=y;yy>=0;yy--){
+    const id=get(x,yy); const m=B[id];
+    if(id===AIR) break;
+    if(m&&m.gravity){
+      // fall down
+      let ny=yy;
+      while(ny+1<WORLD_H && get(x,ny+1)===AIR) ny++;
+      if(ny!==yy){ set(x,yy,AIR); set(x,ny,id); }
+    } else break;
+  }
+}
+function tryPlace(wx,wy){
+  if(wx==null) return;
+  const s=hotbar[player.sel]; if(!s) return;
+  const m=meta(s.id);
+  if(!isBlock(s.id) || m.tool){ flash(m.name+" 은(는) 설치할 수 없다"); return; }
+  if(get(wx,wy)!==AIR) return;
+  const dist=Math.hypot(wx+0.5-player.x, wy+0.5-player.y);
+  if(dist>player.reach) return;
+  // don't place inside player
+  if(wx>=Math.floor(player.x-player.w/2)&&wx<=Math.floor(player.x+player.w/2)
+     && wy>=Math.floor(player.y-player.h)&&wy<=Math.floor(player.y)) return;
+  // torch must attach
+  set(wx,wy,s.id);
+  s.count--; if(s.count<=0) hotbar[player.sel]=null;
+}
+
+//---------------- Crafting recipes (original) -------------------
+// out:{id,n}, need:[[id,n]...], station:true means needs near 화로돌(furnace) — we use proximity to placed 30
+const RECIPES=[
+  {out:[7,4],  need:[[5,1]],            name:"판자",   desc:"나무기둥 1 → 판자 4"},
+  {out:[50,4], need:[[7,2]],            name:"막대",   desc:"판자 2 → 막대 4"},
+  {out:[9,4],  need:[[50,1],[40,1]],    name:"홰불",   desc:"막대1+탄덩이1 → 홰불 4"},
+  {out:[30,1], need:[[3,8]],            name:"화로돌", desc:"석심 8 → 제련용 화로돌"},
+  {out:[53,1], need:[[3,3],[50,2]],     name:"돌곡괭이", desc:"석심3+막대2"},
+  {out:[8,1],  need:[[5,3],[40,1]],     name:"화톳불", desc:"나무3+탄1 (광원)"},
+  {out:[32,2], need:[[43,1],[7,2]],     name:"빛수정블록", desc:"청휘결정1+판자2 (강한 광원)"},
+  // smelting (needs furnace nearby)
+  {out:[51,1], need:[[41,1],[40,1]],    name:"적동괴", desc:"적동원석1+탄덩이1 (화로돌 근처)", furnace:true},
+  {out:[52,1], need:[[42,1],[40,1]],    name:"은괴",   desc:"은원석1+탄덩이1 (화로돌 근처)", furnace:true},
+  {out:[56,1], need:[[6,2],[40,1]],     name:"구운버섯", desc:"잎무리2+탄1 → 회복식 (화로돌 근처)", furnace:true},
+  {out:[54,1], need:[[51,3],[50,2]],    name:"적동곡괭이", desc:"적동괴3+막대2 (화로돌 근처)", furnace:true},
+  {out:[55,1], need:[[52,3],[50,2]],    name:"은곡괭이", desc:"은괴3+막대2 (화로돌 근처)", furnace:true},
+  {out:[31,4], need:[[51,1],[3,4]],     name:"적동벽돌", desc:"적동괴1+석심4 (화로돌 근처)", furnace:true},
+  {out:[57,1], need:[[44,1],[6,3]],     name:"체력단약", desc:"심홍보석1+잎무리3 → +8 HP (화로돌 근처)", furnace:true},
+];
+function nearFurnace(){
+  for(let dx=-3;dx<=3;dx++)for(let dy=-3;dy<=3;dy++){
+    if(get(Math.round(player.x)+dx, Math.round(player.y)+dy)===30) return true;
+  }
+  return false;
+}
+function canCraft(r){
+  if(r.furnace && !nearFurnace()) return false;
+  for(const [id,n] of r.need) if(countItem(id)<n) return false;
+  return true;
+}
+function doCraft(r){
+  if(!canCraft(r)){ flash(r.furnace&&!nearFurnace()?"화로돌 근처에서만 가능":"재료 부족"); return; }
+  for(const [id,n] of r.need) removeItem(id,n);
+  const ok=addItem(r.out[0], r.out[1]);
+  if(!ok){ flash("인벤토리가 가득 참"); /* refund */ for(const [id,n] of r.need) addItem(id,n); return; }
+  flash("제작: "+meta(r.out[0]).name+" x"+r.out[1]);
+  renderCraft(); renderHotbar();
+}
+
+//---------------- Entities update -------------------------------
+function updateDrops(dt){
+  for(const d of drops){
+    d.t+=dt;
+    d.vy+=26*dt;
+    let ny=d.y+d.vy*dt;
+    if(solid(Math.floor(d.x),Math.floor(ny))){ d.vy=0; ny=d.y; } else d.y=ny;
+    d.x+=d.vx*dt; d.vx*=0.9;
+    if(solid(Math.floor(d.x),Math.floor(d.y))){ d.x-=d.vx*dt; }
+    // pickup: measure to nearest point of player body (head..feet), generous radius
+    if(d.t>0.25){
+      const cy=Math.max(player.y-player.h, Math.min(player.y, d.y));
+      if(Math.hypot(d.x-player.x, d.y-cy)<1.7){
+        if(addItem(d.id,1)){ d._dead=true; }
+      }
+    }
+  }
+  drops=drops.filter(d=>!d._dead && d.t<300);
+}
+function updateMobs(dt){
+  const night = skyLevel()<0.3;
+  for(const mo of mobs){
+    mo.t+=dt;
+    mo.vy+=24*dt;
+    // simple AI
+    if(mo.type===1){ // slug hostile: move toward player if close
+      const dx=player.x-mo.x;
+      if(Math.abs(dx)<14 && Math.abs(player.y-mo.y)<6){ mo.vx=Math.sign(dx)*2.2; mo.face=Math.sign(dx);
+        // attack
+        if(Math.abs(dx)<0.9 && Math.abs(player.y-mo.y)<1.4){ hurtPlayer(2, dt); }
+      } else mo.vx*=0.8;
+      // jump if blocked
+      if(mo.onGround && solid(Math.floor(mo.x+mo.face*0.6),Math.floor(mo.y))) mo.vy=-7;
+    } else if(mo.type===2){ // bat: floaty
+      mo.vy += Math.sin(mo.t*4)*3*dt - 24*dt + 24*dt;
+      mo.vy = Math.sin(mo.t*3)*2;
+      mo.vx = Math.cos(mo.t*1.5)*2;
+    } else { // spore: wander slow
+      if(Math.random()<0.01) mo.vx=(Math.random()-0.5)*1.5;
+    }
+    // physics
+    let nx=mo.x+mo.vx*dt;
+    if(!solid(Math.floor(nx),Math.floor(mo.y))&&!solid(Math.floor(nx),Math.floor(mo.y-1))) mo.x=nx; else mo.vx=0;
+    let ny=mo.y+mo.vy*dt;
+    if(mo.type===2){ mo.y=ny; }
+    else if(!solid(Math.floor(mo.x),Math.floor(ny))){ mo.y=ny; mo.onGround=false; } else { if(mo.vy>0){mo.onGround=true; mo.y=Math.floor(ny);} mo.vy=0; }
+    mo.x=Math.max(1,Math.min(WORLD_W-2,mo.x));
+  }
+  // despawn hostile in day
+  if(!night) mobs=mobs.filter(m=>m.type!==1 || Math.hypot(m.x-player.x,m.y-player.y)<20);
+  // spawn logic
+  spawnTimer-=dt;
+  if(spawnTimer<=0){
+    spawnTimer=2.0;
+    const px=Math.round(player.x), py=Math.round(player.y);
+    if(mobs.length<14){
+      // deep/dark -> hostile slug; surface night -> bat; caves -> spore
+      const tx=px + (Math.random()<0.5?-1:1)*(VCOLS/2+2);
+      // find air with floor near tx
+      for(let ty=Math.max(2,py-8);ty<py+10;ty++){
+        if(get(tx,ty)===AIR && solid(tx,ty+1)){
+          const dark = lightHere(tx,ty)<0.18;
+          if(player.y>SURFACE+4 && dark) spawnMob(1,tx,ty);          // cave hostile
+          else if(night && Math.random()<0.4) spawnMob(2,tx,ty);     // dusk bat
+          else if(player.y>SURFACE+6 && Math.random()<0.5) spawnMob(0,tx,ty); // spore
+          break;
+        }
+      }
+    }
+  }
+}
+let spawnTimer=2;
+function lightHere(x,y){
+  const x0=Math.floor(camX), y0=Math.floor(camY);
+  const vx=x-x0, vy=y-y0, H=VROWS+2;
+  if(!lightMap||vx<0||vy<0||vx>=VCOLS+2||vy>=H) return 0.5;
+  return lightMap[vx*H+vy]||0;
+}
+function hurtPlayer(amt,dt){
+  if(player._inv>0) return;
+  player.hp-=amt; player.hurtT=0.8; player._inv=0.7;
+  if(player.hp<=0) gameOver();
+}
+
+//---------------- Survival ticks --------------------------------
+let survTimer=0;
+function survival(dt){
+  player.hurtT=Math.max(0,player.hurtT-dt*1.4);
+  player._inv=Math.max(0,(player._inv||0)-dt);
+  survTimer+=dt;
+  if(survTimer>=4){
+    survTimer=0;
+    // hunger drain
+    if(player.food>0) player.food=Math.max(0,player.food-1);
+    else player.hp=Math.max(0,player.hp-1);
+    // regen if fed
+    if(player.food>=16 && player.hp<player.maxhp) player.hp=Math.min(player.maxhp,player.hp+1);
+    if(player.hp<=0) gameOver();
+  }
+}
+function eatSelected(){
+  const s=hotbar[player.sel]; if(!s) return;
+  const m=meta(s.id);
+  if(m.food){ player.food=Math.min(player.maxfood,player.food+m.food); s.count--; if(s.count<=0)hotbar[player.sel]=null; flash("기력 회복 +"+m.food); renderHotbar(); }
+  else if(m.heal){ player.hp=Math.min(player.maxhp,player.hp+m.heal); s.count--; if(s.count<=0)hotbar[player.sel]=null; flash("HP 회복 +"+m.heal); renderHotbar(); }
+}
+
+//---------------- Dimension: Deep Rift (my variant) -------------
+let savedOverworld=null;
+function toggleDim(){
+  if(player.dim==="표층"){
+    // descend to deep rift: teleport deep + ensure dense ore/caves area visible
+    flash("심층 균열로 하강…");
+    player.dim="심층";
+    const px=Math.round(player.x);
+    const floorRow = WORLD_H-26 + Math.floor(Math.random()*6);
+    // carve a landing pocket above a solid floor; feet rest on the floor top
+    for(let dx=-2;dx<=2;dx++) for(let dy=1;dy<=4;dy++) set(px+dx, floorRow-dy, AIR);
+    for(let dx=-2;dx<=2;dx++) set(px+dx, floorRow, 10);
+    player.y = floorRow; player.vy=0;
+    document.getElementById("diveBtn").textContent="표층귀환 [G]";
+  } else {
+    flash("표층으로 귀환");
+    player.dim="표층";
+    // land safely on the actual surface above, not the top of the sky
+    const px=Math.round(player.x);
+    let sy=SURFACE;
+    for(let y=2;y<WORLD_H;y++){ if(solid(px,y)){ sy=y; break; } }
+    // carve headroom so we don't suffocate; feet rest on top of surface row sy
+    for(let dy=1;dy<=3;dy++) set(px, sy-dy, AIR);
+    player.y=sy; player.vy=0;
+    document.getElementById("diveBtn").textContent="심층동굴 [G]";
+  }
+}
+
+//---------------- HUD / UI --------------------------------------
+const hotbarEl=document.getElementById("hotbar");
+function renderHotbar(){
+  hotbarEl.innerHTML="";
+  for(let i=0;i<9;i++){
+    const s=hotbar[i]; const d=document.createElement("div");
+    d.className="slot"+(i===player.sel?" sel":"");
+    d.innerHTML=`<span class="key">${i+1}</span>`;
+    if(s){ const m=meta(s.id);
+      d.innerHTML+=`<span style="color:${m.fg}">${m.g}</span>`;
+      if(!m.tool) d.innerHTML+=`<span class="cnt">${s.count}</span>`;
+      else if(s.dur!=null) d.innerHTML+=`<span class="cnt">${s.dur}</span>`;
+      d.title=m.name;
+    }
+    d.onclick=()=>{ player.sel=i; renderHotbar(); };
+    hotbarEl.appendChild(d);
+  }
+}
+function updateHUD(){
+  document.getElementById("hpBar").style.width=(player.hp/player.maxhp*100)+"%";
+  document.getElementById("foodBar").style.width=(player.food/player.maxfood*100)+"%";
+  const h=Math.floor(timeOfDay*24), mm=Math.floor((timeOfDay*24%1)*60);
+  const icon=skyLevel()>0.4?"☀":"☾";
+  document.getElementById("clock").textContent=`${icon} ${String(h).padStart(2,"0")}:${String(mm).padStart(2,"0")} · ${player.dim} · ${biomeAt[Math.round(player.x)]||""} · Y${Math.round(player.y)}`;
+}
+let msgT=0;
+function flash(t){ document.getElementById("msg").textContent=t; msgT=2.4; }
+
+function renderCraft(){
+  const el=document.getElementById("recipes"); el.innerHTML="";
+  for(const r of RECIPES){
+    const ok=canCraft(r);
+    const out=meta(r.out[0]);
+    const div=document.createElement("div");
+    div.className="recipe"+(ok?"":" no");
+    const needTxt=r.need.map(([id,n])=>`${meta(id).g}${meta(id).name}×${n} <small style="display:inline;color:${countItem(id)>=n?'var(--acc)':'var(--hp)'}">(${countItem(id)})</small>`).join(" + ");
+    div.innerHTML=`<div class="out" style="color:${out.fg}">${out.g}</div>
+      <div class="info"><b>${r.name}</b> ×${r.out[1]} ${r.furnace?'<small style="display:inline;color:var(--warn)">🔥화로돌 필요</small>':''}
+      <small>${needTxt}</small></div>`;
+    const btn=document.createElement("button"); btn.className="btn"+(ok?" acc":""); btn.textContent="제작";
+    btn.disabled=!ok; if(ok) btn.onclick=()=>doCraft(r);
+    div.appendChild(btn);
+    el.appendChild(div);
+  }
+}
+
+//---------------- Input ----------------------------------------
+window.addEventListener("keydown",e=>{
+  if(e.repeat) return;
+  const k=e.key.toLowerCase();
+  if(k==="arrowleft"||k==="a") keys.left=true;
+  if(k==="arrowright"||k==="d") keys.right=true;
+  if(k==="arrowup"||k==="w"||k===" ") {keys.up=true; e.preventDefault();}
+  if(k==="arrowdown"||k==="s") keys.down=true;
+  if(k>="1"&&k<="9"){ player.sel=parseInt(k)-1; renderHotbar(); }
+  if(k==="c"){ toggleCraft(); }
+  if(k==="g"){ toggleDim(); }
+  if(k==="h"){ document.getElementById("intro").style.display="flex"; }
+  if(k==="e"){ eatSelected(); }
+  if(k==="q"){ player.sel=(player.sel+1)%9; renderHotbar(); }
+  if(k==="escape"){ closeCraft(); document.getElementById("intro").style.display="none"; }
+});
+window.addEventListener("keyup",e=>{
+  const k=e.key.toLowerCase();
+  if(k==="arrowleft"||k==="a") keys.left=false;
+  if(k==="arrowright"||k==="d") keys.right=false;
+  if(k==="arrowup"||k==="w"||k===" ") keys.up=false;
+  if(k==="arrowdown"||k==="s") keys.down=false;
+});
+cv.addEventListener("mousemove",e=>{ const r=cv.getBoundingClientRect(); mouse.px=e.clientX-r.left; mouse.py=e.clientY-r.top; worldFromMouse(); });
+cv.addEventListener("mousedown",e=>{ e.preventDefault(); mouse.down=true; mouse.btn=e.button; worldFromMouse();
+  if(e.button===2){ tryPlace(mouse.wx,mouse.wy); } });
+cv.addEventListener("mouseup",e=>{ mouse.down=false; player.breakTarget=null; player.breakT=0; });
+cv.addEventListener("contextmenu",e=>e.preventDefault());
+cv.addEventListener("mouseleave",()=>{ mouse.wx=null; mouse.down=false; });
+
+// touch
+let isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints>0;
+const touchState={};
+function bindTouch(){
+  document.querySelectorAll("#touch .tbtn").forEach(b=>{
+    const k=b.dataset.k;
+    const on=e=>{e.preventDefault();
+      if(k==="next"){ player.sel=(player.sel+1)%9; renderHotbar(); return; }
+      touchState[k]=true;
+      if(k==="mine"){ /* handled in loop using facing */ }
+      if(k==="place"){ touchPlace(); }
+    };
+    const off=e=>{e.preventDefault(); touchState[k]=false; if(k==="mine"){player.breakTarget=null;player.breakT=0;} };
+    b.addEventListener("touchstart",on,{passive:false});
+    b.addEventListener("touchend",off,{passive:false});
+    b.addEventListener("touchcancel",off,{passive:false});
+    b.addEventListener("mousedown",on); b.addEventListener("mouseup",off); b.addEventListener("mouseleave",off);
+  });
+}
+function frontCell(){ // cell player faces (for touch mine/place)
+  const fx=Math.round(player.x + player.face*0.9);
+  const fy=Math.round(player.y - 0.6);
+  return {x:fx,y:fy};
+}
+function touchPlace(){ const f=frontCell();
+  // prefer placing at feet-front or front
+  if(get(f.x,f.y)===AIR) tryPlace(f.x,f.y);
+  else tryPlace(f.x, f.y-1);
+}
+
+//---------------- Game loop ------------------------------------
+let started=false, last=0, gameDone=false;
+function loop(ts){
+  requestAnimationFrame(loop);
+  if(!started) return;
+  let dt=(ts-last)/1000; last=ts; if(dt>0.05)dt=0.05; if(dt<=0)return;
+  if(gameDone) return;
+
+  timeOfDay=(timeOfDay+dt/180)%1; // ~3 min day
+
+  physics(dt);
+  // mining
+  if(mouse.down && mouse.btn===0 && !isTouch){ worldFromMouse(); tryMine(mouse.wx,mouse.wy,dt); }
+  if(touchState.mine){ const f=frontCell(); tryMine(f.x,f.y,dt); }
+  if(keys.down){ // dig down: break the floor block directly under the feet
+    const dx=Math.round(player.x);
+    let dy=Math.floor(player.y);
+    if(!solid(dx,dy)) dy=Math.floor(player.y)+1; // if already mid-air, target next cell down
+    tryMine(dx,dy,dt);
+  }
+  updateDrops(dt);
+  updateMobs(dt);
+  survival(dt);
+  if(msgT>0){ msgT-=dt; if(msgT<=0) document.getElementById("msg").textContent=""; }
+
+  render();
+  updateHUD();
+  if(uiTick++ %6===0) renderHotbar();
+}
+let uiTick=0;
+
+//---------------- Combat (attack mobs by mining their cell) -----
+function attackCheck(){
+  // clicking on a mob cell hurts it (reuse mine button on front)
+}
+
+//---------------- Start / Over ---------------------------------
+function startGame(){
+  document.getElementById("intro").style.display="none";
+  if(started) return;
+  fit();
+  gen();
+  // place player on surface center: feet rest on top of the first solid row
+  player.x=WORLD_W/2;
+  for(let y=2;y<WORLD_H;y++){ if(solid(Math.round(player.x),y)){ player.y=y; player.vy=0; break; } }
+  startKit();
+  renderHotbar();
+  if(isTouch){ document.getElementById("touch").style.display="block"; bindTouch(); }
+  started=true;
+  flash("표층에서 깨어났다. 나무를 채집해 시작하라.");
+}
+function gameOver(){
+  if(gameDone) return; gameDone=true;
+  const ov=document.createElement("div"); ov.className="overlay";
+  ov.innerHTML=`<h1 style="color:var(--hp)">쓰러졌다</h1>
+    <p>심층의 어둠이 당신을 삼켰습니다.<br>채굴한 깊이: <b>Y${Math.round(player.y)}</b> · 차원: ${player.dim}</p>
+    <button class="btn acc" style="font-size:15px;padding:9px 20px" onclick="location.reload()">다시 도전</button>
+    <p class="small" style="margin-top:14px">Minecraft에서 영감 — © Mojang/Microsoft. 오리지널 구현(GLYPHDELVE).</p>`;
+  document.body.appendChild(ov);
+}
+
+//---------------- Craft panel toggles --------------------------
+function toggleCraft(){ const p=document.getElementById("craftPanel");
+  if(p.classList.contains("open")) closeCraft(); else { renderCraft(); p.classList.add("open"); } }
+function closeCraft(){ document.getElementById("craftPanel").classList.remove("open"); }
+document.getElementById("craftBtn").onclick=toggleCraft;
+document.getElementById("closeCraft").onclick=closeCraft;
+document.getElementById("diveBtn").onclick=toggleDim;
+document.getElementById("helpBtn").onclick=()=>document.getElementById("intro").style.display="flex";
+document.getElementById("startBtn").onclick=startGame;
+
+// boot
+fit();
+renderHotbar();
+requestAnimationFrame(loop);
+// auto-detect touch hint
+if(isTouch){ document.querySelector("#intro .small").innerHTML += "<br><b>터치 기기 감지됨</b>"; }
+</script>
+</body>
+</html>

@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>MERCURY · 라바램프 메탈볼</title>
+<style>
+  :root { --bg:#05060a; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:var(--bg); }
+  body { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; -webkit-font-smoothing:antialiased; touch-action:none; }
+  #stage { position:fixed; inset:0; display:block; }
+  canvas { position:fixed; inset:0; width:100%; height:100%; display:block; }
+  /* HUD */
+  .hud { position:fixed; z-index:10; color:#cfd6e6; pointer-events:none; mix-blend-mode:screen; }
+  .title { top:26px; left:30px; }
+  .title h1 { font-size:13px; letter-spacing:.62em; font-weight:600; color:#eef2ff; text-transform:uppercase; }
+  .title p { margin-top:8px; font-size:10px; letter-spacing:.30em; color:#7d8bb0; }
+  .meta { bottom:24px; left:30px; font-size:9.5px; letter-spacing:.22em; color:#6b7799; line-height:1.9; }
+  .meta b { color:#aab6dc; font-weight:600; }
+  .corner { top:26px; right:30px; text-align:right; font-size:9.5px; letter-spacing:.24em; color:#6b7799; line-height:1.85; }
+  .fps { color:#88f3c4; }
+  .hint { position:fixed; left:50%; bottom:26px; transform:translateX(-50%); z-index:10;
+          font-size:9.5px; letter-spacing:.34em; color:#5a6790; pointer-events:none;
+          text-transform:uppercase; transition:opacity 1.1s ease; }
+  .hint.gone { opacity:0; }
+  /* palette swatches */
+  .palettes { position:fixed; right:28px; bottom:24px; z-index:11; display:flex; gap:9px; }
+  .sw { width:20px; height:20px; border-radius:50%; cursor:pointer; border:1px solid rgba(255,255,255,.14);
+        box-shadow:0 2px 10px rgba(0,0,0,.5), inset 0 0 6px rgba(255,255,255,.25);
+        transition:transform .25s cubic-bezier(.2,.8,.2,1), box-shadow .25s; }
+  .sw:hover { transform:scale(1.22); }
+  .sw.on { transform:scale(1.32); box-shadow:0 0 0 2px rgba(255,255,255,.5), 0 2px 12px rgba(0,0,0,.6); }
+  @media (max-width:520px){
+    .title{top:18px;left:18px;} .title h1{font-size:11px;letter-spacing:.42em;}
+    .title p{font-size:9px;letter-spacing:.22em;}
+    .corner{top:18px;right:18px;} .meta{left:18px;bottom:54px;}
+    .palettes{right:16px;bottom:18px;} .sw{width:24px;height:24px;}
+    .hint{bottom:80px;}
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div class="hud title">
+  <h1>MERCURY</h1>
+  <p>LIQUID&nbsp;METAL&nbsp;·&nbsp;FIELD&nbsp;OF&nbsp;BLOBS</p>
+</div>
+<div class="hud corner">
+  <div>BLOBS&nbsp;<span id="nballs">12</span></div>
+  <div>HEAT&nbsp;<span id="heat">0.42</span></div>
+  <div class="fps" id="fps">60 FPS</div>
+</div>
+<div class="hud meta">
+  <div><b>DRAG</b>&nbsp;끌어당기기&nbsp;·&nbsp;<b>CLICK</b>&nbsp;새 방울</div>
+  <div><b>SCROLL</b>&nbsp;열·점도&nbsp;·&nbsp;<b>KEY 1-4</b>&nbsp;색</div>
+</div>
+<div class="hint" id="hint">MOVE&nbsp;·&nbsp;DRAG&nbsp;·&nbsp;CLICK&nbsp;·&nbsp;SCROLL</div>
+<div class="palettes" id="palettes"></div>
+
+<script>
+(() => {
+"use strict";
+
+const cv = document.getElementById('stage');
+const gl = cv.getContext('webgl', { antialias:false, premultipliedAlpha:false, alpha:false, powerPreference:'high-performance' })
+        || cv.getContext('experimental-webgl');
+
+if (!gl) { document.body.innerHTML = '<div style="color:#889;font:14px monospace;padding:40px">WebGL을 사용할 수 없습니다.</div>'; return; }
+
+// ---------- shaders ----------
+const VERT = `
+attribute vec2 p;
+void main(){ gl_Position = vec4(p, 0.0, 1.0); }
+`;
+
+// Max metaballs supported in the shader array.
+const MAXB = 22;
+
+const FRAG = `
+precision highp float;
+
+uniform vec2  uRes;
+uniform float uT;
+uniform vec3  uBalls[${MAXB}];   // xy = pos (px), z = radius (px)
+uniform int   uN;
+uniform vec2  uMouse;            // px
+uniform float uMouseOn;
+uniform float uHeat;             // 0..1 affects glow / contrast
+uniform vec3  uColA;             // deep / background
+uniform vec3  uColB;             // mid / body
+uniform vec3  uColC;             // hot / highlight
+uniform vec3  uColEnv;           // environment tint for metal reflection
+
+float hash21(vec2 p){
+  p = fract(p*vec2(123.34, 345.45));
+  p += dot(p, p+34.345);
+  return fract(p.x*p.y);
+}
+
+// Procedural studio environment reflected by the chrome surface.
+// A mirror sphere reflects: a bright sky / softbox above a dark floor,
+// with a crisp horizon line, a hot sun, and a couple of colored light bars.
+// Matcap-style chrome: map the surface normal (and reflection) to a punchy,
+// high-contrast, palette-tinted shading ball. Colored metal, not white plastic.
+vec3 envMap(vec3 r){
+  vec3 rn = normalize(r);
+  float y = clamp(rn.y, -1.0, 1.0);
+  float x = rn.x;
+
+  // base = deep palette color (the metal's own dark reflection of the room)
+  vec3 col = uColA * 0.25;
+
+  // upper hemisphere catches the colored "sky"; lower stays dark => strong split
+  float up = smoothstep(-0.15, 0.65, y);
+  col = mix(col, uColEnv * 0.9, up);
+
+  // a hot, narrow horizon reflection line (the signature liquid-metal edge)
+  float horizon = exp(-pow((y - 0.05)*7.0, 2.0));
+  col += mix(uColC, vec3(1.0), 0.4) * horizon * 1.1;
+
+  // big soft top light => bright cap, tinted toward white
+  float cap = smoothstep(0.45, 1.0, y);
+  col += mix(uColC*0.6, vec3(1.0), cap) * cap * 0.9;
+
+  // brilliant moving sun glint (tiny pure-white hotspot)
+  vec3 sun = normalize(vec3(0.5*sin(uT*0.22)+0.15, 0.85, 0.45));
+  float s = max(dot(rn, sun), 0.0);
+  col += vec3(1.0) * pow(s, 400.0) * 3.5;
+  col += uColC * pow(s, 20.0) * 0.4;
+
+  // cool colored rim from a low side light (gives volume to the dark side)
+  vec3 fill = normalize(vec3(-0.75, -0.25, 0.5));
+  float f = max(dot(rn, fill), 0.0);
+  col += uColB * pow(f, 6.0) * 0.45;
+
+  // drifting colored softbox streak across the body
+  float ang = atan(rn.y, rn.x);
+  float streak = exp(-pow((sin(ang*0.5 + uT*0.16) - 0.55)*2.0, 2.0));
+  col += uColC * streak * 0.35;
+  return col;
+}
+
+// iridescent body ramp (deep -> mid -> hot)
+vec3 iri(float t){
+  t = clamp(t, 0.0, 1.0);
+  vec3 a = mix(uColA*0.6, uColB, smoothstep(0.0, 0.5, t));
+  return mix(a, uColC, smoothstep(0.55, 1.0, t));
+}
+
+void main(){
+  vec2 fc = gl_FragCoord.xy;
+  vec2 uv = fc / uRes;
+  float aspect = uRes.x / uRes.y;
+  float px = uRes.y * 0.0011;   // edge softness scaled to resolution
+
+  // ---- smooth-union SDF over all blobs (negative = inside) ----
+  // Polynomial smooth-min keeps droplets spherical but lets them fuse with
+  // organic necks (true metaball look) AND gives a real curved dome to reflect.
+  float kSmooth = 46.0;        // neck softness in px
+  float sdf = 1e9;             // smooth-union distance (px, signed)
+  vec2  nrm = vec2(0.0);       // accumulated 2D gradient of the SDF
+
+  float invK = 0.5 / kSmooth;
+  for (int i = 0; i < ${MAXB}; i++){
+    if (i >= uN) break;
+    vec3 b = uBalls[i];
+    vec2 d = fc - b.xy;
+    float L = length(d) + 1e-4;
+    float dist = L - b.z;                   // signed distance to this sphere
+    vec2  g = d / L;                        // unit outward gradient
+    float h = clamp(0.5 + (sdf - dist)*invK, 0.0, 1.0);
+    nrm = mix(nrm, g, h);
+    sdf = mix(sdf, dist, h) - kSmooth*h*(1.0-h);
+  }
+  if (uMouseOn > 0.5){
+    vec2 d = fc - uMouse;
+    float L = length(d) + 1e-4;
+    float dist = L - 150.0;
+    vec2 g = d / L;
+    float h = clamp(0.5 + (sdf - dist)*invK, 0.0, 1.0);
+    nrm = mix(nrm, g, h);
+    sdf = mix(sdf, dist, h) - kSmooth*h*(1.0-h);
+  }
+
+  // signed distance inside the body (positive inside)
+  float depthIn = -sdf;
+  float inside = smoothstep(-1.5, 1.5, depthIn);
+
+  // ----------------- BACKGROUND -----------------
+  vec3 bg = mix(uColA*0.10, uColA*0.02, uv.y);
+  float vig = smoothstep(1.35, 0.1, length((uv-0.5)*vec2(aspect,1.0)));
+  bg += uColB * 0.04 * vig;
+  float floorGlow = smoothstep(0.0, 0.55, 1.0 - uv.y) * (0.10 + uHeat*0.30);
+  bg += uColC * floorGlow * 0.25 * vig;
+
+  // ----------------- METAL SURFACE -----------------
+  // Reconstruct a spherical dome height from the SDF: h = sqrt(R^2 - d^2)-ish.
+  // Curvature radius scales with how thick the body is here.
+  // Dome shape: a rounded shell of ~fixed thickness near the rim, flat deep inside.
+  // Using a fixed reference radius (not the local depth) avoids concave dimples
+  // at the merged sub-blob centers.
+  float shell = 55.0;                                 // px from edge to flat top
+  float t = clamp(depthIn / shell, 0.0, 1.0);
+  // smooth ease so the dome rounds off without a hard ring
+  float nz = sin(t * 1.5707963);                      // 0 at rim -> 1 at top, C1-smooth
+  vec3 N = normalize(vec3(nrm * (1.0 - nz), nz + 0.04));
+  float bulge = t;
+
+  vec3 V = vec3(0.0, 0.0, 1.0);
+
+  // reflection vector for environment (chrome mirror)
+  vec3 R = reflect(-V, N);
+  vec3 envc = envMap(R);
+
+  // fresnel: rim faces away => stronger reflection / glow
+  float fres = pow(1.0 - clamp(dot(N,V),0.0,1.0), 2.5);
+
+  // a primary light for an extra crisp moving highlight
+  vec3 L1 = normalize(vec3(0.4*sin(uT*0.25)+0.2, 0.85, 0.5));
+  vec3 H1 = normalize(L1 + V);
+  float spec1 = pow(max(dot(N,H1),0.0), 200.0);        // tiny mirror glint
+
+  // subtle iridescent tint baked into the chrome (so palettes read clearly)
+  float flow = 0.5 + 0.5*sin(N.x*5.0 - N.y*4.0 + uT*0.4);
+  vec3 tint = iri(0.35 + flow*0.4 + bulge*0.25);
+
+  // CHROME body = the colored matcap reflection, with a faint iridescent flow
+  vec3 metal = envc + tint * 0.10;
+  metal += vec3(1.0) * spec1 * 2.2;                    // extra sun glint
+  metal += uColC * fres * (0.35 + uHeat*0.7);          // glowing fresnel rim
+  // hot inner pulse
+  metal += uColC * smoothstep(0.6, 1.0, bulge) * (0.04 + uHeat*0.30)
+                 * (0.6 + 0.4*sin(uT*1.2));
+
+  // ----------------- AO / CONTACT SHADOW + outer glow near blobs -----------------
+  // use the (positive) distance just outside the surface
+  float outDist = max(-depthIn, 0.0);                 // 0 at edge, grows outward
+  float near = exp(-outDist*0.045);                   // 1 at edge -> 0 far away
+  float aoOutside = near * (1.0 - inside);
+  vec3 bgShaded = bg - bg*aoOutside*0.45;            // darken just outside (grounding)
+  float bloom = exp(-outDist*0.020) * (1.0 - inside);
+  bgShaded += uColC * bloom * (0.06 + uHeat*0.30);
+
+  vec3 col = mix(bgShaded, metal, inside);
+
+  // global vignette
+  col *= 0.5 + 0.5*vig;
+
+  // ----------------- GRADE -----------------
+  // slight saturation boost
+  float lum = dot(col, vec3(0.299,0.587,0.114));
+  col = mix(vec3(lum), col, 1.18);
+  // ACES-ish tone map
+  col = (col*(2.51*col+0.03)) / (col*(2.43*col+0.59)+0.14);
+  col = pow(max(col, 0.0), vec3(0.95));
+
+  // film grain
+  float gr = hash21(fc + uT*73.0);
+  col += (gr - 0.5) * 0.018;
+
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+function compile(type, src){
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+    console.error(gl.getShaderInfoLog(s), src);
+    throw new Error('shader compile failed');
+  }
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)){
+  console.error(gl.getProgramInfoLog(prog));
+}
+gl.useProgram(prog);
+
+// fullscreen triangle
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+const aP = gl.getAttribLocation(prog, 'p');
+gl.enableVertexAttribArray(aP);
+gl.vertexAttribPointer(aP, 2, gl.FLOAT, false, 0, 0);
+
+// uniforms
+const U = {};
+['uRes','uT','uBalls','uN','uMouse','uMouseOn','uHeat','uColA','uColB','uColC','uColEnv']
+  .forEach(n => U[n] = gl.getUniformLocation(prog, n));
+
+// ---------- palettes (deep, mid, hot, env) ----------
+const PALETTES = [
+  { // 0 — molten amber / classic lava
+    name:'AMBER',
+    A:[0.06,0.02,0.10], B:[0.95,0.30,0.10], C:[1.0,0.85,0.35], E:[0.9,0.5,0.25],
+    swatch:'linear-gradient(135deg,#ff6a1a,#ffd86b)'
+  },
+  { // 1 — mercury / chrome teal
+    name:'MERCURY',
+    A:[0.03,0.05,0.09], B:[0.30,0.55,0.70], C:[0.75,0.95,1.0], E:[0.55,0.8,0.95],
+    swatch:'linear-gradient(135deg,#3a6f8c,#bfeaff)'
+  },
+  { // 2 — neon magenta / cyber
+    name:'NEON',
+    A:[0.07,0.02,0.12], B:[0.85,0.10,0.65], C:[0.45,0.95,1.0], E:[0.7,0.3,0.95],
+    swatch:'linear-gradient(135deg,#ff2bd6,#3df0ff)'
+  },
+  { // 3 — toxic acid green / gold
+    name:'ACID',
+    A:[0.02,0.06,0.04], B:[0.35,0.85,0.25], C:[0.9,1.0,0.45], E:[0.5,0.9,0.4],
+    swatch:'linear-gradient(135deg,#39d353,#eaff5a)'
+  },
+];
+let pal = 1; // start with MERCURY
+
+function setPalette(i){
+  pal = i;
+  const p = PALETTES[i];
+  gl.useProgram(prog);
+  gl.uniform3fv(U.uColA, p.A);
+  gl.uniform3fv(U.uColB, p.B);
+  gl.uniform3fv(U.uColC, p.C);
+  gl.uniform3fv(U.uColEnv, p.E);
+  // update swatch UI
+  document.querySelectorAll('.sw').forEach((el,k)=> el.classList.toggle('on', k===i));
+}
+
+// build swatch UI
+const palWrap = document.getElementById('palettes');
+PALETTES.forEach((p,i)=>{
+  const el = document.createElement('div');
+  el.className = 'sw' + (i===pal?' on':'');
+  el.style.background = p.swatch;
+  el.title = p.name;
+  el.addEventListener('click', ()=> setPalette(i));
+  palWrap.appendChild(el);
+});
+
+// ---------- simulation: lava blobs ----------
+let W=0, H=0, DPR=1;
+let blobs = [];
+let heat = 0.5;           // controls upward buoyancy / glow
+let viscosity = 0.99;     // damping (high = slow, syrupy lava motion)
+
+function rand(a,b){ return a + Math.random()*(b-a); }
+
+function makeBlob(x, y, r){
+  return {
+    x, y,
+    vx: rand(-8,8), vy: rand(-6,6),
+    r,
+    base: r,
+    // each blob "breathes" its radius
+    ph: Math.random()*Math.PI*2,
+    pr: rand(0.06,0.14),    // pulse amount
+    temp: rand(0.4,1.0),    // hotter = floats up more
+    seed: Math.random()*1000,
+  };
+}
+
+function initBlobs(){
+  blobs = [];
+  const n = (W < 560) ? 8 : 12;
+  for (let i=0;i<n;i++){
+    const r = rand(W<560?34:46, W<560?64:96);
+    blobs.push(makeBlob(rand(r, W-r), rand(r, H-r), r));
+  }
+}
+
+// ---------- resize (with adaptive resolution for smooth fps) ----------
+let renderScale = 1.0;        // dynamic quality multiplier, auto-tuned by fps
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  const cssW = window.innerWidth, cssH = window.innerHeight;
+  // hard pixel budget — the per-pixel metaball loop is the cost driver
+  const maxPix = 1500000;
+  let scale = DPR;
+  if (cssW*cssH*scale*scale > maxPix){
+    scale = Math.sqrt(maxPix/(cssW*cssH));
+  }
+  scale *= renderScale;
+  scale = Math.max(0.4, scale);
+  W = Math.max(1, Math.round(cssW*scale));
+  H = Math.max(1, Math.round(cssH*scale));
+  cv.width = W; cv.height = H;
+  cv.style.width = cssW+'px'; cv.style.height = cssH+'px';
+  gl.viewport(0,0,W,H);
+  gl.useProgram(prog);
+  gl.uniform2f(U.uRes, W, H);
+  if (blobs.length===0) initBlobs();
+  else {
+    for (const b of blobs){ b.x=Math.min(Math.max(b.x,b.r),W-b.r); b.y=Math.min(Math.max(b.y,b.r),H-b.r); }
+  }
+}
+window.addEventListener('resize', resize);
+
+// ---------- input ----------
+const mouse = { x:0, y:0, on:false, down:false, px:0, py:0, vx:0, vy:0 };
+let hintGone = false;
+function killHint(){ if(!hintGone){ hintGone=true; document.getElementById('hint').classList.add('gone'); } }
+
+function toBuf(clientX, clientY){
+  // CSS px -> framebuffer px, y flipped (gl_FragCoord origin bottom-left)
+  const sx = W / window.innerWidth;
+  const sy = H / window.innerHeight;
+  return { x: clientX*sx, y: H - clientY*sy };
+}
+
+function pointerMove(clientX, clientY){
+  const m = toBuf(clientX, clientY);
+  mouse.px = mouse.x; mouse.py = mouse.y;
+  mouse.x = m.x; mouse.y = m.y;
+  mouse.vx = mouse.x - mouse.px; mouse.vy = mouse.y - mouse.py;
+  mouse.on = true;
+  killHint();
+}
+
+cv.addEventListener('mousemove', e => pointerMove(e.clientX, e.clientY));
+cv.addEventListener('mouseleave', () => { mouse.on=false; mouse.down=false; });
+cv.addEventListener('mousedown', e => { mouse.down=true; pointerMove(e.clientX,e.clientY); });
+window.addEventListener('mouseup', () => { mouse.down=false; });
+
+// click = spawn new blob at cursor (in sim space)
+cv.addEventListener('click', e => {
+  const m = toBuf(e.clientX, e.clientY);
+  if (blobs.length < MAXB){
+    const r = rand(W<560?38:52, W<560?70:100);
+    const b = makeBlob(m.x, m.y, r);
+    b.vx = mouse.vx*0.6; b.vy = mouse.vy*0.6;
+    blobs.push(b);
+  } else {
+    // recycle the oldest, drop it at cursor
+    const b = blobs.shift();
+    b.x=m.x; b.y=m.y; b.vx=rand(-6,6); b.vy=rand(-6,6);
+    blobs.push(b);
+  }
+  killHint();
+});
+
+// touch
+cv.addEventListener('touchstart', e => {
+  e.preventDefault();
+  const t = e.touches[0];
+  mouse.down = true; pointerMove(t.clientX, t.clientY);
+}, {passive:false});
+cv.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const t = e.touches[0]; pointerMove(t.clientX, t.clientY);
+}, {passive:false});
+cv.addEventListener('touchend', e => {
+  e.preventDefault(); mouse.down=false; mouse.on=false;
+  // tap to spawn
+  if (e.changedTouches.length){
+    const t = e.changedTouches[0];
+    const m = toBuf(t.clientX, t.clientY);
+    if (blobs.length < MAXB){
+      const r = rand(40,80);
+      blobs.push(makeBlob(m.x, m.y, r));
+    }
+  }
+}, {passive:false});
+
+// scroll = heat & viscosity
+window.addEventListener('wheel', e => {
+  e.preventDefault();
+  heat = Math.min(1, Math.max(0, heat - e.deltaY*0.0009));
+  viscosity = 0.965 + heat*0.028; // hotter -> less damping, livelier
+  killHint();
+}, {passive:false});
+
+// keys 1-4 palette
+window.addEventListener('keydown', e => {
+  const k = e.key;
+  if (k>='1' && k<='4'){ setPalette(parseInt(k)-1); }
+  if (k===' '){ // spacebar burst
+    for (const b of blobs){ b.vy += rand(-30,-10); b.vx += rand(-12,12); }
+    killHint();
+  }
+});
+
+// ---------- physics ----------
+function step(dt){
+  const cx = W*0.5;
+  // gravity sign flips by temperature => lava convection (hot rises, cool sinks)
+  for (const b of blobs){
+    // breathing radius
+    b.ph += b.pr*dt*0.06;
+    b.r = b.base * (1 + Math.sin(b.ph)*0.10);
+
+    // buoyancy: temperature oscillates slowly (heating at bottom, cooling at top)
+    const yNorm = b.y / H; // 0 bottom .. 1 top  (gl coords: 0 bottom)
+    // heat from bottom: increase temp when low, lose temp when high
+    b.temp += ( (1.0 - yNorm) * heat - (yNorm)*0.5 ) * dt * 0.004;
+    b.temp += Math.sin(b.seed + performance.now()*0.0002)*0.002;
+    b.temp = Math.min(1.4, Math.max(0.0, b.temp));
+
+    // vertical force: hot floats up (positive vy in gl coords = up), cool sinks
+    const buoy = (b.temp - 0.55) * (0.9 + heat*1.4);
+    b.vy += buoy * dt * 0.9;
+
+    // very gentle horizontal sway toward center (lamp shape) + wandering noise
+    b.vx += (cx - b.x) * 0.000012 * dt * 60;
+    b.vx += Math.sin(b.seed*2.0 + performance.now()*0.0007) * 0.16 * dt;
+    b.vy += Math.cos(b.seed*1.3 + performance.now()*0.0005) * 0.06 * dt;
+
+    // mouse drag attractor (pull blobs while dragging)
+    if (mouse.down){
+      const dx = mouse.x - b.x, dy = mouse.y - b.y;
+      const d2 = dx*dx + dy*dy + 1;
+      const f = 9000 / d2;
+      b.vx += dx/Math.sqrt(d2) * f * dt;
+      b.vy += dy/Math.sqrt(d2) * f * dt;
+      // inject mouse motion as flow
+      b.vx += mouse.vx*0.012; b.vy += mouse.vy*0.012;
+    }
+  }
+
+  // soft blob-blob separation: keep droplets distinct (they still fuse visually
+  // via the shader's smooth-union, but cores stay apart => no clumping into a wad)
+  for (let i=0;i<blobs.length;i++){
+    for (let j=i+1;j<blobs.length;j++){
+      const a=blobs[i], c=blobs[j];
+      const dx=c.x-a.x, dy=c.y-a.y;
+      const d=Math.sqrt(dx*dx+dy*dy)+0.001;
+      const min=(a.r+c.r)*0.92;
+      if (d < min){
+        const push=(min-d)/min;
+        const nx=dx/d, ny=dy/d;
+        const f = push*1.15;
+        a.vx -= nx*f; a.vy -= ny*f;
+        c.vx += nx*f; c.vy += ny*f;
+      }
+    }
+  }
+
+  // integrate + walls
+  for (const b of blobs){
+    b.vx *= viscosity; b.vy *= viscosity;
+    // clamp speed
+    const sp = Math.hypot(b.vx,b.vy), maxsp=18;
+    if (sp>maxsp){ b.vx*=maxsp/sp; b.vy*=maxsp/sp; }
+    b.x += b.vx*dt; b.y += b.vy*dt;
+
+    const m = b.r*0.55;
+    if (b.x < m){ b.x=m; b.vx=Math.abs(b.vx)*0.5; }
+    if (b.x > W-m){ b.x=W-m; b.vx=-Math.abs(b.vx)*0.5; }
+    if (b.y < m){ b.y=m; b.vy=Math.abs(b.vy)*0.45; b.temp=1.2; }  // reheat at bottom
+    if (b.y > H-m){ b.y=H-m; b.vy=-Math.abs(b.vy)*0.45; b.temp=0.15; } // cool at top
+  }
+}
+
+// ---------- render ----------
+const ballData = new Float32Array(MAXB*3);
+let last = performance.now();
+let acc = 0;
+let frames = 0, fpsT = performance.now(), fpsVal = 60;
+const fpsEl = document.getElementById('fps');
+const nEl = document.getElementById('nballs');
+const heatEl = document.getElementById('heat');
+
+let started = false;
+
+function frame(now){
+  let dt = (now - last) / 16.6667; // in 60fps-frame units
+  last = now;
+  if (dt > 3) dt = 3; // avoid huge jumps after tab switch
+  step(dt);
+
+  // upload balls
+  const n = Math.min(blobs.length, MAXB);
+  for (let i=0;i<n;i++){
+    ballData[i*3]   = blobs[i].x;
+    ballData[i*3+1] = blobs[i].y;
+    ballData[i*3+2] = blobs[i].r;
+  }
+  gl.useProgram(prog);
+  gl.uniform3fv(U.uBalls, ballData);
+  gl.uniform1i(U.uN, n);
+  gl.uniform1f(U.uT, now*0.001);
+  gl.uniform2f(U.uMouse, mouse.x, mouse.y);
+  gl.uniform1f(U.uMouseOn, mouse.on?1:0);
+  gl.uniform1f(U.uHeat, heat);
+
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  // HUD + adaptive resolution
+  frames++;
+  if (now - fpsT > 500){
+    fpsVal = Math.round(frames*1000/(now-fpsT));
+    frames=0; fpsT=now;
+    fpsEl.textContent = fpsVal + ' FPS';
+    nEl.textContent = n;
+    heatEl.textContent = heat.toFixed(2);
+
+    // auto-tune render scale to keep things smooth (ignore the first ~1s warmup)
+    if (now > 1500){
+      if (fpsVal < 45 && renderScale > 0.45){
+        renderScale = Math.max(0.45, renderScale - 0.12);
+        resize();
+      } else if (fpsVal > 58 && renderScale < 1.0){
+        renderScale = Math.min(1.0, renderScale + 0.06);
+        resize();
+      }
+    }
+  }
+  requestAnimationFrame(frame);
+}
+
+// ---------- boot ----------
+resize();
+setPalette(pal);
+last = performance.now();
+requestAnimationFrame(frame);
+
+// expose for self-test
+window.__art = {
+  blobs: () => blobs.length,
+  heat: () => heat,
+  spawn: (x,y) => { const m=toBuf(x,y); blobs.push(makeBlob(m.x,m.y,60)); },
+  setHeat: (h) => { heat=h; },
+  fps: () => fpsVal,
+};
+})();
+</script>
+</body>
+</html>

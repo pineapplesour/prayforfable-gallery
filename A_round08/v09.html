@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Thin-Film — 비눗방울 간섭막 무지개</title>
+<style>
+  :root{ color-scheme: dark; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#04060d; }
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+    -webkit-font-smoothing:antialiased; touch-action:none; cursor:none;
+  }
+  #gl{ position:fixed; inset:0; width:100%; height:100%; display:block; }
+  /* soft cursor halo */
+  #cursor{
+    position:fixed; left:0; top:0; width:44px; height:44px; margin:-22px 0 0 -22px;
+    border-radius:50%; pointer-events:none; z-index:30; mix-blend-mode:screen;
+    background:radial-gradient(circle at 50% 50%, rgba(255,255,255,.55), rgba(180,220,255,.12) 45%, transparent 70%);
+    transition:transform .15s cubic-bezier(.2,.8,.2,1), opacity .3s; opacity:0;
+  }
+  /* HUD */
+  .hud{
+    position:fixed; z-index:20; pointer-events:none;
+    font-weight:600; letter-spacing:.02em; color:rgba(235,242,255,.92);
+    text-shadow:0 1px 18px rgba(0,0,0,.6);
+  }
+  #title{ left:26px; top:22px; }
+  #title h1{ font-size:15px; font-weight:700; letter-spacing:.18em; text-transform:uppercase;
+    background:linear-gradient(92deg,#ff5fb0,#ffd36e,#7af7c8,#6ab8ff,#c98bff);
+    -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
+    filter:saturate(1.2); }
+  #title p{ font-size:11px; font-weight:500; color:rgba(190,205,235,.65); margin-top:5px; letter-spacing:.04em; }
+  #hint{ left:26px; bottom:22px; font-size:11px; font-weight:500; line-height:1.85;
+    color:rgba(190,205,235,.62); }
+  #hint b{ color:rgba(255,255,255,.92); font-weight:700; }
+  #hint .k{ display:inline-block; padding:1px 7px; margin-right:3px; border-radius:6px;
+    background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.12);
+    font-size:10px; color:rgba(225,235,255,.85); }
+  #stats{ right:24px; top:22px; text-align:right; font-size:10.5px; font-weight:600;
+    color:rgba(170,190,225,.55); line-height:1.7; font-variant-numeric:tabular-nums; }
+  #stats b{ color:rgba(140,225,255,.9); }
+  #flash{ position:fixed; inset:0; z-index:25; pointer-events:none; opacity:0;
+    background:radial-gradient(circle at var(--fx,50%) var(--fy,50%), rgba(255,255,255,.9), transparent 14%);
+    mix-blend-mode:screen; }
+  @media (max-width:560px){
+    body{ cursor:auto; } #cursor{ display:none; }
+    #title{ left:16px; top:14px; } #title h1{ font-size:12px; letter-spacing:.13em; }
+    #title p{ font-size:10px; }
+    #hint{ left:16px; right:16px; bottom:14px; font-size:10px; line-height:1.7; }
+    #stats{ right:14px; top:14px; font-size:9px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="cursor"></div>
+<div id="flash"></div>
+<div id="title" class="hud">
+  <h1>THIN&nbsp;·&nbsp;FILM</h1>
+  <p>비눗방울 간섭막 — 빛이 박막 위에서 스스로를 더하고 지운다</p>
+</div>
+<div id="stats" class="hud">
+  <div><b id="sfps">60</b> fps</div>
+  <div id="sbub">3 films</div>
+  <div id="smode">drift</div>
+</div>
+<div id="hint" class="hud">
+  <span class="k">움직임</span> 막을 휘젓는다 &nbsp;·&nbsp;
+  <span class="k">클릭/탭</span> 새 방울 &nbsp;·&nbsp;
+  <span class="k">길게 누르기</span> 막을 얇게 (펑!) &nbsp;·&nbsp;
+  <span class="k">스크롤</span> 기압 — 부풀고 꺼진다 &nbsp;·&nbsp;
+  <span class="k">space</span> 숨결
+</div>
+
+<script id="vert" type="x-shader/x-fragment">
+attribute vec2 p; void main(){ gl_Position = vec4(p,0.,1.); }
+</script>
+
+<script id="frag" type="x-shader/x-fragment">
+precision highp float;
+
+uniform vec2  uRes;       // resolution px
+uniform float uTime;
+uniform vec2  uMouse;     // px
+uniform vec2  uMVel;      // mouse velocity (px/frame-ish)
+uniform float uStir;      // accumulated stir energy 0..1
+uniform float uPressure;  // ambient pressure (scroll) -> inflate
+uniform float uBreath;    // breath pulse 0..1
+uniform int   uCount;     // active bubble count
+uniform vec3  uB0;        // bubble: x,y,radius (px)
+uniform vec3  uB1;
+uniform vec3  uB2;
+uniform vec3  uB3;
+uniform vec3  uB4;
+uniform vec3  uB5;
+uniform vec4  uLife;      // life/thinning per bubble (b0..b3)
+uniform vec2  uLife2;     // life b4,b5
+
+#define PI 3.14159265359
+
+// ---------- hash / noise ----------
+vec2 hash2(vec2 p){
+  p = vec2(dot(p,vec2(127.1,311.7)), dot(p,vec2(269.5,183.3)));
+  return fract(sin(p)*43758.5453);
+}
+float hash1(vec2 p){ return fract(sin(dot(p,vec2(41.3,289.1)))*43758.5453); }
+
+float vnoise(vec2 p){
+  vec2 i=floor(p), f=fract(p);
+  vec2 u=f*f*(3.-2.*f);
+  float a=hash1(i), b=hash1(i+vec2(1,0));
+  float c=hash1(i+vec2(0,1)), d=hash1(i+vec2(1,1));
+  return mix(mix(a,b,u.x), mix(c,d,u.x), u.y);
+}
+// flow-warped fbm — the film's turbulent thickness field
+float fbm(vec2 p){
+  float v=0., a=0.5; mat2 m=mat2(1.6,1.2,-1.2,1.6);
+  for(int i=0;i<6;i++){ v+=a*vnoise(p); p=m*p; a*=0.5; }
+  return v;
+}
+
+// ---------- thin film interference ----------
+// physically-flavoured: optical path = 2*n*d*cos(theta).
+// Map path-length(nm) -> RGB via 3 cosine reflectance bands (R~640 G~540 B~460nm).
+vec3 interference(float thickness, float cosT, float fres){
+  float n = 1.33;                 // soap film index
+  float opl = 2.0*n*thickness*cosT;   // optical path length (nm)
+  // reflectance for a wavelength (constructive when opl ~ (m+0.5)*lambda, +PI phase shift)
+  float pr = (2.0*PI)*opl/640.0;
+  float pg = (2.0*PI)*opl/540.0;
+  float pb = (2.0*PI)*opl/460.0;
+  // amplitude: thin-film reflectance ~ sin^2(phase/2)
+  float r = 0.5 - 0.5*cos(pr + PI);
+  float g = 0.5 - 0.5*cos(pg + PI);
+  float b = 0.5 - 0.5*cos(pb + PI);
+  vec3 col = vec3(r,g,b);
+  // boost saturation: push channels apart from their luminance
+  float lum = dot(col, vec3(0.299,0.587,0.114));
+  col = mix(vec3(lum), col, 1.35);
+  col = clamp(col, 0.0, 1.4);
+  // gamma for chromatic richness
+  col = pow(col, vec3(0.78));
+  // Fresnel adds metallic sheen at glancing rim
+  col = mix(col, vec3(1.0), fres*0.30);
+  return col;
+}
+
+// signed-ish: returns coverage 0..1 of a soft bubble disc + local film coordinate
+// we accumulate front-most contributions.
+void main(){
+  vec2 fc = gl_FragCoord.xy;
+  vec2 uv = (fc - 0.5*uRes)/uRes.y;       // centered, aspect-correct
+  float t = uTime;
+
+  // deep iridescent void background (very subtle, so first paint is already alive)
+  vec3 bg = vec3(0.015,0.02,0.04);
+  float halo = 0.0;
+  vec2 m = (uMouse - 0.5*uRes)/uRes.y;
+  halo = exp(-dot(uv-m,uv-m)*7.0)*0.05;
+  bg += vec3(0.10,0.16,0.28)*halo;
+  // faint drifting nebula so empty space isn't dead
+  float neb = fbm(uv*2.2 + vec2(t*0.02, -t*0.015));
+  bg += vec3(0.03,0.045,0.08)*neb*0.5;
+
+  vec3 outc = bg;
+  float frontA = 0.0; // front coverage to softly composite over bg
+
+  for(int i=0;i<6;i++){
+    if(i>=uCount) break;
+    vec3 B; float life;
+    if(i==0){B=uB0; life=uLife.x;}
+    else if(i==1){B=uB1; life=uLife.y;}
+    else if(i==2){B=uB2; life=uLife.z;}
+    else if(i==3){B=uB3; life=uLife.w;}
+    else if(i==4){B=uB4; life=uLife2.x;}
+    else {B=uB5; life=uLife2.y;}
+
+    vec2 c = (B.xy - 0.5*uRes)/uRes.y;
+    float R = B.z/uRes.y;
+    if(R<=0.0001) continue;
+
+    vec2 d = uv - c;
+    float r = length(d)/R;            // 0 center .. 1 rim
+    if(r>1.06) continue;
+
+    // sphere normal (orthographic) -> cosTheta to viewer, fresnel at rim
+    float z = sqrt(max(0.0, 1.0 - r*r));
+    float cosT = clamp(z, 0.02, 1.0);
+    float fres = pow(1.0 - cosT, 3.0);
+
+    // ---- film thickness field (nm) ----
+    // base thickness modulated by gravity drainage (thinner at top),
+    // turbulent flow (advected fbm) and stirring near the cursor.
+    vec2 sp = d/R;                    // local sphere coords -1..1
+    // drainage: thinner toward top (sp.y>0 => up). inflate with pressure.
+    // real films drain into horizontal-ish lamellae -> stretch the field vertically.
+    float drain = (0.5 - sp.y*0.5);
+    float base = 230.0 + 560.0*drain;
+    // turbulent flow (advected fbm). horizontal stretch + slow vertical creep = drainage swirls.
+    vec2 flow = vec2(t*0.05, -t*0.10) + uMVel*0.0011;
+    vec2 fp1 = vec2(sp.x*2.4, sp.y*4.6) + flow;     // vertically-stretched cells
+    float warp = fbm(fp1);
+    // domain-warp the second octave by the first -> marbled, turbulent lamellae
+    vec2 fp2 = vec2(sp.x*5.2, sp.y*8.5) - flow*1.3 + warp*2.2;
+    float warp2 = fbm(fp2);
+    float warp3 = fbm(fp2*2.1 + warp2*1.5 - flow*0.6);
+    float thick = base
+                + 470.0*warp
+                + 250.0*warp2
+                + 120.0*warp3
+                + 300.0*uStir*(warp2-0.5)        // stir amplifies turbulence, not rings
+                + 110.0*uBreath*fbm(sp*3.0 + t*0.6)
+                - 150.0*uPressure;               // higher pressure stretches film thinner
+    // swirl the field when stirring near the cursor (curl-ish)
+    float swirl = uStir * 200.0 * sin(atan(sp.y,sp.x)*3.0 + length(sp)*5.0 - t*1.5);
+    thick += swirl;
+    // life>1 means inflating (newborn); <small means thinning to black-film death
+    thick *= (0.55 + 0.9*clamp(life,0.0,1.6));
+    // black film: when very thin near top -> destructive -> dark spot before pop
+    float blackfilm = smoothstep(0.0, 1.0, (0.45 - life)) * smoothstep(0.3,0.95, sp.y*0.5+0.5);
+
+    vec3 film = interference(max(thick,40.0), cosT, fres);
+
+    // specular highlight (a tiny sharp light source upper-left)
+    vec2 lightDir = normalize(vec2(-0.55, 0.7));
+    vec2 nrm2 = sp;
+    float spec = pow(max(0.0, dot(normalize(nrm2), lightDir)), 6.0);
+    spec *= z; // only on the lit hemisphere
+    vec3 col = film + vec3(spec)*0.6;
+
+    // rim glow (Fresnel) tinted by film color -> luminous soap edge
+    col += film*fres*1.4 + vec3(0.6,0.8,1.0)*fres*0.25;
+
+    // darken black film region
+    col *= (1.0 - blackfilm*0.9);
+
+    // soap surface is mostly transparent in the middle: alpha from fresnel+sheen
+    float bodyA = 0.10 + 0.55*fres + 0.30*smoothstep(0.0,1.0,length(film));
+    bodyA = clamp(bodyA, 0.0, 1.0);
+
+    // crisp anti-aliased rim membrane (bright thin ring)
+    float ring = smoothstep(1.02,0.98,r) - smoothstep(0.985,0.94,r);
+    ring = clamp(ring,0.0,1.0);
+    col += film*ring*1.2 + vec3(1.0)*ring*0.15;
+    bodyA = max(bodyA, ring*0.95);
+
+    // overall disc mask (soft edge)
+    float mask = smoothstep(1.05,1.0,r);
+    bodyA *= mask;
+
+    // composite this bubble over accumulated (front-to-back-ish; later i drawn on top)
+    outc = mix(outc, col, bodyA);
+    frontA = max(frontA, bodyA);
+  }
+
+  // gentle filmic tonemap + vignette
+  outc = outc/(outc+0.6);
+  outc = pow(outc, vec3(0.92));
+  float vig = smoothstep(1.25, 0.25, length(uv));
+  outc *= 0.55 + 0.45*vig;
+  // subtle grain to kill banding
+  float gr = (hash1(fc + t)*2.0-1.0)*0.012;
+  outc += gr;
+
+  gl_FragColor = vec4(outc, 1.0);
+}
+</script>
+
+<script>
+(function(){
+  "use strict";
+  const cv = document.getElementById('gl');
+  const gl = cv.getContext('webgl', {antialias:true, alpha:false, premultipliedAlpha:false, powerPreference:'high-performance'})
+          || cv.getContext('experimental-webgl');
+  const cursor = document.getElementById('cursor');
+  const flash = document.getElementById('flash');
+  const sfps = document.getElementById('sfps');
+  const sbub = document.getElementById('sbub');
+  const smode = document.getElementById('smode');
+
+  if(!gl){
+    document.body.innerHTML = '<div style="color:#fff;font:14px sans-serif;padding:40px">WebGL을 사용할 수 없습니다.</div>';
+    return;
+  }
+
+  // ---- compile ----
+  function sh(type, src){
+    const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  }
+  const prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, document.getElementById('vert').textContent));
+  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, document.getElementById('frag').textContent));
+  gl.linkProgram(prog);
+  if(!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+  const pLoc = gl.getAttribLocation(prog, 'p');
+  gl.enableVertexAttribArray(pLoc);
+  gl.vertexAttribPointer(pLoc, 2, gl.FLOAT, false, 0, 0);
+
+  const U = {};
+  ['uRes','uTime','uMouse','uMVel','uStir','uPressure','uBreath','uCount',
+   'uB0','uB1','uB2','uB3','uB4','uB5','uLife','uLife2'].forEach(n=>U[n]=gl.getUniformLocation(prog,n));
+
+  // ---- state ----
+  let W=0,H=0,DPR=1;
+  const MAXB = 6;
+  const bubbles = [];           // {x,y,r,tr(target r),vx,vy,life,target(life),state}
+  let mouse = {x:0,y:0,px:0,py:0,vx:0,vy:0,active:false};
+  let stir = 0, pressure = 0, breath = 0;
+  let pressTimer = null, pressing=false, pressStart=0;
+
+  function resize(){
+    DPR = Math.min(window.devicePixelRatio||1, 1.75);
+    // resolution cap for smooth perf on big screens
+    const cssW = window.innerWidth, cssH = window.innerHeight;
+    let scale = DPR;
+    const maxPix = 1920*1080*1.6;
+    if(cssW*cssH*DPR*DPR > maxPix){ scale = Math.sqrt(maxPix/(cssW*cssH)); }
+    W = Math.max(2, Math.round(cssW*scale));
+    H = Math.max(2, Math.round(cssH*scale));
+    cv.width=W; cv.height=H; cv.style.width=cssW+'px'; cv.style.height=cssH+'px';
+    gl.viewport(0,0,W,H);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  const RS = ()=> (cv.width/window.innerWidth); // px(css)->px(buffer) ratio
+
+  function rnd(a,b){ return a + Math.random()*(b-a); }
+
+  function spawn(cx, cy, r){
+    if(bubbles.length>=MAXB) bubbles.shift();
+    const minDim = Math.min(W,H);
+    const rad = r!=null ? r : rnd(minDim*0.10, minDim*0.26);
+    bubbles.push({
+      x:cx, y:cy, r:rad*0.2, tr:rad,
+      vx:rnd(-0.15,0.15)*RS(), vy:rnd(-0.25,-0.05)*RS(),
+      life:1.35, tlife:1.0, state:'live', age:0
+    });
+    updateCount();
+  }
+  function updateCount(){ sbub.textContent = bubbles.length + (bubbles.length===1?' film':' films'); }
+
+  // seed bubbles so FIRST PAINT is already the artwork
+  function seed(){
+    const minDim = Math.min(W,H);
+    spawn(W*0.34, H*0.52, minDim*0.30);
+    spawn(W*0.64, H*0.40, minDim*0.22);
+    spawn(W*0.52, H*0.68, minDim*0.17);
+    // make them already inflated for instant beauty
+    bubbles.forEach(b=>{ b.r=b.tr; b.life=1.0; });
+  }
+  seed();
+
+  // ---- interaction ----
+  function setMouse(x,y){
+    mouse.px=mouse.x; mouse.py=mouse.y;
+    mouse.x=x*RS(); mouse.y=(window.innerHeight-y)*RS(); // flip Y for GL
+    mouse.active=true;
+    cursor.style.opacity='1';
+    cursor.style.transform=`translate(${x}px,${y}px)`;
+  }
+
+  window.addEventListener('pointermove', e=>{ setMouse(e.clientX, e.clientY); }, {passive:true});
+  window.addEventListener('pointerleave', ()=>{ mouse.active=false; cursor.style.opacity='0'; });
+
+  function doFlash(cx,cy){
+    flash.style.setProperty('--fx', cx+'px');
+    flash.style.setProperty('--fy', cy+'px');
+    flash.style.transition='none'; flash.style.opacity='0.85';
+    requestAnimationFrame(()=>{ flash.style.transition='opacity .5s ease-out'; flash.style.opacity='0'; });
+  }
+
+  // find topmost bubble under a point (css coords -> buffer coords, GL y-up)
+  function pickBubble(x,y){
+    const bx = x*RS(), by = (window.innerHeight-y)*RS();
+    for(let i=bubbles.length-1;i>=0;i--){
+      const b=bubbles[i]; const dx=bx-b.x, dy=by-b.y;
+      if(dx*dx+dy*dy < b.r*b.r) return b;
+    }
+    return null;
+  }
+
+  window.addEventListener('pointerdown', e=>{
+    pressing=true; pressStart=performance.now();
+    const cx=e.clientX, cy=e.clientY;
+    setMouse(cx,cy);
+    // long-press to thin & pop the bubble under finger
+    pressTimer = setTimeout(()=>{
+      const b = pickBubble(cx,cy);
+      if(b){ b.state='popping'; b.tlife=-0.4; smode.textContent='thinning'; }
+    }, 360);
+    // visual cursor squeeze
+    cursor.style.transform=`translate(${cx}px,${cy}px) scale(.6)`;
+  });
+
+  window.addEventListener('pointerup', e=>{
+    clearTimeout(pressTimer);
+    cursor.style.transform=`translate(${e.clientX}px,${e.clientY}px) scale(1)`;
+    const held = performance.now()-pressStart;
+    pressing=false;
+    if(held < 320){
+      // tap/click -> spawn a new film at point
+      const bx=e.clientX*RS(), by=(window.innerHeight-e.clientY)*RS();
+      spawn(bx,by);
+      doFlash(e.clientX, e.clientY);
+      smode.textContent='born';
+    }
+  });
+
+  // scroll / wheel -> pressure (inflate / deflate)
+  window.addEventListener('wheel', e=>{
+    e.preventDefault();
+    pressure += (e.deltaY>0? 0.10 : -0.10);
+    pressure = Math.max(-0.9, Math.min(0.9, pressure));
+    smode.textContent = e.deltaY>0 ? 'pressure +' : 'pressure -';
+  }, {passive:false});
+
+  // keyboard: space = breath
+  window.addEventListener('keydown', e=>{
+    if(e.code==='Space'){ e.preventDefault(); breath=1.0; smode.textContent='breath'; }
+  });
+
+  // ---- main loop ----
+  let t0 = performance.now();
+  let last = t0;
+  let fpsAcc=0, fpsCnt=0, fpsShown=60;
+
+  function frame(now){
+    const dt = Math.min(0.05, (now-last)/1000); last=now;
+    const t = (now-t0)/1000;
+
+    // mouse velocity & stir energy
+    mouse.vx = (mouse.x-mouse.px);
+    mouse.vy = (mouse.y-mouse.py);
+    const speed = Math.hypot(mouse.vx, mouse.vy);
+    stir += (Math.min(speed*0.012, 1.0) - stir)*0.10;
+    stir *= 0.985;
+    pressure *= 0.992;          // pressure eases back
+    breath *= 0.93;             // breath decays
+
+    // update bubbles
+    const minDim = Math.min(W,H);
+    for(let i=bubbles.length-1;i>=0;i--){
+      const b=bubbles[i]; b.age+=dt;
+      // ease radius to target (with pressure inflation)
+      const pr = 1.0 + pressure*0.22;
+      b.r += ((b.tr*pr) - b.r)*Math.min(1,dt*4.5);
+      // life easing
+      b.life += (b.tlife - b.life)*Math.min(1,dt*2.2);
+      // gentle physics: float + drift + mouse repulsion (membranes wobble away)
+      b.vy -= 1.2*RS()*dt;                    // buoyancy upward (GL y-up)
+      // mouse pushes film
+      const dx=b.x-mouse.x, dy=b.y-mouse.y, dd=Math.hypot(dx,dy)+1e-3;
+      if(mouse.active && dd < b.r*1.4){
+        const f = (1 - dd/(b.r*1.4)) * 14 * RS();
+        b.vx += (dx/dd)*f*dt; b.vy += (dy/dd)*f*dt;
+      }
+      b.x += b.vx; b.y += b.vy;
+      b.vx*=0.97; b.vy*=0.97;
+      // soft wall bounce
+      const m=b.r*0.6;
+      if(b.x< m){b.x=m;b.vx*=-0.5;} if(b.x>W-m){b.x=W-m;b.vx*=-0.5;}
+      if(b.y< m){b.y=m;b.vy*=-0.4;} if(b.y>H+b.r){ // floated off top -> recycle as drifting
+        b.y = -b.r*0.5; b.x = rnd(W*0.2,W*0.8); b.vy = -rnd(0.05,0.2)*RS();
+      }
+      // popping: shrink life & radius then remove
+      if(b.state==='popping'){
+        b.tr *= (1 - dt*1.5);
+        if(b.life < -0.25 || b.tr < minDim*0.02){
+          // pop flash at bubble center
+          const cssX = b.x/RS(), cssY = window.innerHeight - b.y/RS();
+          doFlash(cssX, cssY);
+          bubbles.splice(i,1); updateCount();
+        }
+      }
+      // natural aging -> very old films start thinning toward black-film death
+      if(b.state==='live' && b.age>26){ b.state='popping'; b.tlife=-0.3; }
+    }
+    // keep the scene alive: if too few, drift a new one in
+    if(bubbles.length<2 && Math.random()<0.012){
+      spawn(rnd(W*0.2,W*0.8), -minDim*0.1, rnd(minDim*0.12,minDim*0.24));
+    }
+
+    // ---- draw ----
+    gl.uniform2f(U.uRes, W, H);
+    gl.uniform1f(U.uTime, t);
+    gl.uniform2f(U.uMouse, mouse.active?mouse.x:W*0.5, mouse.active?mouse.y:H*0.5);
+    gl.uniform2f(U.uMVel, mouse.vx, mouse.vy);
+    gl.uniform1f(U.uStir, Math.max(0,Math.min(1,stir)));
+    gl.uniform1f(U.uPressure, pressure);
+    gl.uniform1f(U.uBreath, breath);
+    gl.uniform1i(U.uCount, bubbles.length);
+
+    const Bn=['uB0','uB1','uB2','uB3','uB4','uB5'];
+    for(let i=0;i<MAXB;i++){
+      const b=bubbles[i];
+      if(b) gl.uniform3f(U[Bn[i]], b.x, b.y, Math.max(0,b.r));
+      else  gl.uniform3f(U[Bn[i]], 0,0,0);
+    }
+    gl.uniform4f(U.uLife,
+      bubbles[0]?bubbles[0].life:0, bubbles[1]?bubbles[1].life:0,
+      bubbles[2]?bubbles[2].life:0, bubbles[3]?bubbles[3].life:0);
+    gl.uniform2f(U.uLife2, bubbles[4]?bubbles[4].life:0, bubbles[5]?bubbles[5].life:0);
+
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    // fps
+    fpsAcc += 1/Math.max(dt,1e-3); fpsCnt++;
+    if(fpsCnt>=20){ fpsShown=Math.round(fpsAcc/fpsCnt); fpsAcc=0; fpsCnt=0; sfps.textContent=Math.min(fpsShown,144); }
+
+    // settle mode label
+    if(stir>0.12) smode.textContent='stir';
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  // ---- test hooks ----
+  window.__film = {
+    state: ()=>({count:bubbles.length, stir, pressure, breath,
+                 fps:fpsShown, w:W, h:H, dpr:DPR}),
+    spawn: ()=>spawn(W*0.5,H*0.5),
+    pop: ()=>{ if(bubbles[0]){bubbles[0].state='popping'; bubbles[0].tlife=-0.4;} },
+    stirNow: (v)=>{ stir=v; },
+    pressureNow:(v)=>{ pressure=v; },
+    breathNow: ()=>{ breath=1; },
+    pixelSample: ()=>{
+      const px=new Uint8Array(4);
+      gl.readPixels((W/2)|0,(H/2)|0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,px);
+      return [px[0],px[1],px[2],px[3]];
+    }
+  };
+})();
+</script>
+</body>
+</html>

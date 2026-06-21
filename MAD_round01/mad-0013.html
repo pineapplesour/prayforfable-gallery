@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>CHRONOSLIT — 시간왜곡 슬릿스캔</title>
+<style>
+  :root{ --ink:#04050a; }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; background:var(--ink); overflow:hidden; }
+  body{
+    font-family:"Helvetica Neue",-apple-system,system-ui,"Segoe UI",Arial,sans-serif;
+    color:#eef2ff; -webkit-font-smoothing:antialiased; cursor:crosshair;
+  }
+  #c{ position:fixed; inset:0; display:block; width:100%; height:100%; touch-action:none; }
+
+  /* ---- minimal overlay HUD : first paint IS the artwork, this just floats on top ---- */
+  .hud{ position:fixed; inset:0; pointer-events:none; z-index:5; mix-blend-mode:screen; }
+  .title{
+    position:absolute; left:clamp(18px,3.4vw,46px); top:clamp(18px,3.4vw,44px);
+    font-weight:800; letter-spacing:-0.04em; line-height:0.86;
+    font-size:clamp(30px,6.4vw,76px);
+    text-transform:uppercase;
+    text-shadow:0 0 30px rgba(120,200,255,.25);
+  }
+  .title b{ display:block; font-weight:300; letter-spacing:.02em;
+    font-size:clamp(10px,1.5vw,15px); opacity:.62; margin-top:.85em; text-transform:none; }
+  .meta{
+    position:absolute; right:clamp(18px,3.4vw,46px); top:clamp(20px,3.6vw,46px);
+    text-align:right; font-size:clamp(9px,1.1vw,12px); letter-spacing:.32em;
+    opacity:.5; font-weight:500; text-transform:uppercase;
+  }
+  .legend{
+    position:absolute; left:clamp(18px,3.4vw,46px); bottom:clamp(18px,3.2vw,40px);
+    display:flex; gap:clamp(14px,2vw,30px); align-items:flex-end;
+    font-size:clamp(9px,1.05vw,12px); letter-spacing:.18em; opacity:.62; font-weight:500;
+    text-transform:uppercase;
+  }
+  .legend span{ display:flex; flex-direction:column; gap:.5em; }
+  .legend span i{ font-style:normal; opacity:.5; font-size:.82em; letter-spacing:.12em; }
+  .tnum{ font-variant-numeric:tabular-nums; }
+  @media (max-width:520px){
+    .meta{ display:none; }
+    .legend{ gap:14px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="hud">
+  <div class="title">Chrono<br>slit<b>slit-scan time displacement field — drag·scroll·tap</b></div>
+  <div class="meta">N°013<br>time → space</div>
+  <div class="legend">
+    <span>DISPERSION<i class="tnum" id="lD">1.40</i></span>
+    <span>FOCAL DRIFT<i id="lF">auto</i></span>
+    <span>CHRONO<i class="tnum" id="lT">0.0s</i></span>
+  </div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+var canvas = document.getElementById("c");
+var gl = canvas.getContext("webgl", {antialias:false, alpha:false, premultipliedAlpha:false, powerPreference:"high-performance"})
+      || canvas.getContext("experimental-webgl");
+
+if(!gl){
+  document.body.innerHTML = '<div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#9fb;font:600 14px sans-serif;letter-spacing:.2em">WEBGL NOT AVAILABLE</div>';
+  return;
+}
+
+/* ---------------------------------------------------------------------------
+   SLIT-SCAN TIME WARP
+   The scene is a purely procedural flowing world. Instead of storing frames,
+   every pixel evaluates that world at its OWN moment in time. The sample-time
+   is a function of screen-x (a temporal shear) plus a pointer-driven time lens
+   and click ripples. Time becomes a spatial axis — the signature slit-scan smear.
+   R/G/B are sampled at slightly different moments → chromatic time-aberration.
+--------------------------------------------------------------------------- */
+
+var VERT = [
+  "attribute vec2 p;",
+  "void main(){ gl_Position = vec4(p,0.0,1.0); }"
+].join("\n");
+
+var FRAG = [
+"precision highp float;",
+"uniform vec2  u_res;",
+"uniform float u_time;",
+"uniform vec2  u_mouse;",   // 0..1, y already flipped to gl space, smoothed
+"uniform vec2  u_mvel;",    // smoothed pointer velocity
+"uniform float u_spread;",  // temporal dispersion (scroll)
+"uniform float u_pulse;",   // click ripple 0..1
+"uniform float u_aspect;",
+
+"float hash(vec2 p){ p=fract(p*vec2(123.34,345.45)); p+=dot(p,p+34.345); return fract(p.x*p.y); }",
+"float noise(vec2 p){",
+"  vec2 i=floor(p), f=fract(p);",
+"  float a=hash(i), b=hash(i+vec2(1.,0.)), c=hash(i+vec2(0.,1.)), d=hash(i+vec2(1.,1.));",
+"  vec2 u=f*f*(3.0-2.0*f);",
+"  return mix(mix(a,b,u.x), mix(c,d,u.x), u.y);",
+"}",
+"float fbm(vec2 p){",
+"  float v=0.0, a=0.55; mat2 m=mat2(1.62,1.18,-1.18,1.62);",
+"  for(int i=0;i<5;i++){ v+=a*noise(p); p=m*p; a*=0.5; }",
+"  return v;",
+"}",
+
+// refined cosine palette — deep ink -> teal -> magenta -> gold
+"vec3 pal(float t){",
+"  vec3 a=vec3(0.52,0.46,0.54);",
+"  vec3 b=vec3(0.48,0.50,0.52);",
+"  vec3 c=vec3(1.00,1.05,0.92);",
+"  vec3 d=vec3(0.00,0.18,0.42);",
+"  return a + b*cos(6.28318*(c*t + d));",
+"}",
+
+// the animated procedural world, evaluated at an arbitrary moment t
+"vec3 scene(vec2 uv, float t){",
+"  vec2 p = uv*vec2(u_aspect,1.0)*2.3;",
+"  p.x += t*0.55;",                                   // dominant horizontal flow -> becomes slit streaks
+"  float w = fbm(p*1.10 + vec2(0.0, t*0.13));",
+"  vec2  q = p + 1.7*vec2( fbm(p+w + t*0.04), fbm(p*1.07 - t*0.06) );",
+"  float f = fbm(q*1.35 + t*0.08);",
+"  float bands = sin( (q.x*1.35 + q.y*0.55 + f*4.2)*3.0 + t*0.5 );",
+"  float line  = smoothstep(0.10, 0.0, abs(bands));",         // thin bright filament
+"  float glow  = pow(max(0.0,1.0-abs(bands)), 3.2);",         // soft halo around it",
+"  vec3 col = pal(f*0.85 + q.x*0.04);",
+"  col = mix(col, pal(0.32 + f), 0.5);",
+"  col *= 0.30 + 0.70*f;",
+"  col += line * vec3(1.15,1.06,0.92) * 1.5;",
+"  col += glow * pal(0.62 + f) * 0.65;",
+"  return col;",
+"}",
+
+"void main(){",
+"  vec2 frag = gl_FragCoord.xy / u_res;",
+"  vec2 cc   = (gl_FragCoord.xy - 0.5*u_res)/u_res.y;",     // centered, aspect-correct
+
+"  float spread = 1.0 + u_spread;",
+"  float tx = frag.x - 0.5;",
+"  float dt = tx * spread * 2.6;",                           // linear temporal shear across x
+"  dt += spread * 0.35 * sin(frag.y*3.14159 + u_time*0.2);", // gentle vertical curvature
+
+   // pointer time-lens : pulls the local timeline forward, swirls with velocity
+"  vec2  md  = cc - vec2((u_mouse.x-0.5)*u_aspect, (u_mouse.y-0.5));",
+"  float r   = length(md);",
+"  float lens= exp(-r*r*6.5);",
+"  dt += lens * (2.4 + 7.0*length(u_mvel));",
+"  float sw  = lens * (2.2 + 9.0*u_mvel.x);",                // swirl amount
+"  float cs=cos(sw), sn=sin(sw);",
+"  vec2  luv = frag;",
+"  vec2  rel = frag-0.5; rel = mat2(cs,-sn,sn,cs)*rel; luv = rel+0.5;",
+
+   // click ripple in time
+"  dt += u_pulse * exp(-r*r*3.5) * 5.5 * sin(r*22.0 - u_time*5.0);",
+
+"  float ts = u_time - dt;",
+
+   // chromatic time-aberration : sample channels at different moments
+"  float ca = (0.06 + 0.16*spread) * (0.45 + lens*1.6);",
+"  vec3 col;",
+"  col.r = scene(luv, ts + ca).r;",
+"  col.g = scene(luv, ts).g;",
+"  col.b = scene(luv, ts - ca).b;",
+
+   // subtle second tap for bloom-ish lift on bright streaks
+"  float lum = dot(col, vec3(0.299,0.587,0.114));",
+"  col += pow(max(lum-0.55,0.0),1.5) * pal(0.5+0.2*sin(u_time*0.1)) * 0.5;",
+
+   // vignette
+"  float vig = smoothstep(1.35, 0.20, length(cc));",
+"  col *= 0.55 + 0.55*vig;",
+
+   // fine grain
+"  float g = hash(gl_FragCoord.xy + fract(u_time)) * 0.075;",
+"  col += g - 0.037;",
+
+   // faint horizontal scan shimmer
+"  col *= 0.97 + 0.03*sin(gl_FragCoord.y*1.7 + u_time*1.5);",
+
+   // tonemap
+"  col = col/(col+0.72);",
+"  col = pow(max(col,0.0), vec3(0.86));",
+"  gl_FragColor = vec4(col, 1.0);",
+"}"
+].join("\n");
+
+function compile(type, src){
+  var s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+    console.error(gl.getShaderInfoLog(s), src);
+    return null;
+  }
+  return s;
+}
+var prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog, gl.LINK_STATUS)){ console.error(gl.getProgramInfoLog(prog)); return; }
+gl.useProgram(prog);
+
+var buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+var loc = gl.getAttribLocation(prog, "p");
+gl.enableVertexAttribArray(loc);
+gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+
+var U = {
+  res:    gl.getUniformLocation(prog, "u_res"),
+  time:   gl.getUniformLocation(prog, "u_time"),
+  mouse:  gl.getUniformLocation(prog, "u_mouse"),
+  mvel:   gl.getUniformLocation(prog, "u_mvel"),
+  spread: gl.getUniformLocation(prog, "u_spread"),
+  pulse:  gl.getUniformLocation(prog, "u_pulse"),
+  aspect: gl.getUniformLocation(prog, "u_aspect")
+};
+
+/* ----------------------------- state ----------------------------- */
+var DPR = Math.min(window.devicePixelRatio||1, 2);
+var W=1, H=1, aspect=1;
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, (window.innerWidth<560?1.6:2));
+  W = Math.max(2, Math.floor(window.innerWidth  * DPR));
+  H = Math.max(2, Math.floor(window.innerHeight * DPR));
+  canvas.width=W; canvas.height=H;
+  canvas.style.width=window.innerWidth+"px";
+  canvas.style.height=window.innerHeight+"px";
+  aspect = W/H;
+  gl.viewport(0,0,W,H);
+}
+window.addEventListener("resize", resize, {passive:true});
+resize();
+
+var mouse   = {x:0.5, y:0.5};   // target
+var smooth  = {x:0.5, y:0.5};   // smoothed
+var prevS   = {x:0.5, y:0.5};
+var vel     = {x:0, y:0};
+var spread  = 1.40, spreadTarget = 1.40;
+var pulse   = 0.0;
+var lastInput = -10;            // time of last user input
+var active  = false;
+var startT  = performance.now();
+
+function setPointer(clientX, clientY){
+  mouse.x = clientX/window.innerWidth;
+  mouse.y = 1.0 - clientY/window.innerHeight;     // flip to gl space
+  lastInput = (performance.now()-startT)/1000;
+  active = true;
+}
+canvas.addEventListener("pointermove", function(e){ setPointer(e.clientX, e.clientY); }, {passive:true});
+canvas.addEventListener("pointerdown", function(e){
+  setPointer(e.clientX, e.clientY); pulse = 1.0;
+}, {passive:true});
+window.addEventListener("pointerup", function(){ /* keep last focal */ }, {passive:true});
+
+canvas.addEventListener("wheel", function(e){
+  e.preventDefault();
+  spreadTarget = Math.min(4.0, Math.max(0.0, spreadTarget + e.deltaY*0.0016));
+  lastInput = (performance.now()-startT)/1000;
+}, {passive:false});
+
+// touch fallbacks (pointer events cover most, but guard for older mobile)
+canvas.addEventListener("touchmove", function(e){
+  if(e.touches[0]){ setPointer(e.touches[0].clientX, e.touches[0].clientY); e.preventDefault(); }
+}, {passive:false});
+canvas.addEventListener("touchstart", function(e){
+  if(e.touches[0]){ setPointer(e.touches[0].clientX, e.touches[0].clientY); pulse=1.0; }
+}, {passive:true});
+
+/* HUD refs */
+var lD=document.getElementById("lD"), lF=document.getElementById("lF"), lT=document.getElementById("lT");
+var hudTick=0;
+
+/* ----------------------------- loop ----------------------------- */
+function frame(now){
+  var t = (now - startT)/1000;
+
+  // idle: focal point drifts on a slow Lissajous so the piece stays alive
+  var idle = (t - lastInput) > 2.2;
+  var tgx, tgy;
+  if(idle){
+    tgx = 0.5 + 0.30*Math.sin(t*0.21) + 0.10*Math.sin(t*0.53);
+    tgy = 0.5 + 0.26*Math.cos(t*0.17) + 0.09*Math.cos(t*0.47);
+  } else {
+    tgx = mouse.x; tgy = mouse.y;
+  }
+  // smooth focal
+  smooth.x += (tgx - smooth.x)*0.07;
+  smooth.y += (tgy - smooth.y)*0.07;
+  // velocity (smoothed)
+  vel.x += ((smooth.x - prevS.x) - vel.x)*0.2;
+  vel.y += ((smooth.y - prevS.y) - vel.y)*0.2;
+  prevS.x = smooth.x; prevS.y = smooth.y;
+
+  spread += (spreadTarget - spread)*0.06;
+  pulse  *= 0.94;
+
+  gl.uniform2f(U.res, W, H);
+  gl.uniform1f(U.time, t);
+  gl.uniform2f(U.mouse, smooth.x, smooth.y);
+  gl.uniform2f(U.mvel, vel.x*60.0, vel.y*60.0);
+  gl.uniform1f(U.spread, spread);
+  gl.uniform1f(U.pulse, pulse);
+  gl.uniform1f(U.aspect, aspect);
+
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  if((hudTick++ & 7)===0){
+    lD.textContent = spread.toFixed(2);
+    lF.textContent = idle ? "auto" : "lock";
+    lT.textContent = t.toFixed(1)+"s";
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

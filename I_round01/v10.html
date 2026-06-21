@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>별무리 표류 · Liquid Glass</title>
+<style>
+  :root{
+    --glass-bg: rgba(14,18,30,0.34);
+    --glass-bg-strong: rgba(12,16,28,0.46);
+    --glass-line: rgba(255,255,255,0.16);
+    --glass-line-soft: rgba(255,255,255,0.08);
+    --ink: rgba(238,243,255,0.96);
+    --ink-dim: rgba(206,216,238,0.66);
+    --ink-faint: rgba(180,192,220,0.45);
+    --accent: #8fb6ff;
+    --accent-2: #c9a8ff;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;height:100%;overflow:hidden;background:#04060d;
+    font-family:"Inter","Helvetica Neue","Pretendard","Apple SD Gothic Neo",sans-serif;
+    color:var(--ink);}
+  #scene{position:fixed;inset:0;width:100%;height:100%;display:block;z-index:0;}
+  #stage{position:fixed;inset:0;z-index:2;pointer-events:none;}
+  .panel{
+    position:absolute;pointer-events:auto;
+    background:var(--glass-bg);
+    -webkit-backdrop-filter:blur(20px) saturate(1.35) brightness(1.04);
+    backdrop-filter:blur(20px) saturate(1.35) brightness(1.04);
+    border:1px solid var(--glass-line);
+    border-radius:30px;
+    box-shadow:
+      0 24px 60px rgba(0,0,0,0.46),
+      0 4px 14px rgba(0,0,0,0.30),
+      inset 0 1px 0 rgba(255,255,255,0.22),
+      inset 0 0 0 1px rgba(255,255,255,0.04);
+    overflow:hidden;
+    will-change:transform;
+    transition:box-shadow .4s ease, border-color .4s ease;
+  }
+  /* top liquid highlight sheen */
+  .panel::before{
+    content:"";position:absolute;left:-20%;top:-60%;width:140%;height:120%;
+    background:radial-gradient(120% 70% at 30% 0%,rgba(255,255,255,0.20),rgba(255,255,255,0) 60%);
+    pointer-events:none;mix-blend-mode:screen;opacity:.9;
+  }
+  /* faint inner colored glow (refraction tint) */
+  .panel::after{
+    content:"";position:absolute;inset:0;pointer-events:none;border-radius:inherit;
+    background:linear-gradient(135deg,rgba(143,182,255,0.07),rgba(201,168,255,0.05) 55%,rgba(0,0,0,0) 80%);
+  }
+  .panel.dragging{box-shadow:
+      0 34px 80px rgba(0,0,0,0.56),
+      0 6px 18px rgba(0,0,0,0.4),
+      inset 0 1px 0 rgba(255,255,255,0.30),
+      inset 0 0 0 1px rgba(255,255,255,0.06);
+    border-color:rgba(255,255,255,0.28);}
+  .grab{cursor:grab;}
+  .grab:active{cursor:grabbing;}
+
+  /* ---- profile panel ---- */
+  #profile{width:340px;left:9%;top:24%;padding:30px 30px 26px;}
+  .ava-wrap{display:flex;align-items:center;gap:16px;}
+  .ava{width:64px;height:64px;border-radius:50%;flex:0 0 auto;position:relative;
+    background:conic-gradient(from 200deg,#7ea8ff,#c9a8ff,#8ce0ff,#7ea8ff);
+    box-shadow:0 0 22px rgba(140,180,255,0.5),inset 0 0 0 3px rgba(8,12,22,0.85);}
+  .ava::after{content:"";position:absolute;inset:9px;border-radius:50%;
+    background:radial-gradient(circle at 35% 30%,#dfe9ff,#9fb6e6 50%,#5d6f9c);
+    box-shadow:inset -4px -5px 10px rgba(0,0,0,0.4);}
+  .ava .ring{position:absolute;inset:-7px;border-radius:50%;
+    border:1px dashed rgba(255,255,255,0.25);animation:spin 26s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .who h1{margin:0;font-size:23px;font-weight:700;letter-spacing:-.01em;}
+  .who .handle{margin-top:3px;font-size:13px;color:var(--accent);letter-spacing:.02em;}
+  .bio{margin:18px 0 20px;font-size:13.5px;line-height:1.65;color:var(--ink-dim);}
+  .stats{display:flex;gap:10px;}
+  .stat{flex:1;text-align:center;padding:13px 6px;border-radius:18px;
+    background:rgba(255,255,255,0.05);border:1px solid var(--glass-line-soft);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.10);}
+  .stat b{display:block;font-size:18px;font-weight:700;letter-spacing:-.01em;}
+  .stat span{display:block;margin-top:3px;font-size:10.5px;letter-spacing:.08em;
+    text-transform:uppercase;color:var(--ink-faint);}
+
+  /* ---- status / now drifting panel ---- */
+  #status{width:300px;right:8%;top:17%;padding:24px 26px;}
+  .lbl{font-size:10.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-faint);}
+  .now{display:flex;align-items:center;gap:12px;margin-top:14px;}
+  .pulse{width:11px;height:11px;border-radius:50%;background:var(--accent);
+    box-shadow:0 0 0 0 rgba(143,182,255,0.6);animation:pulse 2.6s ease-out infinite;flex:0 0 auto;}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(143,182,255,0.5);}70%{box-shadow:0 0 0 14px rgba(143,182,255,0);}100%{box-shadow:0 0 0 0 rgba(143,182,255,0);}}
+  .now .txt{font-size:15px;font-weight:600;}
+  .coords{margin-top:20px;display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;}
+  .coords div{font-size:12px;color:var(--ink-dim);}
+  .coords b{display:block;font-variant-numeric:tabular-nums;font-size:14px;color:var(--ink);font-weight:600;margin-top:2px;letter-spacing:.01em;}
+  .bar{margin-top:20px;height:6px;border-radius:99px;background:rgba(255,255,255,0.08);overflow:hidden;}
+  .bar i{display:block;height:100%;width:64%;border-radius:99px;
+    background:linear-gradient(90deg,var(--accent),var(--accent-2));
+    box-shadow:0 0 12px rgba(160,150,255,0.6);}
+  .bar-cap{margin-top:8px;font-size:11px;color:var(--ink-faint);display:flex;justify-content:space-between;}
+
+  /* ---- mini constellation panel ---- */
+  #mini{width:236px;left:16%;bottom:11%;padding:20px 22px;}
+  #mini .lbl{margin-bottom:12px;}
+  #constel{width:100%;height:96px;display:block;border-radius:14px;
+    background:rgba(255,255,255,0.03);border:1px solid var(--glass-line-soft);}
+  #mini .cap{margin-top:12px;font-size:12px;color:var(--ink-dim);display:flex;align-items:center;justify-content:space-between;}
+  #mini .cap em{font-style:normal;color:var(--accent-2);font-weight:600;}
+
+  /* hint */
+  #hint{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:3;
+    font-size:12px;letter-spacing:.12em;color:var(--ink-dim);
+    background:rgba(8,12,22,0.4);padding:8px 18px;border-radius:99px;
+    border:1px solid var(--glass-line-soft);
+    -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
+    pointer-events:none;transition:opacity 1.4s ease;white-space:nowrap;}
+
+  /* responsive: narrow / mobile (390) */
+  @media (max-width:640px){
+    .panel{border-radius:26px;}
+    #profile{width:84vw;left:8vw;top:8%;padding:24px 24px 22px;}
+    #status{width:84vw;right:auto;left:8vw;top:calc(8% + 360px);padding:20px 22px;}
+    #mini{width:84vw;left:8vw;bottom:6%;}
+    .who h1{font-size:21px;}
+  }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+
+<div id="stage">
+  <!-- profile glass -->
+  <section class="panel grab" id="profile" data-depth="1.0">
+    <div class="ava-wrap">
+      <div class="ava"><span class="ring"></span></div>
+      <div class="who">
+        <h1>Nova Aster</h1>
+        <div class="handle">@drifting_among_stars</div>
+      </div>
+    </div>
+    <p class="bio">고요한 성운 사이를 떠다니는 관측자. 느린 빛과
+      가라앉는 별먼지를 모으며 유리창 너머의 어둠을 바라본다.</p>
+    <div class="stats">
+      <div class="stat"><b>248</b><span>Stars</span></div>
+      <div class="stat"><b>9.0k</b><span>Drift ly</span></div>
+      <div class="stat"><b>17</b><span>Nebulae</span></div>
+    </div>
+  </section>
+
+  <!-- status glass -->
+  <section class="panel grab" id="status" data-depth="1.7">
+    <div class="lbl">Now Drifting</div>
+    <div class="now"><span class="pulse"></span><span class="txt">성운 표류 중</span></div>
+    <div class="coords">
+      <div>Velocity<b id="vel">0.42 c</b></div>
+      <div>Heading<b id="hdg">204°</b></div>
+      <div>Depth<b id="dep">−1.8 kpc</b></div>
+      <div>Field<b id="fld">9,140</b></div>
+    </div>
+    <div class="bar"><i></i></div>
+    <div class="bar-cap"><span>표류 안정도</span><span>64%</span></div>
+  </section>
+
+  <!-- mini constellation glass -->
+  <section class="panel grab" id="mini" data-depth="2.4">
+    <div class="lbl">Constellation</div>
+    <canvas id="constel"></canvas>
+    <div class="cap"><span>오늘의 별자리</span><em>Lyra</em></div>
+  </section>
+</div>
+
+<div id="hint">패널을 끌어 보세요 · 마우스로 별무리가 흐릅니다</div>
+
+<script>
+'use strict';
+(()=>{
+const TAU=Math.PI*2;
+
+/* ===================================================================
+   AMBIENT NATURE BASE — slow drifting star cluster + nebula
+   (frangollo's slow murky ambient reinterpreted as a deep-space drift)
+   =================================================================== */
+const cv=document.getElementById('scene');
+const ctx=cv.getContext('2d',{alpha:false});
+let W=0,H=0,DPR=1;
+
+// pointer for parallax (scene + panels follow gently)
+const ptr={x:.5,y:.5, tx:.5, ty:.5};
+
+let stars=[], dust=[], nebula=[], streaks=[];
+const rnd=(a,b)=>a+Math.random()*(b-a);
+
+function build(){
+  // STARS — layered depth, slow drift, twinkle
+  const N=Math.round(Math.min(W*H/2600, 520));
+  stars=[];
+  for(let i=0;i<N;i++){
+    const depth=Math.random();              // 0 far .. 1 near
+    stars.push({
+      x:Math.random()*W, y:Math.random()*H,
+      r:0.4 + depth*1.9,
+      base: 0.25 + depth*0.6,
+      tw: rnd(0.6,1.7), tp: Math.random()*TAU,
+      depth,
+      // very slow intrinsic drift (the "current")
+      vx: (-0.05 - depth*0.10), vy: (0.012 + depth*0.03),
+      hue: Math.random()<0.18 ? rnd(200,250) : (Math.random()<0.5?rnd(40,55):0),
+    });
+  }
+  // DUST motes — larger soft particles sinking slowly (like pond bubbles)
+  dust=[];
+  const D=Math.round(Math.min(W*H/52000, 46));
+  for(let i=0;i<D;i++){
+    dust.push({
+      x:Math.random()*W, y:Math.random()*H,
+      r: rnd(18,90), depth:Math.random(),
+      vy: rnd(0.05,0.22), vx: rnd(-0.10,0.02),
+      a: rnd(0.015,0.06), tp:Math.random()*TAU, ts:rnd(0.3,0.8)
+    });
+  }
+  // NEBULA blobs — big soft colored clouds, gentle breathing
+  nebula=[];
+  const cols=[[90,120,210],[150,110,210],[70,150,190],[40,70,150]];
+  const NB=5;
+  for(let i=0;i<NB;i++){
+    nebula.push({
+      x:rnd(0.05,0.95)*W, y:rnd(0.05,0.95)*H,
+      r: rnd(0.22,0.5)*Math.max(W,H),
+      col:cols[i%cols.length],
+      a: rnd(0.05,0.12), tp:Math.random()*TAU, ts:rnd(0.06,0.14),
+      vx: rnd(-0.06,0.02), vy: rnd(-0.01,0.03), depth:Math.random()*0.5
+    });
+  }
+}
+
+function resize(){
+  W=window.innerWidth; H=window.innerHeight;
+  DPR=Math.min(window.devicePixelRatio||1, 2);
+  cv.width=Math.round(W*DPR); cv.height=Math.round(H*DPR);
+  cv.style.width=W+'px'; cv.style.height=H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  build();
+  layoutClamp();
+}
+window.addEventListener('resize',resize);
+
+// occasional shooting streak
+function maybeStreak(){
+  if(Math.random()<0.006 && streaks.length<3){
+    const x=rnd(0.1,0.9)*W, y=rnd(0.0,0.4)*H;
+    streaks.push({x,y, vx:rnd(2.2,4.5), vy:rnd(0.8,1.8), life:1, len:rnd(60,120)});
+  }
+}
+
+let t=0, last=0;
+function draw(ts){
+  requestAnimationFrame(draw);
+  const now=ts/1000;
+  const dt=Math.min(0.05, Math.max(0.001, now-last)); last=now; t=now;
+
+  // ease pointer
+  ptr.x += (ptr.tx-ptr.x)*0.05;
+  ptr.y += (ptr.ty-ptr.y)*0.05;
+  const px=(ptr.x-0.5), py=(ptr.y-0.5);
+
+  // deep background vertical gradient
+  const bg=ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0,'#070b16');
+  bg.addColorStop(0.45,'#05080f');
+  bg.addColorStop(1,'#03050b');
+  ctx.fillStyle=bg; ctx.fillRect(0,0,W,H);
+
+  // NEBULA clouds (additive soft)
+  ctx.globalCompositeOperation='lighter';
+  for(const n of nebula){
+    n.x+=n.vx*dt*60; n.y+=n.vy*dt*60; n.tp+=n.ts*dt;
+    if(n.x<-n.r)n.x=W+n.r; if(n.x>W+n.r)n.x=-n.r;
+    if(n.y<-n.r)n.y=H+n.r; if(n.y>H+n.r)n.y=-n.r;
+    const breathe=0.85+0.15*Math.sin(n.tp);
+    const ox=-px*40*(0.4+n.depth), oy=-py*40*(0.4+n.depth);
+    const g=ctx.createRadialGradient(n.x+ox,n.y+oy,0,n.x+ox,n.y+oy,n.r*breathe);
+    const c=n.col;
+    g.addColorStop(0,`rgba(${c[0]},${c[1]},${c[2]},${n.a*breathe})`);
+    g.addColorStop(0.5,`rgba(${c[0]},${c[1]},${c[2]},${n.a*0.4*breathe})`);
+    g.addColorStop(1,`rgba(${c[0]},${c[1]},${c[2]},0)`);
+    ctx.fillStyle=g;
+    ctx.beginPath();ctx.arc(n.x+ox,n.y+oy,n.r*breathe,0,TAU);ctx.fill();
+  }
+  ctx.globalCompositeOperation='source-over';
+
+  // DUST motes (soft, behind stars)
+  for(const d of dust){
+    d.y+=d.vy*dt*60; d.x+=d.vx*dt*60; d.tp+=d.ts*dt;
+    if(d.y-d.r>H){d.y=-d.r; d.x=Math.random()*W;}
+    if(d.x+d.r<0)d.x=W+d.r;
+    const ox=-px*26*(0.3+d.depth), oy=-py*26*(0.3+d.depth);
+    const wob=1+0.06*Math.sin(d.tp);
+    const g=ctx.createRadialGradient(d.x+ox,d.y+oy,0,d.x+ox,d.y+oy,d.r*wob);
+    g.addColorStop(0,`rgba(150,175,225,${d.a})`);
+    g.addColorStop(0.7,`rgba(120,150,210,${d.a*0.35})`);
+    g.addColorStop(1,'rgba(120,150,210,0)');
+    ctx.fillStyle=g;
+    ctx.beginPath();ctx.arc(d.x+ox,d.y+oy,d.r*wob,0,TAU);ctx.fill();
+  }
+
+  // STARS
+  ctx.globalCompositeOperation='lighter';
+  for(const s of stars){
+    s.x+=s.vx*dt*60; s.y+=s.vy*dt*60; s.tp+=s.tw*dt;
+    if(s.x<-2)s.x=W+2; if(s.y>H+2)s.y=-2;
+    // parallax: nearer stars move more with pointer
+    const ox=-px*60*s.depth, oy=-py*60*s.depth;
+    const tw=s.base*(0.55+0.45*Math.sin(s.tp));
+    const x=s.x+ox, y=s.y+oy, r=s.r;
+    if(s.hue===0){
+      ctx.fillStyle=`rgba(235,242,255,${tw})`;
+    }else{
+      const l=Math.round(tw*255);
+      ctx.fillStyle=`hsla(${s.hue},80%,${60}%,${tw})`;
+    }
+    ctx.beginPath();ctx.arc(x,y,r,0,TAU);ctx.fill();
+    // glow halo for brighter near stars
+    if(s.depth>0.6){
+      const g=ctx.createRadialGradient(x,y,0,x,y,r*4.5);
+      g.addColorStop(0,`rgba(200,220,255,${tw*0.5})`);
+      g.addColorStop(1,'rgba(200,220,255,0)');
+      ctx.fillStyle=g;ctx.beginPath();ctx.arc(x,y,r*4.5,0,TAU);ctx.fill();
+    }
+  }
+
+  // SHOOTING STREAKS
+  maybeStreak();
+  for(let i=streaks.length-1;i>=0;i--){
+    const k=streaks[i];
+    k.x+=k.vx*dt*60; k.y+=k.vy*dt*60; k.life-=dt*0.5;
+    if(k.life<=0||k.x>W+150){streaks.splice(i,1);continue;}
+    const g=ctx.createLinearGradient(k.x,k.y,k.x-k.len,k.y-k.len*(k.vy/k.vx));
+    g.addColorStop(0,`rgba(230,240,255,${0.9*k.life})`);
+    g.addColorStop(1,'rgba(230,240,255,0)');
+    ctx.strokeStyle=g;ctx.lineWidth=1.6;ctx.lineCap='round';
+    ctx.beginPath();ctx.moveTo(k.x,k.y);
+    ctx.lineTo(k.x-k.len,k.y-k.len*(k.vy/k.vx));ctx.stroke();
+  }
+  ctx.globalCompositeOperation='source-over';
+
+  // gentle vignette for depth (like frangollo)
+  const vg=ctx.createRadialGradient(W*0.5,H*0.46,Math.min(W,H)*0.2,W*0.5,H*0.5,Math.max(W,H)*0.8);
+  vg.addColorStop(0,'rgba(0,0,0,0)');
+  vg.addColorStop(1,'rgba(2,3,8,0.62)');
+  ctx.fillStyle=vg;ctx.fillRect(0,0,W,H);
+
+  // drive panel parallax + live readouts
+  updatePanels(px,py);
+  drawConstel();
+}
+
+/* ===================================================================
+   FLOATING LIQUID-GLASS PANELS — parallax + drag
+   =================================================================== */
+const panels=[...document.querySelectorAll('.panel')].map(el=>({
+  el, depth:parseFloat(el.dataset.depth)||1,
+  ox:0, oy:0,          // drag offset (px)
+  px:0, py:0           // parallax offset
+}));
+
+function updatePanels(px,py){
+  for(const p of panels){
+    // parallax: deeper panels (higher depth #) move less, opposite to scene -> floaty
+    const f = 22/p.depth;
+    p.px += ((px*f) - p.px)*0.06;
+    p.py += ((py*f) - p.py)*0.06;
+    p.el.style.transform=
+      `translate3d(${(p.ox+p.px).toFixed(2)}px,${(p.oy+p.py).toFixed(2)}px,0)`;
+  }
+}
+
+// drag
+let drag=null;
+function down(e){
+  const target=e.currentTarget;
+  const p=panels.find(q=>q.el===target);
+  if(!p)return;
+  const pt=e.touches?e.touches[0]:e;
+  drag={p, sx:pt.clientX, sy:pt.clientY, ox:p.ox, oy:p.oy};
+  p.el.classList.add('dragging');
+  // bring to front
+  p.el.style.zIndex=10;
+  panels.forEach(q=>{if(q!==p)q.el.style.zIndex=3;});
+  hideHint();
+  e.preventDefault();
+}
+function move(e){
+  if(!drag)return;
+  const pt=e.touches?e.touches[0]:e;
+  drag.p.ox=drag.ox+(pt.clientX-drag.sx);
+  drag.p.oy=drag.oy+(pt.clientY-drag.sy);
+}
+function up(){
+  if(drag){drag.p.el.classList.remove('dragging');drag=null;}
+}
+panels.forEach(p=>{
+  p.el.addEventListener('mousedown',down);
+  p.el.addEventListener('touchstart',down,{passive:false});
+});
+window.addEventListener('mousemove',e=>{ move(e); });
+window.addEventListener('touchmove',e=>{ if(drag){move(e);e.preventDefault();} },{passive:false});
+window.addEventListener('mouseup',up);
+window.addEventListener('touchend',up);
+
+// pointer for parallax (whole window)
+window.addEventListener('mousemove',e=>{
+  ptr.tx=e.clientX/W; ptr.ty=e.clientY/H;
+});
+window.addEventListener('touchmove',e=>{
+  const p=e.touches[0]; if(p){ptr.tx=p.clientX/W; ptr.ty=p.clientY/H;}
+},{passive:true});
+
+// keep panels on-screen after resize
+function layoutClamp(){
+  for(const p of panels){
+    const r=p.el.getBoundingClientRect();
+    // reset drag offsets if panel pushed fully off
+    if(r.right<40||r.left>W-40||r.bottom<40||r.top>H-40){p.ox=0;p.oy=0;}
+  }
+}
+
+/* ===================================================================
+   MINI CONSTELLATION inside glass panel (live drawn)
+   =================================================================== */
+const ccv=document.getElementById('constel');
+const cctx=ccv.getContext('2d');
+let cW=0,cH=0,cnodes=[];
+function constelResize(){
+  const r=ccv.getBoundingClientRect();
+  cW=r.width; cH=r.height;
+  ccv.width=Math.round(cW*DPR); ccv.height=Math.round(cH*DPR);
+  cctx.setTransform(DPR,0,0,DPR,0,0);
+  cnodes=[];
+  const pts=[[0.15,0.7],[0.34,0.4],[0.5,0.62],[0.62,0.28],[0.78,0.5],[0.9,0.3]];
+  for(const [x,y] of pts){
+    cnodes.push({x:x*cW,y:y*cH,tp:Math.random()*TAU,tw:rnd(0.8,1.6)});
+  }
+}
+function drawConstel(){
+  if(!cW){constelResize();}
+  cctx.clearRect(0,0,cW,cH);
+  // links
+  cctx.strokeStyle='rgba(160,185,255,0.30)';cctx.lineWidth=1;
+  cctx.beginPath();
+  for(let i=0;i<cnodes.length-1;i++){
+    cctx.moveTo(cnodes[i].x,cnodes[i].y);
+    cctx.lineTo(cnodes[i+1].x,cnodes[i+1].y);
+  }
+  cctx.stroke();
+  // nodes
+  cctx.globalCompositeOperation='lighter';
+  for(const n of cnodes){
+    n.tp+=0.03*n.tw;
+    const a=0.55+0.45*Math.sin(n.tp);
+    const g=cctx.createRadialGradient(n.x,n.y,0,n.x,n.y,7);
+    g.addColorStop(0,`rgba(220,232,255,${a})`);
+    g.addColorStop(1,'rgba(180,200,255,0)');
+    cctx.fillStyle=g;cctx.beginPath();cctx.arc(n.x,n.y,7,0,TAU);cctx.fill();
+    cctx.fillStyle=`rgba(255,255,255,${a})`;
+    cctx.beginPath();cctx.arc(n.x,n.y,1.6,0,TAU);cctx.fill();
+  }
+  cctx.globalCompositeOperation='source-over';
+}
+window.addEventListener('resize',()=>{cW=0;});
+
+/* live status readouts (subtle motion) */
+const velEl=document.getElementById('vel'),hdgEl=document.getElementById('hdg'),
+      depEl=document.getElementById('dep'),fldEl=document.getElementById('fld');
+let rt=0;
+setInterval(()=>{
+  rt+=1;
+  const v=(0.40+0.05*Math.sin(rt*0.21)).toFixed(2);
+  const h=Math.round(202+8*Math.sin(rt*0.13));
+  const d=(-1.8+0.15*Math.sin(rt*0.17)).toFixed(1);
+  const f=(9140+Math.round(40*Math.sin(rt*0.31)));
+  if(velEl)velEl.textContent=v+' c';
+  if(hdgEl)hdgEl.textContent=h+'°';
+  if(depEl)depEl.textContent=d+' kpc';
+  if(fldEl)fldEl.textContent=f.toLocaleString();
+},900);
+
+/* hint fade */
+function hideHint(){const h=document.getElementById('hint');if(h)h.style.opacity=0;}
+setTimeout(hideHint,8000);
+
+/* boot */
+resize();
+requestAnimationFrame(draw);
+})();
+</script>
+</body>
+</html>

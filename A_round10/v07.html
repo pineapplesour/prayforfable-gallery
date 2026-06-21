@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>砂 · KRONOS — 입자 모래시계</title>
+<style>
+  html,body{margin:0;height:100%;background:#06070d;overflow:hidden;
+    font-family:"Helvetica Neue",Arial,sans-serif;cursor:none;
+    -webkit-tap-highlight-color:transparent;user-select:none;}
+  #stage{position:fixed;inset:0;display:block;}
+  .hud{position:fixed;left:22px;bottom:18px;color:#9fb0d0;
+    font-size:11px;letter-spacing:.18em;line-height:1.9;
+    text-transform:uppercase;opacity:.62;pointer-events:none;z-index:5;
+    text-shadow:0 0 12px rgba(120,160,255,.35);mix-blend-mode:screen;}
+  .hud b{color:#ffd9a8;font-weight:600;}
+  .title{position:fixed;right:24px;top:20px;text-align:right;z-index:5;
+    pointer-events:none;mix-blend-mode:screen;}
+  .title .k{font-size:13px;letter-spacing:.55em;color:#cfe0ff;opacity:.8;
+    text-shadow:0 0 18px rgba(140,180,255,.5);}
+  .title .s{font-size:10px;letter-spacing:.3em;color:#8a7adf;opacity:.6;margin-top:6px;}
+  @media (max-width:560px){
+    .hud{font-size:9px;bottom:14px;left:14px;letter-spacing:.12em;}
+    .title{right:14px;top:14px;} .title .k{font-size:11px;letter-spacing:.4em;}
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div class="title"><div class="k">KRONOS</div><div class="s">砂 の 時 計</div></div>
+<div class="hud">
+  <div><b>탭/플립</b> 모래시계 뒤집기</div>
+  <div><b>드래그</b> 바람으로 모래 흩기</div>
+  <div><b>휠</b> 시간의 흐름 가감속</div>
+</div>
+<script>
+(()=>{
+"use strict";
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', {alpha:false});
+let W=0,H=0,DPR=1,CX=0,CY=0,SCALE=1;
+
+// ---------- geometry of the hourglass (in design units, centered) ----------
+// We design in a virtual space then map to screen.
+const G = {
+  halfW: 150,      // half width of the bulbs
+  bulbH: 200,      // height of one bulb (from neck to top)
+  neckW: 14,       // half width of the neck gap
+  neckH: 26,       // vertical half-height of neck region
+};
+
+// ---------- state ----------
+let flip = 0;          // 0 -> top is upper. animated 0..1 (PI rotation)
+let flipTarget = 0;
+let flipVel = 0;
+let timeScale = 1;     // scroll controlled
+let timeScaleTarget = 1;
+const mouse = {x:-9999,y:-9999,px:-9999,py:-9999,down:false,vx:0,vy:0,active:false};
+
+// ---------- particles ----------
+let N = 4200;          // tuned at resize for perf
+let P = null;          // typed arrays
+function allocParticles(n){
+  P = {
+    x:new Float32Array(n), y:new Float32Array(n),
+    vx:new Float32Array(n), vy:new Float32Array(n),
+    settled:new Uint8Array(n), hue:new Float32Array(n),
+    r:new Float32Array(n), n
+  };
+}
+
+// design-space coordinate helpers (origin at hourglass center; +y down)
+// the upper bulb occupies y in [-(neckH+bulbH), -neckH], lower in [neckH, neckH+bulbH]
+function bulbHalfWidthAt(yLocal){
+  // yLocal measured from neck center (0). returns half-width of glass interior.
+  const ay = Math.abs(yLocal);
+  if(ay <= G.neckH){
+    // neck region: smooth narrowing
+    const t = ay/G.neckH;
+    return G.neckW + (0)*t; // straight neck channel
+  }
+  const t = (ay - G.neckH)/G.bulbH; // 0 at neck mouth, 1 at bulb extreme
+  const tt = Math.min(1,Math.max(0,t));
+  // ease curve for nice bulb silhouette
+  const e = Math.sin(tt*Math.PI*0.5);
+  return G.neckW + (G.halfW-G.neckW)*Math.pow(e,0.72);
+}
+
+// In current orientation, "upper" bulb is where sand starts; depends on flip phase.
+// flip in [0,1] maps to rotation 0..PI. We treat sand gravity always downward (screen),
+// and physically rotate particle positions for rendering+collision via the glass that rotates.
+// To keep physics intuitive, we rotate the WORLD: particles live in design space that is
+// rotated by angle = flip*PI around center. Gravity is constant downward in screen space.
+
+// rotation of design space:
+let rot = 0; // radians, = flip*PI
+
+// transform design(local) -> screen
+function L2S(lx,ly,out){
+  const c=Math.cos(rot), s=Math.sin(rot);
+  const rx = lx*c - ly*s;
+  const ry = lx*s + ly*c;
+  out.x = CX + rx*SCALE;
+  out.y = CY + ry*SCALE;
+}
+// transform screen -> design(local)
+function S2L(sx,sy,out){
+  const c=Math.cos(-rot), s=Math.sin(-rot);
+  const dx=(sx-CX)/SCALE, dy=(sy-CY)/SCALE;
+  out.x = dx*c - dy*s;
+  out.y = dx*s + dy*c;
+}
+
+// containment test in design space: is point (lx,ly) inside glass interior?
+function insideGlass(lx,ly){
+  const ayAbs = Math.abs(ly);
+  const totalH = G.neckH + G.bulbH;
+  if(ayAbs > totalH) return false;
+  const hw = bulbHalfWidthAt(ly);
+  return Math.abs(lx) <= hw;
+}
+
+// push a point back inside glass (design space), returns true if it was outside the wall
+function clampInside(lx,ly){
+  const totalH = G.neckH + G.bulbH;
+  let ny=ly, nx=lx, hit=false;
+  if(ny < -totalH){ ny=-totalH; hit=true; }
+  if(ny >  totalH){ ny= totalH; hit=true; }
+  const hw = bulbHalfWidthAt(ny);
+  if(nx >  hw){ nx= hw; hit=true; }
+  if(nx < -hw){ nx=-hw; hit=true; }
+  return {x:nx,y:ny,hit};
+}
+
+// ---------- spatial hash for sand stacking ----------
+let CELL=7; // design units
+let cols=0, rows=0, originX=0, originY=0;
+let grid=null;          // Int32Array head index per cell
+let nextIdx=null;       // Int32Array linked list
+function buildGridDims(){
+  const totalH = G.neckH + G.bulbH;
+  originX = -G.halfW-6; originY = -totalH-6;
+  cols = Math.ceil((2*G.halfW+12)/CELL);
+  rows = Math.ceil((2*totalH+12)/CELL);
+  grid = new Int32Array(cols*rows);
+  nextIdx = new Int32Array(N);
+}
+function cellOf(lx,ly){
+  let cx=((lx-originX)/CELL)|0, cy=((ly-originY)/CELL)|0;
+  if(cx<0)cx=0; else if(cx>=cols)cx=cols-1;
+  if(cy<0)cy=0; else if(cy>=rows)cy=rows-1;
+  return cy*cols+cx;
+}
+function rebuildGrid(){
+  grid.fill(-1);
+  for(let i=0;i<N;i++){
+    const c=cellOf(P.x[i],P.y[i]);
+    nextIdx[i]=grid[c];
+    grid[c]=i;
+  }
+}
+
+// ---------- init / seed particles in the (currently) upper bulb ----------
+function seedParticles(){
+  allocParticles(N);
+  const totalH=G.neckH+G.bulbH;
+  let i=0, guard=0;
+  while(i<N && guard<N*40){
+    guard++;
+    // random in upper bulb region (local y negative)
+    const ly = -G.neckH - Math.random()*G.bulbH*0.96;
+    const hw = bulbHalfWidthAt(ly)*0.94;
+    const lx = (Math.random()*2-1)*hw;
+    if(!insideGlass(lx,ly)) continue;
+    P.x[i]=lx; P.y[i]=ly;
+    P.vx[i]=0; P.vy[i]=0; P.settled[i]=0;
+    // golden/amber sand palette with rare luminous grains
+    const base = 36 + Math.random()*14;          // amber hue
+    P.hue[i]= Math.random()<0.04 ? 190+Math.random()*30 : base;
+    P.r[i]= 0.9 + Math.random()*0.9;
+    i++;
+  }
+  N = i || N;
+  buildGridDims();
+}
+
+// ---------- physics ----------
+const GRAV = 0.10;       // gravity in design units/frame^2 (scaled by timeScale)
+const tmpL={x:0,y:0}, tmpS={x:0,y:0}, tmpL2={x:0,y:0};
+
+function gravityLocal(){
+  // gravity points down in screen space => in design space it's rotated by -rot
+  const c=Math.cos(-rot), s=Math.sin(-rot);
+  // screen down = (0,1); design = R(-rot)*(0,1) = (-s, c)? compute:
+  // R(-rot)*(0,1) = ( cos(-rot)*0 - sin(-rot)*1, sin(-rot)*0 + cos(-rot)*1 ) = (-sin(-rot), cos(-rot))
+  return { gx: -s, gy: c };
+}
+
+function step(dt){
+  const ts = timeScale*dt;
+  const {gx,gy} = gravityLocal();
+  const totalH=G.neckH+G.bulbH;
+
+  rebuildGrid();
+
+  // mouse in design space (for wind)
+  let mLx=null,mLy=null,mForce=0;
+  if(mouse.active){
+    S2L(mouse.x,mouse.y,tmpL2); mLx=tmpL2.x; mLy=tmpL2.y;
+    mForce = mouse.down? 1 : 0.45;
+  }
+  const windScale = SCALE; // map screen vel to design
+  const mvx = mouse.vx/windScale, mvy = mouse.vy/windScale;
+
+  for(let i=0;i<N;i++){
+    let x=P.x[i], y=P.y[i], vx=P.vx[i], vy=P.vy[i];
+
+    // apply gravity
+    vx += gx*GRAV*ts;
+    vy += gy*GRAV*ts;
+
+    // mouse wind: push grains near cursor along mouse velocity + radial
+    if(mLx!==null){
+      const dx=x-mLx, dy=y-mLy;
+      const d2=dx*dx+dy*dy;
+      const R=46;
+      if(d2 < R*R){
+        const d=Math.sqrt(d2)+0.001;
+        const fall=(1-d/R);
+        const f = fall*fall*mForce;
+        // radial push out + carry with mouse motion
+        vx += (dx/d)*f*1.6 + mvx*f*0.9;
+        vy += (dy/d)*f*1.6 + mvy*f*0.9;
+        P.settled[i]=0;
+      }
+    }
+
+    // integrate
+    vx*=0.992; // air drag
+    vy*=0.992;
+    let nx=x+vx*ts, ny=y+vy*ts;
+
+    // wall collision (glass interior)
+    if(!insideGlass(nx,ny)){
+      const cl=clampInside(nx,ny);
+      // reflect velocity softly along wall normal (approx by separating axis)
+      if(cl.x!==nx){ vx*=-0.18; }
+      if(cl.y!==ny){ vy*=-0.18; }
+      nx=cl.x; ny=cl.y;
+    }
+
+    // ---- granular stacking via neighbor repulsion (cheap) ----
+    // sample a few neighbors in grid below/around
+    let rest=0;
+    const myCell=cellOf(nx,ny);
+    const cx=myCell%cols, cy=(myCell/cols)|0;
+    let pushx=0,pushy=0, contacts=0;
+    for(let oy=-1;oy<=1;oy++){
+      const ry=cy+oy; if(ry<0||ry>=rows)continue;
+      for(let ox=-1;ox<=1;ox++){
+        const rx=cx+ox; if(rx<0||rx>=cols)continue;
+        let j=grid[ry*cols+rx];
+        let lim=0;
+        while(j!==-1 && lim<6){
+          lim++;
+          if(j!==i){
+            const ddx=nx-P.x[j], ddy=ny-P.y[j];
+            const dd2=ddx*ddx+ddy*ddy;
+            const minD=(P.r[i]+P.r[j])*1.55;
+            if(dd2 < minD*minD && dd2>1e-6){
+              const dd=Math.sqrt(dd2);
+              const overlap=(minD-dd)/minD;
+              pushx += (ddx/dd)*overlap;
+              pushy += (ddy/dd)*overlap;
+              contacts++;
+            }
+          }
+          j=nextIdx[j];
+        }
+      }
+    }
+    if(contacts>0){
+      nx += pushx*0.9;
+      ny += pushy*0.9;
+      vx += pushx*0.25;
+      vy += pushy*0.25;
+      // friction when many contacts (settled pile)
+      if(contacts>=3){
+        vx*=0.6; vy*=0.6; rest=1;
+      }
+    }
+
+    // re-clamp after push
+    if(!insideGlass(nx,ny)){
+      const cl=clampInside(nx,ny); nx=cl.x; ny=cl.y;
+      vx*=0.4; vy*=0.4;
+    }
+
+    // settle flag (low energy + supported)
+    const sp = vx*vx+vy*vy;
+    if(sp<0.0009 && rest) P.settled[i]=1; else if(sp>0.02) P.settled[i]=0;
+
+    P.x[i]=nx; P.y[i]=ny; P.vx[i]=vx; P.vy[i]=vy;
+  }
+}
+
+// ---------- rendering ----------
+let glassGrad=null;
+function makeGradients(){
+  // built lazily per draw because rotation changes; we keep simple.
+}
+
+function drawGlass(){
+  const totalH=G.neckH+G.bulbH;
+  ctx.save();
+  ctx.translate(CX,CY);
+  ctx.rotate(rot);
+  ctx.scale(SCALE,SCALE);
+
+  // build silhouette path (two bulbs + neck) for both halves
+  function bulbPath(sign){
+    // sign -1 = upper(local negative y), +1 = lower
+    ctx.beginPath();
+    const steps=42;
+    // outer wall left side from neck to top
+    ctx.moveTo(-G.neckW, sign*G.neckH);
+    for(let k=0;k<=steps;k++){
+      const t=k/steps;
+      const ly=sign*(G.neckH + t*G.bulbH);
+      const hw=bulbHalfWidthAt(ly);
+      ctx.lineTo(-hw, ly);
+    }
+    // across top
+    const topY=sign*(G.neckH+G.bulbH);
+    ctx.lineTo(G.halfW, topY);
+    for(let k=steps;k>=0;k--){
+      const t=k/steps;
+      const ly=sign*(G.neckH + t*G.bulbH);
+      const hw=bulbHalfWidthAt(ly);
+      ctx.lineTo(hw, ly);
+    }
+    ctx.lineTo(G.neckW, sign*G.neckH);
+    ctx.closePath();
+  }
+
+  // glass fill (subtle cyan tint, refraction sheen)
+  for(const sign of [-1,1]){
+    bulbPath(sign);
+    const g=ctx.createLinearGradient(-G.halfW,0,G.halfW,0);
+    g.addColorStop(0,'rgba(120,170,230,0.05)');
+    g.addColorStop(0.5,'rgba(190,225,255,0.11)');
+    g.addColorStop(1,'rgba(90,140,210,0.05)');
+    ctx.fillStyle=g; ctx.fill();
+    // inner shadow rim
+    ctx.lineWidth=1.6;
+    ctx.strokeStyle='rgba(180,215,255,0.55)';
+    ctx.stroke();
+    // highlight streak
+    ctx.beginPath();
+    const hx=-G.halfW*0.5;
+    ctx.moveTo(hx, sign*(G.neckH+6));
+    ctx.lineTo(hx*0.7, sign*(G.neckH+G.bulbH*0.92));
+    ctx.lineWidth=3.4;
+    ctx.strokeStyle='rgba(255,255,255,0.10)';
+    ctx.stroke();
+  }
+
+  // wooden caps top & bottom
+  for(const sign of [-1,1]){
+    const y=sign*(G.neckH+G.bulbH);
+    ctx.beginPath();
+    ctx.rect(-G.halfW-10, y - (sign<0?14:0), (G.halfW+10)*2, 14);
+    const cg=ctx.createLinearGradient(0,y-14,0,y+14);
+    cg.addColorStop(0,'#3a2a1c'); cg.addColorStop(0.5,'#6b4a2e'); cg.addColorStop(1,'#241509');
+    ctx.fillStyle=cg; ctx.fill();
+  }
+  // posts connecting caps (4 corners-ish: 2 visible side posts)
+  ctx.fillStyle='#2a1d12';
+  ctx.fillRect(-G.halfW-9, -(totalH), 6, totalH*2);
+  ctx.fillRect( G.halfW+3, -(totalH), 6, totalH*2);
+  ctx.fillStyle='rgba(120,80,40,0.5)';
+  ctx.fillRect(-G.halfW-9, -(totalH), 2, totalH*2);
+  ctx.fillRect( G.halfW+3, -(totalH), 2, totalH*2);
+
+  ctx.restore();
+}
+
+const sp={x:0,y:0};
+function drawParticles(){
+  // additive luminous sand
+  ctx.globalCompositeOperation='lighter';
+  for(let i=0;i<N;i++){
+    L2S(P.x[i],P.y[i],sp);
+    const speed=Math.min(1, (P.vx[i]*P.vx[i]+P.vy[i]*P.vy[i])*0.6);
+    const h=P.hue[i];
+    const settled=P.settled[i];
+    // moving grains glow brighter / hotter
+    const light = settled? 52 : 60 + speed*22;
+    const alpha = settled? 0.85 : 0.95;
+    const rr = (P.r[i])*SCALE*(settled?1.0:1.15);
+    // glow halo for fast ones
+    if(!settled && speed>0.25){
+      ctx.beginPath();
+      ctx.fillStyle=`hsla(${h},95%,${light}%,${0.18*speed})`;
+      ctx.arc(sp.x,sp.y, rr*3.2, 0, 6.28318);
+      ctx.fill();
+    }
+    ctx.beginPath();
+    ctx.fillStyle=`hsla(${h},92%,${light}%,${alpha})`;
+    ctx.arc(sp.x,sp.y, rr, 0, 6.28318);
+    ctx.fill();
+  }
+  ctx.globalCompositeOperation='source-over';
+}
+
+// ambient background: deep void with slow nebula + vignette
+let bgGrad=null, t0=performance.now();
+function drawBackground(now){
+  // base
+  ctx.fillStyle='#06070d';
+  ctx.fillRect(0,0,W,H);
+  // soft moving glow behind glass
+  const t=(now-t0)*0.0002;
+  const gx=CX+Math.cos(t)*40, gy=CY+Math.sin(t*0.7)*30;
+  const r=Math.max(W,H)*0.7;
+  const g=ctx.createRadialGradient(gx,gy,0,gx,gy,r);
+  g.addColorStop(0,'rgba(40,55,110,0.55)');
+  g.addColorStop(0.4,'rgba(20,28,60,0.28)');
+  g.addColorStop(1,'rgba(6,7,13,0)');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  // vignette
+  const v=ctx.createRadialGradient(CX,CY,Math.min(W,H)*0.2,CX,CY,Math.max(W,H)*0.75);
+  v.addColorStop(0,'rgba(0,0,0,0)');
+  v.addColorStop(1,'rgba(0,0,0,0.6)');
+  ctx.fillStyle=v; ctx.fillRect(0,0,W,H);
+}
+
+// custom cursor ring
+function drawCursor(){
+  if(!mouse.active) return;
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  const r = mouse.down? 26:18;
+  const g=ctx.createRadialGradient(mouse.x,mouse.y,0,mouse.x,mouse.y,r*2.2);
+  g.addColorStop(0,'rgba(150,200,255,0.30)');
+  g.addColorStop(1,'rgba(150,200,255,0)');
+  ctx.fillStyle=g;
+  ctx.beginPath(); ctx.arc(mouse.x,mouse.y,r*2.2,0,6.28318); ctx.fill();
+  ctx.strokeStyle=`rgba(190,220,255,${mouse.down?0.9:0.55})`;
+  ctx.lineWidth=1.4;
+  ctx.beginPath(); ctx.arc(mouse.x,mouse.y,r,0,6.28318); ctx.stroke();
+  ctx.restore();
+}
+
+// falling-stream sparkle: subtle vertical light beam at neck when sand flows
+function neckGlow(){
+  // count fast grains near neck
+  L2S(0,0,sp);
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  const g=ctx.createRadialGradient(sp.x,sp.y,0,sp.x,sp.y,40*SCALE);
+  g.addColorStop(0,`rgba(255,200,120,${0.10*streamIntensity})`);
+  g.addColorStop(1,'rgba(255,200,120,0)');
+  ctx.fillStyle=g;
+  ctx.beginPath(); ctx.arc(sp.x,sp.y,40*SCALE,0,6.28318); ctx.fill();
+  ctx.restore();
+}
+let streamIntensity=0;
+
+// ---------- loop ----------
+let last=performance.now();
+function frame(now){
+  let dt=(now-last)/16.6667; last=now;
+  if(dt>2.2) dt=2.2; // clamp big gaps
+
+  // flip animation (spring)
+  const k=0.012, damp=0.86;
+  flipVel += (flipTarget-flip)*k;
+  flipVel *= damp;
+  flip += flipVel*dt;
+  rot = flip*Math.PI;
+
+  // timescale easing
+  timeScale += (timeScaleTarget-timeScale)*0.06;
+
+  // mouse velocity decay & active fade
+  mouse.vx*=0.8; mouse.vy*=0.8;
+
+  // measure stream intensity (grains crossing neck with speed)
+  let fast=0;
+  for(let i=0;i<N;i++){
+    if(Math.abs(P.y[i])<G.neckH+8){
+      const s=P.vx[i]*P.vx[i]+P.vy[i]*P.vy[i];
+      if(s>0.01) fast++;
+    }
+  }
+  streamIntensity += (Math.min(1,fast/60)-streamIntensity)*0.1;
+
+  // physics substeps for stability at high timescale
+  const subs = timeScale>1.6?2:1;
+  for(let s2=0;s2<subs;s2++) step(dt/subs);
+
+  drawBackground(now);
+  neckGlow();
+  // draw back glass tint behind particles
+  drawGlassBack();
+  drawParticles();
+  drawGlass();
+  drawCursor();
+
+  requestAnimationFrame(frame);
+}
+
+// a lighter back layer so particles read against glass
+function drawGlassBack(){
+  ctx.save();
+  ctx.translate(CX,CY); ctx.rotate(rot); ctx.scale(SCALE,SCALE);
+  const totalH=G.neckH+G.bulbH;
+  for(const sign of [-1,1]){
+    ctx.beginPath();
+    const steps=42;
+    ctx.moveTo(-G.neckW, sign*G.neckH);
+    for(let k=0;k<=steps;k++){const t=k/steps;const ly=sign*(G.neckH+t*G.bulbH);ctx.lineTo(-bulbHalfWidthAt(ly),ly);}
+    ctx.lineTo(G.halfW, sign*(G.neckH+G.bulbH));
+    for(let k=steps;k>=0;k--){const t=k/steps;const ly=sign*(G.neckH+t*G.bulbH);ctx.lineTo(bulbHalfWidthAt(ly),ly);}
+    ctx.lineTo(G.neckW, sign*G.neckH); ctx.closePath();
+    ctx.fillStyle='rgba(10,14,28,0.55)';
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ---------- resize ----------
+function resize(){
+  DPR=Math.min(window.devicePixelRatio||1, 2);
+  W=window.innerWidth; H=window.innerHeight;
+  cv.width=W*DPR; cv.height=H*DPR;
+  cv.style.width=W+'px'; cv.style.height=H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  CX=W/2; CY=H/2;
+  const totalH=G.neckH+G.bulbH;
+  // fit hourglass within ~78% height and width
+  const sH=(H*0.80)/(2*totalH);
+  const sW=(W*0.82)/(2*(G.halfW+12));
+  SCALE=Math.min(sH,sW);
+
+  // particle count tuned by area for perf
+  const area=W*H;
+  const target = Math.round(Math.min(5200, Math.max(2200, area/520)));
+  if(!P || Math.abs(target-N)>400){
+    N=target; seedParticles();
+  } else {
+    buildGridDims();
+  }
+}
+
+// ---------- interaction ----------
+function pointerPos(e){
+  const r=cv.getBoundingClientRect();
+  const t=e.touches? e.touches[0]:e;
+  return {x:t.clientX-r.left, y:t.clientY-r.top};
+}
+let downX=0,downY=0,downT=0,moved=false;
+function onDown(e){
+  const p=pointerPos(e);
+  mouse.x=p.x; mouse.y=p.y; mouse.px=p.x; mouse.py=p.y;
+  mouse.down=true; mouse.active=true;
+  downX=p.x; downY=p.y; downT=performance.now(); moved=false;
+}
+function onMove(e){
+  const p=pointerPos(e);
+  if(mouse.active){
+    mouse.vx=p.x-mouse.x; mouse.vy=p.y-mouse.y;
+  }
+  mouse.x=p.x; mouse.y=p.y; mouse.active=true;
+  if(Math.abs(p.x-downX)>6||Math.abs(p.y-downY)>6) moved=true;
+}
+function onUp(e){
+  const dt=performance.now()-downT;
+  // tap (short, little movement) => flip
+  if(!moved && dt<350 && mouse.down){
+    flipTarget = flipTarget>0.5 ? 0 : 1;
+    flipVel += (flipTarget>0.5?0.18:-0.18); // kick for satisfying spin
+  }
+  mouse.down=false;
+}
+cv.addEventListener('mousedown',onDown);
+window.addEventListener('mousemove',onMove);
+window.addEventListener('mouseup',onUp);
+cv.addEventListener('mouseleave',()=>{mouse.active=false;});
+cv.addEventListener('touchstart',e=>{e.preventDefault();onDown(e);},{passive:false});
+cv.addEventListener('touchmove',e=>{e.preventDefault();onMove(e);},{passive:false});
+cv.addEventListener('touchend',e=>{onUp(e);});
+window.addEventListener('wheel',e=>{
+  timeScaleTarget = Math.min(3.2, Math.max(0.15, timeScaleTarget * (e.deltaY>0?0.88:1.14)));
+},{passive:true});
+window.addEventListener('keydown',e=>{
+  if(e.code==='Space'){ flipTarget = flipTarget>0.5?0:1; flipVel+=0.15; }
+});
+window.addEventListener('resize',resize);
+
+// ---------- go ----------
+resize();
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

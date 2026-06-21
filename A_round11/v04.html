@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>키리가미 — 종이 골짜기</title>
+<style>
+  :root{ color-scheme: dark; }
+  html,body{ margin:0; padding:0; height:100%; overflow:hidden; background:#0a0710;
+    font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+    -webkit-tap-highlight-color:transparent; touch-action:none; cursor:crosshair; }
+  #stage{ position:fixed; inset:0; display:block; }
+  .ui{ position:fixed; left:0; right:0; pointer-events:none; z-index:10;
+    color:#f3e7d4; text-shadow:0 2px 14px rgba(0,0,0,.7); user-select:none; }
+  #title{ top:clamp(18px,3.4vw,40px); text-align:center; }
+  #title h1{ margin:0; font-weight:500; letter-spacing:.42em;
+    font-size:clamp(15px,2.5vw,30px); padding-left:.42em; color:#fff6ea;
+    text-shadow:0 1px 2px rgba(40,16,8,.9),0 0 22px rgba(20,8,4,.7),0 3px 18px rgba(0,0,0,.6);
+    opacity:0; animation:rise 1.6s .3s cubic-bezier(.2,.8,.2,1) forwards; }
+  #title p{ margin:.5em 0 0; font-size:clamp(9px,1.05vw,12px); letter-spacing:.55em;
+    opacity:0; color:#d9b48a; padding-left:.55em;
+    animation:rise 1.6s .65s cubic-bezier(.2,.8,.2,1) forwards; }
+  #hint{ bottom:clamp(16px,2.6vw,30px); text-align:center;
+    font-size:clamp(9px,1vw,12px); letter-spacing:.34em; color:#c9b69b;
+    opacity:0; animation:fadein 2s 1.4s ease forwards; padding-left:.34em; }
+  @keyframes rise{ from{opacity:0; transform:translateY(18px)} to{opacity:1; transform:none} }
+  @keyframes fadein{ to{opacity:.78} }
+  #pal{ position:fixed; z-index:11; right:clamp(14px,2vw,26px); top:50%;
+    transform:translateY(-50%); display:flex; flex-direction:column; gap:11px; pointer-events:auto; }
+  .sw{ width:15px; height:15px; border-radius:50%; cursor:pointer; border:1.5px solid rgba(255,255,255,.32);
+    box-shadow:0 2px 9px rgba(0,0,0,.55); transition:transform .25s, border-color .25s; opacity:.85; }
+  .sw:hover{ transform:scale(1.42); opacity:1; }
+  .sw.on{ border-color:#fff; transform:scale(1.3); opacity:1; }
+  @media (max-width:560px){
+    #pal{ flex-direction:row; top:auto; bottom:46px; left:0; right:0; justify-content:center; transform:none; }
+    #title h1{ letter-spacing:.3em; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="title" class="ui"><h1>종 이 골 짜 기</h1><p>K I R I G A M I &nbsp; V A L L E Y</p></div>
+<div id="hint" class="ui">움직여서 책을 펼치고 · 눌러서 종이를 오리다</div>
+<div id="pal"></div>
+
+<script>
+(()=>{
+"use strict";
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', { alpha:false });
+let W=0,H=0,DPR=1,CX=0,CY=0,DIAG=1,MOBILE=false;
+
+/* ---------- palettes : warm paper, layered tonal ramps ---------- */
+const PALETTES = [
+  { name:'황혼', sky:['#1a0f26','#3a1840','#7c2f4e','#c9554d','#e98a4e','#f3c878'],
+    paper:['#2b1530','#4a1f3e','#7a2f47','#b14d4a','#dd7a4c','#efa85a','#f6cf7e'],
+    crane:'#fbe6cf', sun:'#ffe6a8', star:'#ffe9c2', dust:'#ffd9a0' },
+  { name:'옥빛', sky:['#06141a','#0c2b30','#114a44','#1d7a5e','#46b07a','#bfe6b0'],
+    paper:['#08201f','#0f3a33','#185c47','#2c8159','#54a86c','#86c98a','#c8ecb8'],
+    crane:'#eafbe6', sun:'#dffbd0', star:'#d6ffe0', dust:'#bff0c4' },
+  { name:'심야', sky:['#040611','#0a1230','#172a63','#3550a8','#6f86d6','#cdd9ff'],
+    paper:['#070a1c','#101a44','#1d2f72','#2f4aa0','#5572cc','#8aa1e6','#cdd9ff'],
+    crane:'#eef3ff', sun:'#e6ecff', star:'#dfe8ff', dust:'#b9c8ff' },
+  { name:'홍매', sky:['#160611','#3a0c2a','#6f1242','#b22357','#e85a73','#ffb3a0'],
+    paper:['#1d0816','#42102e','#73204a','#ad356a','#dd6385','#f59ca0','#ffd5c4'],
+    crane:'#fff0ea', sun:'#ffe2d6', star:'#ffe6dc', dust:'#ffc7b6' },
+];
+let PI = 0, P = PALETTES[0];
+let curP = mkRamp(P), tgtP = mkRamp(P), lerpT = 1;
+
+function mkRamp(pal){ return { sky:pal.sky.slice(), paper:pal.paper.slice(),
+  crane:pal.crane, sun:pal.sun, star:pal.star, dust:pal.dust }; }
+function hx(c){
+  if(c[0]==='#'){ c=c.slice(1); return [parseInt(c.slice(0,2),16),parseInt(c.slice(2,4),16),parseInt(c.slice(4,6),16)]; }
+  const m=c.match(/\d+/g); return [ +m[0], +m[1], +m[2] ];   // rgb(...) form
+}
+function mix(a,b,t){ const A=hx(a),B=hx(b); return `rgb(${Math.round(A[0]+(B[0]-A[0])*t)},${Math.round(A[1]+(B[1]-A[1])*t)},${Math.round(A[2]+(B[2]-A[2])*t)})`; }
+function rampAt(arr,t){ t=Math.max(0,Math.min(.99999,t)); const s=t*(arr.length-1); const i=Math.floor(s); return mix(arr[i],arr[i+1],s-i); }
+
+/* live (interpolated) palette accessors */
+const LP = { sky:[], paper:[], crane:'', sun:'', star:'', dust:'' };
+function stepPalette(dt){
+  if(lerpT<1){ lerpT=Math.min(1,lerpT+dt*1.6); }
+  const t=lerpT<1?ease(lerpT):1;
+  for(let i=0;i<7;i++){ LP.sky[i]=mix(curP.sky[i]||curP.sky[curP.sky.length-1], tgtP.sky[i]||tgtP.sky[tgtP.sky.length-1], t); }
+  for(let i=0;i<7;i++){ LP.paper[i]=mix(curP.paper[i], tgtP.paper[i], t); }
+  LP.crane=mix(curP.crane,tgtP.crane,t); LP.sun=mix(curP.sun,tgtP.sun,t);
+  LP.star=mix(curP.star,tgtP.star,t); LP.dust=mix(curP.dust,tgtP.dust,t);
+}
+function setPalette(i){
+  if(i===PI && lerpT>=1) return;
+  curP = mkRamp({ sky:LP.sky.slice(), paper:LP.paper.slice(), crane:LP.crane, sun:LP.sun, star:LP.star, dust:LP.dust });
+  PI=i; P=PALETTES[i]; tgtP=mkRamp(P); lerpT=0;
+  document.querySelectorAll('.sw').forEach((s,k)=>s.classList.toggle('on',k===i));
+}
+function ease(t){ return t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2; }
+
+/* ---------- input ---------- */
+const M = { x:0, y:0, tx:0, ty:0, vx:0, vy:0, down:false, has:false };
+let scrollDepth = 0, tScroll = 0;       // 0..1 dolly-in
+let autoT = 0;
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 1.75);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = Math.round(W*DPR); cv.height = Math.round(H*DPR);
+  cv.style.width=W+'px'; cv.style.height=H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  CX=W/2; CY=H/2; DIAG=Math.hypot(W,H);
+  MOBILE = W<560;
+  buildLayers();
+}
+window.addEventListener('resize', resize);
+
+function pointer(e){
+  const t = e.touches? e.touches[0] : e;
+  if(!t) return;
+  M.tx = t.clientX; M.ty = t.clientY; M.has = true;
+}
+window.addEventListener('mousemove', pointer, {passive:true});
+window.addEventListener('touchmove', e=>{ pointer(e); }, {passive:true});
+window.addEventListener('touchstart', e=>{ pointer(e); M.down=true; cut(e.touches[0].clientX,e.touches[0].clientY); }, {passive:true});
+window.addEventListener('touchend', ()=>{ M.down=false; });
+window.addEventListener('mousedown', e=>{ M.down=true; cut(e.clientX,e.clientY); });
+window.addEventListener('mouseup', ()=>{ M.down=false; });
+window.addEventListener('wheel', e=>{ tScroll = Math.max(0, Math.min(1, tScroll + e.deltaY*0.0009)); }, {passive:true});
+window.addEventListener('keydown', e=>{ if(e.key>='1'&&e.key<='4') setPalette(+e.key-1);
+  if(e.key===' '){ setPalette((PI+1)%PALETTES.length); e.preventDefault(); } });
+
+/* ---------- paper layers (kirigami ridgelines) ---------- */
+let LAYERS = [];          // back -> front mountain silhouettes
+const NLAYER = 7;
+function rnd(s){ s=Math.sin(s*127.1)*43758.5453; return s-Math.floor(s); }
+
+function buildLayers(){
+  LAYERS = [];
+  for(let L=0; L<NLAYER; L++){
+    const depth = L/(NLAYER-1);                 // 0 far .. 1 near
+    const seed = 11.3 + L*7.77;
+    const pts = [];
+    const baseY = H*(0.30 + depth*0.62);
+    const amp = H*(0.05 + depth*0.20);
+    const segs = MOBILE? (10+L*2) : (14+L*3);
+    for(let i=0;i<=segs;i++){
+      const fx=i/segs;
+      let y=0, f=1, a=1;
+      for(let o=0;o<3;o++){ y += Math.sin(fx*Math.PI*(1.3+o*1.9)*(1+L*.25) + rnd(seed+o)*6.28)*a; f*=2; a*=0.5; }
+      y = baseY - (y*0.5+0.5)*amp*0.9 - amp*0.1;
+      pts.push({ fx, y, baseY:y });
+    }
+    // kirigami cut-out windows in nearer layers
+    const windows=[];
+    if(L>=3 && L<NLAYER-1){
+      const nw = L-2;
+      for(let k=0;k<nw;k++){
+        const wx = 0.12 + rnd(seed*3+k)*0.76;
+        windows.push({ x:wx, w:0.03+rnd(seed*5+k)*0.05, kind: Math.floor(rnd(seed*7+k)*3) });
+      }
+    }
+    let topY=1e9; for(const p of pts) if(p.y<topY) topY=p.y;
+    LAYERS.push({ depth, pts, windows, seed, baseY, topY,
+      par: 0.012 + depth*0.075,          // parallax strength
+      fold: rnd(seed)*0.5+0.4 });
+  }
+  buildBirds(); buildPetals(); buildStars();
+}
+
+/* ---------- paper cranes (folded birds) ---------- */
+let BIRDS=[];
+function buildBirds(){
+  BIRDS=[];
+  const n = MOBILE? 4:7;
+  for(let i=0;i<n;i++){
+    BIRDS.push({
+      x: rnd(i*3.1+2)*W, y: H*(0.12+rnd(i*5.7)*0.4),
+      z: 0.25+rnd(i*1.9)*0.7,           // depth (size/speed)
+      sp: (0.18+rnd(i*2.3)*0.5)*(rnd(i*9)<.5?-1:1),
+      ph: rnd(i*4.1)*6.28, fl: 2.0+rnd(i*6.3)*2.2,
+      bob: rnd(i*8.2)*6.28 });
+  }
+}
+let PETALS=[];
+function buildPetals(){
+  PETALS=[];
+  const n = MOBILE? 26:54;
+  for(let i=0;i<n;i++){
+    PETALS.push({ x:rnd(i*1.7)*W, y:rnd(i*2.9)*H, z:0.2+rnd(i*3.3)*0.9,
+      vy:0.18+rnd(i*4.4)*0.4, sw:rnd(i*5.5)*6.28, ss:0.6+rnd(i*6.6)*1.4,
+      sz:2.4+rnd(i*7.7)*3.6, rot:rnd(i*8.8)*6.28, rs:(rnd(i*9.9)-0.5)*0.05 });
+  }
+}
+let STARS=[];
+function buildStars(){
+  STARS=[];
+  const n=MOBILE?70:140;
+  for(let i=0;i<n;i++){ STARS.push({ x:rnd(i*1.3)*W, y:rnd(i*2.1)*H*0.6,
+    r:rnd(i*3.7)*1.3+0.2, tw:rnd(i*4.9)*6.28, ts:0.6+rnd(i*5.1)*1.8 }); }
+}
+
+/* ---------- ripple cuts (click) ---------- */
+let RIPPLES=[];
+function cut(px,py){
+  RIPPLES.push({ x:px, y:py, t:0, max:1, hue: rnd(performance.now())*1 });
+  // confetti paper bits
+  const n=18;
+  for(let i=0;i<n;i++){
+    const a=(i/n)*6.28 + rnd(i)*0.4, sp=2+rnd(i*2)*3.5;
+    CONF.push({ x:px,y:py, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp-1.5,
+      life:1, sz:3+rnd(i*3)*5, rot:rnd(i*4)*6.28, rs:(rnd(i*5)-.5)*0.4,
+      tone: Math.floor(rnd(i*6)*6) });
+  }
+  if(RIPPLES.length>10) RIPPLES.shift();
+}
+let CONF=[];
+
+/* ---------- rendering ---------- */
+let tilt={x:0,y:0};
+function frame(now){
+  const dt = Math.min(0.05, (now-(frame._p||now))/1000); frame._p=now;
+  autoT += dt;
+  // pointer smoothing -> tilt
+  if(!M.has){ // gentle auto drift before first interaction
+    M.tx = CX + Math.cos(autoT*0.35)*W*0.16;
+    M.ty = CY + Math.sin(autoT*0.27)*H*0.12;
+  }
+  const px=(M.tx||CX), py=(M.ty||CY);
+  M.vx=px-M.x; M.vy=py-M.y;
+  M.x += (px-M.x)*0.09; M.y += (py-M.y)*0.09;
+  tilt.x += (((M.x/W)-0.5) - tilt.x)*0.08;
+  tilt.y += (((M.y/H)-0.5) - tilt.y)*0.08;
+  scrollDepth += (tScroll - scrollDepth)*0.06;
+  stepPalette(dt);
+
+  draw(now/1000);
+  requestAnimationFrame(frame);
+}
+
+function vgrad(){
+  const g=ctx.createLinearGradient(0,0,0,H);
+  const n=LP.sky.length;
+  for(let i=0;i<n;i++) g.addColorStop(i/(n-1), LP.sky[i]);
+  return g;
+}
+
+function draw(t){
+  const dolly = scrollDepth;                  // 0..1 push into the valley
+  const zoom = 1 + dolly*0.85;
+  // ---- sky ----
+  ctx.fillStyle = vgrad(); ctx.fillRect(0,0,W,H);
+
+  // soft sun/moon glow
+  const sunX = CX + (tilt.x*-0.5)*W*0.12;
+  const sunY = H*(0.30) + tilt.y*H*0.05 - dolly*H*0.1;
+  const sg=ctx.createRadialGradient(sunX,sunY,0,sunX,sunY,DIAG*0.5);
+  sg.addColorStop(0, withA(LP.sun,0.55)); sg.addColorStop(0.12, withA(LP.sun,0.22));
+  sg.addColorStop(0.4, withA(LP.sun,0.0));
+  ctx.fillStyle=sg; ctx.fillRect(0,0,W,H);
+  // sun disc
+  ctx.beginPath(); ctx.arc(sunX,sunY, Math.min(W,H)*0.075, 0,6.2832);
+  ctx.fillStyle=withA(LP.sun,0.9); ctx.fill();
+
+  // ---- stars (twinkle) ----
+  for(const s of STARS){
+    const a = 0.35+0.45*Math.sin(t*s.ts + s.tw);
+    if(a<=0.05) continue;
+    ctx.globalAlpha = a*(0.4+0.6*(1-PI*0)) ; // dimmer in bright palettes handled by color
+    ctx.fillStyle = LP.star;
+    const sx = s.x - tilt.x*30*(0.3), sy = s.y - tilt.y*20*0.3 - dolly*40;
+    ctx.fillRect(sx, sy, s.r, s.r);
+  }
+  ctx.globalAlpha=1;
+
+  // ---- paper mountain layers (back to front) ----
+  for(let L=0; L<NLAYER; L++) drawLayer(L, t, zoom, dolly);
+
+  // ---- petals (paper confetti drifting) ----
+  drawPetals(t, dolly);
+
+  // ---- cranes ----
+  drawBirds(t, dolly);
+
+  // ---- ripple cuts ----
+  drawRipples(t);
+  drawConf();
+
+  // ---- vignette + paper grain ----
+  vignette();
+  grain(t);
+}
+
+function withA(rgb,a){ // rgb 'rgb(r,g,b)' -> rgba
+  const m=rgb.match(/\d+/g); return `rgba(${m[0]},${m[1]},${m[2]},${a})`;
+}
+function shade(rgb,f){ const m=rgb.match(/\d+/g);
+  return `rgb(${Math.round(m[0]*f)},${Math.round(m[1]*f)},${Math.round(m[2]*f)})`; }
+
+function layerPath(ly, off, squashTop){
+  const pts=ly.pts;
+  ctx.beginPath();
+  ctx.moveTo(-40, H+60);
+  for(let i=0;i<pts.length;i++){
+    const x = pts[i].fx*(W+80)-40 + off.x;
+    let y = pts[i].y + off.y;
+    if(squashTop) y = squashTop(y, pts[i].fx);
+    if(i===0){ ctx.lineTo(x,y); }
+    else {
+      const px=pts[i-1].fx*(W+80)-40+off.x;
+      const py=(squashTop?squashTop(pts[i-1].y+off.y,pts[i-1].fx):pts[i-1].y+off.y);
+      ctx.quadraticCurveTo((px+x)/2,(py+y)/2, x, y); // smoothed ridge but we approximate
+    }
+  }
+  ctx.lineTo(W+60, H+60); ctx.closePath();
+}
+
+function drawLayer(L,t,zoom,dolly){
+  const ly=LAYERS[L];
+  const depth=ly.depth;
+  // parallax: nearer layers move more; pop-up "open" tilt from pointer
+  const open = 1; // fully open
+  const par = ly.par;
+  const ox = -tilt.x * W * par * 2.4 * zoom;
+  const oy = -tilt.y * H * par * 0.9 * zoom + (depth)*dolly*H*0.55;
+  // gentle breathing of the ridge (paper standing in a breeze)
+  const breath = Math.sin(t*0.6 + L*0.9)*H*0.004*(0.4+depth);
+  const off = { x:ox, y:oy+breath };
+
+  const tone = rampAt(LP.paper, 0.12 + depth*0.86);
+  const lift = shade(tone, 1.0); // top edge highlight base
+
+  // drop shadow of this layer onto the one behind (between-paper gap).
+  // cheap "fake blur": stroke the ridge a few times as a SOFT BAND near the
+  // ridge only (not full-screen fills) so software rendering stays fast.
+  ctx.save();
+  const pts0=ly.pts;
+  const band = 30+depth*44;                 // shadow band height below ridge
+  const passes = 3;
+  for(let s=passes; s>=1; s--){
+    const spread = (4+depth*10) * (s/passes);
+    ctx.beginPath();
+    for(let i=0;i<pts0.length;i++){
+      const x=pts0[i].fx*(W+80)-40+off.x, y=pts0[i].y+off.y+spread+ (6+depth*9);
+      if(i===0) ctx.moveTo(x,y); else {
+        const px=pts0[i-1].fx*(W+80)-40+off.x, py=pts0[i-1].y+off.y+spread+(6+depth*9);
+        ctx.quadraticCurveTo((px+x)/2,(py+y)/2,x,y);
+      }
+    }
+    // close into a band, not the full canvas, to limit fill area
+    for(let i=pts0.length-1;i>=0;i--){
+      const x=pts0[i].fx*(W+80)-40+off.x, y=pts0[i].y+off.y+spread+(6+depth*9)+band;
+      ctx.lineTo(x,y);
+    }
+    ctx.closePath();
+    ctx.fillStyle='rgba(0,0,0,'+((0.06+depth*0.05))+')';
+    ctx.fill();
+  }
+  ctx.restore();
+
+  // body
+  layerPath(ly, off);
+  // vertical paper gradient: lighter at ridge, darker at base
+  const topY = ly.topY + off.y;
+  const g=ctx.createLinearGradient(0, topY, 0, H);
+  g.addColorStop(0, shade(tone, 1.18));
+  g.addColorStop(0.35, tone);
+  g.addColorStop(1, shade(tone, 0.66));
+  ctx.fillStyle=g; ctx.fill();
+
+  // ridge highlight (cut paper top edge catches light)
+  ctx.save();
+  ctx.beginPath();
+  const pts=ly.pts;
+  for(let i=0;i<pts.length;i++){
+    const x=pts[i].fx*(W+80)-40+off.x, y=pts[i].y+off.y;
+    if(i===0) ctx.moveTo(x,y); else {
+      const px=pts[i-1].fx*(W+80)-40+off.x, py=pts[i-1].y+off.y;
+      ctx.quadraticCurveTo((px+x)/2,(py+y)/2,x,y);
+    }
+  }
+  // light direction from sun
+  ctx.lineWidth=1.6+depth*1.2;
+  ctx.strokeStyle=withA(LP.sun, 0.30+depth*0.22);
+  ctx.stroke();
+  ctx.restore();
+
+  // kirigami cut-out windows: BACKLIT apertures (warm light glowing through the
+  // cut paper) — NOT black holes. Clipped to this layer's body.
+  if(ly.windows.length){
+    ctx.save();
+    layerPath(ly, off); ctx.clip();
+    for(const w of ly.windows){
+      const wx = w.x*(W+80)-40+off.x;
+      let ry=H;
+      for(const p of pts){ const xx=p.fx*(W+80)-40+off.x; if(Math.abs(xx-wx)<W*0.06){ ry=Math.min(ry,p.y+off.y);} }
+      const wy = ry + H*(0.075+depth*0.05);
+      const r = w.w*W*0.9;
+      // halo of light bleeding through the paper around the cut
+      const halo=ctx.createRadialGradient(wx,wy-r*0.2,0,wx,wy-r*0.2,r*2.4);
+      halo.addColorStop(0,withA(LP.sun,0.30)); halo.addColorStop(0.5,withA(LP.sun,0.10));
+      halo.addColorStop(1,withA(LP.sun,0));
+      ctx.fillStyle=halo;
+      ctx.fillRect(wx-r*2.5,wy-r*2.6,r*5,r*5);
+      // the lit aperture itself (warm interior light)
+      drawWindow(wx,wy,r,w.kind);
+      const fill=ctx.createRadialGradient(wx,wy-r*0.25,0,wx,wy,r*1.4);
+      fill.addColorStop(0, withA(LP.sun,0.95));
+      fill.addColorStop(0.55, withA(LP.dust,0.7));
+      fill.addColorStop(1, withA(rampAt(LP.sky,0.55),0.55));
+      ctx.fillStyle=fill; ctx.fill();
+      // bright rim (cut paper edge catching the inner light)
+      drawWindow(wx,wy,r,w.kind);
+      ctx.strokeStyle=withA(LP.crane,0.55); ctx.lineWidth=1.1; ctx.stroke();
+      // a faint lattice bar across the gate for paper-cut detail
+      if(w.kind!==1){
+        ctx.beginPath(); ctx.moveTo(wx-r*0.7,wy); ctx.lineTo(wx+r*0.7,wy);
+        ctx.strokeStyle=withA(rampAt(LP.paper,0.2),0.5); ctx.lineWidth=1; ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+}
+
+function drawWindow(x,y,r,kind){
+  ctx.beginPath();
+  if(kind===0){ // arch window
+    ctx.moveTo(x-r,y+r*1.2); ctx.lineTo(x-r,y); ctx.arc(x,y,r,Math.PI,0); ctx.lineTo(x+r,y+r*1.2); ctx.closePath();
+  } else if(kind===1){ // circle (moon gate)
+    ctx.arc(x,y,r,0,6.2832);
+  } else { // pointed lantern / diamond
+    ctx.moveTo(x,y-r*1.15); ctx.quadraticCurveTo(x+r*0.85,y-r*0.2,x+r*0.55,y+r*0.5);
+    ctx.lineTo(x-r*0.55,y+r*0.5); ctx.quadraticCurveTo(x-r*0.85,y-r*0.2,x,y-r*1.15); ctx.closePath();
+  }
+}
+
+function drawBirds(t,dolly){
+  for(const b of BIRDS){
+    b.x += b.sp * (0.4+b.z) * (1+dolly*0.4);
+    const span = W+160;
+    if(b.x>W+90) b.x=-90; if(b.x<-90) b.x=W+90;
+    const yb = b.y + Math.sin(t*0.8 + b.bob)*14*b.z - dolly*H*0.18*b.z;
+    const s = (10+b.z*26);
+    const flap = Math.sin(t*b.fl + b.ph);
+    drawCrane(b.x - tilt.x*40*b.z, yb - tilt.y*22*b.z, s, flap, b.sp<0);
+  }
+}
+function drawCrane(x,y,s,flap,flip){
+  ctx.save();
+  ctx.translate(x,y);
+  if(flip) ctx.scale(-1,1);
+  const wing = 0.55 + flap*0.5;     // wing raise
+  // shadow body
+  ctx.fillStyle = LP.crane;
+  ctx.strokeStyle = withA('rgb(40,30,20)',0.25); ctx.lineWidth=0.8;
+  // body (folded paper diamond)
+  ctx.beginPath();
+  ctx.moveTo(-s*0.9, 0);            // tail
+  ctx.lineTo(0, -s*0.18);
+  ctx.lineTo(s*0.95, -s*0.05);      // toward head
+  ctx.lineTo(s*1.15, -s*0.12);      // beak
+  ctx.lineTo(s*0.9, s*0.06);
+  ctx.lineTo(0, s*0.16);
+  ctx.closePath(); ctx.fill();
+  // far wing (slightly darker)
+  ctx.beginPath();
+  ctx.moveTo(0,0); ctx.lineTo(-s*0.5,-s*0.9*wing*0.8); ctx.lineTo(s*0.25,-s*0.08); ctx.closePath();
+  ctx.fillStyle = shade(LP.crane,0.78); ctx.fill();
+  // near wing
+  ctx.beginPath();
+  ctx.moveTo(0,0); ctx.lineTo(-s*0.15,-s*1.1*wing); ctx.lineTo(s*0.55,-s*0.02); ctx.closePath();
+  ctx.fillStyle = LP.crane; ctx.fill(); ctx.stroke();
+  // crease line
+  ctx.beginPath(); ctx.moveTo(-s*0.85,0); ctx.lineTo(s*0.9,-s*0.02);
+  ctx.strokeStyle=withA('rgb(60,40,30)',0.2); ctx.stroke();
+  ctx.restore();
+}
+
+function drawPetals(t,dolly){
+  for(const p of PETALS){
+    p.y += p.vy*(0.4+p.z)*(1+dolly*0.6);
+    p.sw += 0.02*p.ss;
+    p.x += Math.sin(p.sw)*0.6*p.ss;
+    p.rot += p.rs;
+    if(p.y>H+10){ p.y=-10; p.x=rnd(p.x*0.013+t)*W; }
+    const sx=p.x - tilt.x*50*p.z, sy=p.y - tilt.y*30*p.z;
+    const sz=p.sz*(0.5+p.z);
+    ctx.save(); ctx.translate(sx,sy); ctx.rotate(p.rot);
+    const fold = 0.4+0.6*Math.abs(Math.sin(p.sw*1.3)); // paper twirl -> thin/wide
+    ctx.scale(fold,1);
+    ctx.globalAlpha=0.55+0.35*p.z;
+    ctx.fillStyle = p.z>0.6? LP.dust : rampAt(LP.paper,0.6);
+    ctx.beginPath();
+    ctx.moveTo(0,-sz); ctx.quadraticCurveTo(sz*0.9,-sz*0.2,0,sz);
+    ctx.quadraticCurveTo(-sz*0.9,-sz*0.2,0,-sz); ctx.fill();
+    ctx.restore();
+  }
+  ctx.globalAlpha=1;
+}
+
+function drawRipples(t){
+  for(let i=RIPPLES.length-1;i>=0;i--){
+    const r=RIPPLES[i]; r.t+=0.018;
+    if(r.t>=1){ RIPPLES.splice(i,1); continue; }
+    const e=ease(r.t);
+    const rad = e*DIAG*0.55;
+    const a = (1-r.t)*0.5;
+    ctx.beginPath(); ctx.arc(r.x,r.y,rad,0,6.2832);
+    ctx.lineWidth = (1-r.t)*7+0.5;
+    ctx.strokeStyle = withA(LP.sun, a*0.8); ctx.stroke();
+    ctx.beginPath(); ctx.arc(r.x,r.y,rad*0.7,0,6.2832);
+    ctx.lineWidth=(1-r.t)*4+0.5; ctx.strokeStyle=withA(LP.dust,a*0.5); ctx.stroke();
+  }
+}
+function drawConf(){
+  for(let i=CONF.length-1;i>=0;i--){
+    const c=CONF[i];
+    c.vy+=0.12; c.x+=c.vx; c.y+=c.vy; c.vx*=0.985; c.rot+=c.rs; c.life-=0.012;
+    if(c.life<=0){ CONF.splice(i,1); continue; }
+    ctx.save(); ctx.translate(c.x,c.y); ctx.rotate(c.rot);
+    ctx.globalAlpha=Math.max(0,c.life);
+    ctx.fillStyle = rampAt(LP.paper, 0.2+c.tone*0.14);
+    const w=c.sz, h=c.sz*0.55*Math.abs(Math.cos(c.rot*1.7));
+    ctx.fillRect(-w/2,-h/2,w,h+0.5);
+    ctx.restore();
+  }
+  ctx.globalAlpha=1;
+}
+
+function vignette(){
+  const g=ctx.createRadialGradient(CX,CY*0.92,Math.min(W,H)*0.2,CX,CY,DIAG*0.62);
+  g.addColorStop(0,'rgba(0,0,0,0)'); g.addColorStop(0.7,'rgba(0,0,0,0)');
+  g.addColorStop(1,'rgba(0,0,0,0.5)');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+}
+
+/* lightweight paper grain via prebaked tile (pattern cached once) */
+let grainTile=null, grainPat=null;
+function makeGrain(){
+  const s=160; const c=document.createElement('canvas'); c.width=s; c.height=s;
+  const g=c.getContext('2d'); const id=g.createImageData(s,s);
+  for(let i=0;i<id.data.length;i+=4){ const v=(Math.random()*255)|0;
+    id.data[i]=id.data[i+1]=id.data[i+2]=v; id.data[i+3]=Math.random()*40|0; }
+  g.putImageData(id,0,0); grainTile=c; grainPat=ctx.createPattern(c,'repeat');
+}
+function grain(t){
+  if(!grainPat) makeGrain();
+  ctx.save(); ctx.globalAlpha=0.045; ctx.fillStyle=grainPat;
+  const dx=(t*5)%160, dy=(t*3)%160;
+  ctx.translate(-dx,-dy); ctx.fillRect(0,0,W+160,H+160);
+  ctx.restore();
+}
+
+/* ---------- palette swatches ---------- */
+const palEl=document.getElementById('pal');
+PALETTES.forEach((p,i)=>{
+  const d=document.createElement('div'); d.className='sw'+(i===0?' on':'');
+  d.style.background=`linear-gradient(140deg, ${p.sky[2]}, ${p.paper[4]})`;
+  d.title=p.name;
+  d.addEventListener('click',()=>setPalette(i));
+  palEl.appendChild(d);
+});
+
+/* ---------- go ---------- */
+resize();
+stepPalette(0);
+requestAnimationFrame(frame);
+
+// expose for verification
+window.__kirigami = {
+  setPalette, cut, layers:()=>LAYERS.length, birds:()=>BIRDS.length,
+  state:()=>({ pi:PI, dolly:scrollDepth, tilt:{...tilt}, ripples:RIPPLES.length }) };
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>FABLE — liquid aurora</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #03030a; overflow: hidden; }
+  body { cursor: crosshair; }
+  #c { display: block; width: 100vw; height: 100vh; }
+  #hint {
+    position: fixed; left: 50%; bottom: 6vh; transform: translateX(-50%);
+    font: 300 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+    letter-spacing: .42em; text-transform: uppercase;
+    color: rgba(255,255,255,.62); pointer-events: none; user-select: none;
+    text-shadow: 0 0 18px rgba(140,180,255,.55);
+    animation: breathe 4.5s ease-in-out infinite, vanish 1.2s ease 9s forwards;
+    white-space: nowrap;
+  }
+  @keyframes breathe { 0%,100%{opacity:.30} 50%{opacity:.85} }
+  @keyframes vanish { to { opacity: 0 } }
+  #sig {
+    position: fixed; top: 18px; left: 20px;
+    font: 600 11px/1 ui-monospace, monospace; letter-spacing: .55em;
+    color: rgba(255,255,255,.34); pointer-events: none; user-select: none;
+    text-shadow: 0 0 14px rgba(120,160,255,.5);
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="sig">PRAY · FOR · FABLE</div>
+<div id="hint">move &nbsp;·&nbsp; drag &nbsp;·&nbsp; click to detonate</div>
+
+<script>
+(function () {
+  "use strict";
+  const canvas = document.getElementById("c");
+
+  // ---- WebGL context (instant first paint, no gate) ----
+  const gl =
+    canvas.getContext("webgl", { antialias: false, alpha: false, premultipliedAlpha: false }) ||
+    canvas.getContext("experimental-webgl");
+
+  const VERT = `
+    attribute vec2 p;
+    void main(){ gl_Position = vec4(p, 0.0, 1.0); }
+  `;
+
+  const FRAG = `
+    precision highp float;
+    uniform vec2  u_res;
+    uniform float u_time;
+    uniform vec2  u_mouse;     // device px, gl_FragCoord space
+    uniform float u_speed;     // smoothed mouse speed
+    uniform float u_burst;     // decaying click energy
+    uniform vec2  u_burstpos;  // device px
+
+    float hash(vec2 p){
+      p = fract(p * vec2(123.34, 456.21));
+      p += dot(p, p + 45.32);
+      return fract(p.x * p.y);
+    }
+    float vnoise(vec2 p){
+      vec2 i = floor(p), f = fract(p);
+      float a = hash(i);
+      float b = hash(i + vec2(1.0, 0.0));
+      float c = hash(i + vec2(0.0, 1.0));
+      float d = hash(i + vec2(1.0, 1.0));
+      vec2 u = f * f * (3.0 - 2.0 * f);
+      return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+    }
+    float fbm(vec2 p){
+      float s = 0.0, a = 0.5;
+      mat2 m = mat2(1.6, 1.2, -1.2, 1.6);
+      for (int i = 0; i < 6; i++){
+        s += a * vnoise(p);
+        p = m * p;
+        a *= 0.5;
+      }
+      return s;
+    }
+    vec3 pal(float t){
+      vec3 a = vec3(0.5);
+      vec3 b = vec3(0.5);
+      vec3 c = vec3(1.0, 1.0, 1.0);
+      vec3 d = vec3(0.00, 0.33, 0.67);
+      return a + b * cos(6.28318 * (c * t + d));
+    }
+
+    void main(){
+      vec2 uv = (gl_FragCoord.xy - 0.5 * u_res) / u_res.y;
+      vec2 m  = (u_mouse        - 0.5 * u_res) / u_res.y;
+      float t = u_time * 0.085;
+
+      // --- vortex warp around the cursor ---
+      vec2 d = uv - m;
+      float dist = length(d);
+      float swirl = (0.55 + 3.2 * u_speed) * exp(-dist * 2.4);
+      float ang = swirl * 1.6;
+      float cs = cos(ang), sn = sin(ang);
+      vec2 ruv = m + mat2(cs, -sn, sn, cs) * d;
+
+      // --- domain-warped fbm (the "liquid aurora") ---
+      vec2 q = vec2(fbm(ruv + t), fbm(ruv + vec2(5.2, 1.3) - t));
+      vec2 r = vec2(
+        fbm(ruv + 3.0 * q + vec2(1.7, 9.2) + 0.55 * t),
+        fbm(ruv + 3.0 * q + vec2(8.3, 2.8) - 0.55 * t)
+      );
+      float f = fbm(ruv + 4.0 * r);
+
+      // --- click shockwave ---
+      vec2 bd = uv - (u_burstpos - 0.5 * u_res) / u_res.y;
+      float bl = length(bd);
+      f += u_burst * 0.6 * sin(bl * 20.0 - u_time * 7.0) * exp(-bl * 2.6);
+
+      float shade = dot(r, vec2(0.6)) + f;
+      vec3 col = pal(f + 0.18 * t + 0.45 * length(q));
+      col = mix(col, pal(shade + 0.5), 0.5);
+
+      // --- cursor light: chromatic halo + white core ---
+      float glow = exp(-dist * 5.5);
+      col += pal(u_time * 0.22) * glow * (1.1 + 1.8 * u_speed);
+      col += vec3(1.0) * exp(-dist * 24.0) * 0.85;
+
+      // shockwave bloom
+      col += pal(u_time * 0.3) * u_burst * exp(-bl * 4.0) * 0.9;
+
+      // grade
+      col = pow(max(col, 0.0), vec3(1.32));
+      float vig = smoothstep(1.5, 0.2, length(uv));
+      col *= vig;
+      col += (hash(gl_FragCoord.xy + u_time) - 0.5) * 0.035;
+
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `;
+
+  function compile(type, src){
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      console.error(gl.getShaderInfoLog(s));
+    }
+    return s;
+  }
+
+  let prog, loc = {};
+  function buildWebGL(){
+    prog = gl.createProgram();
+    gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
+    gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
+    gl.linkProgram(prog);
+    gl.useProgram(prog);
+
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+    const pl = gl.getAttribLocation(prog, "p");
+    gl.enableVertexAttribArray(pl);
+    gl.vertexAttribPointer(pl, 2, gl.FLOAT, false, 0, 0);
+
+    ["u_res","u_time","u_mouse","u_speed","u_burst","u_burstpos"].forEach(n => {
+      loc[n] = gl.getUniformLocation(prog, n);
+    });
+  }
+
+  // ---- state ----
+  let DPR = 1, W = 1, H = 1;
+  let target = { x: 0, y: 0 };   // CSS px
+  let smooth = { x: 0, y: 0 };   // CSS px, eased
+  let prev   = { x: 0, y: 0 };
+  let speed = 0;
+  let burst = 0;
+  let burstPx = { x: 0, y: 0 };
+  let started = (typeof performance !== "undefined") ? performance.now() : Date.now();
+
+  function resize(){
+    DPR = Math.min(window.devicePixelRatio || 1, 1.6);
+    W = Math.floor(innerWidth * DPR);
+    H = Math.floor(innerHeight * DPR);
+    canvas.width = W;
+    canvas.height = H;
+    if (gl) gl.viewport(0, 0, W, H);
+  }
+
+  // init mouse at center so the field has a focus before any input
+  function center(){
+    target.x = smooth.x = prev.x = innerWidth * 0.5;
+    target.y = smooth.y = prev.y = innerHeight * 0.5;
+  }
+
+  function setPointer(e){
+    const t = (e.touches && e.touches[0]) ? e.touches[0] : e;
+    target.x = t.clientX;
+    target.y = t.clientY;
+  }
+  function detonate(e){
+    setPointer(e);
+    burst = 1.0;
+    burstPx.x = target.x * DPR;
+    burstPx.y = (innerHeight - target.y) * DPR;
+  }
+
+  window.addEventListener("resize", resize, { passive: true });
+  window.addEventListener("mousemove", setPointer, { passive: true });
+  window.addEventListener("touchmove", setPointer, { passive: true });
+  window.addEventListener("mousedown", detonate, { passive: true });
+  window.addEventListener("touchstart", detonate, { passive: true });
+
+  resize();
+  center();
+  if (gl) buildWebGL();
+
+  function frame(now){
+    const time = ((now || performance.now()) - started) / 1000;
+
+    // ease cursor, derive speed
+    smooth.x += (target.x - smooth.x) * 0.12;
+    smooth.y += (target.y - smooth.y) * 0.12;
+    const dx = smooth.x - prev.x, dy = smooth.y - prev.y;
+    const inst = Math.sqrt(dx * dx + dy * dy) / Math.max(innerHeight, 1);
+    speed += (inst - speed) * 0.18;
+    prev.x = smooth.x; prev.y = smooth.y;
+
+    burst *= 0.94;
+
+    if (gl) {
+      gl.useProgram(prog);
+      gl.uniform2f(loc.u_res, W, H);
+      gl.uniform1f(loc.u_time, time);
+      gl.uniform2f(loc.u_mouse, smooth.x * DPR, (innerHeight - smooth.y) * DPR);
+      gl.uniform1f(loc.u_speed, Math.min(speed * 9.0, 2.2));
+      gl.uniform1f(loc.u_burst, burst);
+      gl.uniform2f(loc.u_burstpos, burstPx.x, burstPx.y);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

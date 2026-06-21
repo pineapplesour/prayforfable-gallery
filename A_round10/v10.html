@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Phyllotaxis — 개화</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { height:100%; width:100%; overflow:hidden; background:#05060a; }
+  body {
+    font-family: ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+    cursor: crosshair;
+  }
+  #stage { position:fixed; inset:0; display:block; }
+  /* tactile vignette + grain overlay so the canvas never reads "flat" */
+  #frame {
+    position:fixed; inset:0; pointer-events:none; z-index:5;
+    box-shadow: inset 0 0 240px 40px rgba(0,0,0,0.72), inset 0 0 60px 0 rgba(0,0,0,0.4);
+    mix-blend-mode: multiply;
+  }
+  #hud {
+    position:fixed; left:26px; bottom:22px; z-index:6; pointer-events:none;
+    color:#f4e9d8; opacity:.9; user-select:none;
+    text-shadow:0 1px 18px rgba(0,0,0,.9);
+  }
+  #hud .title {
+    font-weight:700; font-size:13px; letter-spacing:.42em; text-transform:uppercase;
+    opacity:.95;
+  }
+  #hud .sub {
+    margin-top:7px; font-size:11px; letter-spacing:.16em; opacity:.55; line-height:1.7;
+    max-width:62vw;
+  }
+  #hud .ph { font-variant-numeric: tabular-nums; opacity:.8; }
+  #season {
+    position:fixed; right:26px; top:22px; z-index:6; pointer-events:none;
+    text-align:right; color:#f4e9d8; user-select:none;
+    text-shadow:0 1px 18px rgba(0,0,0,.9);
+  }
+  #season .lab { font-size:10px; letter-spacing:.4em; text-transform:uppercase; opacity:.5; }
+  #season .val { font-size:15px; letter-spacing:.22em; font-weight:600; margin-top:4px; opacity:.92; }
+  .bar { position:fixed; right:26px; top:64px; z-index:6; width:120px; height:3px;
+    background:rgba(255,255,255,.12); border-radius:2px; overflow:hidden; pointer-events:none; }
+  .bar > i { display:block; height:100%; width:0%;
+    background:linear-gradient(90deg,#ffd76b,#ff7ab6,#7be0ff); border-radius:2px;
+    box-shadow:0 0 12px rgba(255,180,80,.7); transition:width .12s linear; }
+  @media (max-width:520px){
+    #hud { left:16px; bottom:16px; }
+    #hud .title { font-size:11px; letter-spacing:.34em; }
+    #hud .sub { font-size:10px; max-width:80vw; }
+    #season { right:16px; top:16px; }
+    .bar { right:16px; top:54px; width:92px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="frame"></div>
+<div id="season"><div class="lab">SEASON · 계절</div><div class="val" id="seasonVal">봄 · SPRING</div></div>
+<div class="bar"><i id="barFill"></i></div>
+<div id="hud">
+  <div class="title">PHYLLOTAXIS · 개화</div>
+  <div class="sub">
+    움직임 — 씨앗이 휘어든다 &nbsp;·&nbsp; 클릭 — 꽃가루 파동 &nbsp;·&nbsp; 스크롤 — 개화와 계절<br>
+    seeds <span class="ph" id="cnt">0</span> &nbsp;·&nbsp; φ 137.5° golden angle
+  </div>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+const cv = document.getElementById('stage');
+const ctx = cv.getContext('2d', { alpha:false });
+const seasonVal = document.getElementById('seasonVal');
+const barFill = document.getElementById('barFill');
+const cntEl = document.getElementById('cnt');
+
+// ---- constants -------------------------------------------------------------
+const GOLDEN = Math.PI * (3 - Math.sqrt(5));   // ~137.50776 deg in radians
+const PHI = (1 + Math.sqrt(5)) / 2;
+const TAU = Math.PI * 2;
+
+let W=0, H=0, DPR=1, CX=0, CY=0, MINDIM=0;
+let SCALE = 1;          // seed packing scale, set on resize
+let MAX_SEEDS = 1500;   // capped per device for 60fps
+
+// ---- responsive sizing -----------------------------------------------------
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = Math.floor(W * DPR);
+  cv.height = Math.floor(H * DPR);
+  cv.style.width = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  CX = W/2; CY = H/2;
+  MINDIM = Math.min(W,H);
+
+  // seed budget by area — keep particle count bounded for smooth perf
+  const area = W*H;
+  if (area > 1800*1100)      MAX_SEEDS = 1700;
+  else if (area > 1100*800)  MAX_SEEDS = 1400;
+  else if (area < 480*760)   MAX_SEEDS = 820;   // phones
+  else                       MAX_SEEDS = 1100;
+
+  // packing scale: outer radius should reach ~ 0.46 of min dimension at full bloom
+  // r = c*sqrt(n) ; want c*sqrt(MAX_SEEDS) = 0.46*MINDIM
+  SCALE = (0.46 * MINDIM) / Math.sqrt(MAX_SEEDS);
+}
+window.addEventListener('resize', resize, {passive:true});
+resize();
+
+// ---- bloom / interaction state --------------------------------------------
+let bloom = 0.18;        // 0..1 maturity, driven by scroll, eased
+let bloomTarget = 0.18;
+let season = 0;          // 0..1 wraps; spring->summer->autumn->winter
+let spin = 0;            // global slow rotation of the head
+let t = 0;               // time seconds
+
+// pointer
+const ptr = { x:CX, y:CY, tx:CX, ty:CY, active:false, vx:0, vy:0, prevx:CX, prevy:CY };
+
+// pollen pulses (click waves traveling outward in seed-index space)
+const pulses = [];       // {r0(px), born, strength, hue}
+
+// flat buffer of excited-seed glows: [x,y,sz,hue,alpha, ...] (avoids GC churn)
+const glowBuf = [];
+
+// drifting pollen motes in the air
+const motes = [];
+function seedMotes(){
+  motes.length = 0;
+  const N = MINDIM < 600 ? 34 : 60;
+  for (let i=0;i<N;i++){
+    motes.push({
+      x: Math.random()*W, y: Math.random()*H,
+      z: 0.3 + Math.random()*0.7,
+      a: Math.random()*TAU,
+      sp: 0.15 + Math.random()*0.5
+    });
+  }
+}
+seedMotes();
+
+// ---- color palettes per season --------------------------------------------
+// each: function of normalized radius rn (0 center .. 1 rim) -> [h,s,l]
+// We interpolate between four anchor seasons by `season` (0..1, loops).
+const SEASONS = [
+  { name:'봄 · SPRING',  core:[48,90,66], mid:[330,82,66], rim:[280,70,62] },
+  { name:'여름 · SUMMER', core:[52,98,62], mid:[18,92,58],  rim:[346,82,56] },
+  { name:'가을 · AUTUMN', core:[38,92,58], mid:[16,88,52],  rim:[358,72,46] },
+  { name:'겨울 · WINTER', core:[44,30,80], mid:[205,55,66], rim:[230,60,58] },
+];
+function lerp(a,b,k){ return a + (b-a)*k; }
+function lerpHue(a,b,k){
+  let d = ((b - a + 540) % 360) - 180;
+  return (a + d*k + 360) % 360;
+}
+function mixSeasonStop(stop, s){
+  // s in [0,4); blend two adjacent seasons' stop. Bulletproof against NaN/neg/overflow.
+  if (!isFinite(s)) s = 0;
+  s = ((s % 4) + 4) % 4;                 // safe wrap into [0,4)
+  const i = Math.floor(s) % 4;           // [0,3]
+  const j = (i + 1) % 4;
+  const k = s - Math.floor(s);
+  const A = SEASONS[i][stop], B = SEASONS[j][stop];
+  return [ lerpHue(A[0],B[0],k), lerp(A[1],B[1],k), lerp(A[2],B[2],k) ];
+}
+
+// ---- offscreen seed sprite (radial glow disc) for cheap fast drawing -------
+const sprite = document.createElement('canvas');
+const sctx = sprite.getContext('2d');
+const SPR = 64;
+sprite.width = SPR; sprite.height = SPR;
+(function buildSprite(){
+  const g = sctx.createRadialGradient(SPR/2,SPR/2,0, SPR/2,SPR/2,SPR/2);
+  g.addColorStop(0.0,'rgba(255,255,255,1)');
+  g.addColorStop(0.22,'rgba(255,255,255,0.92)');
+  g.addColorStop(0.5,'rgba(255,255,255,0.4)');
+  g.addColorStop(1.0,'rgba(255,255,255,0)');
+  sctx.fillStyle = g;
+  sctx.fillRect(0,0,SPR,SPR);
+})();
+
+// ---- main render -----------------------------------------------------------
+let last = performance.now();
+let fpsEMA = 60;
+let adaptive = 1;   // dynamic detail multiplier if fps sags
+
+function frame(now){
+  let dt = (now - last) / 1000;
+  last = now;
+  if (dt > 0.05) dt = 0.05;     // clamp after tab switch
+  t += dt;
+
+  // fps adaptive quality
+  const inst = 1 / Math.max(dt, 1e-4);
+  fpsEMA = fpsEMA*0.92 + inst*0.08;
+  if (fpsEMA < 48 && adaptive > 0.55) adaptive -= 0.01;
+  else if (fpsEMA > 57 && adaptive < 1) adaptive += 0.006;
+
+  // ease bloom + pointer
+  bloom += (bloomTarget - bloom) * Math.min(1, dt*4.5);
+  ptr.prevx = ptr.x; ptr.prevy = ptr.y;
+  ptr.x += (ptr.tx - ptr.x) * Math.min(1, dt*12);
+  ptr.y += (ptr.ty - ptr.y) * Math.min(1, dt*12);
+  ptr.vx = ptr.x - ptr.prevx; ptr.vy = ptr.y - ptr.prevy;
+
+  spin += dt * 0.045;          // gentle perpetual rotation
+  // season slowly cycles on its own + nudged by bloom
+  season = (season + dt*0.012) % 1;
+
+  render(dt);
+  requestAnimationFrame(frame);
+}
+
+function render(dt){
+  // --- background: deep gradient that breathes with season -----------------
+  const bgTop = mixSeasonStop('rim', season*4);
+  const bgB = mixSeasonStop('core', season*4);
+  const bg = ctx.createRadialGradient(CX, CY, 0, CX, CY, MINDIM*0.85);
+  bg.addColorStop(0, `hsl(${bgB[0]} ${Math.min(bgB[1],40)}% ${6+bloom*4}%)`);
+  bg.addColorStop(0.5, `hsl(${bgTop[0]} 30% 5%)`);
+  bg.addColorStop(1, `#04050a`);
+  ctx.fillStyle = bg;
+  ctx.fillRect(0,0,W,H);
+
+  // --- drifting motes (behind, additive) -----------------------------------
+  ctx.globalCompositeOperation = 'lighter';
+  for (const m of motes){
+    m.a += dt * m.sp * 0.6;
+    m.x += Math.cos(m.a) * m.sp * 8 * dt * 4;
+    m.y += (Math.sin(m.a)*0.4 + 0.25) * m.sp * 8 * dt * 4;
+    if (m.y > H+20) { m.y = -20; m.x = Math.random()*W; }
+    if (m.x < -20) m.x = W+20; else if (m.x > W+20) m.x = -20;
+    const r = (1.4 + m.z*2.6);
+    const a = 0.06 + m.z*0.10;
+    const hue = mixSeasonStop('core', season*4)[0];
+    ctx.globalAlpha = a;
+    ctx.fillStyle = `hsl(${hue} 90% 75%)`;
+    ctx.beginPath(); ctx.arc(m.x, m.y, r, 0, TAU); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // --- the seed head -------------------------------------------------------
+  // number of currently-visible seeds grows with bloom
+  const liveN = Math.floor( (60 + bloom*(MAX_SEEDS-60)) * adaptive );
+  cntEl.textContent = liveN;
+
+  // pointer in head-local terms
+  const pdx = ptr.x - CX, pdy = ptr.y - CY;
+  const pdist = Math.hypot(pdx, pdy);
+  const lensR = MINDIM * 0.26;            // radius of pointer influence
+  const pointerSpeed = Math.hypot(ptr.vx, ptr.vy);
+
+  const sCol = season*4;
+  const coreC = mixSeasonStop('core', sCol);
+  const midC  = mixSeasonStop('mid',  sCol);
+  const rimC  = mixSeasonStop('rim',  sCol);
+
+  // Seed cores draw in NORMAL blend so the dense spiral keeps saturated,
+  // readable color instead of clipping to white. Glow halos are collected and
+  // drawn in a single additive pass afterwards for the luminous bloom.
+  ctx.globalCompositeOperation = 'source-over';
+  glowBuf.length = 0;
+
+  // precompute pulse fronts in px radius
+  for (let pi=pulses.length-1; pi>=0; pi--){
+    const p = pulses[pi];
+    p.age = t - p.born;
+    p.front = p.age * MINDIM * 0.62;      // expanding ring radius
+    if (p.front > MINDIM*0.85 + 120) pulses.splice(pi,1);
+  }
+
+  // breathing scale of whole bloom
+  const breathe = 1 + Math.sin(t*0.9)*0.012;
+  const baseScale = SCALE * breathe;
+
+  for (let i = 0; i < liveN; i++){
+    // phyllotaxis placement
+    const ang = i * GOLDEN + spin;
+    const baseR = baseScale * Math.sqrt(i);
+    const rn = baseR / (baseScale * Math.sqrt(MAX_SEEDS)); // 0..~1 normalized
+
+    let x = CX + Math.cos(ang) * baseR;
+    let y = CY + Math.sin(ang) * baseR;
+
+    // --- pointer lens: warp seeds, refract around cursor ------------------
+    const dx = x - ptr.x, dy = y - ptr.y;
+    const d = Math.hypot(dx, dy) + 0.0001;
+    let flare = 0;
+    if (d < lensR){
+      const f = 1 - d/lensR;             // 0..1
+      const push = f*f * (28 + pointerSpeed*1.4);
+      // push outward from cursor -> lens/parallax feel
+      x += (dx/d) * push;
+      y += (dy/d) * push;
+      flare = f*f;                        // brightness boost near cursor
+    }
+
+    // --- pulse interaction: ring sweeping outward lifts & brightens -------
+    let pulseLift = 0, pulseHue = 0, pulseW = 0;
+    for (const p of pulses){
+      const dd = Math.abs(baseR - p.front);
+      const band = 46;
+      if (dd < band){
+        const g = (1 - dd/band);
+        const e = g*g * p.strength;
+        pulseLift += e;
+        pulseHue += p.hue * e;
+        pulseW += e;
+      }
+    }
+    if (pulseW > 0){
+      pulseHue /= pulseW;
+      // lift seed slightly outward on the wave
+      const k = 1 + pulseLift*0.10;
+      x = CX + (x-CX)*k;
+      y = CY + (y-CY)*k;
+    }
+
+    // --- color: radial gradient core->mid->rim, plus parastichy shimmer ---
+    let h, s, l;
+    if (rn < 0.5){
+      const k = rn/0.5;
+      h = lerpHue(coreC[0], midC[0], k);
+      s = lerp(coreC[1], midC[1], k);
+      l = lerp(coreC[2], midC[2], k);
+    } else {
+      const k = (rn-0.5)/0.5;
+      h = lerpHue(midC[0], rimC[0], k);
+      s = lerp(midC[1], rimC[1], k);
+      l = lerp(midC[2], rimC[2], k);
+    }
+    // deepen base color so the dense field stays rich, not milky
+    l *= 0.82;
+    s = Math.min(100, s + 6);
+    // parastichy spiral families: shimmer keyed to Fibonacci neighbor index
+    const para = Math.sin(i * 0.382 + t*0.8) * 0.5 + 0.5; // golden-fraction
+    l += para * 5 - 2.5;
+    // living pulse from center outward
+    const wave = Math.sin(rn*9 - t*1.6) * 0.5 + 0.5;
+    l += wave * 5;
+
+    if (pulseW > 0){
+      h = lerpHue(h, pulseHue, Math.min(0.8, pulseLift*0.5));
+      l += pulseLift * 22;
+    }
+    l += flare * 30;
+    h = (h + 360) % 360;
+    l = Math.max(8, Math.min(96, l));
+
+    // seed size: bigger toward rim then taper; subtle pop near edge of fresh growth
+    const growthEdge = liveN * (0.86 + Math.sin(t*1.3)*0.04);
+    let sz = (1.0 + rn*1.9) * baseScale * 0.9;
+    if (i > growthEdge) sz *= Math.max(0.2, 1 - (i-growthEdge)/(liveN*0.16)); // new seeds fade in at the rim
+    sz *= (1 + flare*0.8 + pulseLift*0.5);
+    sz = Math.max(0.6, sz);
+
+    const alpha = Math.min(1, 0.55 + flare*0.5 + pulseLift*0.4) * (rn<0.99?1:0.6);
+
+    // excited seeds (near pointer, on a pulse, or large rim seeds) also emit a
+    // glow halo (collected for the additive pass below).
+    const excited = flare > 0.06 || pulseLift > 0.06;
+    // colored core in normal blend
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = `hsl(${h|0} ${s|0}% ${l|0}%)`;
+    ctx.beginPath();
+    ctx.arc(x, y, sz*(excited?0.66:0.84), 0, TAU);
+    ctx.fill();
+    // glow only for genuinely excited seeds (pointer/pulse) — keeps field clean
+    if (excited){
+      glowBuf.push(x, y, sz, h, Math.min(0.8, (flare*0.55 + pulseLift*0.45)));
+    }
+  }
+
+  // --- additive glow pass for excited seeds (luminous bloom) ----------------
+  ctx.globalCompositeOperation = 'lighter';
+  for (let g=0; g<glowBuf.length; g+=5){
+    const gx=glowBuf[g], gy=glowBuf[g+1], gr=glowBuf[g+2], gh=glowBuf[g+3], ga=glowBuf[g+4];
+    ctx.globalAlpha = ga;
+    ctx.drawImage(sprite, gx - gr*1.9, gy - gr*1.9, gr*3.8, gr*3.8);
+  }
+  ctx.globalAlpha = 1;
+
+  // --- outer petals (sway, appear with bloom) ------------------------------
+  drawPetals(coreC, midC, rimC, baseScale, dt);
+
+  // --- pulse rings (faint guiding light) -----------------------------------
+  for (const p of pulses){
+    const a = Math.max(0, 0.16 * (1 - p.front/(MINDIM*0.9))) * p.strength;
+    if (a <= 0.002) continue;
+    ctx.globalAlpha = a;
+    ctx.strokeStyle = `hsl(${p.hue} 95% 70%)`;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(CX, CY, p.front, 0, TAU); ctx.stroke();
+  }
+
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+
+  // --- central bright eye --------------------------------------------------
+  const eyeR = baseScale*4.4 + 4;
+  const eye = ctx.createRadialGradient(CX,CY,0,CX,CY, eyeR);
+  const ec = coreC;
+  eye.addColorStop(0, `hsla(${ec[0]},98%,76%,${0.22+bloom*0.12})`);
+  eye.addColorStop(0.55, `hsla(${ec[0]},92%,64%,0.10)`);
+  eye.addColorStop(1, `hsla(${ec[0]},90%,58%,0)`);
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = eye;
+  ctx.beginPath(); ctx.arc(CX,CY, eyeR, 0, TAU); ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+
+  // HUD updates
+  barFill.style.width = (bloom*100).toFixed(0) + '%';
+  seasonVal.textContent = currentSeasonName(sCol);
+}
+
+function currentSeasonName(s){
+  if (!isFinite(s)) s = 0;
+  s = ((s % 4) + 4) % 4;
+  const i = Math.floor(s) % 4;
+  return SEASONS[i].name;
+}
+
+function drawPetals(coreC, midC, rimC, baseScale, dt){
+  const petalBloom = Math.max(0, (bloom - 0.4) / 0.6); // petals after 40% bloom
+  if (petalBloom <= 0.001) return;
+  const R = baseScale * Math.sqrt(MAX_SEEDS) * 1.02; // just outside seed head
+  const N = 34;
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i=0;i<N;i++){
+    const a = (i/N)*TAU + spin*0.7;
+    const sway = Math.sin(t*1.1 + i*0.7) * 0.06;
+    const aa = a + sway;
+    const len = R * (0.42 + petalBloom*0.5) * (0.9 + Math.sin(i*2.3)*0.06);
+    const wid = R * 0.085 * petalBloom;
+    const x0 = CX + Math.cos(aa)*R*0.96;
+    const y0 = CY + Math.sin(aa)*R*0.96;
+    const x1 = CX + Math.cos(aa)*(R*0.96+len);
+    const y1 = CY + Math.sin(aa)*(R*0.96+len);
+
+    // petal as a soft tapered gradient stroke
+    const grad = ctx.createLinearGradient(x0,y0,x1,y1);
+    const c = i%2 ? rimC : midC;
+    grad.addColorStop(0, `hsla(${c[0]},${c[1]}%,${Math.min(70,c[2]+10)}%,${0.5*petalBloom})`);
+    grad.addColorStop(0.6,`hsla(${c[0]},${c[1]}%,${c[2]}%,${0.32*petalBloom})`);
+    grad.addColorStop(1, `hsla(${c[0]},${c[1]}%,${c[2]}%,0)`);
+    ctx.strokeStyle = grad;
+    ctx.lineCap='round';
+    ctx.lineWidth = Math.max(1, wid);
+    ctx.beginPath();
+    ctx.moveTo(x0,y0);
+    // slight curve for organic petal
+    const mx = (x0+x1)/2 + Math.cos(aa+Math.PI/2)*len*0.10*Math.sin(t*0.9+i);
+    const my = (y0+y1)/2 + Math.sin(aa+Math.PI/2)*len*0.10*Math.sin(t*0.9+i);
+    ctx.quadraticCurveTo(mx,my,x1,y1);
+    ctx.stroke();
+  }
+}
+
+// ---- interaction wiring ----------------------------------------------------
+function setPtr(cx, cy){ ptr.tx = cx; ptr.ty = cy; ptr.active = true; }
+window.addEventListener('mousemove', e => setPtr(e.clientX, e.clientY), {passive:true});
+window.addEventListener('mouseleave', () => { ptr.active=false; ptr.tx=CX; ptr.ty=CY; });
+
+window.addEventListener('touchmove', e => {
+  if (e.touches[0]) setPtr(e.touches[0].clientX, e.touches[0].clientY);
+}, {passive:true});
+
+function spawnPulse(cx, cy){
+  // hue based on where you click (radial position) for variety
+  const sCol = season*4;
+  const baseHue = mixSeasonStop('mid', sCol)[0];
+  pulses.push({
+    born: t,
+    age: 0,
+    front: 0,
+    strength: 1,
+    hue: (baseHue + (Math.random()*60-30) + 360)%360
+  });
+  if (pulses.length > 6) pulses.shift();
+  // small bloom kick
+  bloomTarget = Math.min(1, bloomTarget + 0.04);
+}
+window.addEventListener('mousedown', e => { setPtr(e.clientX,e.clientY); spawnPulse(e.clientX,e.clientY); });
+window.addEventListener('touchstart', e => {
+  if (e.touches[0]) { setPtr(e.touches[0].clientX,e.touches[0].clientY); spawnPulse(e.touches[0].clientX,e.touches[0].clientY); }
+}, {passive:true});
+
+// scroll / wheel drives bloom maturity + season
+window.addEventListener('wheel', e => {
+  e.preventDefault();
+  bloomTarget = Math.max(0.06, Math.min(1, bloomTarget + (-e.deltaY) * 0.0012));
+  season = (season + (e.deltaY>0? 0.006 : 0.994)) % 1;
+}, {passive:false});
+
+// touch vertical drag -> bloom (two-finger or single drag beyond move handled by delta)
+let lastTouchY = null;
+window.addEventListener('touchstart', e => { lastTouchY = e.touches[0] ? e.touches[0].clientY : null; }, {passive:true});
+window.addEventListener('touchmove', e => {
+  if (lastTouchY!=null && e.touches[0]){
+    const dy = e.touches[0].clientY - lastTouchY;
+    bloomTarget = Math.max(0.06, Math.min(1, bloomTarget + dy*0.0016));
+    lastTouchY = e.touches[0].clientY;
+  }
+}, {passive:true});
+
+// keyboard nicety: space = pulse at center, arrows = bloom
+window.addEventListener('keydown', e => {
+  if (e.code==='Space'){ spawnPulse(CX,CY); e.preventDefault(); }
+  if (e.code==='ArrowUp')   bloomTarget = Math.min(1, bloomTarget+0.06);
+  if (e.code==='ArrowDown')  bloomTarget = Math.max(0.06, bloomTarget-0.06);
+});
+
+// auto opening bloom on load so the first paint is already alive and grows
+bloomTarget = 0.62;
+let openTimer = setInterval(()=>{
+  bloomTarget = Math.min(0.78, bloomTarget + 0.02);
+  if (bloomTarget >= 0.78) clearInterval(openTimer);
+}, 90);
+
+// gentle idle pulse so an untouched canvas still feels alive
+setInterval(()=>{ if(!ptr.active && pulses.length===0) spawnPulse(CX,CY); }, 5200);
+
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>FERN · 양치류의 호흡</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#03070b; }
+  body {
+    font-family: ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+  }
+  canvas { position:fixed; inset:0; width:100%; height:100%; display:block; }
+  #glow { mix-blend-mode: screen; pointer-events:none; }
+
+  .hud {
+    position:fixed; z-index:10; pointer-events:none;
+    color:#cfeede; text-shadow:0 1px 14px rgba(0,0,0,.85);
+    user-select:none;
+  }
+  #title { top: clamp(16px,3.2vh,34px); left: clamp(16px,3vw,38px); }
+  #title .k {
+    font-weight:800; letter-spacing:.42em;
+    font-size: clamp(13px,1.5vw,19px);
+    background: linear-gradient(90deg,#9affc0,#5fe0ff 55%,#b388ff);
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+  }
+  #title .s {
+    margin-top:6px; font-size: clamp(10px,1.05vw,12px);
+    letter-spacing:.26em; color:#728d85; font-weight:500;
+  }
+  #hint {
+    bottom: clamp(14px,2.6vh,26px); left: clamp(16px,3vw,38px);
+    font-size: clamp(9.5px,1vw,11.5px); letter-spacing:.16em;
+    color:#5c7a72; line-height:1.7; max-width: 70vw;
+  }
+  #hint b { color:#a7ffd0; font-weight:600; }
+  #stat {
+    bottom: clamp(14px,2.6vh,26px); right: clamp(16px,3vw,38px);
+    font-size: clamp(9px,.95vw,11px); letter-spacing:.14em;
+    color:#557269; text-align:right; line-height:1.8;
+    font-variant-numeric: tabular-nums;
+  }
+  #stat b { color:#7fe9c2; font-weight:600; }
+  #species {
+    position:fixed; z-index:10; top: clamp(16px,3.2vh,34px);
+    right: clamp(16px,3vw,38px); display:flex; gap:8px;
+  }
+  .pill {
+    pointer-events:auto; cursor:pointer; user-select:none;
+    font-size: clamp(9px,.95vw,11px); letter-spacing:.14em;
+    padding:7px 13px; border-radius:999px;
+    color:#8fb6ab; background:rgba(12,30,24,.4);
+    border:1px solid rgba(120,200,170,.16);
+    backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px);
+    transition: all .35s cubic-bezier(.2,.8,.2,1);
+  }
+  .pill:hover { color:#d6fff0; border-color:rgba(140,255,210,.4); }
+  .pill.on {
+    color:#04140e; font-weight:700;
+    background: linear-gradient(120deg,#7dffc0,#56e6ff);
+    border-color:transparent;
+    box-shadow:0 0 22px rgba(110,255,200,.35);
+  }
+  @media (max-width:480px){
+    #species { gap:6px; }
+    .pill { padding:6px 9px; }
+    #hint { max-width:62vw; }
+  }
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <canvas id="glow"></canvas>
+
+  <div id="title" class="hud">
+    <div class="k">B A R N S L E Y &nbsp;·&nbsp; F E R N</div>
+    <div class="s">살아 숨쉬는 프랙탈 양치류</div>
+  </div>
+
+  <div id="species">
+    <div class="pill on" data-sp="0">Barnsley</div>
+    <div class="pill" data-sp="1">Thelypteris</div>
+    <div class="pill" data-sp="2">Cyclosorus</div>
+  </div>
+
+  <div id="hint" class="hud">
+    <b>마우스</b> 양치류가 휜다 &nbsp;·&nbsp; <b>클릭/드래그</b> 새 포자를 흩뿌린다 &nbsp;·&nbsp; <b>휠</b> 바람 &nbsp;·&nbsp; <b>C</b> 비우기
+  </div>
+
+  <div id="stat" class="hud">
+    <span id="sFps"><b>—</b> fps</span><br>
+    <span id="sPts"><b>—</b> 점</span><br>
+    <span id="sFern"><b>—</b> 양치류</span>
+  </div>
+
+<script>
+"use strict";
+/* =====================================================================
+   살아 움직이는 바른슬리 양치류 (Barnsley Fern — alive)
+   설계 핵심:
+   - 무로딩: 첫 프레임이 곧 작품 (prime burst).
+   - 각 양치류는 "고정된 유효 IFS" 를 가진다. 카오스 게임은 매 프레임
+     수백~천 점을 누적, 점은 영구 트레일로 base canvas에 남는다.
+   - 인터랙션(마우스·바람)은 IFS 계수를 망가뜨리지 않고, screen-space
+     post-transform 으로만 적용한다 → 어트랙터는 항상 수렴, 안정적.
+     · rotation/sway = 전체 양치류 흔들림
+     · bend(휨) = 높이에 비례한 비선형 굽힘 (바람에 휘는 줄기)
+   - dual canvas: base(누적 잎) + glow(screen blend, 호흡 빛 + 이슬).
+   - 모든 반지름/스케일은 양수로 클램프 (런타임 throw 방지).
+   ===================================================================== */
+
+const base = document.getElementById('stage');
+const glow = document.getElementById('glow');
+const bx = base.getContext('2d', { alpha:false });
+const gx = glow.getContext('2d', { alpha:true });
+
+let W=0,H=0,DPR=1, isPhone=false;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 1.75);
+  W = window.innerWidth; H = window.innerHeight;
+  isPhone = W < 560;
+  for (const c of [base,glow]){
+    c.width = Math.floor(W*DPR);
+    c.height = Math.floor(H*DPR);
+    c.style.width = W+'px'; c.style.height = H+'px';
+  }
+  bx.setTransform(DPR,0,0,DPR,0,0);
+  gx.setTransform(DPR,0,0,DPR,0,0);
+  bx.fillStyle = '#03070b';
+  bx.fillRect(0,0,W,H);
+}
+
+/* ---------------------------------------------------------------------
+   IFS species. Each map: [a,b,c,d,e,f], prob p.  (classic Barnsley space:
+   x in ~[-2.2,2.7], y in [0,10].)  All contractive → stable attractor.
+   --------------------------------------------------------------------- */
+const SPECIES = [
+  { name:'Barnsley', hue:140, hue2:172, xspread:2.7, top:10,
+    maps:[
+      {m:[ 0.00, 0.00, 0.00, 0.16, 0.00, 0.00], p:0.01},
+      {m:[ 0.85, 0.04,-0.04, 0.85, 0.00, 1.60], p:0.85},
+      {m:[ 0.20,-0.26, 0.23, 0.22, 0.00, 1.60], p:0.07},
+      {m:[-0.15, 0.28, 0.26, 0.24, 0.00, 0.44], p:0.07},
+    ]},
+  { name:'Thelypteris', hue:92, hue2:158, xspread:2.0, top:10,
+    maps:[
+      {m:[ 0.00, 0.00, 0.00, 0.25, 0.00,-0.40], p:0.02},
+      {m:[ 0.95, 0.005,-0.005, 0.93,-0.002, 0.50], p:0.84},
+      {m:[ 0.035,-0.20, 0.16, 0.04,-0.09, 0.02], p:0.07},
+      {m:[-0.04, 0.20, 0.16, 0.04, 0.083, 0.12], p:0.07},
+    ]},
+  { name:'Cyclosorus', hue:166, hue2:200, xspread:2.5, top:9.5,
+    maps:[
+      {m:[ 0.00, 0.00, 0.00, 0.25, 0.00,-0.14], p:0.02},
+      {m:[ 0.85, 0.02,-0.02, 0.83, 0.00, 1.00], p:0.84},
+      {m:[ 0.09,-0.28, 0.30, 0.11, 0.00, 0.60], p:0.07},
+      {m:[-0.09, 0.28, 0.30, 0.09, 0.00, 0.70], p:0.07},
+    ]},
+];
+function cumProbs(maps){
+  let s=0; for(const k of maps) s+=k.p;
+  let acc=0; const out=[];
+  for(const k of maps){ acc += k.p/s; out.push(acc); }
+  return out;
+}
+
+/* ---------------------------------------------------------------------
+   Fern instance
+   --------------------------------------------------------------------- */
+let nextId = 1;
+class Fern {
+  constructor(nx, ny, scale, spIdx, ang){
+    this.id = nextId++;
+    this.nx = nx; this.ny = ny;        // normalized anchor (stem base)
+    this.baseScale = scale;            // relative to min(W,H), maps to top->this fraction of height
+    this.spIdx = spIdx;
+    this.cum = cumProbs(SPECIES[spIdx].maps);
+    this.x = 0; this.y = 0;            // chaos-game state (fern coords)
+    this.age = 0;
+    this.born = performance.now();
+    this.phase = Math.random()*Math.PI*2;
+    this.sway = 0;
+    this.angle = ang || 0;             // base lean
+    this.hueShift = (Math.random()*2-1)*8;
+  }
+}
+let ferns = [];
+let MAX_FERNS = 9;
+
+function spawnFern(nx, ny, scale, spIdx, ang){
+  if (ferns.length >= MAX_FERNS) ferns.shift();
+  ferns.push(new Fern(nx, ny, scale, spIdx, ang));
+  updateStat();
+}
+
+/* ---------------------------------------------------------------------
+   Interaction state
+   --------------------------------------------------------------------- */
+const mouse = { x:0.5, y:0.5, px:0.5, py:0.5, down:false, vx:0, vy:0 };
+let wind = 0, windTarget = 0;
+let curSpecies = 0;
+
+function col(h,s,l,a){ return `hsla(${h},${s}%,${l}%,${a})`; }
+function clampPos(v,min){ return v<min? min : v; }
+
+/* ---------------------------------------------------------------------
+   MAIN LOOP
+   --------------------------------------------------------------------- */
+let lastT = performance.now();
+let fpsSmooth = 60;
+let totalPoints = 0;
+let perfScale = 1;          // adaptive 0.25..1, throttles points when slow
+
+function frame(now){
+  const dt = Math.min(64, now - lastT);
+  lastT = now;
+  const t = now * 0.001;
+
+  mouse.vx = mouse.x - mouse.px;
+  mouse.vy = mouse.y - mouse.py;
+  mouse.px += (mouse.x - mouse.px)*0.18;
+  mouse.py += (mouse.y - mouse.py)*0.18;
+
+  windTarget *= 0.945;
+  wind += (windTarget - wind) * 0.08;
+  const breeze = Math.sin(t*0.55)*0.5 + Math.sin(t*0.23+1.3)*0.5; // -1..1
+
+  // BASE: very slow fade so the accumulated fern body grows dense & rich.
+  // (near-zero fade keeps structure; tiny value lets old/retired ferns dissolve)
+  bx.globalCompositeOperation = 'source-over';
+  bx.fillStyle = 'rgba(3,7,11,0.010)';
+  bx.fillRect(0,0,W,H);
+  gx.clearRect(0,0,W,H);
+
+  const minDim = Math.min(W,H);
+  const mWarpX = (mouse.x - 0.5);
+  const stir   = Math.min(1, (Math.abs(mouse.vx)+Math.abs(mouse.vy)) * 9.0);
+
+  totalPoints = 0;
+
+  for (const f of ferns){
+    const sp = SPECIES[f.spIdx];
+    f.age += (1 - f.age) * 0.016;
+    const grow = f.age;
+    const breath = 1 + Math.sin(t*1.05 + f.phase)*0.018;
+
+    // full-grown stem height: a large fraction of screen height
+    const fullH = f.baseScale * H;                 // baseScale tuned ~0.5..0.95
+    const stemH = fullH * grow * breath;
+    const ax = f.nx * W, ay = f.ny * H;
+
+    // ---- LIFE parameters (sway / tilt / bend) for the GLOW layer ----
+    const localWind = (wind*1.0 + breeze*0.5) * (0.55 + f.nx*0.8);
+    f.sway += (localWind - f.sway) * 0.06;
+    const tilt = f.angle + f.sway*0.085 + mWarpX*0.14;
+    const mouseFocus = Math.max(0, 1 - Math.abs(f.nx-mouse.x)*1.8);
+    const bendAmt = f.sway*0.42 + mWarpX*0.7*mouseFocus + breeze*0.14;
+    const bendClamped = Math.max(-1.3, Math.min(1.3, bendAmt));
+    const cosT = Math.cos(tilt), sinT = Math.sin(tilt);
+
+    // points/frame (perf-scaled). Base accumulates structure; a subset also
+    // drawn brightly on glow with the LIVING transform.
+    let pts = isPhone ? 700 : 1500;
+    pts = Math.floor(pts / Math.max(1, ferns.length*0.42));
+    pts = Math.max(220, pts);
+    pts = Math.floor(pts * (0.5 + grow*0.7) * perfScale);
+    if (pts < 60) pts = 60;
+
+    const xnorm = 1/(sp.xspread);
+    const ynorm = 1/(sp.top);
+
+    for (let i=0;i<pts;i++){
+      const r = Math.random();
+      let mi;
+      if      (r < f.cum[0]) mi=0;
+      else if (r < f.cum[1]) mi=1;
+      else if (r < f.cum[2]) mi=2;
+      else                    mi=3;
+      const M = sp.maps[mi].m;
+      const xn = M[0]*f.x + M[1]*f.y + M[4];
+      const yn = M[2]*f.x + M[3]*f.y + M[5];
+      f.x = xn; f.y = yn;
+      if (!isFinite(f.x) || !isFinite(f.y)) { f.x=0; f.y=0; continue; }
+
+      const hx = f.x * xnorm;             // ~[-1,1]
+      const hyR = f.y * ynorm;
+      const hyc = hyR<0?0:(hyR>1?1:hyR);  // [0,1] height fraction
+
+      // structural (resting) position — the fern STANDS, slight base lean only
+      const lx = hx * stemH * 0.5;
+      const ly = hyc * stemH;
+      const rcos = Math.cos(f.angle), rsin = Math.sin(f.angle);
+      const sx0 = ax + (lx*rcos - ly*rsin);
+      const sy0 = ay - (lx*rsin + ly*rcos);
+
+      // color (height-driven gradient green→cyan→violet)
+      const hue = sp.hue + (sp.hue2-sp.hue)*hyc + f.hueShift
+                + (mi===2?-10:mi===3?9:0);
+      const light = 34 + hyc*28;
+      const sat = 72 + hyc*16;
+
+      // BASE: accumulate dense static body (the "structure")
+      if (sx0>-30 && sx0<W+30 && sy0>-30 && sy0<H+30){
+        bx.globalCompositeOperation = 'lighter';
+        bx.fillStyle = col(hue, sat, light, 0.075 + hyc*0.06);
+        const sz = 0.6 + hyc*0.95;
+        bx.fillRect(sx0, sy0, sz, sz);
+      }
+
+      // GLOW: a subset, drawn at the LIVING (bent/swayed) position — this is
+      // what makes the plant visibly bend & breathe in light each frame.
+      if ((i & 3) === 0){
+        const bend = bendClamped * Math.pow(hyc, 1.55);
+        const cb = Math.cos(bend), sb = Math.sin(bend);
+        const bxp = lx*cb - ly*sb;
+        const byp = lx*sb + ly*cb;
+        const sx = ax + (bxp*cosT - byp*sinT);
+        const sy = ay - (bxp*sinT + byp*cosT);
+        if (sx>-30 && sx<W+30 && sy>-30 && sy<H+30){
+          const dxm = sx - mouse.x*W, dym = sy - mouse.y*H;
+          const near = Math.max(0, 1 - Math.sqrt(dxm*dxm+dym*dym)/(minDim*0.26));
+          const gA = 0.045 + hyc*0.11 + near*0.24;
+          gx.fillStyle = col(hue+8, sat, clampPos(Math.min(76, light+24+near*16),20), gA);
+          // cheap "glow": small bright square on the screen-blend layer
+          // (far faster than arc() in software rasterizers; reads as a glowing pixel)
+          const gr = clampPos(1.1 + hyc*2.4 + near*2.6, 0.8);
+          gx.fillRect(sx - gr*0.5, sy - gr*0.5, gr, gr);
+        }
+      }
+      totalPoints++;
+    }
+  }
+
+  drawDew(t, minDim, mWarpX);
+
+  // FPS + adaptive governor: keep ~60fps by scaling point budget
+  const inst = 1000/Math.max(1,dt);
+  fpsSmooth += (inst - fpsSmooth)*0.08;
+  if (fpsSmooth < 50) perfScale = Math.max(0.25, perfScale - 0.03);
+  else if (fpsSmooth > 58) perfScale = Math.min(1, perfScale + 0.01);
+  fpsTick();
+
+  requestAnimationFrame(frame);
+}
+
+/* ---------------------------------------------------------------------
+   Dew drops — luminous halos riding high on each fern, catching light.
+   All radii clamped positive.
+   --------------------------------------------------------------------- */
+function drawDew(t, minDim, mWarpX){
+  for (const f of ferns){
+    if (f.age < 0.15) continue;
+    const sp = SPECIES[f.spIdx];
+    const ax = f.nx*W, ay = f.ny*H;
+    const stemH = f.baseScale*H*f.age;
+    const k = f.id*0.37;
+    const hyc = 0.5 + 0.38*(0.5+0.5*Math.sin(t*0.4 + k));     // 0.5..0.88
+    const hx = Math.sin(t*0.9 + k)*0.22;                       // wander
+    const tilt = f.angle + f.sway*0.085 + mWarpX*0.14;
+    const bend = Math.max(-1.3,Math.min(1.3, f.sway*0.42 + breezeNow()*0.14 + mWarpX*0.3)) * Math.pow(hyc,1.55);
+    let lx = hx*stemH*0.5, ly = hyc*stemH;
+    const cb=Math.cos(bend), sb=Math.sin(bend);
+    let bxp = lx*cb - ly*sb, byp = lx*sb + ly*cb;
+    const cosT=Math.cos(tilt), sinT=Math.sin(tilt);
+    const sx = ax + (bxp*cosT - byp*sinT);
+    const sy = ay - (bxp*sinT + byp*cosT);
+    const pulse = 0.5 + 0.5*Math.sin(t*2.0 + k);
+    const rad = clampPos((5 + 9*pulse) * (0.5+f.age*0.6), 1);
+    const g = gx.createRadialGradient(sx,sy,0,sx,sy,rad);
+    g.addColorStop(0, col(sp.hue2, 92, 82, 0.34*f.age));
+    g.addColorStop(0.4, col(sp.hue2, 92, 66, 0.12*f.age));
+    g.addColorStop(1, col(sp.hue2, 92, 60, 0));
+    gx.fillStyle = g;
+    gx.beginPath(); gx.arc(sx,sy,rad,0,6.2832); gx.fill();
+    gx.fillStyle = col(sp.hue2+12, 100, 94, 0.5*f.age);
+    gx.beginPath(); gx.arc(sx,sy,clampPos(1.3,0.5),0,6.2832); gx.fill();
+  }
+}
+let _breeze = 0;
+function breezeNow(){ return _breeze; }
+
+/* ---------------------------------------------------------------------
+   Stats HUD
+   --------------------------------------------------------------------- */
+const elFps = document.querySelector('#sFps b');
+const elPts = document.querySelector('#sPts b');
+const elFern= document.querySelector('#sFern b');
+let statAcc=0;
+function fpsTick(){
+  _breeze = Math.sin(performance.now()*0.001*0.55)*0.5 + Math.sin(performance.now()*0.001*0.23+1.3)*0.5;
+  statAcc++;
+  if (statAcc % 10 === 0) elFps.textContent = Math.round(fpsSmooth);
+}
+function updateStat(){ elFern.textContent = ferns.length; }
+setInterval(()=>{ elPts.textContent = totalPoints.toLocaleString(); }, 400);
+
+/* ---------------------------------------------------------------------
+   Input
+   --------------------------------------------------------------------- */
+function setMouse(cx, cy){ mouse.x = cx / W; mouse.y = cy / H; }
+window.addEventListener('pointermove', e=>{ setMouse(e.clientX, e.clientY); }, {passive:true});
+window.addEventListener('pointerdown', e=>{
+  if (e.target.classList && e.target.classList.contains('pill')) return;
+  mouse.down = true; setMouse(e.clientX, e.clientY);
+  // base of new fern at the click point; height scales with how low you click
+  const sc = (isPhone?0.34:0.42) + Math.random()*0.16;
+  spawnFern(e.clientX/W, Math.min(0.99, e.clientY/H + 0.0), sc, curSpecies, (Math.random()*0.24-0.12));
+});
+window.addEventListener('pointerup', ()=>{ mouse.down=false; });
+let dragTick=0;
+window.addEventListener('pointermove', e=>{
+  if (mouse.down){
+    dragTick++;
+    if (dragTick % 6 === 0){
+      const sc = (isPhone?0.22:0.28) + Math.random()*0.14;
+      spawnFern(e.clientX/W, Math.min(0.99,e.clientY/H), sc, curSpecies, (Math.random()*0.34-0.17));
+    }
+  }
+}, {passive:true});
+window.addEventListener('wheel', e=>{
+  windTarget += Math.sign(e.deltaY)*0.85 + (Math.random()-0.5)*0.2;
+  windTarget = Math.max(-3, Math.min(3, windTarget));
+}, {passive:true});
+window.addEventListener('touchmove', e=>{
+  if (e.touches.length) setMouse(e.touches[0].clientX, e.touches[0].clientY);
+}, {passive:true});
+
+document.querySelectorAll('.pill').forEach(p=>{
+  p.addEventListener('click', ()=>{
+    document.querySelectorAll('.pill').forEach(q=>q.classList.remove('on'));
+    p.classList.add('on');
+    curSpecies = parseInt(p.dataset.sp,10);
+  });
+});
+window.addEventListener('keydown', e=>{
+  if (e.code==='Space'){ windTarget += (Math.random()<.5?-1:1)*2.4; e.preventDefault(); }
+  if (e.key==='c' || e.key==='C'){
+    ferns = []; updateStat();
+    bx.globalCompositeOperation='source-over';
+    bx.fillStyle='#03070b'; bx.fillRect(0,0,W,H);
+    seedInitial(); primePaint();
+  }
+});
+window.addEventListener('resize', resize);
+
+/* ---------------------------------------------------------------------
+   Initial meadow — first paint is already a composed scene.
+   --------------------------------------------------------------------- */
+function seedInitial(){
+  MAX_FERNS = isPhone ? 6 : 9;
+  const n = isPhone ? 3 : 5;
+  for (let i=0;i<n;i++){
+    const nx = isPhone ? (0.16 + i*0.30) : (0.10 + i*0.185);
+    const ny = 0.99 - (i%2)*0.01;
+    // background ferns smaller, foreground larger — depth
+    const sc = (isPhone?0.55:0.62) - Math.abs(i-2)*0.07 + Math.random()*0.04;
+    const sp = i % SPECIES.length;
+    // alternate the curl direction so the meadow fills both sides
+    const f = new Fern(nx, ny, sc, sp, (Math.random()*0.08-0.04) + (i%2?0.05:-0.05));
+    f.age = 0.45 + Math.random()*0.1;       // already substantially grown on paint 1
+    ferns.push(f);
+  }
+  // hero fern: slightly left so its rightward Barnsley curl centers; biggest
+  if (ferns[0]){
+    ferns[0].nx = isPhone?0.42:0.40; ferns[0].spIdx = 0;
+    ferns[0].cum = cumProbs(SPECIES[0].maps);
+    ferns[0].baseScale = isPhone?0.80:0.92; ferns[0].age = 0.62;
+    ferns[0].angle = -0.04;
+  }
+  updateStat();
+}
+
+/* prime: run the chaos game a few thousand iterations per fern so the
+   very first painted frame already shows full, recognizable fronds. */
+function primePaint(){
+  bx.globalCompositeOperation='lighter';
+  for(const f of ferns){
+    const sp=SPECIES[f.spIdx];
+    const stemH=f.baseScale*H*f.age;
+    const ax=f.nx*W, ay=f.ny*H;
+    const cosT=Math.cos(f.angle), sinT=Math.sin(f.angle);
+    const xnorm=1/sp.xspread, ynorm=1/sp.top;
+    for(let i=0;i<80;i++){ chaosStep(f,sp); }      // warm up walker
+    const N = isPhone?5000:8000;                    // dense, full fern on paint 1
+    for(let i=0;i<N;i++){
+      chaosStep(f,sp);
+      const hx=f.x*xnorm, hyRaw=f.y*ynorm, hy=hyRaw<0?0:(hyRaw>1?1:hyRaw);
+      const lx=hx*stemH*0.5, ly=hy*stemH;
+      const sx=ax+(lx*cosT-ly*sinT), sy=ay-(lx*sinT+ly*cosT);
+      if(sx<-30||sx>W+30||sy<-30||sy>H+30) continue;
+      const hue=sp.hue+(sp.hue2-sp.hue)*hy+f.hueShift;
+      bx.fillStyle=col(hue,76,36+hy*30,0.06+hy*0.05);
+      const sz=0.5+hy*0.85;
+      bx.fillRect(sx,sy,sz,sz);
+    }
+  }
+}
+function chaosStep(f,sp){
+  const r=Math.random(); let mi;
+  if(r<f.cum[0])mi=0; else if(r<f.cum[1])mi=1; else if(r<f.cum[2])mi=2; else mi=3;
+  const M=sp.maps[mi].m;
+  const xn=M[0]*f.x+M[1]*f.y+M[4];
+  const yn=M[2]*f.x+M[3]*f.y+M[5];
+  f.x=xn; f.y=yn;
+  if(!isFinite(f.x)||!isFinite(f.y)){f.x=0;f.y=0;}
+}
+
+/* ---------------------------------------------------------------------
+   Boot
+   --------------------------------------------------------------------- */
+resize();
+seedInitial();
+primePaint();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
